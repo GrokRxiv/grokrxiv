@@ -97,12 +97,12 @@ private_status="$(http_status "${BASE_URL}/api/v1/reviews/${review_id}")"
 ok "awaiting_moderation review is not public (status=${private_status})"
 
 if [[ "${RUN_PUBLISH_E2E:-0}" == "1" ]]; then
-  step "publish E2E"
+  step "PR handoff E2E"
   bash scripts/publish-e2e.sh "${ARXIV_ID}"
-  ok "publish E2E passed"
+  ok "PR handoff E2E passed"
 else
-  step "publish E2E skipped"
-  ok "set RUN_PUBLISH_E2E=1 with GitHub env to run real publish"
+  step "PR handoff E2E skipped"
+  ok "set RUN_PUBLISH_E2E=1 with GitHub env to run CLI PR handoff"
 fi
 
 printf '\n'

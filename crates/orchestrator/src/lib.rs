@@ -9,6 +9,7 @@
 pub mod agents;
 pub mod arxiv_rate_limit;
 pub mod cli;
+pub mod cli_status;
 pub mod config;
 pub mod db;
 pub mod doctor;

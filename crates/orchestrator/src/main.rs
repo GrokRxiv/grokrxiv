@@ -31,5 +31,6 @@ fn init_tracing() {
         .with_env_filter(filter)
         .json()
         .with_current_span(false)
+        .with_writer(std::io::stderr)
         .init();
 }

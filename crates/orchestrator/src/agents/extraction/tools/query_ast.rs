@@ -1,8 +1,8 @@
 //! `query_ast(jsonpath)` — run a JSONPath query against the semantic AST.
 //!
-//! The semantic AST is populated upstream by the deterministic Stage 2
-//! (Pandoc plus LaTeXML). When it's unavailable the tool reports that to the
-//! LLM rather than failing the whole loop.
+//! The semantic AST is populated upstream by the optional LaTeXML enrichment
+//! path in deterministic Stage 2. Pandoc markdown remains the default source
+//! for extraction, so missing `semantic_ast` is normal.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -46,7 +46,7 @@ impl Tool for QueryAstTool {
         let Some(ast) = ctx.semantic_ast else {
             return Ok(json!({
                 "matches": [],
-                "warning": "semantic_ast not available — deterministic Stage 2 did not run on this paper"
+                "warning": "semantic_ast not available — LaTeXML enrichment is disabled or did not produce an AST"
             }));
         };
         let matches = jsonpath_query(ast, q)?;

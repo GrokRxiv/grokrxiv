@@ -31,7 +31,7 @@ const STAGES = [
   {
     n: "05",
     name: "Human moderation",
-    body: "A moderator reviews the bundle. On approval, the publisher opens a PR to github.com/GrokRxiv/reviews. Reviews become publicly visible only after a human moderator merges the corresponding PR on GitHub. This is the human-moderation gate: approving a review opens the PR but does NOT publish it. The merge webhook flips the review to published, revalidates the Vercel page, and unlocks outreach drafts.",
+    body: "A moderator reviews the bundle. On approval, the publisher opens a PR to github.com/GrokRxiv/grokrxiv-reviews. Reviews become publicly visible only after a human moderator merges the corresponding PR on GitHub. This is the human-moderation gate: approving a review opens the PR but does NOT publish it. The merge webhook flips the review to published, revalidates the Vercel page, and unlocks outreach drafts.",
   },
 ];
 

@@ -153,6 +153,9 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
     tracing::info!(arxiv_id, "M1: ingest start");
+    crate::cli_status::emit(format!(
+        "paper {arxiv_id}: fetching arXiv source and metadata"
+    ));
 
     // RPT3 Wave-3 Team-F: when the storage feature is on, the orchestrator's
     // staged ingest pipeline runs Stages 1–8 (acquisition → format conversion
@@ -163,6 +166,9 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
     #[cfg(feature = "grokrxiv-storage")]
     {
         let opts = ingest_options_from_env();
+        crate::cli_status::emit(format!(
+            "paper {arxiv_id}: running staged extraction pipeline"
+        ));
         match crate::ingest_pipeline::run_ingest_pipeline(state, arxiv_id, &opts).await {
             Ok(out) => {
                 paper_id = out.paper_id;
@@ -193,35 +199,16 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         extract = pe;
     }
     tracing::info!(arxiv_id, %paper_id, "M1: paper persisted");
+    crate::cli_status::emit(format!(
+        "paper {arxiv_id}: extraction persisted as paper_id={paper_id}; starting review DAG"
+    ));
 
     run_review_dag_from_state(state, pool, paper_id, extract).await
 }
 
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 fn ingest_options_from_env() -> crate::ingest_pipeline::IngestOptions {
-    let no_cache = matches!(
-        std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
-        Ok("1")
-    );
-    let dry_run_storage = matches!(
-        std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(),
-        Ok("1")
-    );
-    let skip_stages: Vec<String> = std::env::var("GROKRXIV_INGEST_SKIP_STAGES")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    crate::ingest_pipeline::IngestOptions {
-        no_cache,
-        skip_stages,
-        dry_run_storage,
-    }
+    crate::ingest_pipeline::IngestOptions::from_env()
 }
 
 /// Drive the review DAG for a paper row that is already present in the database.
@@ -312,6 +299,36 @@ fn review_cache_disabled() -> bool {
         std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
         Ok("1") | Ok("true")
     )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn specialist_review_concurrency_limit(roles: &[grokrxiv_schemas::AgentRole]) -> usize {
+    use crate::agents::AgentRunnerKind;
+
+    let max = roles.len().max(1);
+    let has_cli_role = roles.iter().any(|role| {
+        review_runner_override_for(*role).unwrap_or(AgentRunnerKind::Cli) == AgentRunnerKind::Cli
+    });
+    review_concurrency_limit_from(
+        std::env::var("GROKRXIV_REVIEW_CONCURRENCY").ok().as_deref(),
+        has_cli_role,
+        max,
+    )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_concurrency_limit_from(raw: Option<&str>, has_cli_role: bool, max: usize) -> usize {
+    if let Some(parsed) = raw
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return parsed.min(max.max(1));
+    }
+    if has_cli_role {
+        1
+    } else {
+        max.max(1)
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -421,6 +438,9 @@ async fn run_review_dag_inner(
     // request-changes / approve commands flip this row's `state`.
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     tracing::info!(%review_id, "M1: review row created");
+    crate::cli_status::emit(format!(
+        "review {review_id}: created review row; starting specialist reviewers"
+    ));
 
     // Drive the DAG inside an inner async block so any error path can
     // transition the review row off the stale `awaiting_moderation` state.
@@ -436,7 +456,11 @@ async fn run_review_dag_inner(
         AgentRole::Citation,
     ];
 
-    let sem = Arc::new(tokio::sync::Semaphore::new(5));
+    let review_concurrency = specialist_review_concurrency_limit(&specialist_roles);
+    crate::cli_status::emit(format!(
+        "review {review_id}: specialist concurrency={review_concurrency}"
+    ));
+    let sem = Arc::new(tokio::sync::Semaphore::new(review_concurrency));
     let extract_arc = Arc::new(extract);
     let specialist_input: serde_json::Value =
         serde_json::to_value(extract_arc.as_ref()).unwrap_or_else(|_| json!({}));
@@ -472,6 +496,10 @@ async fn run_review_dag_inner(
         let specialist_input_cloned = specialist_input.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
+            crate::cli_status::emit(format!(
+                "review {review_id}: {} reviewer starting",
+                role_slug(role)
+            ));
 
             // FP6 A4: cache lookup before the LLM call. We only honour
             // verifier_status='pass' rows so a previously-warned/failed run
@@ -524,6 +552,10 @@ async fn run_review_dag_inner(
                 source_bundle_path: None,
             };
             let run = agent.run(&*runner, input).await?;
+            crate::cli_status::emit(format!(
+                "review {review_id}: {} reviewer completed",
+                role_slug(role)
+            ));
             anyhow::Ok((
                 role,
                 run.output,
@@ -551,6 +583,9 @@ async fn run_review_dag_inner(
             .map_err(|e| anyhow::anyhow!("specialist join: {e}"))??;
         specialist_results.push(r);
     }
+    crate::cli_status::emit(format!(
+        "review {review_id}: specialist reviewers completed; running verifier ladder"
+    ));
 
     // Persist + verify each specialist's output against its role-specific
     // verifier ladder. The ladder uses the role-specific JSON schema as its
@@ -597,6 +632,13 @@ async fn run_review_dag_inner(
             .await;
         }
         specialist_verifier_status.push((*role, v_status));
+        crate::cli_status::emit(format!(
+            "review {review_id}: {} verifier={}",
+            role_slug(*role),
+            v_status
+                .map(|s| format!("{s:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
         tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
     }
 
@@ -675,6 +717,7 @@ async fn run_review_dag_inner(
     let meta_system = role_system_prompt(AgentRole::MetaReviewer);
 
     let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer)?;
+    crate::cli_status::emit(format!("review {review_id}: meta_reviewer starting"));
 
     // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
     // the specialists-bundle JSON it would have reasoned over, so two reviews
@@ -759,6 +802,12 @@ async fn run_review_dag_inner(
         },
     )
     .await?;
+    crate::cli_status::emit(format!(
+        "review {review_id}: meta_reviewer verifier={}",
+        meta_v_status
+            .map(|s| format!("{s:?}").to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
 
     // FP6 A4: only cache fresh successful meta-reviews.
     if !meta_from_cache && meta_v_status == Some(VerifierStatus::Pass) {
@@ -793,8 +842,12 @@ async fn run_review_dag_inner(
     // pipeline output (no synthetic placeholders). Storage-bucket upload is
     // M3; on-disk paths suffice for the M1 assertions.
     let _ = paper_id; // not needed by the new render path
+    crate::cli_status::emit(format!("review {review_id}: rendering artifacts"));
     if let Err(e) = render_to_disk(state, review_id).await {
         tracing::warn!(%review_id, err = %e, "render_to_disk failed");
+        crate::cli_status::emit(format!("review {review_id}: render warning: {e:#}"));
+    } else {
+        crate::cli_status::emit(format!("review {review_id}: render complete"));
     }
 
         Ok(())
@@ -817,6 +870,9 @@ async fn run_review_dag_inner(
         return Err(e);
     }
 
+    crate::cli_status::emit(format!(
+        "review {review_id}: awaiting_moderation; approve opens a PR, human merge publishes"
+    ));
     Ok(review_id)
 }
 
@@ -2251,6 +2307,23 @@ mod tests {
     #[test]
     fn min_specialist_quorum_is_three() {
         assert_eq!(MIN_SPECIALIST_QUORUM, 3);
+    }
+
+    #[test]
+    fn review_concurrency_defaults_to_one_for_cli_roles() {
+        assert_eq!(review_concurrency_limit_from(None, true, 5), 1);
+    }
+
+    #[test]
+    fn review_concurrency_defaults_to_full_parallel_for_api_roles() {
+        assert_eq!(review_concurrency_limit_from(None, false, 5), 5);
+    }
+
+    #[test]
+    fn review_concurrency_env_override_is_clamped() {
+        assert_eq!(review_concurrency_limit_from(Some("2"), true, 5), 2);
+        assert_eq!(review_concurrency_limit_from(Some("99"), true, 5), 5);
+        assert_eq!(review_concurrency_limit_from(Some("0"), true, 5), 1);
     }
 
     /// FP-RPT3b B2: helper that mirrors the quorum-count predicate in

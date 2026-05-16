@@ -1,5 +1,5 @@
 //! GrokRxiv publisher: uploads review artifacts to Supabase Storage and opens
-//! a moderation PR against the `GrokRxiv/reviews` repository.
+//! a moderation PR against the `GrokRxiv/grokrxiv-reviews` repository.
 //!
 //! The publisher is **admin-gated**: every public entry point that mutates a
 //! remote system takes an [`AdminCaller`] zero-sized token, the sole

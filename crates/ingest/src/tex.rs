@@ -5,10 +5,12 @@
 //!    temp dir, preserving relative paths so `\input{chapters/intro}`
 //!    resolves naturally.
 //! 2. Pick the main `.tex` file by `\documentclass` + `\begin{document}`.
-//! 3. Run `latexml` → `latexmlpost` → `pandoc` to produce semantic XML +
-//!    HTML5 + Markdown. Parse the XML into a `semantic_ast` JSON tree.
-//! 4. If LaTeXML times out or errors, fall back to `pandoc main.tex --to
-//!    markdown --mathjax`.
+//! 3. Run `pandoc main.tex --to markdown --mathjax` to produce reviewer-ready
+//!    Markdown quickly.
+//! 4. Optionally, when `GROKRXIV_TEX_ENABLE_LATEXML=1`, run `latexml` →
+//!    `latexmlpost` → `pandoc` to produce semantic XML + HTML5 + Markdown.
+//!    Parse the XML into a `semantic_ast` JSON tree. If LaTeXML times out or
+//!    errors, keep the pandoc Markdown.
 //! 5. Parse the resulting Markdown into title / abstract / sections.
 //!    Bibliography is harvested from `\bibitem` blocks in the original TeX
 //!    plus any `.bib` files in the bundle.
@@ -17,8 +19,9 @@
 //! - `GROKRXIV_PANDOC_BIN`             (default `pandoc`)
 //! - `GROKRXIV_LATEXML_BIN`            (default `latexml`)
 //! - `GROKRXIV_LATEXMLPOST_BIN`        (default `latexmlpost`)
-//! - `GROKRXIV_LATEXML_TIMEOUT_SECS`   (default 120)
-//! - `GROKRXIV_TEX_DISABLE_LATEXML=1`  skip LaTeXML, go straight to pandoc
+//! - `GROKRXIV_LATEXML_TIMEOUT_SECS`   (default 20)
+//! - `GROKRXIV_TEX_ENABLE_LATEXML=1`   opt into LaTeXML semantic AST
+//! - `GROKRXIV_TEX_DISABLE_LATEXML=1`  force skip LaTeXML
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -240,18 +243,22 @@ fn latexmlpost_bin() -> String {
     std::env::var("GROKRXIV_LATEXMLPOST_BIN").unwrap_or_else(|_| "latexmlpost".to_string())
 }
 
-fn latexml_disabled() -> bool {
+fn env_truthy(key: &str) -> bool {
     matches!(
-        std::env::var("GROKRXIV_TEX_DISABLE_LATEXML").as_deref(),
+        std::env::var(key).as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
+}
+
+fn latexml_enabled() -> bool {
+    env_truthy("GROKRXIV_TEX_ENABLE_LATEXML") && !env_truthy("GROKRXIV_TEX_DISABLE_LATEXML")
 }
 
 fn subprocess_timeout() -> Duration {
     let secs = std::env::var("GROKRXIV_LATEXML_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(120);
+        .unwrap_or(20);
     Duration::from_secs(secs)
 }
 
@@ -261,7 +268,15 @@ async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> (String, Option
     let html_path = tmp.path().join("paper.html");
     let media_path = tmp.path().join("media");
 
-    if !latexml_disabled() {
+    let pandoc_markdown = match run_pandoc_tex(&layout.tex_dir, &layout.main_name, timeout).await {
+        Ok(md) => md,
+        Err(e) => {
+            warn!(error = %e, "pandoc TeX conversion failed; returning empty markdown unless LaTeXML succeeds");
+            String::new()
+        }
+    };
+
+    if latexml_enabled() {
         match run_latexml_pipeline(
             &layout.tex_dir,
             &layout.main_name,
@@ -282,18 +297,12 @@ async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> (String, Option
                 return (markdown, ast);
             }
             Err(e) => {
-                warn!(error = %e, "latexml pipeline failed; falling back to pandoc-only");
+                warn!(error = %e, "latexml pipeline failed; keeping pandoc markdown");
             }
         }
     }
 
-    match run_pandoc_tex(&layout.tex_dir, &layout.main_name, timeout).await {
-        Ok(md) => (md, None),
-        Err(e) => {
-            warn!(error = %e, "pandoc TeX fallback also failed; returning empty markdown");
-            (String::new(), None)
-        }
-    }
+    (pandoc_markdown, None)
 }
 
 async fn run_latexml_pipeline(
@@ -362,6 +371,7 @@ async fn run_pandoc_tex(tex_dir: &Path, main_name: &str, timeout: Duration) -> R
 }
 
 async fn run_cmd(cmd: &mut Command, timeout: Duration, label: &str) -> Result<()> {
+    cmd.kill_on_drop(true);
     let fut = cmd.output();
     let output = tokio::time::timeout(timeout, fut)
         .await
@@ -378,6 +388,7 @@ async fn run_cmd(cmd: &mut Command, timeout: Duration, label: &str) -> Result<()
 }
 
 async fn run_cmd_capture(cmd: &mut Command, timeout: Duration, label: &str) -> Result<String> {
+    cmd.kill_on_drop(true);
     let fut = cmd.output();
     let output = tokio::time::timeout(timeout, fut)
         .await
@@ -847,6 +858,7 @@ Some text.
             eprintln!("skipping: latexml not installed");
             return;
         }
+        std::env::set_var("GROKRXIV_TEX_ENABLE_LATEXML", "1");
         std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
         let tex = r#"\documentclass{article}
 \usepackage{amsthm}
@@ -860,6 +872,7 @@ Let $n \ge 1$.
 "#;
         let bundle = make_targz(&[("main.tex", tex)]);
         let extract = parse_bundle(&bundle).await.expect("parse_bundle");
+        std::env::remove_var("GROKRXIV_TEX_ENABLE_LATEXML");
         let body_joined: String = extract
             .sections
             .iter()
@@ -960,6 +973,28 @@ See~\cite{foo}.
             "bibliography raw should reference 'foo'/'A. Foo': {}",
             extract.bibliography[0].raw
         );
+    }
+
+    #[test]
+    fn latexml_is_opt_in_by_default() {
+        std::env::remove_var("GROKRXIV_TEX_ENABLE_LATEXML");
+        std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
+        assert!(
+            !latexml_enabled(),
+            "LaTeXML must not run by default on the operator CLI path"
+        );
+
+        std::env::set_var("GROKRXIV_TEX_ENABLE_LATEXML", "1");
+        assert!(latexml_enabled(), "explicit opt-in should enable LaTeXML");
+
+        std::env::set_var("GROKRXIV_TEX_DISABLE_LATEXML", "1");
+        assert!(
+            !latexml_enabled(),
+            "explicit disable should override the opt-in"
+        );
+
+        std::env::remove_var("GROKRXIV_TEX_ENABLE_LATEXML");
+        std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
     }
 
     #[test]

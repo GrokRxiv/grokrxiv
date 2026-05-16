@@ -9,7 +9,7 @@
 //! container".
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -179,6 +179,10 @@ struct BuiltCommand {
     /// helper can assert it was placed and the runtime helper can clean up).
     /// `None` for claude / gemini.
     schema_path: Option<PathBuf>,
+    /// Working directory for the child process. Keeping CLI children out of
+    /// the repo root prevents provider CLIs from scanning the whole checkout
+    /// when they fall back to their own local tools.
+    cwd: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -211,10 +215,12 @@ impl AgentRunner for CliRunner {
             }
         }
 
-        let prompt = format!("{}\n\n{}", input.system_prompt, input.user_prompt);
+        let review_workdir = prepare_review_workdir(spec, input)?;
+        let prompt = render_review_prompt_with_files(input);
 
         // 3. First attempt.
-        let built = build_command(self, spec, &prompt)?;
+        let mut built = build_command(self, spec, &prompt)?;
+        built.cwd = Some(review_workdir.path().to_path_buf());
         let raw_stdout =
             match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
                 Ok(s) => s,
@@ -241,7 +247,8 @@ impl AgentRunner for CliRunner {
                     schema = serde_json::to_string(&spec.schema).unwrap_or_default(),
                     prompt = prompt,
                 );
-                let built2 = build_command(self, spec, &corrective)?;
+                let mut built2 = build_command(self, spec, &corrective)?;
+                built2.cwd = Some(review_workdir.path().to_path_buf());
                 let raw2 =
                     match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
                         Ok(s) => s,
@@ -312,7 +319,7 @@ impl AgentRunner for CliRunner {
             .ok()
             .filter(|s| s == "api");
         if fallback.is_some() {
-            if !direct_provider_api_allowed() {
+            if !extractor_api_selected() || !direct_provider_api_allowed() {
                 anyhow::bail!(
                     "GROKRXIV_EXTRACTION_TOOL_FALLBACK=api refused because direct provider API \
                      is disabled for this CLI run; use --extractor api to allow API billing, \
@@ -337,7 +344,7 @@ impl AgentRunner for CliRunner {
         log_auth_path_once(&spec.provider);
 
         let prompt = render_tool_prompt(spec, messages, tools, ctx)?;
-        let built = build_tool_command(self, spec, &prompt)?;
+        let built = build_tool_command(self, spec, &prompt, ctx.workdir)?;
         let raw_stdout =
             match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
                 Ok(s) => s,
@@ -361,7 +368,7 @@ impl AgentRunner for CliRunner {
                      Use only the available tool names. If the extraction is complete, call \
                      submit with the final payload."
                 );
-                let built2 = build_tool_command(self, spec, &corrective)?;
+                let built2 = build_tool_command(self, spec, &corrective, ctx.workdir)?;
                 let raw2 =
                     match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
                         Ok(s) => s,
@@ -397,6 +404,54 @@ fn enrich_cli_tool_raw(mut raw: serde_json::Value, elapsed: Duration) -> serde_j
         "raw": raw,
         "cli_latency_ms": elapsed.as_millis() as u64,
     })
+}
+
+fn prepare_review_workdir(
+    spec: &AgentSpec,
+    input: &AgentInput,
+) -> anyhow::Result<tempfile::TempDir> {
+    let dir = tempfile::Builder::new()
+        .prefix("grokrxiv-review-")
+        .tempdir()
+        .map_err(|e| anyhow::anyhow!("create review CLI workdir: {e}"))?;
+    write_json_file(&dir.path().join("review_input.json"), &input.artifact)?;
+    write_json_file(&dir.path().join("schema.json"), &spec.schema)?;
+    std::fs::write(dir.path().join("prompt.md"), &input.user_prompt)
+        .map_err(|e| anyhow::anyhow!("write prompt.md: {e}"))?;
+    std::fs::write(dir.path().join("system.md"), &input.system_prompt)
+        .map_err(|e| anyhow::anyhow!("write system.md: {e}"))?;
+    std::fs::write(
+        dir.path().join("README.md"),
+        "GrokRxiv prepared this directory for one review role.\n\
+         Use review_input.json as the paper/review artifact, prompt.md as the task, \
+         system.md as the role instruction, and schema.json as the required output schema.\n\
+         Do not search parent directories or the GrokRxiv repository.\n",
+    )
+    .map_err(|e| anyhow::anyhow!("write README.md: {e}"))?;
+    Ok(dir)
+}
+
+fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    let body = serde_json::to_vec_pretty(value)
+        .map_err(|e| anyhow::anyhow!("serialise {}: {e}", path.display()))?;
+    std::fs::write(path, body).map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))
+}
+
+fn render_review_prompt_with_files(input: &AgentInput) -> String {
+    format!(
+        "{system}\n\n\
+         GrokRxiv has prepared the exact review inputs in your current working directory.\n\
+         Use these files only:\n\
+         - review_input.json: canonical JSON artifact to review\n\
+         - prompt.md: role-specific task\n\
+         - system.md: role instruction\n\
+         - schema.json: required output schema\n\n\
+         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
+         If you use local file tools, restrict them to the current directory and these files.\n\n\
+         Role task:\n{user}",
+        system = input.system_prompt,
+        user = input.user_prompt,
+    )
 }
 
 fn render_tool_prompt(
@@ -438,6 +493,7 @@ fn build_tool_command(
     runner: &CliRunner,
     spec: &AgentSpec,
     prompt: &str,
+    workdir: &Path,
 ) -> anyhow::Result<BuiltCommand> {
     let program = runner.binary_for(&spec.provider)?;
     let args = match spec.provider.as_str() {
@@ -466,6 +522,7 @@ fn build_tool_command(
         args,
         stdin_payload: prompt.to_string(),
         schema_path: None,
+        cwd: Some(workdir.to_path_buf()),
     })
 }
 
@@ -762,6 +819,7 @@ fn build_command(
         args,
         stdin_payload,
         schema_path,
+        cwd: None,
     })
 }
 
@@ -780,7 +838,17 @@ async fn exec_and_capture(
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new(&built.program);
     cmd.args(&built.args);
+    if let Some(cwd) = &built.cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.kill_on_drop(true);
     scrub_provider_api_env(&mut cmd);
+    if provider == "gemini" {
+        // Extraction and review subprocesses run in isolated temp workdirs so
+        // CLI tools cannot scan the repo root. Gemini requires an explicit
+        // trust signal for headless automation in such directories.
+        cmd.env("GEMINI_CLI_TRUST_WORKSPACE", "true");
+    }
     tracing::info!(
         provider = %provider,
         program = %built.program,
@@ -870,6 +938,10 @@ fn direct_provider_api_allowed() -> bool {
         std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
+}
+
+fn extractor_api_selected() -> bool {
+    matches!(std::env::var("GROKRXIV_EXTRACTOR").as_deref(), Ok("api"))
 }
 
 fn scrub_provider_api_env(cmd: &mut Command) {
@@ -1399,17 +1471,11 @@ fn log_auth_path_once(provider: &str) {
                     plan_type = %plan_type,
                     "codex CLI auth path"
                 );
-                // Per the FP-RPT3b audit: codex's `chatgpt_plus` / `chatgpt_pro`
-                // tiers include a metered API budget but are NOT a flat $0
-                // subscription. Warn unless the auth tier is explicitly
-                // recognised as a personal subscription with included usage.
-                if auth_method != "chatgpt_subscription" {
-                    tracing::warn!(
-                        provider = "openai",
-                        auth_method = %auth_method,
-                        "codex CLI runs against OpenAI API — will incur per-token billing"
-                    );
-                }
+                tracing::info!(
+                    provider = "openai",
+                    auth_method = %auth_method,
+                    "codex CLI uses local CLI auth; provider API key env is scrubbed"
+                );
             }
         }
         "gemini" => {
@@ -1423,16 +1489,11 @@ fn log_auth_path_once(provider: &str) {
                     quota_project = %quota_project,
                     "gemini CLI auth path"
                 );
-                // gemini CLI on `cloud-platform` scope routes through the
-                // gcloud quota project, which is metered. Same warning pattern
-                // as codex.
-                if auth_method != "personal_subscription" {
-                    tracing::warn!(
-                        provider = "gemini",
-                        auth_method = %auth_method,
-                        "gemini CLI runs against Google AI / Vertex API — will incur per-token billing"
-                    );
-                }
+                tracing::info!(
+                    provider = "gemini",
+                    auth_method = %auth_method,
+                    "gemini CLI uses local CLI auth; provider API key env is scrubbed"
+                );
             }
         }
         _ => {}
@@ -1739,6 +1800,47 @@ mod tests {
             msg.contains("foo"),
             "error should name the bad provider: {msg}"
         );
+    }
+
+    #[test]
+    fn extraction_tool_command_runs_inside_workdir() {
+        let r = CliRunner::new();
+        let spec = stub_spec("gemini", "gemini-test");
+        let workdir = std::env::temp_dir().join("grokrxiv-cli-tool-cwd-test");
+
+        let built = build_tool_command(&r, &spec, "prompt", &workdir).expect("build command");
+
+        assert_eq!(built.cwd.as_deref(), Some(workdir.as_path()));
+    }
+
+    #[test]
+    fn review_workdir_materializes_explicit_input_files() {
+        let spec = stub_spec("gemini", "gemini-test");
+        let input = AgentInput {
+            paper_id: uuid::Uuid::nil(),
+            review_id: uuid::Uuid::nil(),
+            role: AgentRole::Summary,
+            content_hash_material: serde_json::json!({"ignored": true}),
+            artifact: serde_json::json!({"title": "Paper", "sections": []}),
+            system_prompt: "system instructions".to_string(),
+            user_prompt: "review this paper".to_string(),
+            source_bundle_path: None,
+        };
+
+        let dir = prepare_review_workdir(&spec, &input).expect("prepare workdir");
+        let root = dir.path();
+
+        assert!(root.join("review_input.json").exists());
+        assert!(root.join("prompt.md").exists());
+        assert!(root.join("system.md").exists());
+        assert!(root.join("schema.json").exists());
+        assert!(root.join("README.md").exists());
+        let prompt = std::fs::read_to_string(root.join("prompt.md")).unwrap();
+        assert_eq!(prompt, "review this paper");
+
+        let rendered = render_review_prompt_with_files(&input);
+        assert!(rendered.contains("review_input.json"));
+        assert!(rendered.contains("Do not search parent directories"));
     }
 
     #[test]
@@ -2319,6 +2421,7 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             schema_path: None,
+            cwd: None,
         };
 
         let err = exec_and_capture(
@@ -2368,6 +2471,7 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             schema_path: None,
+            cwd: None,
         };
 
         let err = exec_and_capture(
@@ -2409,7 +2513,7 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemini":"%s","marker":"%s"}\n' "${ANTHROPIC_API_KEY+x}" "${OPENAI_API_KEY+x}" "${GOOGLE_GENERATIVE_AI_API_KEY+x}" "${GOOGLE_API_KEY+x}" "${GEMINI_API_KEY+x}" "${GROKRXIV_CLI_API_ENV_SCRUBBED:-}"
+printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemini":"%s","marker":"%s","gemini_trust":"%s"}\n' "${ANTHROPIC_API_KEY+x}" "${OPENAI_API_KEY+x}" "${GOOGLE_GENERATIVE_AI_API_KEY+x}" "${GOOGLE_API_KEY+x}" "${GEMINI_API_KEY+x}" "${GROKRXIV_CLI_API_ENV_SCRUBBED:-}" "${GEMINI_CLI_TRUST_WORKSPACE:-}"
 "#,
         )
         .expect("write fake script");
@@ -2422,13 +2526,14 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
             args: vec![],
             stdin_payload: String::new(),
             schema_path: None,
+            cwd: None,
         };
 
         let stdout = exec_and_capture(
             &built,
             Duration::from_secs(5),
             grokrxiv_schemas::AgentRole::Summary,
-            "claude",
+            "gemini",
         )
         .await
         .expect("subprocess should succeed");
@@ -2441,6 +2546,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         assert_eq!(observed["google"], "");
         assert_eq!(observed["gemini"], "");
         assert_eq!(observed["marker"], "1");
+        assert_eq!(observed["gemini_trust"], "true");
     }
 
     #[tokio::test]
@@ -2448,6 +2554,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         let _env = EnvVarGuard::set(&[
             ("GROKRXIV_EXTRACTION_TOOL_FALLBACK", "api"),
             (ALLOW_PROVIDER_API_ENV, "0"),
+            ("GROKRXIV_EXTRACTOR", "cli"),
         ]);
         let r = CliRunner::new();
         let spec = stub_spec("claude", "claude-test");

@@ -10,7 +10,7 @@ export function GET() {
 ## What it is
 - AI-generated peer reviews of arXiv papers
 - Six specialist LLM reviewers under a typed verifier ladder
-- Public artifacts at github.com/GrokRxiv/reviews
+- Public artifacts at github.com/GrokRxiv/grokrxiv-reviews
 - HTML, Markdown, LaTeX, and zip bundle per review
 
 ## Upload a paper

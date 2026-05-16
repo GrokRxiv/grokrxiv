@@ -32,8 +32,7 @@ pub struct DeterministicIngest {
     /// arXiv Atom metadata (title/authors/abstract/category, plus pdf_url).
     pub meta: ArxivMeta,
     /// Built `PaperExtract` (title/abstract/sections/bibliography). The
-    /// section bodies are the Pandoc+LaTeXML markdown the review path
-    /// consumes.
+    /// section bodies are the Pandoc markdown the review path consumes.
     pub extract: PaperExtract,
     /// Raw PDF bytes (always fetched — it's the archival viewable artifact).
     /// `None` only when the upstream PDF endpoint failed; pipeline continues.
@@ -41,9 +40,9 @@ pub struct DeterministicIngest {
     /// Raw TeX tar.gz bytes when an arXiv source bundle was available.
     /// `None` for PDF-only papers — Stage 3 (`VlmExtractorAgent`) takes over.
     pub source_tarball: Option<Bytes>,
-    /// LaTeXML-derived semantic AST. `Some` only when Stage 2 ran the LaTeXML
-    /// pipeline (TeX source + latexml on PATH) successfully. The orchestrator
-    /// hands this to extraction agents via `ExtractionContext.semantic_ast`.
+    /// Optional LaTeXML-derived semantic AST. `Some` only when Stage 2 ran the
+    /// opt-in LaTeXML pipeline successfully. The orchestrator hands this to
+    /// extraction agents via `ExtractionContext.semantic_ast`.
     pub semantic_ast: Option<Value>,
 }
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # GrokRxiv publish-path E2E (opt-in).
 #
-# Exercises the FULL publication loop end-to-end against a disposable test
-# repository on GitHub. Skipped from `just smoke` because it requires GitHub
-# credentials and a real test repo; run manually when validating the publish
-# flow.
+# By default this exercises the product path through PR handoff only:
+# ingest -> review -> approve -> PR opened at `pr_open`. It does NOT merge.
+# Set GROKRXIV_E2E_ALLOW_MERGE=1 only for disposable test repositories when
+# validating the destructive merge -> webhook -> published leg.
 #
 # Required env:
 #   GITHUB_TOKEN                 — fine-grained PAT with content+pr write
@@ -18,6 +18,7 @@
 #   RUNNER                       — default cli
 #   EXTRACTOR                    — default cli
 #   GROKRXIV_BIN                 — default: cargo run --quiet --release -p grokrxiv-orchestrator --
+#   GROKRXIV_E2E_ALLOW_MERGE     — default 0; set 1 to merge the PR and publish
 #
 # Exits non-zero on any failed assertion.
 
@@ -26,6 +27,7 @@ set -euo pipefail
 ARXIV_ID="${ARXIV_ID:-2605.12484}"
 RUNNER="${RUNNER:-cli}"
 EXTRACTOR="${EXTRACTOR:-cli}"
+GROKRXIV_E2E_ALLOW_MERGE="${GROKRXIV_E2E_ALLOW_MERGE:-0}"
 GROKRXIV_REVIEWS_OWNER="${GROKRXIV_REVIEWS_OWNER:-GrokRxiv}"
 GROKRXIV_REVIEWS_REPO="${GROKRXIV_REVIEWS_REPO:-grokrxiv-reviews}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,7 +91,7 @@ run_psql() {
 }
 
 step "1. ingest ${ARXIV_ID} via runner=${RUNNER} extractor=${EXTRACTOR}"
-"${grokrxiv_cmd[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --no-cache --json ingest "${ARXIV_ID}" 2>&1 \
+"${grokrxiv_cmd[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --status --no-cache --json ingest "${ARXIV_ID}" 2>&1 \
   | tee /tmp/grokrxiv-publish-ingest.log
 review_id="$(extract_json_field /tmp/grokrxiv-publish-ingest.log 'if type == "array" then .[0].review_id else .review_id end' \
   || awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-publish-ingest.log | tail -1 | tr -d '\r')"
@@ -97,7 +99,7 @@ review_id="$(extract_json_field /tmp/grokrxiv-publish-ingest.log 'if type == "ar
 ok "review_id=${review_id}"
 
 step "2. approve → real PR on ${GROKRXIV_REVIEWS_OWNER}/${GROKRXIV_REVIEWS_REPO}"
-"${grokrxiv_cmd[@]}" --json approve "${review_id}" 2>&1 \
+"${grokrxiv_cmd[@]}" --status --json approve "${review_id}" 2>&1 \
   | tee /tmp/grokrxiv-publish-approve.log
 pr_url="$(extract_json_field /tmp/grokrxiv-publish-approve.log '.pr_url' \
   || awk '/pr_url=/{ for(i=1;i<=NF;i++){ if($i ~ /^pr_url=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-publish-approve.log | tail -1 | tr -d '\r')"
@@ -105,14 +107,26 @@ pr_url="$(extract_json_field /tmp/grokrxiv-publish-approve.log '.pr_url' \
   || fail "expected real PR URL, got '${pr_url}'"
 ok "PR opened: ${pr_url}"
 
-step "3. merge the PR with gh"
+step "3. assert PR handoff stopped before publish"
+row="$(run_psql -tA -c "select status, published_at is null from reviews where id = '${review_id}'")"
+[[ "${row}" == "pr_open|t" ]] || fail "expected 'pr_open|t', got '${row}'"
+ok "review is pr_open and unpublished"
+
+if [[ "${GROKRXIV_E2E_ALLOW_MERGE}" != "1" ]]; then
+  ok "PR handoff E2E PASSED. Review ${pr_url}, then merge it manually to publish."
+  echo
+  ok "Set GROKRXIV_E2E_ALLOW_MERGE=1 only in a disposable repo to test merge webhook publication."
+  exit 0
+fi
+
+step "4. merge the PR with gh (destructive opt-in enabled)"
 pr_number="${pr_url##*/}"
 gh pr merge --merge --delete-branch -R "${GROKRXIV_REVIEWS_OWNER}/${GROKRXIV_REVIEWS_REPO}" "${pr_number}" \
   || fail "gh pr merge failed"
 merge_sha="$(gh pr view "${pr_number}" -R "${GROKRXIV_REVIEWS_OWNER}/${GROKRXIV_REVIEWS_REPO}" --json mergeCommit -q '.mergeCommit.oid')"
 ok "merged at ${merge_sha}"
 
-step "4. POST a signed pull_request.closed webhook to localhost:8080"
+step "5. POST a signed pull_request.closed webhook to localhost:8080"
 payload="$(jq -n \
   --arg arxiv_id "${ARXIV_ID}" \
   --arg review_id "${review_id}" \
@@ -139,12 +153,12 @@ http_status="$(curl -sS -o /tmp/grokrxiv-publish-webhook.json -w "%{http_code}" 
 [[ "${http_status}" == "200" ]] || fail "webhook POST returned ${http_status}: $(cat /tmp/grokrxiv-publish-webhook.json)"
 ok "webhook accepted (HTTP 200)"
 
-step "5. assert reviews.status='published' + published_at set"
+step "6. assert reviews.status='published' + published_at set"
 row="$(run_psql -tA -c "select status, published_at is not null from reviews where id = '${review_id}'")"
 [[ "${row}" == "published|t" ]] || fail "expected 'published|t', got '${row}'"
 ok "review row updated to published"
 
-step "6. /api/v1/reviews/<id> returns the published review publicly"
+step "7. /api/v1/reviews/<id> returns the published review publicly"
 WEB="${GROKRXIV_WEB_URL:-http://localhost:3000}"
 public="$(curl -sf "${WEB}/api/v1/reviews/${review_id}" 2>/dev/null || true)"
 [[ -n "${public}" ]] || fail "public API did not return the review"
@@ -153,4 +167,4 @@ echo "${public}" | jq -e '.status == "published"' >/dev/null \
 ok "public API serves the review"
 
 echo
-ok "publish E2E PASSED end-to-end."
+ok "destructive publish E2E PASSED end-to-end."

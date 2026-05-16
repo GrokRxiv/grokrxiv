@@ -4,8 +4,12 @@
 //! variant delegates to a small function so the library/HTTP path and the
 //! CLI path call the same plumbing — no duplication.
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use grokrxiv_schemas::AgentRole;
+use serde::Serialize;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
@@ -90,6 +94,12 @@ pub struct Cli {
     /// Emit JSON instead of human-readable text on commands that support it.
     #[arg(long, global = true)]
     pub json: bool,
+    /// Emit short foreground progress lines to stderr.
+    #[arg(long, global = true, conflicts_with = "no_status")]
+    pub status: bool,
+    /// Suppress foreground progress lines for background runs.
+    #[arg(long, global = true)]
+    pub no_status: bool,
     /// Named TOML profile to load.
     #[arg(long, global = true, default_value = "default")]
     pub profile: String,
@@ -157,6 +167,12 @@ pub enum Command {
     // ---------- ingestion ----------
     /// Synchronously ingest + review one or more papers.
     Ingest {
+        /// arXiv IDs (e.g. `2605.12484`).
+        #[arg(required = true)]
+        arxiv_ids: Vec<String>,
+    },
+    /// Fetch + extract one or more papers, validate reviewer input, then stop before review.
+    Extract {
         /// arXiv IDs (e.g. `2605.12484`).
         #[arg(required = true)]
         arxiv_ids: Vec<String>,
@@ -233,9 +249,9 @@ pub enum Command {
     },
 
     // ---------- moderation (admin) ----------
-    /// Open the publication PR on `GrokRxiv/reviews`.
+    /// Open the publication PR on `GrokRxiv/grokrxiv-reviews`.
     Approve {
-        /// UUID of the review to approve and publish.
+        /// UUID of the review to approve for PR handoff. This does not merge or publish.
         review_id: Uuid,
     },
     /// Mark a review rejected; status stays `awaiting_moderation`.
@@ -344,6 +360,10 @@ pub enum RenderFormat {
 
 /// Run the parsed CLI. Returns a process exit code.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    let status_enabled =
+        cli.status || (!cli.no_status && !cli.json && std::io::stderr().is_terminal());
+    crate::cli_status::set_enabled(status_enabled);
+
     // Resolve layered runtime config once per invocation. The result is held
     // in scope for any subcommand that wants to consult it (today: `config`,
     // `doctor`, `review`). Tracks H1/H2 already thread role-level overrides
@@ -477,6 +497,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Migrate => migrate().await,
         Command::Categories => print_categories(),
         Command::Ingest { arxiv_ids } => ingest_many(&arxiv_ids, json).await,
+        Command::Extract { arxiv_ids } => extract_many(&arxiv_ids, json).await,
         Command::IngestRange {
             from,
             to,
@@ -656,8 +677,14 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
     if arxiv_ids.len() <= 1 {
         // Single-paper path stays direct so the M1 smoke output shape is unchanged.
         for id in arxiv_ids {
+            crate::cli_status::emit(format!(
+                "paper {id}: fetch -> extract(vlm, macros, equations, theorems, citations) -> review(summary, technical_correctness, novelty, reproducibility, citation, meta_reviewer) -> verifier -> render -> moderation"
+            ));
             let review_id =
                 super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+            crate::cli_status::emit(format!(
+                "paper {id}: review_id={review_id} awaiting human moderation"
+            ));
             if json {
                 println!(
                     "{}",
@@ -681,6 +708,9 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
     let mut futures = FuturesUnordered::new();
     for id in arxiv_ids {
         let id = id.clone();
+        crate::cli_status::emit(format!(
+            "paper {id}: queued for fetch/extract/review pipeline"
+        ));
         let supervisor = supervisor.clone();
         let state = state.clone();
         futures.push(async move {
@@ -693,6 +723,9 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
     while let Some((id, result)) = futures.next().await {
         match result {
             Ok(review_id) => {
+                crate::cli_status::emit(format!(
+                    "paper {id}: review_id={review_id} awaiting human moderation"
+                ));
                 if json {
                     successes.push(serde_json::json!({
                         "arxiv_id": id,
@@ -719,6 +752,381 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExtractCommandOutput {
+    arxiv_id: String,
+    paper_id: Uuid,
+    artifact_root: String,
+    review_input: String,
+    audit: ExtractionAudit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExtractionAudit {
+    review_ready: bool,
+    body_chars: usize,
+    section_count: usize,
+    equation_count: usize,
+    citation_count: usize,
+    citation_context_count: usize,
+    theorem_node_count: usize,
+    extraction_stage_count: usize,
+    warnings: Vec<String>,
+    failures: Vec<String>,
+}
+
+async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
+    #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+    {
+        let config = super::Config::from_env();
+        let state = super::AppState::from_config(config).await?;
+        let opts = crate::ingest_pipeline::IngestOptions::from_env();
+        let repo_root = data_repo_root();
+        let mut outputs = Vec::with_capacity(arxiv_ids.len());
+        let mut failures = Vec::new();
+
+        for id in arxiv_ids {
+            crate::cli_status::emit(format!(
+                "extract {id}: fetch -> Pandoc parse -> local extraction -> artifact audit"
+            ));
+            let result = crate::ingest_pipeline::run_ingest_pipeline(&state, id, &opts).await?;
+            let audit = audit_review_input_artifacts(
+                &repo_root,
+                Some(&result.pointer.git_path),
+                &result.review_input,
+            )
+            .with_context(|| format!("audit extracted artifacts for {id}"))?;
+            let artifact_root = artifact_root_for(
+                &repo_root,
+                Some(&result.pointer.git_path),
+                &result.review_input,
+            );
+            let review_input_path = repo_root
+                .join(&result.pointer.git_path)
+                .join("review_input.json");
+
+            crate::cli_status::emit(format!(
+                "extract {id}: body_chars={} sections={} equations={} citations={} contexts={} theorem_nodes={} ready={}",
+                audit.body_chars,
+                audit.section_count,
+                audit.equation_count,
+                audit.citation_count,
+                audit.citation_context_count,
+                audit.theorem_node_count,
+                audit.review_ready
+            ));
+
+            if !json {
+                println!(
+                    "arxiv_id={id} paper_id={} artifact_root={} review_input={} review_ready={}",
+                    result.paper_id,
+                    artifact_root.display(),
+                    review_input_path.display(),
+                    audit.review_ready
+                );
+                println!(
+                    "counts body_chars={} sections={} equations={} citations={} citation_contexts={} theorem_nodes={}",
+                    audit.body_chars,
+                    audit.section_count,
+                    audit.equation_count,
+                    audit.citation_count,
+                    audit.citation_context_count,
+                    audit.theorem_node_count
+                );
+                for warning in &audit.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                for failure in &audit.failures {
+                    eprintln!("failure: {failure}");
+                }
+            }
+
+            if !audit.review_ready {
+                failures.push(format!("{id}: {}", audit.failures.join("; ")));
+            }
+
+            outputs.push(ExtractCommandOutput {
+                arxiv_id: id.clone(),
+                paper_id: result.paper_id,
+                artifact_root: artifact_root.display().to_string(),
+                review_input: review_input_path.display().to_string(),
+                audit,
+            });
+        }
+
+        if json {
+            if outputs.len() == 1 {
+                println!("{}", serde_json::to_string_pretty(&outputs[0])?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&outputs)?);
+            }
+        }
+
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "{} extraction audit(s) failed: {}",
+                failures.len(),
+                failures.join(" | ")
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
+    {
+        let _ = (arxiv_ids, json);
+        anyhow::bail!("extract requires --features full (grokrxiv-ingest + grokrxiv-storage)")
+    }
+}
+
+fn data_repo_root() -> PathBuf {
+    std::env::var("GROKRXIV_DATA_REPO_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"))
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn artifact_root_for(
+    repo_root: &Path,
+    git_path: Option<&str>,
+    review_input: &grokrxiv_storage::ReviewInput,
+) -> PathBuf {
+    git_path
+        .map(|p| repo_root.join(p))
+        .or_else(|| relative_artifact_parent(&review_input.metadata).map(|p| repo_root.join(p)))
+        .unwrap_or_else(|| repo_root.join("papers").join(&review_input.arxiv_id))
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn relative_artifact_parent(path: &str) -> Option<PathBuf> {
+    if path.starts_with("supabase://") {
+        return None;
+    }
+    let p = PathBuf::from(path);
+    p.parent().map(Path::to_path_buf)
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn audit_review_input_artifacts(
+    repo_root: &Path,
+    git_path: Option<&str>,
+    review_input: &grokrxiv_storage::ReviewInput,
+) -> anyhow::Result<ExtractionAudit> {
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+
+    let metadata = read_review_json(repo_root, &review_input.metadata, "metadata.json")?;
+    let body = read_review_text(repo_root, &review_input.body_markdown, "body.md")?;
+    let sections_doc = read_review_json(repo_root, &review_input.sections, "sections.json")?;
+    let equations_doc = read_review_json(repo_root, &review_input.equations, "equations.json")?;
+    let references_doc = read_review_json(repo_root, &review_input.references, "references.json")?;
+    let theorem_doc =
+        read_review_json(repo_root, &review_input.theorem_graph, "theorem_graph.json")?;
+    let report_doc = read_review_json(
+        repo_root,
+        &review_input.extraction_report,
+        "extraction_report.json",
+    )?;
+
+    if metadata
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        failures.push("metadata title is empty".to_string());
+    }
+    if metadata
+        .get("abstract")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        failures.push("metadata abstract is empty".to_string());
+    }
+
+    let body_chars = body.chars().count();
+    if body_chars < 1_000 {
+        failures.push(format!(
+            "body.md is too small for review context ({body_chars} chars)"
+        ));
+    }
+
+    let section_count = array_len(&sections_doc, "sections");
+    if section_count == 0 {
+        failures.push("sections.json has no sections".to_string());
+    }
+
+    let equation_count = array_len(&equations_doc, "equations");
+    if equation_count == 0 {
+        if body_has_math_signal(&body) {
+            failures.push(
+                "equations.json has no equations even though body.md contains math markers"
+                    .to_string(),
+            );
+        } else {
+            warnings.push("equations.json has no equations".to_string());
+        }
+    }
+
+    let citation_count = array_len(&references_doc, "citations");
+    let citation_context_count = references_doc
+        .get("citations")
+        .and_then(serde_json::Value::as_array)
+        .map(|citations| {
+            citations
+                .iter()
+                .map(|c| array_len(c, "contexts"))
+                .sum::<usize>()
+        })
+        .unwrap_or_default();
+    if citation_count == 0 && body_has_citation_signal(&body) {
+        failures.push(
+            "references.json has no citations even though body.md contains citation markers"
+                .to_string(),
+        );
+    }
+    if citation_count > 0 && citation_context_count == 0 {
+        failures.push(
+            "references.json has citations but no citation contexts for reviewers".to_string(),
+        );
+    }
+
+    let theorem_node_count = array_len(&theorem_doc, "nodes");
+    if theorem_node_count == 0 && body_has_theorem_signal(&body) {
+        warnings.push("theorem_graph.json has no nodes despite theorem-like text".to_string());
+    }
+
+    let extraction_stage_count = array_len(&report_doc, "stages");
+    if extraction_stage_count == 0 {
+        failures.push("extraction_report.json has no stages".to_string());
+    }
+    audit_extraction_report_provenance(&report_doc, &mut warnings, &mut failures);
+
+    let artifact_root = artifact_root_for(repo_root, git_path, review_input);
+    for file in [
+        "metadata.json",
+        "body.md",
+        "sections.json",
+        "equations.json",
+        "references.json",
+        "theorem_graph.json",
+        "extraction_report.json",
+        "review_input.json",
+    ] {
+        let path = artifact_root.join(file);
+        if !path.exists() {
+            failures.push(format!("missing reviewer artifact {}", path.display()));
+        }
+    }
+
+    Ok(ExtractionAudit {
+        review_ready: failures.is_empty(),
+        body_chars,
+        section_count,
+        equation_count,
+        citation_count,
+        citation_context_count,
+        theorem_node_count,
+        extraction_stage_count,
+        warnings,
+        failures,
+    })
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn read_review_json(repo_root: &Path, rel: &str, label: &str) -> anyhow::Result<serde_json::Value> {
+    let path = review_artifact_path(repo_root, rel, label)?;
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn read_review_text(repo_root: &Path, rel: &str, label: &str) -> anyhow::Result<String> {
+    let path = review_artifact_path(repo_root, rel, label)?;
+    std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn review_artifact_path(repo_root: &Path, rel: &str, label: &str) -> anyhow::Result<PathBuf> {
+    if rel.starts_with("supabase://") {
+        anyhow::bail!(
+            "{label} points to Supabase storage; local CLI reviewer path needs a Tier-1 file"
+        )
+    }
+    Ok(repo_root.join(rel))
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn array_len(doc: &serde_json::Value, key: &str) -> usize {
+    doc.get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn body_has_math_signal(body: &str) -> bool {
+    body.contains("\\(")
+        || body.contains("\\[")
+        || body.contains("$$")
+        || body.contains("\\begin{equation")
+        || body.contains("\\begin{align")
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn body_has_citation_signal(body: &str) -> bool {
+    body.contains("[@") || body.contains("\\cite")
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn body_has_theorem_signal(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("theorem")
+        || lower.contains("lemma")
+        || lower.contains("proposition")
+        || lower.contains("corollary")
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn audit_extraction_report_provenance(
+    report: &serde_json::Value,
+    warnings: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    let Some(stages) = report.get("stages").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for stage in stages {
+        let name = stage
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unknown>");
+        let status = stage
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unknown>");
+        if status == "degraded" {
+            warnings.push(format!("extraction stage {name} degraded"));
+        }
+        if matches!(
+            name,
+            "vlm" | "macros" | "equations" | "theorems" | "citations"
+        ) && status == "ok"
+        {
+            for field in ["model", "runner", "iters"] {
+                if stage.get(field).is_none() || stage.get(field).is_some_and(|v| v.is_null()) {
+                    failures.push(format!(
+                        "extraction stage {name} missing provenance field {field}"
+                    ));
+                }
+            }
+        }
+    }
 }
 
 async fn ingest_range(
@@ -1135,7 +1543,13 @@ async fn review_arxiv_ids_json(arxiv_ids: &[String]) -> anyhow::Result<()> {
 
     let mut results: Vec<serde_json::Value> = Vec::with_capacity(arxiv_ids.len());
     for id in arxiv_ids {
+        crate::cli_status::emit(format!(
+            "paper {id}: fetch -> extract -> review -> verifier -> render -> moderation"
+        ));
         let review_id = super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+        crate::cli_status::emit(format!(
+            "paper {id}: review_id={review_id} awaiting human moderation"
+        ));
         // Pull status + per-agent verifier_status for the JSON envelope so the
         // smoke test can `jq -e .agents | length == 6 and all(.verifier_status==pass)`.
         let mut envelope = serde_json::json!({
@@ -1236,6 +1650,9 @@ async fn render(
 }
 
 async fn approve(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+    crate::cli_status::emit(format!(
+        "review {review_id}: opening publication PR; human merge is required before publish"
+    ));
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     approve_impl(&state, review_id, json).await
@@ -1299,7 +1716,7 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
         );
         let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
         let simulated = format!(
-            "https://github.com/GrokRxiv/reviews/pull/SIMULATED-{}",
+            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
         let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
@@ -1315,6 +1732,9 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
         } else {
             println!("pr_url={simulated}");
         }
+        crate::cli_status::emit(format!(
+            "review {review_id}: simulated pr_open; publish waits for a real reviewed merge webhook"
+        ));
         return Ok(());
     };
 
@@ -1364,6 +1784,9 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
     } else {
         println!("pr_url={pr_url}");
     }
+    crate::cli_status::emit(format!(
+        "review {review_id}: pr_open at {pr_url}; review and merge the PR manually to publish"
+    ));
     Ok(())
 }
 
@@ -1570,4 +1993,127 @@ async fn tail_jobs(kind: Option<String>, state: Option<String>) -> anyhow::Resul
         kind, state
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn cli_parses_status_flags() {
+        let status = Cli::try_parse_from(["grokrxiv", "--status", "doctor"]).unwrap();
+        assert!(status.status);
+        assert!(!status.no_status);
+
+        let no_status = Cli::try_parse_from(["grokrxiv", "--no-status", "doctor"]).unwrap();
+        assert!(!no_status.status);
+        assert!(no_status.no_status);
+
+        let both = Cli::try_parse_from(["grokrxiv", "--status", "--no-status", "doctor"]);
+        assert!(
+            both.is_err(),
+            "--status and --no-status must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn cli_parses_extract_command() {
+        let parsed = Cli::try_parse_from([
+            "grokrxiv",
+            "--extractor",
+            "cli",
+            "--status",
+            "extract",
+            "2605.00561",
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.extractor, Some(ExtractorKind::Cli));
+        assert!(parsed.status);
+        match parsed.command {
+            Some(Command::Extract { arxiv_ids }) => assert_eq!(arxiv_ids, vec!["2605.00561"]),
+            other => panic!("expected extract command, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "grokrxiv-storage")]
+    #[test]
+    fn extraction_audit_rejects_context_free_citations() {
+        let repo = tempfile::tempdir().unwrap();
+        let arxiv_id = "9999.00001";
+        let rel = |file: &str| format!("papers/{arxiv_id}/{file}");
+        let paper_dir = repo.path().join("papers").join(arxiv_id);
+        std::fs::create_dir_all(&paper_dir).unwrap();
+        std::fs::write(
+            paper_dir.join("metadata.json"),
+            r#"{"title":"Useful Paper","abstract":"A real abstract.","authors":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("body.md"),
+            format!("## Intro\n\n{} [@smith2026].\n", "body ".repeat(260)),
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("sections.json"),
+            r#"{"sections":[{"heading":"Intro","char_start":10,"char_end":1400}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("references.json"),
+            r#"{"citations":[{"key":"smith2026","title":"x","contexts":[]}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("equations.json"),
+            r#"{"equations":[{"id":"eq1","canonical_tex":"x=y"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(paper_dir.join("theorem_graph.json"), r#"{"nodes":[]}"#).unwrap();
+        std::fs::write(
+            paper_dir.join("extraction_report.json"),
+            r#"{"stages":[{"name":"citations","status":"ok","runner":"cli","model":"gemini","iters":3}]}"#,
+        )
+        .unwrap();
+
+        let review_input = grokrxiv_storage::ReviewInput {
+            schema_version: "1".into(),
+            arxiv_id: arxiv_id.into(),
+            metadata: rel("metadata.json"),
+            body_markdown: rel("body.md"),
+            sections: rel("sections.json"),
+            equations: rel("equations.json"),
+            references: rel("references.json"),
+            theorem_graph: rel("theorem_graph.json"),
+            extraction_report: rel("extraction_report.json"),
+            pdf_uri: None,
+            source_uri: None,
+            semantic_ast_uri: None,
+            vlm_raw_uri: None,
+            embeddings_uri: None,
+        };
+
+        let audit = audit_review_input_artifacts(repo.path(), None, &review_input).unwrap();
+        assert!(!audit.review_ready);
+        assert!(audit
+            .failures
+            .iter()
+            .any(|msg| msg.contains("citation contexts")));
+    }
+
+    #[test]
+    fn approve_help_is_pr_handoff_not_publish() {
+        let mut cmd = Cli::command();
+        let approve = cmd
+            .find_subcommand_mut("approve")
+            .expect("approve subcommand exists");
+        let mut help = Vec::new();
+        approve.write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+
+        assert!(help.contains("Open the publication PR"));
+        assert!(help.contains("does not merge or publish"));
+        assert!(!help.contains("approve and publish"));
+    }
 }

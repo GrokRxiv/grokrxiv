@@ -36,6 +36,9 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Bearer expected by the web API `/api/v1/*` write endpoints |
 | `GROKRXIV_AGENTS_DIR`          | _none_                      | Override `./agents` location |
 | `GROKRXIV_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
+| `GROKRXIV_TEX_ENABLE_LATEXML`  | _none_                      | Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter |
+| `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
+| `GROKRXIV_FORCE_AGENT_EXTRACTION` | _none_                    | Run extraction LLM tool loops instead of the deterministic local extractor |
 
 ## Provider keys — API runner
 

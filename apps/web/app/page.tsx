@@ -28,10 +28,10 @@ export default function HomePage() {
           Six specialist LLM reviewers run under a typed verifier ladder. Every
           approved review ships as a human-gated PR to{" "}
           <Link
-            href="https://github.com/GrokRxiv/reviews"
+            href="https://github.com/GrokRxiv/grokrxiv-reviews"
             className="underline underline-offset-4"
           >
-            github.com/GrokRxiv/reviews
+            github.com/GrokRxiv/grokrxiv-reviews
           </Link>
           .
         </p>

@@ -14,7 +14,7 @@ const STEPS = [
   {
     icon: GitPullRequest,
     title: "Publish",
-    body: "Bundle + PR to github.com/GrokRxiv/reviews. Human merges, site revalidates.",
+    body: "Bundle + PR to github.com/GrokRxiv/grokrxiv-reviews. Human merges, site revalidates.",
   },
 ];
 

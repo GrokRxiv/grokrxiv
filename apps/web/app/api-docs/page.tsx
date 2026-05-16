@@ -12,8 +12,8 @@ const SAMPLE_LIST = `{
       "id": "b1e6...",
       "paper_id": "f49a...",
       "status": "published",
-      "github_pr_url": "https://github.com/GrokRxiv/reviews/pull/42",
-      "github_review_url": "https://github.com/GrokRxiv/reviews/tree/main/reviews/2026/05/cs.LG/2401.12345",
+      "github_pr_url": "https://github.com/GrokRxiv/grokrxiv-reviews/pull/42",
+      "github_review_url": "https://github.com/GrokRxiv/grokrxiv-reviews/tree/main/reviews/2026/05/cs.LG/2401.12345",
       "models_used": { "summary": "claude-opus-4-7", "novelty": "gemini-1.5-pro" },
       "created_at": "2026-05-13T18:00:00Z",
       "published_at": "2026-05-13T18:42:00Z"

@@ -109,10 +109,10 @@ export default async function ReviewsIndexPage({
           Every review here is gated through a typed verifier ladder and merged
           by a human moderator on{" "}
           <Link
-            href="https://github.com/GrokRxiv/reviews"
+            href="https://github.com/GrokRxiv/grokrxiv-reviews"
             className="underline underline-offset-4"
           >
-            github.com/GrokRxiv/reviews
+            github.com/GrokRxiv/grokrxiv-reviews
           </Link>{" "}
           before becoming visible. Newest first.
         </p>

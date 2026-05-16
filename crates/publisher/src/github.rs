@@ -1,4 +1,4 @@
-//! GitHub PR opener for the `GrokRxiv/reviews` repository.
+//! GitHub PR opener for the `GrokRxiv/grokrxiv-reviews` repository.
 //!
 //! Implementation uses the raw `repos/.../git/...` REST APIs via the
 //! `octocrab` crate. The flow:
@@ -27,7 +27,7 @@ pub struct GithubPublisher {
     pub client: octocrab::Octocrab,
     /// Repo owner (e.g. `GrokRxiv`).
     pub owner: String,
-    /// Repo name (e.g. `reviews`).
+    /// Repo name (e.g. `grokrxiv-reviews`).
     pub repo: String,
     /// Base branch we PR against (default `main`).
     pub base: String,
@@ -386,7 +386,9 @@ mod tests {
 
         // GET base ref.
         Mock::given(method("GET"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/git/ref/heads/main$"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/git/ref/heads/main$",
+            ))
             .and(header("authorization", "Bearer FAKE"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_string(r#"{"object":{"sha":"abc123"}}"#),
@@ -395,25 +397,27 @@ mod tests {
             .await;
         // Create blob (one per file).
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/git/blobs$"))
+            .and(path_regex(r"^/repos/GrokRxiv/grokrxiv-reviews/git/blobs$"))
             .respond_with(ResponseTemplate::new(201).set_body_string(r#"{"sha":"blobsha"}"#))
             .mount(&server)
             .await;
         // Create tree.
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/git/trees$"))
+            .and(path_regex(r"^/repos/GrokRxiv/grokrxiv-reviews/git/trees$"))
             .respond_with(ResponseTemplate::new(201).set_body_string(r#"{"sha":"treesha"}"#))
             .mount(&server)
             .await;
         // Create commit.
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/git/commits$"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/git/commits$",
+            ))
             .respond_with(ResponseTemplate::new(201).set_body_string(r#"{"sha":"commitsha"}"#))
             .mount(&server)
             .await;
         // Create branch ref.
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/git/refs$"))
+            .and(path_regex(r"^/repos/GrokRxiv/grokrxiv-reviews/git/refs$"))
             .respond_with(
                 ResponseTemplate::new(201).set_body_string(r#"{"object":{"sha":"commitsha"}}"#),
             )
@@ -421,16 +425,14 @@ mod tests {
             .await;
         // Open PR.
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/pulls$"))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_string(
-                    r#"{"html_url":"https://github.com/GrokRxiv/reviews/pull/1"}"#,
-                ),
-            )
+            .and(path_regex(r"^/repos/GrokRxiv/grokrxiv-reviews/pulls$"))
+            .respond_with(ResponseTemplate::new(201).set_body_string(
+                r#"{"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/1"}"#,
+            ))
             .mount(&server)
             .await;
 
-        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "reviews");
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "grokrxiv-reviews");
         let admin = AdminCaller::from_admin_endpoint();
         let url = publisher
             .open_review_pr(
@@ -456,7 +458,7 @@ mod tests {
             )
             .await
             .expect("open pr");
-        assert_eq!(url, "https://github.com/GrokRxiv/reviews/pull/1");
+        assert_eq!(url, "https://github.com/GrokRxiv/grokrxiv-reviews/pull/1");
     }
 
     #[test]
@@ -486,19 +488,21 @@ mod tests {
         let comment_hits_c = comment_hits.clone();
 
         Mock::given(method("PATCH"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/pulls/17$"))
+            .and(path_regex(r"^/repos/GrokRxiv/grokrxiv-reviews/pulls/17$"))
             .and(header("authorization", "Bearer FAKE"))
             .respond_with(move |_: &wiremock::Request| {
                 patch_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_string(
-                    r#"{"html_url":"https://github.com/GrokRxiv/reviews/pull/17","state":"closed"}"#,
+                    r#"{"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17","state":"closed"}"#,
                 )
             })
             .mount(&server)
             .await;
 
         Mock::given(method("POST"))
-            .and(path_regex(r"^/repos/GrokRxiv/reviews/issues/17/comments$"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
             .and(header("authorization", "Bearer FAKE"))
             .respond_with(move |_: &wiremock::Request| {
                 comment_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -507,7 +511,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "reviews");
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "grokrxiv-reviews");
         let admin = AdminCaller::from_admin_endpoint();
         publisher
             .close_pr_with_comment(
@@ -533,20 +537,20 @@ mod tests {
     #[test]
     fn parse_pr_number_extracts_trailing_id() {
         assert_eq!(
-            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/17"),
+            parse_pr_number("https://github.com/GrokRxiv/grokrxiv-reviews/pull/17"),
             Some(17),
         );
         assert_eq!(
-            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/123/files"),
+            parse_pr_number("https://github.com/GrokRxiv/grokrxiv-reviews/pull/123/files"),
             Some(123),
         );
         assert_eq!(
-            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/9?w=1"),
+            parse_pr_number("https://github.com/GrokRxiv/grokrxiv-reviews/pull/9?w=1"),
             Some(9),
         );
         assert_eq!(parse_pr_number("https://example.com/no-pull-segment"), None);
         assert_eq!(
-            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/SIMULATED-abc123"),
+            parse_pr_number("https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-abc123"),
             None,
         );
     }

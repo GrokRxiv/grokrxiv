@@ -4,7 +4,8 @@
 //! [`run_ingest_pipeline`] entry point:
 //!
 //! 1. **Stage 1 (deterministic)** — arXiv metadata + PDF + tar.gz acquisition.
-//! 2. **Stage 2 (deterministic)** — TeX → Pandoc+LaTeXML → markdown + semantic AST.
+//! 2. **Stage 2 (deterministic)** — TeX → Pandoc markdown, with optional
+//!    LaTeXML semantic AST enrichment.
 //! 3. **Stage 3 (agent)** — `VlmExtractorAgent`, only when no TeX source exists.
 //! 4. **Stages 4–7 (agents in parallel)** — macros, equations, theorems,
 //!    citations. Failures degrade gracefully via [`run_agent_safe`] — a single
@@ -97,6 +98,33 @@ impl IngestOptions {
             .iter()
             .any(|s| s.eq_ignore_ascii_case(stage))
     }
+
+    /// Build ingest options from the CLI-exported environment knobs.
+    pub fn from_env() -> Self {
+        let no_cache = matches!(
+            std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
+            Ok("1")
+        );
+        let dry_run_storage = matches!(
+            std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(),
+            Ok("1")
+        );
+        let skip_stages: Vec<String> = std::env::var("GROKRXIV_INGEST_SKIP_STAGES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            no_cache,
+            skip_stages,
+            dry_run_storage,
+        }
+    }
 }
 
 /// Result of one successful ingest pipeline run.
@@ -186,11 +214,13 @@ async fn run_inner(
     let mut stage_reports: Vec<StageReport> = Vec::new();
     stage_reports.push(StageReport::ok("acquisition", None, None, Vec::new()));
 
-    // Stage 2 reflection: whether deterministic TeX→AST produced semantic_ast.
+    // Stage 2 reflection: Pandoc markdown is the default TeX path. LaTeXML is
+    // optional enrichment for a semantic AST, so absence is only degraded when
+    // the operator explicitly enabled LaTeXML.
     let semantic_ast = staged.semantic_ast;
     if semantic_ast.is_some() {
         stage_reports.push(StageReport::ok("tex_to_ast", None, None, Vec::new()));
-    } else if staged.source_tarball.is_some() {
+    } else if staged.source_tarball.is_some() && latexml_semantic_ast_enabled() {
         stage_reports.push(StageReport {
             name: "tex_to_ast".into(),
             status: "degraded".into(),
@@ -202,6 +232,11 @@ async fn run_inner(
             iters: None,
             tool_call_summary: None,
         });
+    } else if staged.source_tarball.is_some() {
+        stage_reports.push(StageReport::skipped(
+            "tex_to_ast",
+            "LaTeXML semantic AST disabled; Pandoc body.md active",
+        ));
     } else {
         stage_reports.push(StageReport::skipped("tex_to_ast", "no tex source"));
     }
@@ -280,54 +315,73 @@ async fn run_inner(
         stage_reports.push(StageReport::skipped("vlm", "tex path active"));
     }
 
-    // --- Stages 4–7 in parallel ---
+    // --- Stages 4–7 ---
+    //
+    // Default CLI extraction is deterministic-first: get reviewer-useful
+    // body/equation/citation/theorem artifacts locally, then reserve CLI LLM
+    // tool loops for explicit opt-in. This keeps one paper from spending
+    // minutes walking every citation key when deterministic citation contexts
+    // already provide the reviewers' needed evidence.
     let semantic_ast_ref = semantic_ast.as_ref();
-    let (macros_res, mut equations_res, mut theorems_res, mut citations_res) = tokio::join!(
-        run_agent_when(
-            !opts.should_skip("macros"),
-            state,
-            workdir.path(),
-            &extract,
-            semantic_ast_ref,
-            paper_id,
-            arxiv_id,
-            "macros",
-            MacroExpanderAgent::new(),
-        ),
-        run_agent_when(
-            !opts.should_skip("equations"),
-            state,
-            workdir.path(),
-            &extract,
-            semantic_ast_ref,
-            paper_id,
-            arxiv_id,
-            "equations",
-            EquationCanonicalizerAgent::new(),
-        ),
-        run_agent_when(
-            !opts.should_skip("theorems"),
-            state,
-            workdir.path(),
-            &extract,
-            semantic_ast_ref,
-            paper_id,
-            arxiv_id,
-            "theorems",
-            TheoremGraphExtractorAgent::new(),
-        ),
-        run_agent_when(
-            !opts.should_skip("citations"),
-            state,
-            workdir.path(),
-            &extract,
-            semantic_ast_ref,
-            paper_id,
-            arxiv_id,
-            "citations",
-            CitationContextualizerAgent::new(),
-        ),
-    );
+    let (macros_res, mut equations_res, mut theorems_res, mut citations_res) =
+        if force_agent_extraction() {
+            tokio::join!(
+                run_agent_when(
+                    !opts.should_skip("macros"),
+                    state,
+                    workdir.path(),
+                    &extract,
+                    semantic_ast_ref,
+                    paper_id,
+                    arxiv_id,
+                    "macros",
+                    MacroExpanderAgent::new(),
+                ),
+                run_agent_when(
+                    !opts.should_skip("equations"),
+                    state,
+                    workdir.path(),
+                    &extract,
+                    semantic_ast_ref,
+                    paper_id,
+                    arxiv_id,
+                    "equations",
+                    EquationCanonicalizerAgent::new(),
+                ),
+                run_agent_when(
+                    !opts.should_skip("theorems"),
+                    state,
+                    workdir.path(),
+                    &extract,
+                    semantic_ast_ref,
+                    paper_id,
+                    arxiv_id,
+                    "theorems",
+                    TheoremGraphExtractorAgent::new(),
+                ),
+                run_agent_when(
+                    !opts.should_skip("citations"),
+                    state,
+                    workdir.path(),
+                    &extract,
+                    semantic_ast_ref,
+                    paper_id,
+                    arxiv_id,
+                    "citations",
+                    CitationContextualizerAgent::new(),
+                ),
+            )
+        } else {
+            crate::cli_status::emit(format!(
+                "extract {arxiv_id}: using deterministic local extraction; set GROKRXIV_FORCE_AGENT_EXTRACTION=1 to run LLM tool loops"
+            ));
+            (
+                deterministic_macros_outcome(raw_tex_concat.as_deref()),
+                deterministic_equations_or_empty(arxiv_id, semantic_ast_ref, &body_md_str),
+                deterministic_theorems_or_empty(arxiv_id, &body_md_str),
+                deterministic_citations_outcome(arxiv_id, &body_md_str, &extract),
+            )
+        };
 
     if should_use_deterministic_fallback("equations", equations_res.as_ref(), opts, &semantic_ctx) {
         equations_res = deterministic_equations_outcome(arxiv_id, semantic_ast_ref, &body_md_str);
@@ -336,7 +390,7 @@ async fn run_inner(
         theorems_res = deterministic_theorems_outcome(arxiv_id, &body_md_str);
     }
     if should_use_citation_fallback(citations_res.as_ref(), opts, &body_md_str) {
-        citations_res = deterministic_citations_outcome(arxiv_id, &body_md_str);
+        citations_res = deterministic_citations_outcome(arxiv_id, &body_md_str, &extract);
     }
 
     push_tool_calls(&mut tool_call_log_entries, "macros", macros_res.as_ref());
@@ -680,6 +734,24 @@ fn resolve_extractor(stage: &str) -> ExtractorKind {
         .unwrap_or_default()
 }
 
+fn force_agent_extraction() -> bool {
+    matches!(
+        std::env::var("GROKRXIV_FORCE_AGENT_EXTRACTION").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+fn env_truthy(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    )
+}
+
+fn latexml_semantic_ast_enabled() -> bool {
+    env_truthy("GROKRXIV_TEX_ENABLE_LATEXML") && !env_truthy("GROKRXIV_TEX_DISABLE_LATEXML")
+}
+
 /// Per-stage routing read from `agents/extraction/<role>.yaml`. Captures the
 /// fields the extraction tool-loop needs at runtime.
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -873,6 +945,9 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     );
     let spec = default_extraction_spec(stage_name, runner_kind);
     let model = spec.model.clone();
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: {stage_name} starting via {runner_name} ({model})"
+    ));
     match agent.run(runner, &spec, ctx).await {
         Ok(run) => {
             info!(
@@ -881,6 +956,10 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
                 iters = run.iters,
                 "extraction stage ok"
             );
+            crate::cli_status::emit(format!(
+                "extract {arxiv_id}: {stage_name} ok iters={}",
+                run.iters
+            ));
             Some(StageOutcome {
                 output: run.output,
                 tool_calls: run.tool_calls,
@@ -893,6 +972,9 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         }
         Err(e) => {
             warn!(stage_name, arxiv_id, err = %format!("{e:#}"), "extraction stage failed");
+            crate::cli_status::emit(format!(
+                "extract {arxiv_id}: {stage_name} failed; deterministic fallback may run"
+            ));
             None
         }
     }
@@ -1139,9 +1221,29 @@ fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Stag
 fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
     // The MacroExpander returns `{normalized_tex, expansions_applied}`. We
     // don't currently re-route normalized_tex back into Stage 5/6/7 because
-    // those agents read from `body.md` + `semantic_ast` (already produced by
-    // Stage 2). The result is recorded in `extraction_report.json` via the
-    // stage outcome bookkeeping.
+    // those stages read from `body.md` and optional `semantic_ast`. The result
+    // is recorded in `extraction_report.json` via stage outcome bookkeeping.
+}
+
+fn deterministic_macros_outcome(raw_tex: Option<&str>) -> Option<StageOutcome> {
+    let started = std::time::Instant::now();
+    Some(StageOutcome {
+        output: json!({
+            "normalized_tex": Value::Null,
+            "expansions_applied": [],
+            "reason": if raw_tex.is_some_and(raw_tex_has_macro_definition) {
+                "macro expansion deferred to deterministic TeX/Pandoc path"
+            } else {
+                "no_macros_detected_by_local_scan"
+            },
+        }),
+        tool_calls: Vec::new(),
+        cost_usd: 0.0,
+        latency_ms: started.elapsed().as_millis() as i64,
+        iters: 0,
+        model: "deterministic-macro-scan".into(),
+        runner: "local".into(),
+    })
 }
 
 fn should_use_deterministic_fallback(
@@ -1157,6 +1259,22 @@ fn should_use_deterministic_fallback(
         None => true,
         Some(outcome) => semantic_check(name, &outcome.output, semantic_ctx).is_some(),
     }
+}
+
+fn deterministic_equations_or_empty(
+    arxiv_id: &str,
+    semantic_ast: Option<&Value>,
+    body_md: &str,
+) -> Option<StageOutcome> {
+    deterministic_equations_outcome(arxiv_id, semantic_ast, body_md).or_else(|| {
+        Some(deterministic_empty_outcome(
+            "equations",
+            json!({
+                "equations": [],
+                "reason": "no_equations_detected_by_local_scan",
+            }),
+        ))
+    })
 }
 
 fn deterministic_equations_outcome(
@@ -1201,6 +1319,18 @@ fn deterministic_equations_outcome(
         iters: 0,
         model: "deterministic-equation-scan".into(),
         runner: "local".into(),
+    })
+}
+
+fn deterministic_theorems_or_empty(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
+    deterministic_theorems_outcome(_arxiv_id, body_md).or_else(|| {
+        Some(deterministic_empty_outcome(
+            "theorems",
+            json!({
+                "nodes": [],
+                "reason": "no_theorems_detected_by_local_scan",
+            }),
+        ))
     })
 }
 
@@ -1255,13 +1385,23 @@ fn should_use_citation_fallback(
     }
 }
 
-fn deterministic_citations_outcome(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
+fn deterministic_citations_outcome(
+    _arxiv_id: &str,
+    body_md: &str,
+    extract: &PaperExtract,
+) -> Option<StageOutcome> {
     use std::collections::BTreeMap;
 
     let started = std::time::Instant::now();
     let sites = crate::agents::extraction::citations::tools::extract_citation_sites(body_md);
     if sites.is_empty() {
-        return None;
+        return Some(deterministic_empty_outcome(
+            "citations",
+            json!({
+                "citations": [],
+                "reason": "no_citation_sites_detected_by_local_scan",
+            }),
+        ));
     }
 
     let mut by_key: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -1286,14 +1426,21 @@ fn deterministic_citations_outcome(_arxiv_id: &str, body_md: &str) -> Option<Sta
         }));
     }
 
+    let bibliography_by_key: BTreeMap<String, &grokrxiv_schemas::Citation> = extract
+        .bibliography
+        .iter()
+        .filter_map(|c| citation_key(c).map(|key| (key, c)))
+        .collect();
     let citations: Vec<Value> = by_key
         .into_iter()
         .map(|(key, contexts)| {
+            let bib = bibliography_by_key.get(&key).copied();
             json!({
                 "key": key,
-                "raw": "",
-                "resolved_doi": Value::Null,
-                "resolved_arxiv_id": Value::Null,
+                "raw": bib.map(|c| c.raw.as_str()).unwrap_or(""),
+                "title": bib.and_then(|c| c.title.as_deref()).map(Value::from).unwrap_or(Value::Null),
+                "resolved_doi": bib.and_then(|c| c.doi.as_deref()).map(Value::from).unwrap_or(Value::Null),
+                "resolved_arxiv_id": bib.and_then(|c| c.arxiv_id.as_deref()).map(Value::from).unwrap_or(Value::Null),
                 "contexts": contexts,
             })
         })
@@ -1311,6 +1458,27 @@ fn deterministic_citations_outcome(_arxiv_id: &str, body_md: &str) -> Option<Sta
         model: "deterministic-citation-scan".into(),
         runner: "local".into(),
     })
+}
+
+fn citation_key(c: &grokrxiv_schemas::Citation) -> Option<String> {
+    c.raw
+        .split_once(':')
+        .map(|(key, _)| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .or_else(|| c.title.as_ref().map(|title| title.trim().to_string()))
+        .filter(|key| !key.is_empty())
+}
+
+fn deterministic_empty_outcome(stage: &str, output: Value) -> StageOutcome {
+    StageOutcome {
+        output,
+        tool_calls: Vec::new(),
+        cost_usd: 0.0,
+        latency_ms: 0,
+        iters: 0,
+        model: format!("deterministic-{stage}-scan"),
+        runner: "local".into(),
+    }
 }
 
 fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body: &str) {
@@ -1793,6 +1961,9 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
 mod a4_tests {
     use super::*;
     use grokrxiv_schemas::{Citation, PaperExtract, Section};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn extract_with(sections: Vec<&str>, bib: usize) -> PaperExtract {
         PaperExtract {
@@ -1926,6 +2097,7 @@ mod a4_tests {
     /// (macros uses `loop:` block; the rest top-level).
     #[test]
     fn macros_budget_resolves_to_yaml_values() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Locate the agents/ dir relative to the workspace root. Tests run
         // with CARGO_MANIFEST_DIR=<crate dir>, so go up two levels.
         let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
@@ -1945,6 +2117,7 @@ mod a4_tests {
     /// Same idea for citations.yaml (top-level form, not nested under `loop:`).
     #[test]
     fn citations_budget_resolves_to_yaml_values() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
         std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
         let b = extraction_budget_for("citations");
@@ -1958,6 +2131,7 @@ mod a4_tests {
 
     #[test]
     fn extractor_resolves_to_yaml_cli_by_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
         std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
         let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
@@ -1977,6 +2151,7 @@ mod a4_tests {
 
     #[test]
     fn extractor_env_overrides_yaml() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
         std::env::set_var("GROKRXIV_EXTRACTOR", "api");
 
@@ -2062,7 +2237,8 @@ mod a4_tests {
     fn deterministic_citation_fallback_groups_contexts() {
         let body = "## Intro\n\nA grouped citation [@Folland; @Spectral1] motivates this.\n\n\
             ## Results\n\nWe compare against [@Folland].\n";
-        let outcome = deterministic_citations_outcome("2605.00403", body)
+        let extract = extract_with(vec!["Intro", "Results"], 2);
+        let outcome = deterministic_citations_outcome("2605.00403", body, &extract)
             .expect("fallback should produce citations");
         assert_eq!(outcome.model, "deterministic-citation-scan");
         let citations = outcome.output["citations"].as_array().unwrap();

@@ -1,9 +1,9 @@
 id: theorem_graph_extractor
 role: "Build a dependency graph over theorem-like blocks (theorem/lemma/proposition/corollary/definition/proof). Resolves \\ref{} edges."
-provider: claude
-# Cross-reference resolution + long-context reasoning over the full paper body
-# is exactly what Opus is good at. Theorem chains can span many sections.
-model: claude-opus-4-7
+provider: gemini
+# Keep theorem graph extraction on the local Gemini CLI path by default.
+# Math-heavy papers can still override the model/runner explicitly.
+model: gemini-2.5-flash
 runner: cli
 prompt_template: prompts/extraction/theorems.md
 output_schema: schemas/extraction/theorems.schema.json

@@ -1,13 +1,14 @@
-# Publish E2E — proving the moderation → PR → merge → publish loop end-to-end
+# Publish E2E — proving CLI-native PR handoff, with optional merge smoke
 
-`scripts/publish-e2e.sh` is **opt-in**. It exercises the full publish path against
-a real GitHub repository. `just smoke` deliberately skips it because it needs
-GitHub credentials that aren't required for any other test. Use this doc when
-you want to prove the publication loop actually closes.
+`scripts/publish-e2e.sh` is **opt-in**. By default it exercises the product
+operator path through PR handoff only: ingest → review → approve → `pr_open`.
+It does **not** merge the PR. Set `GROKRXIV_E2E_ALLOW_MERGE=1` only against a
+disposable test repo when you intentionally want to validate the destructive
+merge → webhook → published leg.
 
 ## What it proves
 
-1. `grokrxiv --runner cli --extractor cli --no-cache --json ingest <arxiv_id>`
+1. `grokrxiv --runner cli --extractor cli --status --no-cache --json ingest <arxiv_id>`
    produces a real review row at `awaiting_moderation` with six
    `review_agents` rows, real input/output JSON artifacts, and per-role
    verifier evidence persisted. Set `RUNNER=api EXTRACTOR=api` only when you
@@ -15,11 +16,12 @@ you want to prove the publication loop actually closes.
 2. `grokrxiv approve <review_id>` opens a real pull request against your test
    reviews repo with the rendered HTML/MD/LaTeX/zip artifacts at the canonical
    `reviews/YYYY/MM/<field>/<arxiv_id>/` repo path.
-3. `gh pr merge --merge --delete-branch` merges the PR.
-4. A synthetic GitHub `pull_request.closed` webhook (HMAC-signed against the
+3. The script stops with the review at `status=pr_open` and `published_at IS NULL`.
+4. With `GROKRXIV_E2E_ALLOW_MERGE=1`, `gh pr merge --merge --delete-branch` merges the PR.
+5. A synthetic GitHub `pull_request.closed` webhook (HMAC-signed against the
    orchestrator's `GITHUB_WEBHOOK_SECRET`) posted to `localhost:8080/webhook/github`
    transitions the review to `status=published`.
-5. `GET /api/v1/reviews/<review_id>` returns the review with `status:"published"`,
+6. `GET /api/v1/reviews/<review_id>` returns the review with `status:"published"`,
    confirming RLS + the public read path.
 
 ## One-time setup
@@ -39,6 +41,26 @@ gh repo create GrokRxiv/grokrxiv-reviews --public --description "GrokRxiv review
 #    from your `.env`.
 ```
 
+## GitHub webhook for local publishing
+
+The webhook belongs on `GrokRxiv/grokrxiv-reviews`, not on the web app. GitHub
+must reach the local orchestrator through a public tunnel:
+
+```text
+https://<ngrok-or-cloudflared-host>/webhook/github
+```
+
+Configure the repo webhook with:
+
+- Content type: `application/json`
+- Secret: exactly `GITHUB_WEBHOOK_SECRET`
+- Events: Pull requests
+- Active: enabled
+
+The webhook handler updates the review row to `published`; the orchestrator
+then calls `WEB_REVALIDATE_URL` with `REVALIDATE_SECRET` to refresh the local or
+deployed Next.js site.
+
 ## Run it
 
 From the repo root with the local stack already up (`supabase start && docker compose up -d`):
@@ -55,14 +77,21 @@ export EXTRACTOR=cli
 bash scripts/publish-e2e.sh
 ```
 
-The script prints each step (1. ingest, 2. approve, 3. merge, 4. webhook,
-5. status check, 6. public API). On success, the last line is:
+The script prints each step (1. ingest, 2. approve, 3. PR handoff assertion).
+On success without merge, it ends with:
 
 ```
-✓ publish E2E PASSED end-to-end.
+✓ PR handoff E2E PASSED. Review <pr_url>, then merge it manually to publish.
 ```
 
 Any failed step aborts with a single-line error and a non-zero exit code.
+
+To intentionally test the destructive merge/webhook/publish leg in a disposable
+repo:
+
+```bash
+GROKRXIV_E2E_ALLOW_MERGE=1 bash scripts/publish-e2e.sh
+```
 
 ## Override the test paper
 
@@ -72,7 +101,9 @@ ARXIV_ID=2605.12492 bash scripts/publish-e2e.sh
 
 ## Cleaning up between runs
 
-Each successful run merges + closes a PR. To re-run cleanly:
+Default runs leave an open PR for human review. If you run with
+`GROKRXIV_E2E_ALLOW_MERGE=1`, the script merges + closes the PR. To re-run that
+destructive mode cleanly:
 
 ```bash
 # Reset the reviews repo's main branch:
@@ -103,7 +134,7 @@ docker exec -i $(docker ps -qf name=supabase_db_grokrxiv) psql -U postgres -d po
   app. In production, Vercel's ISR cache invalidation goes through Vercel's
   own webhook plumbing, which is exercised by the existing
   `.github/workflows/reviews-merge.yml.example` workflow (deployed in the
-  `reviews` repo, not this one).
+  `grokrxiv-reviews` repo, not this one).
 - Email / X drafts to the paper authors. That's an M4 surface; the publish
   script doesn't try to assert on it.
 - Multi-reviewer concurrency. Each run touches a single review.

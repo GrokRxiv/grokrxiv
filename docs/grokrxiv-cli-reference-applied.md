@@ -31,6 +31,8 @@ just serve            # blocking; runs HTTP API + supervisor + scheduler
 | `--offline`                | `false`        | Disallow network where avoidable |
 | `--dry-run`                | `false`        | Plan-only; don't make LLM calls |
 | `--json`                   | `false`        | Emit JSON (where supported) |
+| `--status`                 | auto           | Emit short progress lines to stderr |
+| `--no-status`              | `false`        | Suppress progress lines for background runs |
 | `--profile <name>`         | `default`      | Named TOML profile |
 | `--config <path>`          | `~/.grokrxiv/config.toml` | Override TOML path |
 | `--show-secrets`           | `false`        | Print provider secrets in cleartext (`config` only) |
@@ -108,6 +110,18 @@ The smoke test in `tests/m1-pipeline.sh` asserts on this envelope.
 Synchronously ingest + run the review DAG on one or more papers. Single
 paper prints `arxiv_id=… review_id=…`; multiple papers fan out in parallel.
 
+#### `grokrxiv extract <arxiv_id>...`
+Run fetch + extraction only, then audit the reviewer input artifacts. This is
+the fast standalone check for the extractor before running reviewers:
+
+```sh
+grokrxiv --runner cli --extractor cli --status --no-cache extract 2605.00561
+```
+
+The default TeX conversion is Pandoc. LaTeXML semantic AST enrichment runs only
+when `GROKRXIV_TEX_ENABLE_LATEXML=1`; extraction LLM tool loops run only when
+`GROKRXIV_FORCE_AGENT_EXTRACTION=1`.
+
 #### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
 Bulk OAI-PMH backfill across a date range.
 
@@ -134,9 +148,10 @@ Re-emit artifacts for a persisted review.
 ### Moderation
 
 #### `grokrxiv approve <REVIEW_ID> [--json]`
-Open the publication PR on `GrokRxiv/reviews`. Prints `pr_url=…`. With
-`--json`, returns `{review_id, pr_url, status}`. Without `GITHUB_TOKEN`, the
-PR is simulated.
+Open the publication PR on `GrokRxiv/grokrxiv-reviews`. This does not merge or
+publish the review; a human merge plus the GitHub webhook performs the
+`published` transition. Prints `pr_url=…`. With `--json`, returns
+`{review_id, pr_url, status}`. Without `GITHUB_TOKEN`, the PR is simulated.
 
 #### `grokrxiv reject <REVIEW_ID> --reason TEXT`
 Mark a review rejected (review stays `awaiting_moderation`).

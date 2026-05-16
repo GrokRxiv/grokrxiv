@@ -1,9 +1,9 @@
 id: macro_expander
 role: "Stage 4 — expand user-defined LaTeX macros (\\newcommand / \\def / \\renewcommand / \\DeclareMathOperator) so downstream tools see standard LaTeX."
-provider: claude
-# Macro expansion is mechanical bookkeeping over short TeX snippets.
-# Haiku is plenty; gemini-2.5-flash is the documented alternative.
-model: claude-haiku-4-5-20251001
+provider: gemini
+# Macro expansion is mechanical bookkeeping over short TeX snippets. Keep it on
+# the local Gemini CLI path by default; direct provider APIs remain opt-in.
+model: gemini-2.5-flash
 runner: cli
 output_schema: schemas/extraction/macros.schema.json
 tools:

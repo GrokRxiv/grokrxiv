@@ -40,8 +40,9 @@ pub struct ExtractionContext<'a> {
     pub workdir: &'a Path,
     /// The paper extract (sections, bibliography, figures, ...).
     pub extract: &'a PaperExtract,
-    /// LaTeXML-derived semantic AST; populated when the deterministic Stage 2
-    /// succeeded. Drives `query_ast`.
+    /// Optional LaTeXML-derived semantic AST; populated only when the
+    /// deterministic Stage 2 enrichment path is enabled and succeeds. Drives
+    /// `query_ast`.
     pub semantic_ast: Option<&'a serde_json::Value>,
     /// DB UUID of the paper this extraction is running against.
     pub paper_id: Uuid,
