@@ -160,15 +160,38 @@ pub async fn insert_review(
     // Withdraw any active reviews for this paper. 'draft', 'in_review',
     // 'awaiting_moderation', 'pr_open', 'published', 'corrected' all count as
     // active and get superseded by the new run; 'withdrawn' rows are left as-is.
-    sqlx::query(
+    //
+    // FP-RPT3b B6: capture the ids so we can transition their moderation_queue
+    // rows to `superseded` in the same transaction. Without this, the prior
+    // moderation rows would be left pointing at a withdrawn review row,
+    // making the moderator view inconsistent.
+    let superseded: Vec<(Uuid,)> = sqlx::query_as(
         "update reviews \
          set status='withdrawn', superseded_at=now() \
          where paper_id=$1 \
-           and status in ('draft','in_review','awaiting_moderation','pr_open','published','corrected')",
+           and status in ('draft','in_review','awaiting_moderation','pr_open','published','corrected') \
+         returning id",
     )
     .bind(paper_id)
-    .execute(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
+
+    if !superseded.is_empty() {
+        let ids: Vec<Uuid> = superseded.iter().map(|(i,)| *i).collect();
+        // FP-RPT3b B6: corresponding mq rows graduate to the new `superseded`
+        // terminal state (migration 20260516000005). `rejected` rows are
+        // intentionally left alone — a rejection that happens to be
+        // superseded later keeps its rejection as the primary signal.
+        sqlx::query(
+            "update moderation_queue \
+             set state='superseded' \
+             where review_id = any($1) \
+               and state in ('pending','approved','changes_requested')",
+        )
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     let id = Uuid::new_v4();
     let status = serde_plain(&ReviewStatus::AwaitingModeration);
@@ -864,4 +887,100 @@ pub async fn mark_paper_extraction_failed(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FP-RPT3b B6: when a fresh review supersedes a prior active review,
+    /// the prior review's `moderation_queue` row must transition from
+    /// `pending` to `superseded` in the same transaction. Without this
+    /// the moderator view ends up with mq rows pointing at withdrawn
+    /// reviews.
+    ///
+    /// Gated on `DATABASE_URL` so cargo test in CI without a DB doesn't
+    /// fail. Run locally via:
+    ///   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+    ///     cargo test -p grokrxiv-orchestrator --features full --lib \
+    ///     -- supersede_marks_prior_moderation_queue
+    #[tokio::test]
+    async fn supersede_marks_prior_moderation_queue_row_as_superseded() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return;
+        };
+        let pool = PgPool::connect(&db_url)
+            .await
+            .expect("connect to test DB");
+
+        // 1. Insert a fresh paper row to scope the test data.
+        let arxiv_id = format!("fp-rpt3b-b6-test-{}", Uuid::new_v4());
+        let paper_id: Uuid = sqlx::query_scalar(
+            "insert into papers (arxiv_id, title, authors, abstract, field) \
+             values ($1, $2, '[]'::jsonb, $3, $4) returning id",
+        )
+        .bind(&arxiv_id)
+        .bind("FP-RPT3b B6 supersede test paper")
+        .bind("placeholder abstract")
+        .bind("cs.LG")
+        .fetch_one(&pool)
+        .await
+        .expect("insert paper");
+
+        // 2. First review: insert + add a pending moderation row.
+        let first =
+            insert_review(&pool, paper_id, serde_json::json!({}), None)
+                .await
+                .expect("first insert_review");
+        insert_moderation_pending(&pool, first)
+            .await
+            .expect("insert mq pending");
+
+        let first_state: (String,) = sqlx::query_as(
+            "select state from moderation_queue where review_id = $1",
+        )
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .expect("read first mq state");
+        assert_eq!(first_state.0, "pending");
+
+        // 3. Second review for the same paper should auto-supersede the
+        //    first AND transition its mq row.
+        let second =
+            insert_review(&pool, paper_id, serde_json::json!({}), None)
+                .await
+                .expect("second insert_review");
+        assert_ne!(first, second);
+
+        let first_state_after: (String,) = sqlx::query_as(
+            "select state from moderation_queue where review_id = $1",
+        )
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .expect("read first mq state after supersede");
+        assert_eq!(
+            first_state_after.0, "superseded",
+            "prior moderation_queue row must transition to 'superseded' after supersede"
+        );
+
+        let first_status: (String,) = sqlx::query_as(
+            "select status from reviews where id = $1",
+        )
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .expect("read first review status");
+        assert_eq!(first_status.0, "withdrawn");
+
+        // 4. Clean up: cascade delete via papers.id (reviews + mq have
+        //    on-delete-cascade FKs).
+        sqlx::query("delete from papers where id = $1")
+            .bind(paper_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
 }
