@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GrokRxiv Agent Runner Architecture</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="grokrxiv-agent-runner-architecture"><a class="anchor" aria-label="anchor" href="#grokrxiv-agent-runner-architecture">#</a>GrokRxiv Agent Runner Architecture</h1>
+<blockquote>
+<p>Implementation plan for turning GrokRxiv's current six typed LLM task nodes
+into real code-owned agent workers, while keeping the Rust DAG supervisor as
+the deterministic control plane.</p>
+</blockquote>
+<h2 id="1-problem-statement"><a class="anchor" aria-label="anchor" href="#1-problem-statement">#</a>1. Problem Statement</h2>
+<p>GrokRxiv currently uses the word "agent" for the six review roles:</p>
+<ul>
+<li><code>summary</code></li>
+<li><code>technical_correctness</code></li>
+<li><code>novelty</code></li>
+<li><code>reproducibility</code></li>
+<li><code>citation</code></li>
+<li><code>meta_reviewer</code></li>
+</ul>
+<p>That naming is slightly ahead of the implementation. Today, each role is mostly
+a typed LLM task node: the Rust supervisor builds a prompt, selects a provider
+and model, calls <code>LLMProvider.complete(...)</code>, parses the JSON, verifies it,
+caches it, persists it, and moves the DAG forward.</p>
+<p>That is acceptable for review-only inference, but it is not a full agent
+abstraction. A full agent is not "an API call." The API call is just the
+inference step inside an agent runtime.</p>
+<p>A real agent has:</p>
+<ul>
+<li>a bounded objective</li>
+<li>state and inputs</li>
+<li>tools or execution privileges</li>
+<li>a loop or policy for retries/fixes</li>
+<li>typed output contracts</li>
+<li>verifier gates</li>
+<li>an execution backend</li>
+<li>side-effect boundaries</li>
+</ul>
+<p>The key correction is:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>LLM API       = inference transport</span></span>
+<span data-line=""><span>LLM task node = prompt + schema + one inference call</span></span>
+<span data-line=""><span>Agent         = code-owned worker with tools, loop, verifier, cache, and result</span></span>
+<span data-line=""><span>DAG supervisor = deterministic scheduler and side-effect owner</span></span>
+<span data-line=""><span>Sandbox       = isolated environment where risky/file/tool work executes</span></span></code></pre></figure>
+<h2 id="2-target-architecture"><a class="anchor" aria-label="anchor" href="#2-target-architecture">#</a>2. Target Architecture</h2>
+<p>Keep the Rust supervisor. Do not move the DAG into Claude, Codex, Gemini, or a
+cloud agent product. The supervisor remains the durable, auditable control
+plane for review lifecycle, concurrency, persistence, moderation, rendering,
+and publishing.</p>
+<p>Add two layers under the supervisor:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">trait</span><span style="color:#B392F0"> ReviewAgent</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#F97583">    async</span><span style="color:#F97583"> fn</span><span style="color:#B392F0"> run</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">, input</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentInput</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> anyhow</span><span style="color:#F97583">::</span><span style="color:#B392F0">Result</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">AgentRun</span><span style="color:#E1E4E8">>;</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#F97583">trait</span><span style="color:#B392F0"> AgentRunner</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#F97583">    async</span><span style="color:#F97583"> fn</span><span style="color:#B392F0"> run</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">, spec</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentSpec</span><span style="color:#E1E4E8">, input</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentInput</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> anyhow</span><span style="color:#F97583">::</span><span style="color:#B392F0">Result</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">AgentRun</span><span style="color:#E1E4E8">>;</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<h3 id="reviewagent"><a class="anchor" aria-label="anchor" href="#reviewagent">#</a><code>ReviewAgent</code></h3>
+<p><code>ReviewAgent</code> is the role-level worker. There are six concrete role workers:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>SummaryAgent</span></span>
+<span data-line=""><span>TechnicalCorrectnessAgent</span></span>
+<span data-line=""><span>NoveltyAgent</span></span>
+<span data-line=""><span>ReproducibilityAgent</span></span>
+<span data-line=""><span>CitationAgent</span></span>
+<span data-line=""><span>MetaReviewerAgent</span></span></code></pre></figure>
+<p>Each role owns:</p>
+<ul>
+<li>objective and role slug</li>
+<li>prompt construction</li>
+<li>model/provider route</li>
+<li>schema selection</li>
+<li>cache key construction</li>
+<li>cache read/write policy</li>
+<li>inference or spawned-agent execution through <code>AgentRunner</code></li>
+<li>parse/repair retry</li>
+<li>verifier ladder</li>
+<li>token/latency accounting</li>
+<li>structured <code>AgentRun</code> result</li>
+</ul>
+<h3 id="agentrunner"><a class="anchor" aria-label="anchor" href="#agentrunner">#</a><code>AgentRunner</code></h3>
+<p><code>AgentRunner</code> is the execution backend. It answers: "How does this role do its
+work?"</p>
+<p>Runners should be swappable per role and per deployment:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>ApiInferenceRunner</span></span>
+<span data-line=""><span>ClaudeCliRunner</span></span>
+<span data-line=""><span>CodexCliRunner</span></span>
+<span data-line=""><span>GeminiCliRunner</span></span>
+<span data-line=""><span>LocalContainerRunner</span></span>
+<span data-line=""><span>E2BRunner</span></span>
+<span data-line=""><span>VercelOpenAgentsRunner</span></span></code></pre></figure>
+<p>The existing <code>LLMProvider</code> path becomes the simplest runner:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>ReviewDagSupervisor</span></span>
+<span data-line=""><span>  -> TechnicalCorrectnessAgent</span></span>
+<span data-line=""><span>     -> ApiInferenceRunner</span></span>
+<span data-line=""><span>        -> LLMProvider.complete(...)</span></span></code></pre></figure>
+<p>For more capable agents:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>ReviewDagSupervisor</span></span>
+<span data-line=""><span>  -> RevisionAgent</span></span>
+<span data-line=""><span>     -> LocalContainerRunner</span></span>
+<span data-line=""><span>        -> claude/codex/gemini process with tools in an isolated workdir</span></span></code></pre></figure>
+<h2 id="3-runner-backends"><a class="anchor" aria-label="anchor" href="#3-runner-backends">#</a>3. Runner Backends</h2>
+<h3 id="31-apiinferencerunner"><a class="anchor" aria-label="anchor" href="#31-apiinferencerunner">#</a>3.1 <code>ApiInferenceRunner</code></h3>
+<p>Use this for pure review-only work where the role only needs to read a prepared
+input artifact and return a JSON artifact.</p>
+<p>This is the current GrokRxiv path:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>system prompt + user prompt + JSON schema + model settings</span></span>
+<span data-line=""><span>  -> provider API / local OpenAI-compatible endpoint</span></span>
+<span data-line=""><span>  -> JSON text</span></span>
+<span data-line=""><span>  -> parse + verifier + cache + persist</span></span></code></pre></figure>
+<p>Use it for:</p>
+<ul>
+<li><code>summary</code></li>
+<li><code>citation</code></li>
+<li><code>novelty</code></li>
+<li><code>reproducibility</code></li>
+<li><code>technical_correctness</code></li>
+<li><code>meta_reviewer</code></li>
+</ul>
+<p>unless a role needs to run tools or modify files.</p>
+<p>This runner is enough for typed review-only agents because the "work" is
+reasoning over a prepared paper extract. It is not enough for revision agents
+that need to inspect source trees, run compilers, or propose patches.</p>
+<h3 id="32-claudeclirunner"><a class="anchor" aria-label="anchor" href="#32-claudeclirunner">#</a>3.2 <code>ClaudeCliRunner</code></h3>
+<p>Spawn Claude Code locally as a child process for tool-using agents.</p>
+<p>Representative command shape:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="bash" data-theme="github-dark"><code data-language="bash" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">claude</span><span style="color:#79B8FF"> -p</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$PROMPT</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --model</span><span style="color:#9ECBFF"> opus</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --permission-mode</span><span style="color:#9ECBFF"> plan</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --tools</span><span style="color:#9ECBFF"> "Read,Grep,Glob,Bash"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --add-dir</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$WORKDIR</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --output-format</span><span style="color:#9ECBFF"> json</span></span></code></pre></figure>
+<p>Use Claude CLI when:</p>
+<ul>
+<li>the role needs strong long-context code/paper reasoning</li>
+<li>the agent should use file/search/shell tools</li>
+<li>local subscription economics are preferred over API spend</li>
+<li>the workdir is trusted or externally sandboxed</li>
+</ul>
+<p>Do not run Claude CLI with broad write permissions against the main repo for
+production workloads. Put each run in a dedicated worktree, container, or cloud
+sandbox first.</p>
+<h3 id="33-codexclirunner"><a class="anchor" aria-label="anchor" href="#33-codexclirunner">#</a>3.3 <code>CodexCliRunner</code></h3>
+<p>Spawn Codex non-interactively for code review, formatting review, patch
+proposal, or local OpenAI-backed agent work.</p>
+<p>Representative command shape:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="bash" data-theme="github-dark"><code data-language="bash" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">codex</span><span style="color:#9ECBFF"> exec</span><span style="color:#79B8FF"> -C</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$WORKDIR</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  -s</span><span style="color:#9ECBFF"> workspace-write</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  -a</span><span style="color:#9ECBFF"> never</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --json</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --output-schema</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$SCHEMA_PATH</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#9ECBFF">  "</span><span style="color:#E1E4E8">$PROMPT</span><span style="color:#9ECBFF">"</span></span></code></pre></figure>
+<p>For local OSS routing:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="bash" data-theme="github-dark"><code data-language="bash" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">codex</span><span style="color:#9ECBFF"> exec</span><span style="color:#79B8FF"> --oss</span><span style="color:#79B8FF"> --local-provider</span><span style="color:#9ECBFF"> ollama</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  -C</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$WORKDIR</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#9ECBFF">  "</span><span style="color:#E1E4E8">$PROMPT</span><span style="color:#9ECBFF">"</span></span></code></pre></figure>
+<p>Use Codex CLI when:</p>
+<ul>
+<li>the role should inspect or patch source artifacts</li>
+<li>structured final output is required</li>
+<li>OpenAI/Codex reasoning is preferred</li>
+<li>local or OSS routing is useful for cost control</li>
+</ul>
+<h3 id="34-geminiclirunner"><a class="anchor" aria-label="anchor" href="#34-geminiclirunner">#</a>3.4 <code>GeminiCliRunner</code></h3>
+<p>Spawn Gemini CLI for independent peer review or a second-opinion reviewer.</p>
+<p>Representative command shape:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="bash" data-theme="github-dark"><code data-language="bash" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">gemini</span><span style="color:#79B8FF"> -p</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$PROMPT</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --model</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$RESEARCH_GEMINI_MODEL</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --approval-mode</span><span style="color:#9ECBFF"> plan</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --sandbox</span></span></code></pre></figure>
+<p>Gemini also supports local Gemma routing through <code>gemini gemma setup/start</code>.</p>
+<p>Use Gemini CLI when:</p>
+<ul>
+<li>the role is a peer-review or critique pass</li>
+<li>provider diversity is more important than tool depth</li>
+<li>a cheap independent reviewer improves confidence</li>
+</ul>
+<h3 id="35-localcontainerrunner"><a class="anchor" aria-label="anchor" href="#35-localcontainerrunner">#</a>3.5 <code>LocalContainerRunner</code></h3>
+<p>Run each agent in a local isolated workdir or container.</p>
+<p>Minimum viable local isolation:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>one git worktree per agent</span></span>
+<span data-line=""><span>one temp directory per run</span></span>
+<span data-line=""><span>only copied input artifacts</span></span>
+<span data-line=""><span>no production secrets</span></span>
+<span data-line=""><span>explicit output artifact directory</span></span></code></pre></figure>
+<p>Better local isolation:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>one Docker/Podman container per agent</span></span>
+<span data-line=""><span>read-only mounted inputs</span></span>
+<span data-line=""><span>writable scratch/output volume</span></span>
+<span data-line=""><span>network disabled unless required</span></span>
+<span data-line=""><span>only role-specific environment variables</span></span>
+<span data-line=""><span>container deleted after capture</span></span></code></pre></figure>
+<p>Use local containers for:</p>
+<ul>
+<li>LaTeX compile/test loops</li>
+<li>Haskell/Lean verification</li>
+<li>patch proposal against paper source</li>
+<li>generated-code execution</li>
+<li>any future <code>review_and_revise</code> role</li>
+</ul>
+<h3 id="36-e2brunner"><a class="anchor" aria-label="anchor" href="#36-e2brunner">#</a>3.6 <code>E2BRunner</code></h3>
+<p>E2B provides isolated Linux sandboxes created on demand for agents. The
+GrokRxiv control plane would run outside E2B and use the E2B SDK to upload
+inputs, run commands, fetch outputs, and destroy or archive the sandbox.</p>
+<p>Use E2B when:</p>
+<ul>
+<li>the workload needs stronger isolation than local containers</li>
+<li>cloud execution is acceptable</li>
+<li>we need Linux parity for compilers/build tools</li>
+<li>the agent must run untrusted generated code</li>
+</ul>
+<p>E2B should be an execution backend, not the GrokRxiv control plane.</p>
+<h3 id="37-vercelopenagentsrunner"><a class="anchor" aria-label="anchor" href="#37-vercelopenagentsrunner">#</a>3.7 <code>VercelOpenAgentsRunner</code></h3>
+<p>Vercel Open Agents uses a three-layer model:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>Web -> Agent workflow -> Sandbox VM</span></span></code></pre></figure>
+<p>The important design point is that the agent workflow runs outside the sandbox.
+The sandbox is the filesystem/shell/git/dev-server execution environment.</p>
+<p>That separation matches the architecture GrokRxiv should use:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>Rust supervisor / workflow code</span></span>
+<span data-line=""><span>  -> agent runner</span></span>
+<span data-line=""><span>     -> sandbox VM for risky execution</span></span></code></pre></figure>
+<p>Use Vercel Open Agents when:</p>
+<ul>
+<li>we want durable cloud agent runs</li>
+<li>we want sandbox hibernation/resume</li>
+<li>GitHub branch/PR workflow matters</li>
+<li>web UI and streaming run visibility matter</li>
+</ul>
+<p>Do not make Vercel Open Agents the first dependency for review-only GrokRxiv.
+Add the runner interface first; then make Vercel one possible backend.</p>
+<h2 id="4-data-flow"><a class="anchor" aria-label="anchor" href="#4-data-flow">#</a>4. Data Flow</h2>
+<h3 id="41-review-only-flow"><a class="anchor" aria-label="anchor" href="#41-review-only-flow">#</a>4.1 Review-only flow</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>paper extract</span></span>
+<span data-line=""><span>  -> ReviewDagSupervisor</span></span>
+<span data-line=""><span>  -> SpecialistAgent.run(input)</span></span>
+<span data-line=""><span>  -> cache lookup</span></span>
+<span data-line=""><span>  -> ApiInferenceRunner</span></span>
+<span data-line=""><span>  -> parse strict JSON</span></span>
+<span data-line=""><span>  -> verifier ladder</span></span>
+<span data-line=""><span>  -> cache write if pass</span></span>
+<span data-line=""><span>  -> AgentRun</span></span>
+<span data-line=""><span>  -> review_agents row</span></span></code></pre></figure>
+<p>After all five specialists pass:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>specialist outputs</span></span>
+<span data-line=""><span>  -> MetaReviewerAgent.run(meta_input)</span></span>
+<span data-line=""><span>  -> same cache/runner/parse/verify flow</span></span>
+<span data-line=""><span>  -> meta_review</span></span></code></pre></figure>
+<h3 id="42-tool-using-flow"><a class="anchor" aria-label="anchor" href="#42-tool-using-flow">#</a>4.2 Tool-using flow</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>paper source bundle</span></span>
+<span data-line=""><span>  -> ReviewDagSupervisor</span></span>
+<span data-line=""><span>  -> RevisionAgent.run(input)</span></span>
+<span data-line=""><span>  -> create isolated workdir/sandbox</span></span>
+<span data-line=""><span>  -> copy inputs</span></span>
+<span data-line=""><span>  -> spawn claude/codex/gemini or API-driven tool loop</span></span>
+<span data-line=""><span>  -> run compile/tests/checks</span></span>
+<span data-line=""><span>  -> collect structured artifact</span></span>
+<span data-line=""><span>  -> verifier validates artifact + patch</span></span>
+<span data-line=""><span>  -> persist proposed patch</span></span>
+<span data-line=""><span>  -> human/policy gate applies patch</span></span></code></pre></figure>
+<p>The agent may propose work. Deterministic code applies side effects.</p>
+<h2 id="5-public-interfaces"><a class="anchor" aria-label="anchor" href="#5-public-interfaces">#</a>5. Public Interfaces</h2>
+<h3 id="agentspec"><a class="anchor" aria-label="anchor" href="#agentspec">#</a><code>AgentSpec</code></h3>
+<p>Minimum fields:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">struct</span><span style="color:#B392F0"> AgentSpec</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#E1E4E8">    role</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRole</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    runner</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRunnerKind</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    provider</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">String</span><span style="color:#E1E4E8">>,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    model</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    prompt_template</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    schema</span><span style="color:#F97583">:</span><span style="color:#B392F0"> serde_json</span><span style="color:#F97583">::</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    tool_policy</span><span style="color:#F97583">:</span><span style="color:#B392F0"> ToolPolicy</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    sandbox_policy</span><span style="color:#F97583">:</span><span style="color:#B392F0"> SandboxPolicy</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    max_retries</span><span style="color:#F97583">:</span><span style="color:#B392F0"> u8</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<h3 id="agentinput"><a class="anchor" aria-label="anchor" href="#agentinput">#</a><code>AgentInput</code></h3>
+<p>Minimum fields:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">struct</span><span style="color:#B392F0"> AgentInput</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#E1E4E8">    paper_id</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Uuid</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    review_id</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Uuid</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    role</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRole</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    content_hash_material</span><span style="color:#F97583">:</span><span style="color:#B392F0"> serde_json</span><span style="color:#F97583">::</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    artifact</span><span style="color:#F97583">:</span><span style="color:#B392F0"> serde_json</span><span style="color:#F97583">::</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    source_bundle_path</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">String</span><span style="color:#E1E4E8">>,</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<h3 id="agentrun"><a class="anchor" aria-label="anchor" href="#agentrun">#</a><code>AgentRun</code></h3>
+<p>Minimum fields:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">struct</span><span style="color:#B392F0"> AgentRun</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#E1E4E8">    role</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRole</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    runner</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRunnerKind</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    model</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    output</span><span style="color:#F97583">:</span><span style="color:#B392F0"> serde_json</span><span style="color:#F97583">::</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    verifier_status</span><span style="color:#F97583">:</span><span style="color:#B392F0"> VerifierStatus</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    verifier_notes</span><span style="color:#F97583">:</span><span style="color:#B392F0"> serde_json</span><span style="color:#F97583">::</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    tokens_in</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">i32</span><span style="color:#E1E4E8">>,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    tokens_out</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">i32</span><span style="color:#E1E4E8">>,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    latency_ms</span><span style="color:#F97583">:</span><span style="color:#B392F0"> i32</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    cache_hit</span><span style="color:#F97583">:</span><span style="color:#B392F0"> bool</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    sandbox_ref</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">String</span><span style="color:#E1E4E8">>,</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<h3 id="role-config"><a class="anchor" aria-label="anchor" href="#role-config">#</a>Role config</h3>
+<p>Current <code>agents/*.yaml</code> should grow a runner field later:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="yaml" data-theme="github-dark"><code data-language="yaml" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">technical_correctness</span></span>
+<span data-line=""><span style="color:#85E89D">provider</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">claude</span></span>
+<span data-line=""><span style="color:#85E89D">model</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">claude-opus-4-7</span></span>
+<span data-line=""><span style="color:#85E89D">runner</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">api_inference</span></span>
+<span data-line=""><span style="color:#85E89D">prompt_template</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">prompts/technical_correctness.md</span></span>
+<span data-line=""><span style="color:#85E89D">schema</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">schemas/technical_correctness.schema.json</span></span></code></pre></figure>
+<p>For a future tool-using role:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="yaml" data-theme="github-dark"><code data-language="yaml" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">revision_agent</span></span>
+<span data-line=""><span style="color:#85E89D">runner</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">local_container</span></span>
+<span data-line=""><span style="color:#85E89D">model</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">claude-opus-4-7</span></span>
+<span data-line=""><span style="color:#85E89D">tools</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#E1E4E8">  - </span><span style="color:#9ECBFF">read</span></span>
+<span data-line=""><span style="color:#E1E4E8">  - </span><span style="color:#9ECBFF">grep</span></span>
+<span data-line=""><span style="color:#E1E4E8">  - </span><span style="color:#9ECBFF">bash</span></span>
+<span data-line=""><span style="color:#E1E4E8">  - </span><span style="color:#9ECBFF">edit</span></span>
+<span data-line=""><span style="color:#85E89D">sandbox</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#85E89D">  network</span><span style="color:#E1E4E8">: </span><span style="color:#79B8FF">false</span></span>
+<span data-line=""><span style="color:#85E89D">  writable_paths</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#E1E4E8">    - </span><span style="color:#9ECBFF">/workspace/out</span></span></code></pre></figure>
+<h2 id="6-side-effect-boundaries"><a class="anchor" aria-label="anchor" href="#6-side-effect-boundaries">#</a>6. Side-Effect Boundaries</h2>
+<p>The supervisor owns:</p>
+<ul>
+<li>DAG topology</li>
+<li>concurrency</li>
+<li>DB transactions</li>
+<li>cache tables</li>
+<li>moderation queue</li>
+<li>render/publish lifecycle</li>
+<li>final patch application</li>
+</ul>
+<p>Agents own:</p>
+<ul>
+<li>role reasoning</li>
+<li>local inspection inside their sandbox/workdir</li>
+<li>proposed structured artifacts</li>
+<li>proposed patches</li>
+<li>role-local verification loops</li>
+</ul>
+<p>Agents must not directly:</p>
+<ul>
+<li>write production DB rows</li>
+<li>publish PRs</li>
+<li>mutate the canonical repo</li>
+<li>approve moderation</li>
+<li>bypass verifier gates</li>
+<li>access global secrets</li>
+</ul>
+<p>The runner receives only the inputs and credentials needed for that role.</p>
+<h2 id="7-implementation-phases"><a class="anchor" aria-label="anchor" href="#7-implementation-phases">#</a>7. Implementation Phases</h2>
+<h3 id="phase-1-rename-the-mental-model-no-behavior-change"><a class="anchor" aria-label="anchor" href="#phase-1-rename-the-mental-model-no-behavior-change">#</a>Phase 1: Rename the mental model, no behavior change</h3>
+<p>Introduce <code>ReviewAgent</code> wrappers around the existing six role paths. Each
+wrapper still calls the current <code>LLMProvider</code> path.</p>
+<p>Acceptance:</p>
+<ul>
+<li>six roles still run in the same DAG order</li>
+<li>output rows are unchanged</li>
+<li>cache behavior is unchanged</li>
+<li>all existing M1 pipeline checks pass</li>
+</ul>
+<h3 id="phase-2-add-agentrunner"><a class="anchor" aria-label="anchor" href="#phase-2-add-agentrunner">#</a>Phase 2: Add <code>AgentRunner</code></h3>
+<p>Add <code>ApiInferenceRunner</code> as the default and route all six existing agents
+through it.</p>
+<p>Acceptance:</p>
+<ul>
+<li>role config can select <code>runner: api_inference</code></li>
+<li>missing runner defaults to <code>api_inference</code></li>
+<li>no external CLI is required</li>
+<li>unit tests cover runner selection</li>
+</ul>
+<h3 id="phase-3-add-local-cli-runners"><a class="anchor" aria-label="anchor" href="#phase-3-add-local-cli-runners">#</a>Phase 3: Add local CLI runners</h3>
+<p>Implement <code>ClaudeCliRunner</code>, <code>CodexCliRunner</code>, and <code>GeminiCliRunner</code> as
+experimental backends.</p>
+<p>Acceptance:</p>
+<ul>
+<li>command construction is unit-tested</li>
+<li>each runner supports a timeout</li>
+<li>each runner captures stdout/stderr/exit code</li>
+<li>each runner can write final JSON to a configured output path</li>
+<li>no runner is enabled by default in production config</li>
+</ul>
+<h3 id="phase-4-add-isolated-execution"><a class="anchor" aria-label="anchor" href="#phase-4-add-isolated-execution">#</a>Phase 4: Add isolated execution</h3>
+<p>Add <code>LocalContainerRunner</code> or worktree-based isolation before enabling any
+write-capable local CLI agent.</p>
+<p>Acceptance:</p>
+<ul>
+<li>each run gets a unique workdir</li>
+<li>inputs are copied or mounted read-only</li>
+<li>outputs are collected from a known directory</li>
+<li>cleanup behavior is explicit</li>
+<li>network/secrets are opt-in per role</li>
+</ul>
+<h3 id="phase-5-add-cloud-sandbox-backend"><a class="anchor" aria-label="anchor" href="#phase-5-add-cloud-sandbox-backend">#</a>Phase 5: Add cloud sandbox backend</h3>
+<p>Choose one cloud backend after the runner abstraction exists:</p>
+<ul>
+<li>E2B for generic isolated Linux execution</li>
+<li>Vercel Open Agents for durable workflow plus sandbox VM plus GitHub/PR UX</li>
+</ul>
+<p>Acceptance:</p>
+<ul>
+<li>cloud runner is behind config</li>
+<li>credentials are role-scoped</li>
+<li>failed sandbox creation falls back only when configured</li>
+<li>sandbox id/ref is persisted for audit</li>
+</ul>
+<h3 id="phase-6-add-review_and_revise"><a class="anchor" aria-label="anchor" href="#phase-6-add-review_and_revise">#</a>Phase 6: Add <code>review_and_revise</code></h3>
+<p>Create revision-capable agents that emit structured patch artifacts instead of
+directly modifying canonical source.</p>
+<p>Acceptance:</p>
+<ul>
+<li>patch artifact validates against schema</li>
+<li>compile/test evidence is attached</li>
+<li>human/policy gate is required before apply</li>
+<li>applied patches are traceable to an agent run</li>
+</ul>
+<h2 id="8-testing-strategy"><a class="anchor" aria-label="anchor" href="#8-testing-strategy">#</a>8. Testing Strategy</h2>
+<p>Unit tests:</p>
+<ul>
+<li><code>AgentRunnerKind</code> parsing/defaulting</li>
+<li>command construction for Claude/Codex/Gemini</li>
+<li>cache key includes runner/model/prompt/schema/verifier version</li>
+<li><code>AgentRun</code> serializes to the existing provenance shape</li>
+</ul>
+<p>Integration tests:</p>
+<ul>
+<li>fake runner proves specialist fan-out then meta execution</li>
+<li>fake cache proves all-five-specialist hits produce meta cache hit</li>
+<li>fake failing runner records verifier/runner failure without publishing</li>
+<li>local temp-workdir runner proves input/output collection</li>
+</ul>
+<p>Smoke tests:</p>
+<ul>
+<li>existing <code>tests/m1-pipeline.sh</code> remains the API-inference smoke</li>
+<li>optional <code>tests/agent-runner-local.sh</code> exercises one local CLI runner when
+credentials and binaries exist</li>
+<li>optional <code>tests/agent-runner-sandbox.sh</code> exercises container or cloud sandbox
+when configured</li>
+</ul>
+<h2 id="9-recommendation"><a class="anchor" aria-label="anchor" href="#9-recommendation">#</a>9. Recommendation</h2>
+<p>Use this rule:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>If the role only reads a prepared artifact and returns JSON, use ApiInferenceRunner.</span></span>
+<span data-line=""><span>If the role needs files, shell, compilers, patches, or generated artifacts, use an agent runner.</span></span>
+<span data-line=""><span>If the role can mutate or execute untrusted code, put it in a sandbox.</span></span></code></pre></figure>
+<p>For current GrokRxiv review-only:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>Keep the six roles on ApiInferenceRunner.</span></span>
+<span data-line=""><span>Rename/structure them as ReviewAgents internally.</span></span>
+<span data-line=""><span>Do not pay the complexity cost of cloud agents yet.</span></span></code></pre></figure>
+<p>For future revision mode:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="text" data-theme="github-dark"><code data-language="text" data-theme="github-dark" style="display: grid;"><span data-line=""><span>Use spawned local/cloud agents.</span></span>
+<span data-line=""><span>Give each agent an isolated workdir or sandbox.</span></span>
+<span data-line=""><span>Require structured patch artifacts.</span></span>
+<span data-line=""><span>Let deterministic code validate and apply side effects.</span></span></code></pre></figure>
+<h2 id="10-references"><a class="anchor" aria-label="anchor" href="#10-references">#</a>10. References</h2>
+<ul>
+<li>Vercel Open Agents template: <code>https://vercel.com/templates/template/open-agents</code></li>
+<li>E2B documentation: <code>https://www.e2b.dev/docs</code></li>
+<li>Existing GrokRxiv provider boundary: <code>crates/llm-adapter/src/lib.rs</code></li>
+<li>Existing GrokRxiv DAG: <code>crates/orchestrator/src/supervisor.rs</code></li>
+<li>Existing role configs: <code>agents/*.yaml</code></li>
+</ul>
+<hr>
+<p><em>End of document.</em></p>
+</main>
+<footer class="doc-footer">
+<p>agent-runner.md &middot; generated 2026-05-16T01:38:30.876Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Real-paper end-to-end test — arXiv 2605.00403 → GitHub PR</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="real-paper-end-to-end-test--arxiv-260500403--github-pr"><a class="anchor" aria-label="anchor" href="#real-paper-end-to-end-test--arxiv-260500403--github-pr">#</a>Real-paper end-to-end test — arXiv 2605.00403 → GitHub PR</h1>
+<h2 id="context"><a class="anchor" aria-label="anchor" href="#context">#</a>Context</h2>
+<p>FP6 just shipped the pipeline cost fixes and the M1 smoke test passed 6/6 agents at ~$0.193/paper. The M1 smoke uses paper <code>2605.12484</code> and falls into "simulated PR" mode at the approve step because no <code>GITHUB_TOKEN</code> is set — that's why the smoke reports <code>pr_url=https://github.com/GrokRxiv/reviews/pull/SIMULATED-...</code> and assertion 9 fails.</p>
+<p>We now want a <strong>real</strong> end-to-end run: ingest arXiv <code>2605.00403</code> (a math-ph paper on Generalized Fourier Transforms for Momentum-Space Construction on Riemannian Manifolds), execute the 6-agent DAG against it, and have the publisher open a real PR against <code>GrokRxiv/grokrxiv-reviews</code>. This is the first time the production publish path is exercised end-to-end.</p>
+<h3 id="decisions-already-locked"><a class="anchor" aria-label="anchor" href="#decisions-already-locked">#</a>Decisions already locked</h3>
+<ul>
+<li><strong>Repo</strong>: <code>GrokRxiv/grokrxiv-reviews</code> (override the publisher's default name <code>reviews</code>)</li>
+<li><strong>Visibility</strong>: public, initialized with a README so <code>main</code> exists at the publisher's first API call (<code>GET /repos/.../git/ref/heads/main</code> would 404 on an empty repo)</li>
+<li><strong>GH token</strong>: <code>gh auth token</code> at runtime — inherits the gh-CLI auth (currently <code>MagnetonIO</code>, with <code>repo</code> + <code>read:org</code> scopes verified)</li>
+<li><strong>End point</strong>: open PR, verify it exists via <code>gh pr view</code>, stop there. No merge in this pass.</li>
+</ul>
+<h3 id="what-fp6-already-validated"><a class="anchor" aria-label="anchor" href="#what-fp6-already-validated">#</a>What FP6 already validated</h3>
+<ul>
+<li><code>cargo build --workspace</code> clean</li>
+<li>M1 smoke: 8/8 DAG assertions pass on paper <code>2605.12484</code>; only the approve→PR step fails because of the missing <code>GITHUB_TOKEN</code></li>
+<li>Migrations applied (<code>review_inputs</code>, <code>review_cache</code> present)</li>
+<li>Per-paper cost ~$0.193 — budget for this run is the same range</li>
+</ul>
+<hr>
+<h2 id="goal"><a class="anchor" aria-label="anchor" href="#goal">#</a>Goal</h2>
+<blockquote>
+<p>Run arXiv <code>2605.00403</code> through the full GrokRxiv pipeline ending at a verified real PR on <code>GrokRxiv/grokrxiv-reviews</code>. Capture the second per-paper measurement (different paper, math-ph subject, denser math content than <code>2605.12484</code>'s ML topic) to harden the cost model. Stop at verified PR — no merge.</p>
+</blockquote>
+<hr>
+<h2 id="plan"><a class="anchor" aria-label="anchor" href="#plan">#</a>Plan</h2>
+<h3 id="phase-0--preflight-read-only"><a class="anchor" aria-label="anchor" href="#phase-0--preflight-read-only">#</a>Phase 0 — Preflight (read-only)</h3>
+<ol>
+<li>Confirm Supabase is still running:
+<ul>
+<li><code>supabase status</code> — should still show containers up from the FP6 M1 run</li>
+</ul>
+</li>
+<li>Confirm <code>review_inputs</code> and <code>review_cache</code> tables exist:
+<ul>
+<li><code>docker exec supabase_db_grokrxiv psql -U postgres -d postgres -c "\dt public.review*"</code></li>
+</ul>
+</li>
+<li>Confirm the gh-CLI auth and scopes:
+<ul>
+<li><code>gh auth status</code> should show <code>MagnetonIO</code> with <code>repo</code> and <code>read:org</code></li>
+</ul>
+</li>
+<li>Confirm <code>gh api orgs/GrokRxiv</code> returns 200 (sanity check on org access)</li>
+<li>Sanity-fetch the source bundle for <code>2605.00403</code>:
+<ul>
+<li><code>curl -sLI https://arxiv.org/e-print/2605.00403 | head</code> — should return 200 with <code>content-type: application/x-eprint-tar</code> (or similar). If 404, the paper has no source on arXiv → operator decision needed (we cannot satisfy the "TeX required" policy)</li>
+</ul>
+</li>
+</ol>
+<p>If any of these fail, the run aborts before any LLM cost is incurred.</p>
+<h3 id="phase-05--ingest-enhancement-tex-source-required-one-time-enhancement-lands-before-the-real-paper-run"><a class="anchor" aria-label="anchor" href="#phase-05--ingest-enhancement-tex-source-required-one-time-enhancement-lands-before-the-real-paper-run">#</a>Phase 0.5 — Ingest enhancement: TeX source required (one-time enhancement, lands before the real-paper run)</h3>
+<p><strong>Operator directive (2026-05-15)</strong>:</p>
+<ul>
+<li>TeX is the <strong>preferred</strong> review source; fetch + parse it for every paper that has it.</li>
+<li>If a paper has <strong>no</strong> TeX source on arXiv (rare but real), <strong>fall back to PDF-based extraction</strong> (the current behavior).</li>
+<li>PDF is <strong>always</strong> downloaded — it's the viewable artifact regardless of what the review reads from.</li>
+<li><code>paper_assets</code> tracks both <code>tex_path</code> (nullable — null means TeX not available) and <code>pdf_path</code> (always present).</li>
+</ul>
+<p>Current state of <code>crates/ingest/</code>:</p>
+<ul>
+<li>Fetches Atom metadata from <code>export.arxiv.org/api/query</code> for title/authors/abstract/category</li>
+<li>Fetches PDF from the <code>pdf_url</code> in the Atom feed</li>
+<li>Uses <code>pdf-extract</code> to convert PDF → text → regex-split into sections + bibliography</li>
+<li><strong>No source-bundle fetch. No TeX parsing.</strong></li>
+</ul>
+<p>Change set:</p>
+<ol>
+<li><strong>Add source fetch</strong> — <code>crates/ingest/src/download.rs</code> (or new <code>arxiv_source.rs</code>): fetch <code>https://arxiv.org/e-print/&#x3C;id></code>. Returns either a single <code>.tex</code> file or a <code>.tar.gz</code> containing the LaTeX project. Use the same rate-limited semaphore that gates the PDF fetch (arXiv 3s/req policy).</li>
+<li><strong>Add TeX parser</strong> — new <code>crates/ingest/src/tex.rs</code>:
+<ul>
+<li>If response is gzip+tar: extract to a temp dir, find the "main" tex file (heuristic: the .tex file containing <code>\documentclass</code>, OR the one named <code>main.tex</code>/<code>paper.tex</code>/<code>&#x3C;arxiv-id>.tex</code>, OR the largest .tex file)</li>
+<li>If response is a single .tex: use it directly</li>
+<li>Parse via regex (pragmatic, not a full LaTeX parser): extract <code>\title{...}</code>, <code>\author{...}</code>, <code>\begin{abstract}...\end{abstract}</code>, <code>\section{...}</code> + <code>\subsection{...}</code> markers, <code>\cite{...}</code>/<code>\bibitem{...}</code> for citations</li>
+<li>Resolve <code>\input{...}</code> and <code>\include{...}</code> recursively for multi-file projects (one level deep is enough for most papers)</li>
+<li>Strip LaTeX comments (<code>%</code> at line start, anywhere after non-escaped <code>%</code>)</li>
+<li>Strip LaTeX commands within section titles (<code>\textbf{}</code>, <code>\emph{}</code>, etc.) — keep the inner text</li>
+</ul>
+</li>
+<li><strong>Update <code>pipeline::ingest()</code></strong> in <code>crates/ingest/src/pipeline.rs</code>:
+<ul>
+<li>Try to fetch source via the new module first</li>
+<li><strong>If source 200</strong>: build <code>PaperExtract</code> from TeX (sections, abstract, citations come from TeX)</li>
+<li><strong>If source 404 or unparseable</strong>: log a warning at <code>INFO</code> level (<code>source=pdf_fallback paper=&#x3C;id> reason=&#x3C;...></code>), fall back to PDF-text extraction (current path)</li>
+<li>PDF is <strong>always</strong> downloaded in parallel — needed for <code>paper_assets.pdf_path</code> (the human-viewable artifact)</li>
+<li>Store both paths in <code>paper_assets</code>: <code>tex_path</code> (nullable) and <code>pdf_path</code> (existing column, NOT NULL)</li>
+<li>Mark the extraction source on the <code>PaperExtract</code> struct: <code>source_format: "tex" | "pdf"</code> so downstream agents can know which one they got (and the verifier ladder can be less harsh on PDF-extracted bibliographies, which are typically lossier)</li>
+</ul>
+</li>
+<li><strong>Migration</strong> — <code>supabase/migrations/20260515000003_paper_tex_path.sql</code>:
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sql" data-theme="github-dark"><code data-language="sql" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">ALTER</span><span style="color:#F97583"> TABLE</span><span style="color:#E1E4E8"> paper_assets </span><span style="color:#F97583">ADD</span><span style="color:#E1E4E8"> COLUMN </span><span style="color:#F97583">IF</span><span style="color:#F97583"> NOT</span><span style="color:#F97583"> EXISTS</span><span style="color:#E1E4E8"> tex_path </span><span style="color:#F97583">TEXT</span><span style="color:#E1E4E8">;</span></span></code></pre></figure>
+</li>
+<li><strong>Tests</strong> — update <code>crates/ingest/tests/integration.rs</code>:
+<ul>
+<li>Mock the source endpoint with a small tar.gz fixture containing a known TeX file</li>
+<li>Assert <code>PaperExtract</code> is built from TeX (title/abstract/sections come from the TeX, not the PDF)</li>
+<li>Assert PDF is still downloaded but only used for <code>paper_assets.pdf_path</code></li>
+</ul>
+</li>
+<li><strong>Backward compat</strong> — papers ingested under the old code path (e.g. <code>2c9d69c2-...</code> from the FP6 M1 smoke) keep their PDF-derived <code>PaperExtract</code>. No retroactive re-ingest.</li>
+</ol>
+<p>Document in <code>docs/ingest-tex-with-pdf-fallback-applied.md</code>:</p>
+<ul>
+<li><strong>What</strong>: ingest now fetches arXiv source bundles when available, parses TeX, builds <code>PaperExtract</code> from TeX content. When source is unavailable or unparseable, falls back to PDF-text extraction. PDF is always downloaded as a viewable artifact regardless of which path produced the extract.</li>
+<li><strong>Why</strong>: operator directive (2026-05-15) — TeX is the authoritative source for review content (cleaner sections, real citations, intact math); PDF is too lossy for math papers (verified empirically on 2605.00403, a math-ph paper with dense equations). PDF stays as the fallback so we don't lose coverage of source-less papers.</li>
+<li><strong>Risk</strong>: TeX projects with complex <code>\input</code>/<code>\include</code> chains beyond one level deep miss nested content. Some papers use unusual macros the regex misses; the verifier ladder + the <code>source_format</code> field surface these as low-confidence reviews rather than silent quality drops. Cost impact negligible (~50KB extra download per paper).</li>
+<li><strong>Reversal</strong>: revert the ingest crate + drop <code>paper_assets.tex_path</code> + drop the <code>source_format</code> field. No data loss — PDF path and behavior are unchanged.</li>
+</ul>
+<p>After this enhancement is shipped (cargo build + cargo test green; the existing M1 paper <code>2605.12484</code> still re-ingestable into a fresh review_id with TeX-based extract that's comparable in quality), proceed to Phase 1.</p>
+<p><strong>Future-state note (out of scope this pass)</strong>: arXiv also exposes an "HTML (experimental)" renderer at <code>https://arxiv.org/html/&#x3C;id></code> for many papers — pre-rendered semantic HTML with math as MathML, far cleaner than parsing raw TeX. Confirmed available for 2605.00403 (per the operator's screenshot). A later enhancement could prefer the HTML source when available and fall back to TeX, simplifying the parser. <strong>This pass stays on TeX-only</strong> per the operator directive; the HTML path is a follow-up.</p>
+<h3 id="phase-1--create-grokrxivgrokrxiv-reviews-on-github-one-time"><a class="anchor" aria-label="anchor" href="#phase-1--create-grokrxivgrokrxiv-reviews-on-github-one-time">#</a>Phase 1 — Create <code>GrokRxiv/grokrxiv-reviews</code> on GitHub (one-time)</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">gh</span><span style="color:#9ECBFF"> repo</span><span style="color:#9ECBFF"> create</span><span style="color:#9ECBFF"> GrokRxiv/grokrxiv-reviews</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --public</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --add-readme</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --description</span><span style="color:#9ECBFF"> "Peer-reviewed reviews of arXiv papers by GrokRxiv's agentic AI pipeline. Reviews are advisory, not endorsements."</span></span></code></pre></figure>
+<p>This creates the repo, initializes a <code>main</code> branch with a <code>README.md</code> so the publisher can branch off it. Verify with <code>gh repo view GrokRxiv/grokrxiv-reviews</code>.</p>
+<p>Also clone the (now-non-empty) repo into the existing local directory so the user can <code>cd</code> there and inspect locally:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">cd</span><span style="color:#9ECBFF"> /Users/mlong/Documents/Development/grokrxiv-reviews</span></span>
+<span data-line=""><span style="color:#B392F0">git</span><span style="color:#9ECBFF"> clone</span><span style="color:#9ECBFF"> https://github.com/GrokRxiv/grokrxiv-reviews.git</span><span style="color:#9ECBFF"> .</span></span></code></pre></figure>
+<p>The local clone is for <strong>user inspection only</strong> — the publisher does not read or write to it; it talks directly to the GitHub REST API.</p>
+<h3 id="phase-2--wire-env-for-the-orchestrator-run"><a class="anchor" aria-label="anchor" href="#phase-2--wire-env-for-the-orchestrator-run">#</a>Phase 2 — Wire env for the orchestrator run</h3>
+<p>The publisher's mode toggle is the <strong>presence</strong> of <code>GITHUB_TOKEN</code>. Three new env vars are needed for the orchestrator invocation:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GITHUB_TOKEN</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"$(</span><span style="color:#B392F0">gh</span><span style="color:#9ECBFF"> auth token)"</span></span>
+<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_OWNER</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"GrokRxiv"</span></span>
+<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_REPO</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"grokrxiv-reviews"</span><span style="color:#6A737D">   # override the default "reviews"</span></span></code></pre></figure>
+<p>Plus the existing env from <code>.env</code>:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span><span style="color:#E1E4E8">; </span><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span><span style="color:#E1E4E8">; </span><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
+<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> DATABASE_URL</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"postgresql://postgres:postgres@127.0.0.1:54322/postgres"</span></span></code></pre></figure>
+<p>Sanity: <code>printenv GITHUB_TOKEN | head -c 8</code> should print <code>ghs_...</code> or <code>gho_...</code> (gh-CLI's token prefix), or <code>ghp_...</code> if it's a classic PAT. Empty → abort.</p>
+<h3 id="phase-3--ingest--run-the-dag"><a class="anchor" aria-label="anchor" href="#phase-3--ingest--run-the-dag">#</a>Phase 3 — Ingest + run the DAG</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> run</span><span style="color:#79B8FF"> --</span><span style="color:#9ECBFF"> ingest</span><span style="color:#79B8FF"> 2605.00403</span></span></code></pre></figure>
+<p>This will:</p>
+<ul>
+<li>Hit <code>export.arxiv.org/api/query?id_list=2605.00403</code> to fetch Atom metadata</li>
+<li>Download the PDF (math-ph papers are PDF-only; no LaTeX source bundle)</li>
+<li>Extract title/authors/abstract from XML, sections + bibliography from PDF via <code>pdf-extract</code></li>
+<li>Run the 6 specialists in parallel + meta_reviewer</li>
+<li>Persist review row with status <code>awaiting_moderation</code></li>
+<li>Print <code>review_id=&#x3C;uuid></code></li>
+</ul>
+<p><strong>Expected timing</strong>: ~90–120s wall (matches the M1 smoke's 92s).
+<strong>Expected cost</strong>: ~$0.19 (same envelope as <code>2605.12484</code>).</p>
+<p><strong>Math-ph specific risks to watch for</strong>:</p>
+<ul>
+<li>PDF text extraction may garble math symbols; sections like "3.1 Generalized Fourier Transform" may parse as headers but inline math gets lost. Acceptable degradation — the DAG still runs.</li>
+<li>The <code>citation</code> agent may produce fewer citations than the ML paper did (math papers often have shorter bibliographies); still pass-verified.</li>
+<li>The <code>technical_correctness</code> agent on Opus might run hotter on tokens because math claims need more reasoning. Watch tokens_out.</li>
+</ul>
+<p>If ingest fails (network 5xx from arXiv, PDF unparseable), abort the run — no PR.</p>
+<h3 id="phase-4--verify-the-dag-result-before-publishing"><a class="anchor" aria-label="anchor" href="#phase-4--verify-the-dag-result-before-publishing">#</a>Phase 4 — Verify the DAG result before publishing</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">docker</span><span style="color:#9ECBFF"> exec</span><span style="color:#9ECBFF"> supabase_db_grokrxiv</span><span style="color:#9ECBFF"> psql</span><span style="color:#79B8FF"> -U</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -d</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -c</span><span style="color:#9ECBFF"> "</span></span>
+<span data-line=""><span style="color:#9ECBFF">SELECT id, status, title, field</span></span>
+<span data-line=""><span style="color:#9ECBFF">FROM reviews</span></span>
+<span data-line=""><span style="color:#9ECBFF">WHERE id IN (SELECT id FROM reviews ORDER BY created_at DESC LIMIT 1);</span></span>
+<span data-line=""><span style="color:#9ECBFF">"</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#B392F0">docker</span><span style="color:#9ECBFF"> exec</span><span style="color:#9ECBFF"> supabase_db_grokrxiv</span><span style="color:#9ECBFF"> psql</span><span style="color:#79B8FF"> -U</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -d</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -c</span><span style="color:#9ECBFF"> "</span></span>
+<span data-line=""><span style="color:#9ECBFF">SELECT role, model, tokens_in, tokens_out, verifier_status</span></span>
+<span data-line=""><span style="color:#9ECBFF">FROM review_agents</span></span>
+<span data-line=""><span style="color:#9ECBFF">WHERE review_id = '&#x3C;the new review_id>'</span></span>
+<span data-line=""><span style="color:#9ECBFF">ORDER BY role;</span></span>
+<span data-line=""><span style="color:#9ECBFF">"</span></span></code></pre></figure>
+<p>Acceptance gates before approving:</p>
+<ul>
+<li><code>reviews.status = 'awaiting_moderation'</code></li>
+<li>6 rows in <code>review_agents</code>, each with <code>verifier_status='pass'</code></li>
+<li><code>artifacts/&#x3C;review_id>/</code> contains <code>review.html</code>, <code>review.md</code>, <code>review.tex</code>, <code>bundle.zip</code></li>
+</ul>
+<p>If any of these fail, abort. The publisher requires the artifacts on disk.</p>
+<h3 id="phase-5--approve-to-trigger-the-real-publisher"><a class="anchor" aria-label="anchor" href="#phase-5--approve-to-trigger-the-real-publisher">#</a>Phase 5 — Approve to trigger the real publisher</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> run</span><span style="color:#79B8FF"> --</span><span style="color:#9ECBFF"> approve</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">review_i</span><span style="color:#E1E4E8">d</span><span style="color:#F97583">></span></span></code></pre></figure>
+<p>With <code>GITHUB_TOKEN</code> set, this goes through the real-mode branch (<code>crates/orchestrator/src/cli.rs:710-746</code>), which:</p>
+<ol>
+<li>Reads artifacts from <code>artifacts/&#x3C;review_id>/</code> (review.html, review.md, review.tex, bundle.zip)</li>
+<li>Builds an <code>octocrab</code> client with the PAT token</li>
+<li>Calls <code>publisher.open_review_pr(...)</code> (<code>crates/publisher/src/github.rs:62</code>) — 6 sequential GitHub REST calls:
+<ul>
+<li>GET ref <code>heads/main</code> → base tip SHA</li>
+<li>POST 4 blobs (one per file)</li>
+<li>POST tree with the 4 blobs parented on main's tree</li>
+<li>POST commit on that tree</li>
+<li>POST ref <code>refs/heads/review/2605.00403-&#x3C;8charuuid></code></li>
+<li>POST pull (title=paper title, base=main, head=the new branch, body includes <code>grokrxiv-review-id: &#x3C;uuid></code> marker)</li>
+</ul>
+</li>
+<li>Persists <code>github_pr_url</code> to the <code>reviews</code> row</li>
+<li>Prints <code>pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/&#x3C;N></code></li>
+</ol>
+<p>Path inside the repo:</p>
+<pre><code>reviews/2026/05/math-ph/2605.00403/review.html
+reviews/2026/05/math-ph/2605.00403/review.md
+reviews/2026/05/math-ph/2605.00403/review.tex
+reviews/2026/05/math-ph/2605.00403/bundle.zip
+</code></pre>
+<h3 id="phase-6--verify-the-pr-is-real"><a class="anchor" aria-label="anchor" href="#phase-6--verify-the-pr-is-real">#</a>Phase 6 — Verify the PR is real</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">gh</span><span style="color:#9ECBFF"> pr</span><span style="color:#9ECBFF"> view</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">PR_NUMBE</span><span style="color:#E1E4E8">R</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --repo</span><span style="color:#9ECBFF"> GrokRxiv/grokrxiv-reviews</span></span>
+<span data-line=""><span style="color:#B392F0">gh</span><span style="color:#9ECBFF"> pr</span><span style="color:#9ECBFF"> diff</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">PR_NUMBE</span><span style="color:#E1E4E8">R</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --repo</span><span style="color:#9ECBFF"> GrokRxiv/grokrxiv-reviews</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> head</span><span style="color:#79B8FF"> -50</span></span></code></pre></figure>
+<p>Acceptance gates:</p>
+<ul>
+<li><code>gh pr view</code> returns a real PR (not 404)</li>
+<li>PR body contains <code>grokrxiv-review-id: &#x3C;uuid></code> marker — the future webhook reconciliation needs this</li>
+<li>PR adds exactly 4 files under <code>reviews/2026/05/math-ph/2605.00403/</code></li>
+<li><code>reviews.github_pr_url</code> in DB matches the actual PR URL</li>
+</ul>
+<p>If any fail, capture the failure mode in the writeup; don't try to "fix" by hand.</p>
+<h3 id="phase-65--surface-the-review-on-the-appsweb-frontend"><a class="anchor" aria-label="anchor" href="#phase-65--surface-the-review-on-the-appsweb-frontend">#</a>Phase 6.5 — Surface the review on the apps/web frontend</h3>
+<p>After <code>approve</code> the DB row has <code>status='pr_open'</code>. The Supabase RLS policy (FP2-era migration) restricts the public anon role to <code>status IN ('published', 'corrected')</code>. So as-is, the review is NOT visible on the web frontend at <code>/papers/2605.00403</code> or in the homepage grid.</p>
+<p>This pass surfaces it by transitioning to <code>published</code> manually for this single review:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sql" data-theme="github-dark"><code data-language="sql" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">UPDATE</span><span style="color:#E1E4E8"> reviews</span></span>
+<span data-line=""><span style="color:#F97583">SET</span><span style="color:#F97583"> status</span><span style="color:#F97583"> =</span><span style="color:#9ECBFF"> 'published'</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#E1E4E8">    published_at </span><span style="color:#F97583">=</span><span style="color:#F97583"> now</span><span style="color:#E1E4E8">()</span></span>
+<span data-line=""><span style="color:#F97583">WHERE</span><span style="color:#E1E4E8"> id </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> '&#x3C;the new review_id>'</span><span style="color:#E1E4E8">;</span></span></code></pre></figure>
+<p>The PR on GitHub stays open (not merged) — the GitHub state and the DB state diverge intentionally for this validation pass. The eventual webhook (FP7+) is what reconciles them automatically: PR merge → <code>status='published'</code>. Right now we're just simulating that one transition.</p>
+<p>Document the manual transition in <code>docs/manual-publish-status-for-real-paper-test-applied.md</code>:</p>
+<ul>
+<li>Why: web frontend RLS gates visibility on <code>status='published'</code>; the PR-merge webhook isn't wired yet</li>
+<li>What: one-row UPDATE on <code>reviews</code></li>
+<li>Risk: DB and GitHub PR state will diverge until either the PR is manually merged or the webhook lands</li>
+<li>Reversal: <code>UPDATE reviews SET status='pr_open', published_at=NULL WHERE id=...</code></li>
+</ul>
+<p>Then verify the web frontend:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># In a separate terminal (or open in browser):</span></span>
+<span data-line=""><span style="color:#79B8FF">cd</span><span style="color:#9ECBFF"> apps/web</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#B392F0">pnpm</span><span style="color:#9ECBFF"> dev</span></span>
+<span data-line=""><span style="color:#6A737D"># Visit http://localhost:3000/papers/2605.00403 → should show the review</span></span>
+<span data-line=""><span style="color:#6A737D"># Visit http://localhost:3000/                  → should show in latest grid</span></span>
+<span data-line=""><span style="color:#6A737D"># Visit http://localhost:3000/reviews/&#x3C;review_id> → should render the full review</span></span></code></pre></figure>
+<p>Acceptance gates for web:</p>
+<ul>
+<li><code>/papers/2605.00403</code> returns 200 with the paper title and at least one review card</li>
+<li><code>/reviews/&#x3C;id></code> renders the meta_review JSON via the existing <code>review-card.tsx</code> / <code>agent-accordion.tsx</code> components</li>
+<li>Homepage grid shows the new review</li>
+<li>Mobile breakpoint (375px) and desktop (1280px) both render without layout breaks (per FP4 responsive coverage)</li>
+</ul>
+<h3 id="phase-7--writeup--auto-publish"><a class="anchor" aria-label="anchor" href="#phase-7--writeup--auto-publish">#</a>Phase 7 — Writeup + auto-publish</h3>
+<p>Create <code>research/real-paper-test-2605-00403.md</code> documenting:</p>
+<ul>
+<li>The paper (title, authors, abstract excerpt, link)</li>
+<li>Per-role token counts + measured cost vs the FP5 baseline + the FP6 M1 result</li>
+<li>PR URL</li>
+<li>Any math-ph specific quirks observed (citation count, section parsing quality)</li>
+<li>Comparison vs M1 smoke (<code>2605.12484</code>)</li>
+</ul>
+<p>The Stop hook will auto-regenerate <code>research/real-paper-test-2605-00403.html</code>.</p>
+<h3 id="phase-8--commit--tag"><a class="anchor" aria-label="anchor" href="#phase-8--commit--tag">#</a>Phase 8 — Commit + tag</h3>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">git</span><span style="color:#9ECBFF"> add</span><span style="color:#79B8FF"> -A</span></span>
+<span data-line=""><span style="color:#B392F0">git</span><span style="color:#9ECBFF"> commit</span><span style="color:#79B8FF"> -m</span><span style="color:#9ECBFF"> "Real-paper E2E test — arXiv 2605.00403 → PR #N at </span><span style="color:#E1E4E8">$X</span><span style="color:#9ECBFF">.XX/paper"</span></span>
+<span data-line=""><span style="color:#B392F0">git</span><span style="color:#9ECBFF"> tag</span><span style="color:#9ECBFF"> real-paper-test-2605-00403</span></span></code></pre></figure>
+<hr>
+<h2 id="operator-policy-for-issues--enhancements-discovered-during-the-run"><a class="anchor" aria-label="anchor" href="#operator-policy-for-issues--enhancements-discovered-during-the-run">#</a>Operator policy for issues / enhancements discovered during the run</h2>
+<p>This is a live test, not a dry run. Two new directives from the operator:</p>
+<ol>
+<li>
+<p><strong>Issues found during the run → fix them in flight.</strong> The plan above maps the happy path. If reality diverges (ingest fails, publisher 422s, schema mismatch, etc.), I diagnose and fix the root cause in the same pass rather than reporting "stuck" and waiting. The bias is toward landing the real PR, not toward minimal-scope-discipline.</p>
+</li>
+<li>
+<p><strong>Every fix or enhancement gets documented.</strong> For each non-trivial code change made during this pass, write a short writeup to <code>docs/&#x3C;short-slug>-applied.md</code> covering:</p>
+<ul>
+<li><strong>What</strong> was changed (file:line, before/after)</li>
+<li><strong>Why</strong> (the symptom that forced it; the diagnosis)</li>
+<li><strong>Risk</strong> (what else this touches; what to watch on the next run)</li>
+<li><strong>Reversal</strong> (the one-line <code>git revert</code> or surgical undo)</li>
+</ul>
+<p>Examples of <code>&#x3C;short-slug></code> names: <code>pdf-extract-mathph-fix-applied.md</code>, <code>publisher-422-empty-bundle-fix-applied.md</code>, <code>ingest-timeout-bump-applied.md</code>. The <code>docs/</code> directory already exists in the repo. These docs are auto-published to HTML by the Stop hook (same pipeline as <code>research/</code>).</p>
+</li>
+<li>
+<p><strong>Trivial fixes</strong> (typos, missed clippy lint, env-var rename) don't need their own docs file — note them in the final commit message body instead.</p>
+</li>
+</ol>
+<h2 id="risks-and-mitigations"><a class="anchor" aria-label="anchor" href="#risks-and-mitigations">#</a>Risks and mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Likelihood</th>
+<th>Impact</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>arXiv 503/network failure during ingest</td>
+<td>Low</td>
+<td>Aborts before LLM cost</td>
+<td>Retry once; if persistent, log and skip</td>
+</tr>
+<tr>
+<td><code>pdf-extract</code> chokes on math symbols → empty sections</td>
+<td>Medium</td>
+<td>Lower-quality review but DAG still completes</td>
+<td>Acceptable — verifier ladder will catch verbose failures; we keep the result</td>
+</tr>
+<tr>
+<td>GH token from <code>gh auth token</code> lacks repo:write somehow</td>
+<td>Low</td>
+<td>Approve fails with 403</td>
+<td><code>gh auth status</code> already shows <code>repo</code> scope; fallback is to mint a PAT</td>
+</tr>
+<tr>
+<td>Publisher 422 on PR create (e.g., empty diff)</td>
+<td>Low</td>
+<td>Approve fails</td>
+<td>Manual inspect; common cause is artifact directory empty</td>
+</tr>
+<tr>
+<td><code>2605.00403</code> is a single-PDF paper with no LaTeX source</td>
+<td>Verified</td>
+<td>The renderer's <code>review.tex</code> would still be produced (it's the GENERATED review, not the source paper)</td>
+<td>No mitigation needed</td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code> cost goes WAY up if specialists are verbose on math-ph</td>
+<td>Medium-Low</td>
+<td>Per-paper cost > $0.30</td>
+<td>Acceptable; document it</td>
+</tr>
+<tr>
+<td><code>grokrxiv-reviews</code> repo already exists privately</td>
+<td>Medium</td>
+<td><code>gh repo create</code> errors</td>
+<td>Detect with <code>gh repo view GrokRxiv/grokrxiv-reviews</code> first; skip create if already there</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="critical-files-read-only-for-this-plan"><a class="anchor" aria-label="anchor" href="#critical-files-read-only-for-this-plan">#</a>Critical files (read-only for this plan)</h2>
+<ul>
+<li><code>crates/publisher/src/github.rs:62-152</code> — <code>open_review_pr()</code> real-mode implementation</li>
+<li><code>crates/orchestrator/src/cli.rs:641-747</code> — <code>approve_impl()</code> and the <code>GITHUB_TOKEN</code> toggle</li>
+<li><code>crates/ingest/src/arxiv.rs</code> — Atom metadata fetch</li>
+<li><code>crates/ingest/src/pipeline.rs</code> — full ingest orchestration</li>
+<li><code>.env</code> — provider keys (must NOT add <code>GITHUB_TOKEN</code> here; it's exported at run time only)</li>
+<li><code>tests/m1-pipeline.sh</code> — reference for the assertion pattern</li>
+</ul>
+<h2 id="verification-end-to-end"><a class="anchor" aria-label="anchor" href="#verification-end-to-end">#</a>Verification (end-to-end)</h2>
+<p>A successful run produces:</p>
+<ol>
+<li><code>GrokRxiv/grokrxiv-reviews</code> exists on GitHub, public, with <code>main</code> initialized and 1 open PR</li>
+<li><code>gh pr view &#x3C;PR_NUMBER> --repo GrokRxiv/grokrxiv-reviews</code> shows:
+<ul>
+<li>4 files added under <code>reviews/2026/05/math-ph/2605.00403/</code></li>
+<li>Body contains <code>grokrxiv-review-id: &#x3C;uuid></code></li>
+</ul>
+</li>
+<li>DB row in <code>reviews</code> shows <code>github_pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/&#x3C;N></code> and <code>status='published'</code> (manually transitioned per Phase 6.5)</li>
+<li><strong>Web frontend visibility (Phase 6.5)</strong>:
+<ul>
+<li><code>http://localhost:3000/papers/2605.00403</code> renders the paper page with this review</li>
+<li><code>http://localhost:3000/reviews/&#x3C;id></code> renders the full review via existing components</li>
+<li>Homepage grid shows the new review card</li>
+</ul>
+</li>
+<li>New writeup at <code>research/real-paper-test-2605-00403.md</code> + auto-generated <code>.html</code></li>
+<li>Cost measurement appended to <code>research/cost-breakdown.md</code> as a second data point alongside the FP6 M1 measurement</li>
+<li>Repo tagged <code>real-paper-test-2605-00403</code></li>
+<li>Any in-flight fixes documented under <code>docs/&#x3C;slug>-applied.md</code> and visible in the local research site at <code>localhost:3100</code></li>
+</ol>
+<h2 id="what-this-pass-deliberately-does-not-do"><a class="anchor" aria-label="anchor" href="#what-this-pass-deliberately-does-not-do">#</a>What this pass deliberately does NOT do</h2>
+<ul>
+<li>Does not merge the PR (user reserves that decision)</li>
+<li>Does not configure the GitHub webhook for PR-merge → DB reconciliation (FP7+ scope)</li>
+<li>Does not run a second paper through (this is a one-paper validation)</li>
+<li>Does not preemptively refactor the publisher — code touches happen <strong>only</strong> if a real failure forces them, and each gets its own <code>docs/&#x3C;slug>-applied.md</code></li>
+</ul>
+<hr>
+<h2 id="after-this-pass--index-update"><a class="anchor" aria-label="anchor" href="#after-this-pass--index-update">#</a>After this pass — index update</h2>
+<p>Append a row to <code>~/.claude/plans/piped-bubbling-brook.md</code>:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Pass</th>
+<th>Status</th>
+<th>File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RPT1</td>
+<td>Real-paper E2E test — arXiv 2605.00403 → real PR</td>
+<td>Shipped</td>
+<td><code>~/.claude/plans/rpt1-real-paper-2605-00403.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>(RPT = "Real-Paper Test"; one-off validation pass, not part of the FP6/FP7/FP8 implementation track.)</p>
+</main>
+<footer class="doc-footer">
+<p>rpt1-real-paper-2605-00403.md &middot; generated 2026-05-16T01:45:14.357Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

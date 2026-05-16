@@ -12,7 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::download::rate_limited_get;
 use crate::types::Author;
 
-const ARXIV_API: &str = "http://export.arxiv.org/api/query?id_list=";
+// arXiv started returning 301 redirects to HTTPS in May 2026; the HTTP variant
+// no longer resolves cleanly through Varnish. Use HTTPS directly.
+const ARXIV_API: &str = "https://export.arxiv.org/api/query?id_list=";
+/// The HTML "abs" page is on a separate Fastly/Cloudflare pool from the
+/// `export.arxiv.org` API; we use it as the primary metadata source because
+/// the API is aggressively rate-limited under any non-trivial load.
+const ARXIV_ABS: &str = "https://arxiv.org/abs/";
 
 /// Metadata pulled from the arXiv Atom feed.
 ///
@@ -47,7 +53,20 @@ impl ArxivMeta {
 }
 
 /// Fetch metadata for the supplied arXiv id (e.g. `2401.12345` or `2401.12345v2`).
+///
+/// **Source preference**: the HTML "abs" page is tried first because
+/// `export.arxiv.org/api/query` is aggressively rate-limited (returns
+/// HTTP 429 "Rate exceeded" after a handful of requests per IP). The abs
+/// page is on a separate Fastly pool and returns the same metadata in
+/// `<meta name="citation_*">` tags. The API stays as a fallback so
+/// existing fixtures + the parse_atom() public function keep working.
 pub async fn fetch_metadata(arxiv_id: &str) -> Result<ArxivMeta> {
+    // Try the HTML abs page first.
+    match fetch_metadata_from_abs(arxiv_id).await {
+        Ok(m) => return Ok(m),
+        Err(e) => tracing::info!(arxiv_id, err = %e, "abs metadata failed; falling back to API"),
+    }
+    // Fallback: the legacy API path.
     let url = format!("{ARXIV_API}{arxiv_id}");
     let body = rate_limited_get(&url)
         .await
@@ -56,6 +75,119 @@ pub async fn fetch_metadata(arxiv_id: &str) -> Result<ArxivMeta> {
         arxiv_id,
         std::str::from_utf8(&body).context("arxiv body utf8")?,
     )
+}
+
+/// Fetch the `arxiv.org/abs/<id>` page and parse the embedded citation_*
+/// meta tags into an [`ArxivMeta`].
+pub async fn fetch_metadata_from_abs(arxiv_id: &str) -> Result<ArxivMeta> {
+    let url = format!("{ARXIV_ABS}{arxiv_id}");
+    let body = rate_limited_get(&url)
+        .await
+        .with_context(|| format!("fetch arxiv abs page for {arxiv_id}"))?;
+    let html = std::str::from_utf8(&body).context("abs page utf8")?;
+    parse_abs_html(arxiv_id, html)
+}
+
+/// Parse the citation_* meta tags + primary-subject span out of the abs
+/// page HTML into an [`ArxivMeta`]. Exposed for unit tests with captured
+/// fixtures.
+pub fn parse_abs_html(arxiv_id: &str, html: &str) -> Result<ArxivMeta> {
+    let title = scrape_meta(html, "citation_title").unwrap_or_default();
+    let abstract_text = scrape_meta(html, "citation_abstract").unwrap_or_default();
+    let pdf_url = scrape_meta(html, "citation_pdf_url");
+    let date_str = scrape_meta(html, "citation_date").or_else(|| scrape_meta(html, "citation_online_date"));
+    let submitted_date = date_str.as_deref().and_then(|d| {
+        // Format is "YYYY/MM/DD".
+        NaiveDate::parse_from_str(d, "%Y/%m/%d").ok()
+    });
+    let authors: Vec<Author> = scrape_meta_all(html, "citation_author")
+        .into_iter()
+        .map(|name| Author {
+            name: normalize_author_name(&name),
+            affiliation: None,
+            email: None,
+        })
+        .collect();
+    // Primary subject lives inside <span class="primary-subject">Mathematical Physics (math-ph)</span>
+    let category = scrape_primary_subject(html);
+    let categories: Vec<String> = category.map(|c| vec![c]).unwrap_or_default();
+    let source_url = Some(format!("https://arxiv.org/abs/{arxiv_id}"));
+
+    if title.is_empty() {
+        return Err(anyhow!("abs page: no citation_title meta found for {arxiv_id}"));
+    }
+
+    Ok(ArxivMeta {
+        arxiv_id: arxiv_id.to_string(),
+        title: compact_whitespace(&decode_html_entities(&title)),
+        authors,
+        abstract_text: compact_whitespace(&decode_html_entities(&abstract_text)),
+        categories,
+        pdf_url,
+        source_url,
+        submitted_date,
+    })
+}
+
+fn scrape_meta(html: &str, name: &str) -> Option<String> {
+    // Match either <meta name="X" content="Y"> or <meta content="Y" name="X">.
+    let pat_a = format!(r#"<meta\s+name="{name}"\s+content="([^"]*)""#);
+    let pat_b = format!(r#"<meta\s+content="([^"]*)"\s+name="{name}""#);
+    if let Some(c) = regex_find(&pat_a, html) {
+        return Some(c);
+    }
+    regex_find(&pat_b, html)
+}
+
+fn scrape_meta_all(html: &str, name: &str) -> Vec<String> {
+    let pat = format!(r#"<meta\s+name="{name}"\s+content="([^"]*)""#);
+    let re = match regex::Regex::new(&pat) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    re.captures_iter(html)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
+fn scrape_primary_subject(html: &str) -> Option<String> {
+    // <span class="primary-subject">Mathematical Physics (math-ph)</span>
+    let re = regex::Regex::new(
+        r#"<span class="primary-subject">[^<]*\(([^)]+)\)\s*</span>"#,
+    )
+    .ok()?;
+    re.captures(html)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn regex_find(pattern: &str, hay: &str) -> Option<String> {
+    let re = regex::Regex::new(pattern).ok()?;
+    re.captures(hay)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// "Doe, Jane" → "Jane Doe". Many arXiv abs pages use last-first comma order.
+fn normalize_author_name(raw: &str) -> String {
+    let s = raw.trim();
+    if let Some((last, first)) = s.split_once(',') {
+        let last = last.trim();
+        let first = first.trim();
+        if !first.is_empty() && !last.is_empty() {
+            return format!("{first} {last}");
+        }
+    }
+    s.to_string()
 }
 
 /// Parse an arXiv Atom feed (used by tests with a captured fixture).

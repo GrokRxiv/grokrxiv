@@ -241,6 +241,7 @@ async fn extract_paper(pdf: &[u8]) -> anyhow::Result<PaperExtract> {
         sections,
         figures: vec![] as Vec<FigureRef>,
         bibliography,
+        source_format: Some("pdf".to_string()),
     })
 }
 

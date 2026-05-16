@@ -32,7 +32,14 @@ fn http() -> Result<reqwest::Client> {
         .context("build reqwest client")
 }
 
-/// Perform a rate-limited GET against an arXiv endpoint and return the body bytes.
+/// Perform a rate-limited GET against an arXiv endpoint with retry-on-transient-failure.
+///
+/// arXiv occasionally returns 503/429 under load (especially when multiple
+/// orchestrator processes share the network — the intra-process semaphore
+/// only serialises within ONE process, so 3 parallel `cargo run -- ingest`
+/// invocations can all hit arXiv simultaneously). We retry up to 4 times with
+/// exponential backoff: 2s, 5s, 12s, 30s. Total worst-case ~50s before
+/// returning a hard error.
 pub async fn rate_limited_get(url: &str) -> Result<Bytes> {
     let _permit = ARXIV_SEMAPHORE
         .clone()
@@ -40,7 +47,7 @@ pub async fn rate_limited_get(url: &str) -> Result<Bytes> {
         .await
         .context("acquire arxiv semaphore")?;
 
-    // Enforce ≥ MIN_GAP between successive requests.
+    // Enforce ≥ MIN_GAP between successive requests within this process.
     {
         let mut last = LAST_REQUEST.lock().await;
         if let Some(t) = *last {
@@ -52,16 +59,53 @@ pub async fn rate_limited_get(url: &str) -> Result<Bytes> {
         *last = Some(Instant::now());
     }
 
-    let resp = http()?
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-    let resp = resp
-        .error_for_status()
-        .with_context(|| format!("status {url}"))?;
-    let bytes = resp.bytes().await.with_context(|| format!("body {url}"))?;
-    Ok(bytes)
+    let backoffs = [
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        Duration::from_secs(12),
+        Duration::from_secs(30),
+    ];
+    let mut last_err: Option<anyhow::Error> = None;
+    for (attempt, wait) in std::iter::once(Duration::ZERO)
+        .chain(backoffs.iter().copied())
+        .enumerate()
+    {
+        if wait > Duration::ZERO {
+            tracing::warn!(url, attempt, "arxiv transient failure; backing off");
+            tokio::time::sleep(wait).await;
+        }
+        match http()?
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))
+        {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(ok) => {
+                    let bytes = ok
+                        .bytes()
+                        .await
+                        .with_context(|| format!("body {url}"))?;
+                    return Ok(bytes);
+                }
+                Err(e) => {
+                    let status = e.status();
+                    let transient = status
+                        .map(|s| s.is_server_error() || s.as_u16() == 429)
+                        .unwrap_or(false);
+                    last_err = Some(anyhow::Error::new(e).context(format!("status {url}")));
+                    if !transient {
+                        break;
+                    }
+                }
+            },
+            Err(e) => {
+                last_err = Some(e);
+                // Treat all transport-level errors as transient.
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("arxiv get exhausted retries")))
 }
 
 /// Download a PDF from the supplied URL.

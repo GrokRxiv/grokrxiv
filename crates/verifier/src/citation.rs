@@ -191,6 +191,7 @@ mod tests {
             sections: vec![],
             figures: vec![],
             bibliography: cites,
+            source_format: None,
         }
     }
 

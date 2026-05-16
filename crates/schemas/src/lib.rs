@@ -54,6 +54,11 @@ pub struct PaperExtract {
     pub figures: Vec<FigureRef>,
     /// Bibliography entries as both raw text and parsed identifiers.
     pub bibliography: Vec<Citation>,
+    /// Which source the extract was built from: `"tex"` when the LaTeX source
+    /// bundle was available on arXiv, `"pdf"` when we fell back to PDF text
+    /// extraction. None on the legacy code path for backward compat.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_format: Option<String>,
 }
 
 /// One author block on a paper.
@@ -438,6 +443,7 @@ mod tests {
             sections: vec![],
             figures: vec![],
             bibliography: vec![],
+            source_format: None,
         };
         let json = serde_json::to_value(&extract).unwrap();
         assert_eq!(json["abstract"], "We show that types help.");

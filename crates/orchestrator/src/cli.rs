@@ -378,9 +378,49 @@ async fn ingest_many(arxiv_ids: &[String]) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
+
+    if arxiv_ids.len() <= 1 {
+        // Single-paper path stays direct so the M1 smoke output shape is unchanged.
+        for id in arxiv_ids {
+            let review_id =
+                super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+            println!("arxiv_id={id} review_id={review_id}");
+        }
+        return Ok(());
+    }
+
+    // Parallel path — fan out, then collect. arXiv fetches are serialised
+    // through the in-process semaphore in `grokrxiv_ingest::download`; the
+    // DAGs run concurrently. This is the "ingest in parallel" path the
+    // RPT1 multi-paper test exercises.
+    use futures::stream::{FuturesUnordered, StreamExt};
+    let mut futures = FuturesUnordered::new();
     for id in arxiv_ids {
-        let review_id = super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
-        println!("arxiv_id={id} review_id={review_id}");
+        let id = id.clone();
+        let supervisor = supervisor.clone();
+        let state = state.clone();
+        futures.push(async move {
+            let result =
+                super::supervisor::run_one_paper_blocking(&supervisor, &state, &id).await;
+            (id, result)
+        });
+    }
+    let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
+    while let Some((id, result)) = futures.next().await {
+        match result {
+            Ok(review_id) => println!("arxiv_id={id} review_id={review_id}"),
+            Err(e) => {
+                eprintln!("arxiv_id={id} ERROR: {e:?}");
+                errors.push((id, e));
+            }
+        }
+    }
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} of {} papers failed to ingest",
+            errors.len(),
+            arxiv_ids.len()
+        );
     }
     Ok(())
 }
@@ -422,6 +462,7 @@ async fn ingest_range(
                 sections: Vec::new(),
                 figures: Vec::new(),
                 bibliography: Vec::new(),
+                source_format: None,
             };
             let paper_id = crate::db::upsert_paper(pool, &extract, meta.submitted_date).await?;
             println!("paper_id={paper_id} arxiv_id={}", extract.arxiv_id);

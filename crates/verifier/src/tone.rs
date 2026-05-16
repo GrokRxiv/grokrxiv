@@ -84,6 +84,7 @@ mod tests {
             sections: vec![],
             figures: vec![],
             bibliography: vec![],
+            source_format: None,
         }
     }
 

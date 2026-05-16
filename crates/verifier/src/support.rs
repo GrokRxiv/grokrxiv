@@ -86,6 +86,7 @@ mod tests {
                 sections: Vec::new(),
                 figures: Vec::new(),
                 bibliography: Vec::new(),
+            source_format: None,
             },
             reqwest::Client::new(),
         )

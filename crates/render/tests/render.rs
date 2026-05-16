@@ -36,6 +36,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
             arxiv_id: None,
             title: None,
         }],
+        source_format: Some("pdf".into()),
     };
 
     let meta = MetaReview {

@@ -840,6 +840,7 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
         sections: Vec::<Section>::new(),
         figures: Vec::new(),
         bibliography: Vec::new(),
+        source_format: None,
     };
 
     let html = grokrxiv_render::render_html(&meta, &extract, &agents)
@@ -1108,6 +1109,7 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
                 sections: vec![],
                 figures: vec![],
                 bibliography: vec![],
+                source_format: None,
             }
         }
     };

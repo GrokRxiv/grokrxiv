@@ -46,11 +46,18 @@ for md in research/*.md; do
   check "$md"
 done
 
-# Scan plans dir — but only grokrxiv plans (fp[N]-*.md convention).
-# The plans dir at ~/.claude/plans is global across every Claude Code project;
-# without this filter we'd publish unrelated plans into this repo's research/.
+# Scan docs/ — fix/enhancement writeups produced during real-paper tests
+# get published to HTML on the same pipeline.
+for md in docs/*.md; do
+  check "$md"
+done
+
+# Scan plans dir — but only grokrxiv plans (fp[N]-*.md and rpt[N]-*.md
+# conventions). The plans dir at ~/.claude/plans is global across every
+# Claude Code project; without this filter we'd publish unrelated plans
+# into this repo's research/.
 if [ -d "$PLAN_DIR" ]; then
-  for md in "$PLAN_DIR"/fp[0-9]*-*.md; do
+  for md in "$PLAN_DIR"/fp[0-9]*-*.md "$PLAN_DIR"/rpt[0-9]*-*.md; do
     [ -e "$md" ] || continue
     check "$md"
   done
