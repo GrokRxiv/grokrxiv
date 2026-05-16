@@ -515,6 +515,131 @@ pub struct ReviewDetailRow {
     pub created_at: DateTime<Utc>,
 }
 
+// ---------------------------------------------------------------------------
+// RPT2 Track F: revision_patches CRUD
+// ---------------------------------------------------------------------------
+
+/// A persisted row in `revision_patches`. The supervisor's `apply_revisions`
+/// function reads these to materialise a draft PR with per-patch
+/// accept/reject checkboxes.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct RevisionPatchRow {
+    /// `revision_patches.id` (bigserial).
+    pub id: i64,
+    /// Review the artifact belongs to.
+    pub review_id: Uuid,
+    /// `review_agents.id` that emitted the artifact.
+    pub review_agent_id: Uuid,
+    /// `paper_latex` | `grokrxiv_review_output`.
+    pub target: String,
+    /// JSONB array of patch objects (see `schemas/revision_artifact.schema.json`).
+    pub patches: Value,
+    /// Per-patch indices the moderator has accepted (empty until applied).
+    pub accepted_indices: Vec<i32>,
+    /// URL of the draft PR once `apply_revisions` has opened it.
+    pub applied_pr_url: Option<String>,
+    /// When the row was inserted.
+    pub created_at: DateTime<Utc>,
+    /// When the patches were applied (PR opened); null until then.
+    pub applied_at: Option<DateTime<Utc>>,
+}
+
+/// Insert a revision_artifact for a single agent. The agent emitted
+/// `patches` for the given `target` (paper_latex or grokrxiv_review_output)
+/// while running in `AgentMode::ReviewAndRevise`. Returns the inserted row's
+/// id so the caller can attach it to in-memory bookkeeping.
+pub async fn insert_revision_patches(
+    pool: &PgPool,
+    review_id: Uuid,
+    review_agent_id: Uuid,
+    target: &str,
+    patches: &Value,
+) -> sqlx::Result<i64> {
+    let id: i64 = sqlx::query_scalar(
+        "insert into revision_patches \
+           (review_id, review_agent_id, target, patches) \
+         values ($1, $2, $3, $4) \
+         returning id",
+    )
+    .bind(review_id)
+    .bind(review_agent_id)
+    .bind(target)
+    .bind(patches)
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+/// List every revision_patches row belonging to `review_id`, oldest first.
+/// Used by `apply_revisions` to materialise the draft PR.
+pub async fn list_revision_patches(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<Vec<RevisionPatchRow>> {
+    let rows: Vec<RevisionPatchRow> = sqlx::query_as(
+        "select id, review_id, review_agent_id, target, patches, \
+                accepted_indices, applied_pr_url, created_at, applied_at \
+         from revision_patches \
+         where review_id = $1 \
+         order by created_at asc, id asc",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Stamp the accepted indices and (optionally) the PR URL onto a
+/// `revision_patches` row. When `applied_pr_url` is `Some`, the row is also
+/// marked as applied via `applied_at = now()`. Returns the number of rows
+/// affected so callers can fail fast on an unknown id.
+pub async fn update_revision_patches_accepted(
+    pool: &PgPool,
+    id: i64,
+    accepted_indices: &[i32],
+    applied_pr_url: Option<&str>,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update revision_patches \
+         set accepted_indices = $2, \
+             applied_pr_url = coalesce($3, applied_pr_url), \
+             applied_at = case when $3 is not null then now() else applied_at end \
+         where id = $1",
+    )
+    .bind(id)
+    .bind(accepted_indices)
+    .bind(applied_pr_url)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Set the `reviews.mode` column. Idempotent. Returns the number of rows
+/// affected so callers can detect a missing review id.
+pub async fn set_review_mode(pool: &PgPool, review_id: Uuid, mode: &str) -> sqlx::Result<u64> {
+    let res = sqlx::query("update reviews set mode = $2 where id = $1")
+        .bind(review_id)
+        .bind(mode)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Read the lifecycle status + mode of a review in one round-trip. Used by
+/// `apply_revisions` to gate on the moderator-approved states without
+/// pulling the full ReviewDetailRow shape.
+pub async fn get_review_status_and_mode(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<Option<(String, String)>> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("select status, mode from reviews where id = $1")
+            .bind(review_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row)
+}
+
 /// Load a review + paper + counts in one go for the `show` CLI.
 pub async fn show_review(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Option<ReviewDetailRow>> {
     let row: Option<ReviewDetailRow> = sqlx::query_as(

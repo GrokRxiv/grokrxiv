@@ -191,34 +191,73 @@ pub async fn run_review_dag(
     paper_id: Uuid,
     extract: grokrxiv_schemas::PaperExtract,
 ) -> anyhow::Result<Uuid> {
-    use grokrxiv_llm_adapter::Usage;
+    use crate::agents::runners::api::ApiRunner;
+    use crate::agents::{
+        build_agent, AgentInput, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent,
+        SandboxPolicy, ToolPolicy,
+    };
     use grokrxiv_schemas::{AgentRole, MetaReview, VerifierStatus};
     use serde_json::json;
     use std::sync::Arc;
 
     let default_model = state.config.preview_model.clone();
 
-    // Resolve a `(provider, model)` for `role` from the per-role routing table
-    // built at boot from `agents/*.yaml`. Falls back to the passed-in
-    // `provider` + the orchestrator's PREVIEW_MODEL when routing isn't
-    // populated (e.g. the integration test in tests/dag.rs builds an AppState
-    // that only injects the wiremock-backed Claude provider).
-    let resolve = |role: AgentRole| -> (Arc<dyn grokrxiv_llm_adapter::LLMProvider>, String) {
-        match state.role_routing.get(&role) {
-            Some((p, m)) => (p.clone(), m.clone()),
-            None => (provider.clone(), default_model.clone()),
+    // Resolve the `ReviewAgent` + `AgentRunner` pair for a role. Prefers the
+    // boot-time registry built from `agents/*.yaml`; falls back to a freshly
+    // constructed `ApiRunner` wired to the passed-in `provider` when no
+    // provider registry was available at boot (which is how the integration
+    // test in tests/dag.rs runs the DAG against its wiremock-backed Claude).
+    let make_fallback = |role: AgentRole,
+                         schema: serde_json::Value|
+     -> (Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String) {
+        let spec = AgentSpec {
+            role,
+            runner: AgentRunnerKind::Api,
+            sandbox: SandboxPolicy::None,
+            mode: AgentMode::ReviewOnly,
+            provider: "claude".to_string(),
+            model: default_model.clone(),
+            schema,
+            tool_policy: ToolPolicy::default(),
+            max_retries: 2,
+            timeout_secs: 180,
+        };
+        let agent: Arc<dyn ReviewAgent> = Arc::from(build_agent(spec));
+        let mut providers_map: std::collections::HashMap<
+            String,
+            Arc<dyn grokrxiv_llm_adapter::LLMProvider>,
+        > = std::collections::HashMap::new();
+        providers_map.insert("claude".to_string(), provider.clone());
+        let runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(providers_map));
+        (agent, runner, default_model.clone())
+    };
+
+    let resolve_agent = |role: AgentRole|
+        -> (Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String) {
+        if let Some(agent) = state.agents.get(&role) {
+            let model = agent.spec().model.clone();
+            let runner_kind = agent.spec().runner;
+            if let Some(runner) = state.runners.get(&runner_kind) {
+                return (agent.clone(), runner.clone(), model);
+            }
         }
+        let schema = state
+            .agent_schemas
+            .get(&role)
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object" }));
+        make_fallback(role, schema)
     };
 
     // Pre-create the review row. `models_used` records the per-role model so
     // the moderation UI + the m1-pipeline `distinct model` assertion can show
     // which model each specialist used.
-    let summary_model = resolve(AgentRole::Summary).1;
-    let tech_model = resolve(AgentRole::TechnicalCorrectness).1;
-    let novelty_model = resolve(AgentRole::Novelty).1;
-    let repro_model = resolve(AgentRole::Reproducibility).1;
-    let cite_model = resolve(AgentRole::Citation).1;
-    let meta_model = resolve(AgentRole::MetaReviewer).1;
+    let summary_model = resolve_agent(AgentRole::Summary).2;
+    let tech_model = resolve_agent(AgentRole::TechnicalCorrectness).2;
+    let novelty_model = resolve_agent(AgentRole::Novelty).2;
+    let repro_model = resolve_agent(AgentRole::Reproducibility).2;
+    let cite_model = resolve_agent(AgentRole::Citation).2;
+    let meta_model = resolve_agent(AgentRole::MetaReviewer).2;
     let models_used = json!({
         "summary": summary_model,
         "technical_correctness": tech_model,
@@ -262,17 +301,13 @@ pub async fn run_review_dag(
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
-        let schema = state
-            .agent_schemas
-            .get(&role)
-            .cloned()
-            .unwrap_or_else(|| json!({ "type": "object" }));
         let prompt = build_specialist_prompt(role, extract_arc.as_ref());
         let system = role_system_prompt(role);
-        let (role_provider, role_model) = resolve(role);
+        let (agent, runner, role_model) = resolve_agent(role);
         let sem = sem.clone();
         let pool_cloned = pool.clone();
         let cache_hash = specialist_content_hash.clone();
+        let specialist_input_cloned = specialist_input.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
 
@@ -289,12 +324,15 @@ pub async fn run_review_dag(
                         hit = true,
                         "cache hit"
                     );
-                    let usage = Usage {
-                        tokens_in: hit.tokens_in.unwrap_or(0) as u32,
-                        tokens_out: hit.tokens_out.unwrap_or(0) as u32,
-                        ..Default::default()
-                    };
-                    return anyhow::Ok((role, hit.output, usage, 0i32, hit.model, true));
+                    return anyhow::Ok((
+                        role,
+                        hit.output,
+                        Some(hit.tokens_in.unwrap_or(0) as i32),
+                        Some(hit.tokens_out.unwrap_or(0) as i32),
+                        0i32,
+                        hit.model,
+                        true,
+                    ));
                 }
             }
             tracing::info!(
@@ -304,18 +342,34 @@ pub async fn run_review_dag(
                 "cache miss"
             );
 
-            let started = std::time::Instant::now();
-            let (parsed, usage) =
-                call_with_schema(&*role_provider, &role_model, &system, &prompt, schema).await?;
-            let latency_ms = started.elapsed().as_millis() as i32;
-            anyhow::Ok((role, parsed, usage, latency_ms, role_model, false))
+            let input = AgentInput {
+                paper_id,
+                review_id,
+                role,
+                content_hash_material: specialist_input_cloned.clone(),
+                artifact: specialist_input_cloned,
+                system_prompt: system,
+                user_prompt: prompt,
+                source_bundle_path: None,
+            };
+            let run = agent.run(&*runner, input).await?;
+            anyhow::Ok((
+                role,
+                run.output,
+                run.tokens_in,
+                run.tokens_out,
+                run.latency_ms,
+                role_model,
+                false,
+            ))
         }));
     }
 
     let mut specialist_results: Vec<(
         AgentRole,
         serde_json::Value,
-        Usage,
+        Option<i32>,
+        Option<i32>,
         i32,
         String, // model actually used
         bool,   // cache hit
@@ -330,7 +384,9 @@ pub async fn run_review_dag(
     // Persist + verify each specialist's output against its role-specific
     // verifier ladder. The ladder uses the role-specific JSON schema as its
     // first rung (replacing the previous permissive-object workaround).
-    for (role, output, usage, latency_ms, used_model, cache_hit) in &specialist_results {
+    for (role, output, tokens_in, tokens_out, latency_ms, used_model, cache_hit) in
+        &specialist_results
+    {
         let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
         crate::db::insert_review_agent(
             pool,
@@ -341,8 +397,8 @@ pub async fn run_review_dag(
                 output: output.clone(),
                 verifier_status: v_status,
                 verifier_notes: v_notes.clone(),
-                tokens_in: Some(usage.tokens_in as i32),
-                tokens_out: Some(usage.tokens_out as i32),
+                tokens_in: *tokens_in,
+                tokens_out: *tokens_out,
                 latency_ms: Some(*latency_ms),
             },
         )
@@ -359,8 +415,8 @@ pub async fn run_review_dag(
                 output,
                 "pass",
                 used_model,
-                Some(usage.tokens_in as i32),
-                Some(usage.tokens_out as i32),
+                *tokens_in,
+                *tokens_out,
             )
             .await;
         }
@@ -373,21 +429,16 @@ pub async fn run_review_dag(
     // the meta-reviewer's schema never required a `paper_extract` field. This
     // drops meta input from ~62K tokens to ~10K.
     let mut specialists_map = serde_json::Map::new();
-    for (role, output, _usage, _lat, _model, _cache_hit) in &specialist_results {
+    for (role, output, _ti, _to, _lat, _model, _cache_hit) in &specialist_results {
         specialists_map.insert(role_slug(*role).to_string(), output.clone());
     }
     let meta_input = json!({
         "specialists": serde_json::Value::Object(specialists_map),
     });
-    let meta_schema = state
-        .agent_schemas
-        .get(&AgentRole::MetaReviewer)
-        .cloned()
-        .unwrap_or_else(|| json!({ "type": "object" }));
     let meta_prompt = build_meta_synthesis_prompt(&meta_input);
     let meta_system = role_system_prompt(AgentRole::MetaReviewer);
 
-    let (meta_provider, meta_model_used) = resolve(AgentRole::MetaReviewer);
+    let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer);
 
     // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
     // the specialists-bundle JSON it would have reasoned over, so two reviews
@@ -396,7 +447,7 @@ pub async fn run_review_dag(
     let meta_content_hash =
         sha256_hex(&serde_json::to_vec(&meta_input).unwrap_or_default());
     let mut meta_from_cache = false;
-    let (meta_value, meta_usage, meta_latency_ms, meta_model_recorded) =
+    let (meta_value, meta_tokens_in, meta_tokens_out, meta_latency_ms, meta_model_recorded) =
         match crate::db::lookup_cache(pool, paper_id, AgentRole::MetaReviewer, &meta_content_hash)
             .await
         {
@@ -408,12 +459,13 @@ pub async fn run_review_dag(
                     "cache hit"
                 );
                 meta_from_cache = true;
-                let usage = Usage {
-                    tokens_in: hit.tokens_in.unwrap_or(0) as u32,
-                    tokens_out: hit.tokens_out.unwrap_or(0) as u32,
-                    ..Default::default()
-                };
-                (hit.output, usage, 0i32, hit.model)
+                (
+                    hit.output,
+                    Some(hit.tokens_in.unwrap_or(0) as i32),
+                    Some(hit.tokens_out.unwrap_or(0) as i32),
+                    0i32,
+                    hit.model,
+                )
             }
             _ => {
                 tracing::info!(
@@ -422,17 +474,24 @@ pub async fn run_review_dag(
                     hit = false,
                     "cache miss"
                 );
-                let meta_started = std::time::Instant::now();
-                let (value, usage) = call_with_schema(
-                    &*meta_provider,
-                    &meta_model_used,
-                    &meta_system,
-                    &meta_prompt,
-                    meta_schema,
+                let meta_agent_input = AgentInput {
+                    paper_id,
+                    review_id,
+                    role: AgentRole::MetaReviewer,
+                    content_hash_material: meta_input.clone(),
+                    artifact: meta_input.clone(),
+                    system_prompt: meta_system,
+                    user_prompt: meta_prompt,
+                    source_bundle_path: None,
+                };
+                let run = meta_agent.run(&*meta_runner, meta_agent_input).await?;
+                (
+                    run.output,
+                    run.tokens_in,
+                    run.tokens_out,
+                    run.latency_ms,
+                    meta_model_used.clone(),
                 )
-                .await?;
-                let latency = meta_started.elapsed().as_millis() as i32;
-                (value, usage, latency, meta_model_used.clone())
             }
         };
 
@@ -447,8 +506,8 @@ pub async fn run_review_dag(
             output: meta_value.clone(),
             verifier_status: meta_v_status,
             verifier_notes: meta_v_notes.clone(),
-            tokens_in: Some(meta_usage.tokens_in as i32),
-            tokens_out: Some(meta_usage.tokens_out as i32),
+            tokens_in: meta_tokens_in,
+            tokens_out: meta_tokens_out,
             latency_ms: Some(meta_latency_ms),
         },
     )
@@ -464,8 +523,8 @@ pub async fn run_review_dag(
             &meta_value,
             "pass",
             &meta_model_recorded,
-            Some(meta_usage.tokens_in as i32),
-            Some(meta_usage.tokens_out as i32),
+            meta_tokens_in,
+            meta_tokens_out,
         )
         .await;
     }
@@ -494,76 +553,101 @@ pub async fn run_review_dag(
     Ok(review_id)
 }
 
-/// Run one JSON-schema-enforced LLM call with a single corrective retry on
-/// parse failure. Returns the parsed JSON value and the usage stats.
+/// Apply selected revision patches: fork the paper's LaTeX (or the review's
+/// own output) on `GrokRxiv/grokrxiv-reviews`, apply the accepted patches,
+/// and open a draft PR with per-patch accept/reject checkboxes in the body.
+///
+/// Invoked by the admin approval endpoint after moderation approves a review
+/// that ran with `mode=review_and_revise`. The `accepted_indices` argument is
+/// a flat list of patch indices the moderator has accepted; the supervisor
+/// walks each `revision_patches` row and applies the matching offsets.
+///
+/// RPT2 ships a stub body: this function validates inputs, loads the
+/// `revision_patches` rows for the review, persists `accepted_indices` +
+/// `applied_pr_url` per row, and returns a placeholder PR URL. The actual
+/// LaTeX-patching loop (`apply_patches_to_latex`) is a follow-up.
 #[cfg(feature = "grokrxiv-ingest")]
-async fn call_with_schema(
-    provider: &dyn grokrxiv_llm_adapter::LLMProvider,
-    model: &str,
-    system: &str,
-    prompt: &str,
-    schema: serde_json::Value,
-) -> anyhow::Result<(serde_json::Value, grokrxiv_llm_adapter::Usage)> {
-    use grokrxiv_llm_adapter::{ChatRequest, ContentPart, Message, ResponseFormat, Role};
+pub async fn apply_revisions(
+    state: &AppState,
+    review_id: Uuid,
+    accepted_indices: Vec<i32>,
+) -> anyhow::Result<String> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("apply_revisions: DATABASE_URL not configured"))?;
 
-    let make_req = |user_prompt: String| ChatRequest {
-        system: Some(system.to_string()),
-        messages: vec![Message {
-            role: Role::User,
-            content: vec![ContentPart::Text(user_prompt)],
-        }],
-        model: model.to_string(),
-        max_tokens: 6_000,
-        temperature: 0.2,
-        response_format: ResponseFormat::JsonSchema(schema.clone()),
-        cache_system: true,
-    };
+    // 1. Load review status/mode and gate on lifecycle.
+    let (status, mode) = crate::db::get_review_status_and_mode(pool, review_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("apply_revisions: review {review_id} not found"))?;
+    if status != "awaiting_moderation" && status != "pr_open" {
+        anyhow::bail!(
+            "apply_revisions: review {review_id} is in status `{status}`; \
+             expected `awaiting_moderation` or `pr_open`"
+        );
+    }
+    if mode != "review_and_revise" {
+        anyhow::bail!(
+            "apply_revisions: review {review_id} ran in mode `{mode}`; \
+             revision patches are only produced under `review_and_revise`"
+        );
+    }
 
-    let resp = provider
-        .complete(make_req(prompt.to_string()))
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    match parse_strict_json(&resp.text) {
-        Ok(v) => Ok((v, resp.usage)),
-        Err(first_err) => {
-            // Single corrective retry: tell the model its prior output failed
-            // schema validation and ask for strict JSON. No `{"raw": ...}`
-            // fallback — if the retry also fails the caller surfaces a hard
-            // error and the verifier records the parse error in
-            // `verifier_notes.parse_error`.
-            let corrective = format!(
-                "{prompt}\n\nYour previous output did not validate against the schema; \
-                 return strict JSON only, with no surrounding prose, code fences, or commentary."
-            );
-            let retry = provider
-                .complete(make_req(corrective))
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            match parse_strict_json(&retry.text) {
-                Ok(v) => Ok((v, retry.usage)),
-                Err(e) => Err(anyhow::anyhow!(
-                    "parse failure after corrective retry: first={first_err}; retry={e}; \
-                     raw_first={raw_first:?}; raw_retry={raw_retry:?}",
-                    raw_first = resp.text,
-                    raw_retry = retry.text,
-                )),
+    // 2. Load every revision_patches row for the review.
+    let rows = crate::db::list_revision_patches(pool, review_id).await?;
+    if rows.is_empty() {
+        anyhow::bail!(
+            "apply_revisions: review {review_id} has no revision_patches rows; \
+             nothing to apply"
+        );
+    }
+
+    // 3. Build a placeholder draft PR URL. The full LaTeX-patching + GitHub
+    //    fork loop is a follow-up; for RPT2 we only need the DB plumbing +
+    //    function-signature to land.
+    let simulated_pr = format!(
+        "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-revisions-{}",
+        &review_id.simple().to_string()[..8]
+    );
+
+    // 4. Walk each row, slice the global `accepted_indices` into the row's
+    //    own patch space, and persist `accepted_indices` + `applied_pr_url`.
+    //    The supplied indices are global (across all rows); we partition them
+    //    by row using each row's `patches.len()` as a window.
+    let mut offset: i32 = 0;
+    let accepted_set: std::collections::HashSet<i32> = accepted_indices.iter().copied().collect();
+    for row in &rows {
+        let patch_count = row
+            .patches
+            .as_array()
+            .map(|a| a.len() as i32)
+            .unwrap_or(0);
+        let mut row_accepted: Vec<i32> = Vec::new();
+        for local in 0..patch_count {
+            let global = offset + local;
+            if accepted_set.contains(&global) {
+                row_accepted.push(local);
             }
         }
+        offset += patch_count;
+        crate::db::update_revision_patches_accepted(
+            pool,
+            row.id,
+            &row_accepted,
+            Some(&simulated_pr),
+        )
+        .await?;
     }
-}
 
-/// Try strict JSON parse; on failure, strip ```json fences and retry; on
-/// failure again, return `Err`. Never returns `{"raw": ...}`.
-fn parse_strict_json(s: &str) -> anyhow::Result<serde_json::Value> {
-    let trimmed = s.trim();
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(v) => Ok(v),
-        Err(_) => {
-            let stripped = strip_fences(trimmed);
-            serde_json::from_str::<serde_json::Value>(stripped)
-                .map_err(|e| anyhow::anyhow!("not valid JSON: {e}"))
-        }
-    }
+    tracing::info!(
+        %review_id,
+        pr_url = %simulated_pr,
+        rows = rows.len(),
+        accepted = accepted_indices.len(),
+        "apply_revisions: stub PR materialised; DB updated"
+    );
+    Ok(simulated_pr)
 }
 
 /// Aggregate every rung of the role-specific verifier ladder into a
@@ -915,16 +999,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(digest)
 }
 
-fn strip_fences(s: &str) -> &str {
-    if let Some(rest) = s.strip_prefix("```json") {
-        return rest.trim_start_matches('\n').trim_end_matches("```").trim();
-    }
-    if let Some(rest) = s.strip_prefix("```") {
-        return rest.trim_start_matches('\n').trim_end_matches("```").trim();
-    }
-    s
-}
-
 async fn run_item(
     state: &AppState,
     item: &WorkItem,
@@ -1265,5 +1339,99 @@ mod tests {
     #[test]
     fn backoff_caps_at_30s() {
         assert!(exp_backoff(10) <= Duration::from_secs(30));
+    }
+
+    /// RPT2 Track F: the revision_artifact schema parses and validates the
+    /// happy-path artifact, and rejects an artifact missing a required field.
+    #[test]
+    fn revision_artifact_schema_validates() {
+        let schema_str =
+            include_str!("../../../schemas/revision_artifact.schema.json");
+        let schema: serde_json::Value =
+            serde_json::from_str(schema_str).expect("schema parses as JSON");
+        let validator = jsonschema::validator_for(&schema)
+            .expect("schema compiles as JSON Schema draft-07");
+
+        // Happy path: every required field present.
+        let good = serde_json::json!({
+            "target": "paper_latex",
+            "patches": [{
+                "section": "introduction",
+                "original": "We propose ...",
+                "proposed":  "We introduce ...",
+                "rationale": "Match the abstract's verb.",
+                "confidence": 0.8,
+            }],
+        });
+        assert!(validator.is_valid(&good), "expected valid artifact to validate");
+
+        // Bad: missing `rationale` on the patch.
+        let bad = serde_json::json!({
+            "target": "paper_latex",
+            "patches": [{
+                "section": "introduction",
+                "original": "x",
+                "proposed":  "y",
+                "confidence": 0.5,
+            }],
+        });
+        assert!(!validator.is_valid(&bad), "expected artifact missing rationale to fail");
+
+        // Bad: target not in the enum.
+        let bad_target = serde_json::json!({
+            "target": "something_else",
+            "patches": [],
+        });
+        assert!(!validator.is_valid(&bad_target), "expected bad target to fail");
+    }
+
+    /// RPT2 Track F: `apply_revisions` returns a clean error when the
+    /// supervisor has no database configured. Exercises the input-validation
+    /// path that wraps the lookup; the DB-bound branch is covered by the
+    /// integration test that ships under `--features grokrxiv-ingest`.
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[tokio::test]
+    async fn apply_revisions_errors_without_db() {
+        // Build a Config that has NO database_url so `state.db` is `None`.
+        let mut config = crate::Config::from_env();
+        config.database_url = None;
+        let state = crate::AppState::from_config(config)
+            .await
+            .expect("AppState builds without a database url");
+        let err = apply_revisions(&state, Uuid::new_v4(), vec![0])
+            .await
+            .expect_err("expected error when DATABASE_URL is unset");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DATABASE_URL"),
+            "error should mention missing DATABASE_URL, got: {msg}"
+        );
+    }
+
+    /// RPT2 Track F: the global `--mode` and `--revision-target` flags parse
+    /// via clap's `ValueEnum` derive. Doctor is used as an inert subcommand
+    /// so the parse exercises the flags exclusively.
+    #[test]
+    fn cli_parses_mode_and_revision_target_flags() {
+        use crate::agents::{AgentMode, RevisionTarget};
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from([
+            "grokrxiv",
+            "--mode",
+            "review_and_revise",
+            "--revision-target",
+            "paper_latex",
+            "doctor",
+        ])
+        .expect("cli parses with the new RPT2 Track F flags");
+        assert_eq!(cli.mode, AgentMode::ReviewAndRevise);
+        assert_eq!(cli.revision_target, RevisionTarget::PaperLatex);
+
+        // Defaults exercise the value-enum default arm.
+        let defaults = Cli::try_parse_from(["grokrxiv", "doctor"]).expect("defaults parse");
+        assert_eq!(defaults.mode, AgentMode::ReviewOnly);
+        assert_eq!(defaults.revision_target, RevisionTarget::PaperLatex);
     }
 }

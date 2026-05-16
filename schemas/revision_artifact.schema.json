@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "revision_artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "patches"],
+  "properties": {
+    "target": {
+      "type": "string",
+      "enum": ["paper_latex", "grokrxiv_review_output"]
+    },
+    "patches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section", "original", "proposed", "rationale", "confidence"],
+        "properties": {
+          "section": {"type": "string", "description": "Section name or LaTeX path"},
+          "original": {"type": "string", "description": "Verbatim text being patched"},
+          "proposed": {"type": "string", "description": "Replacement text"},
+          "rationale": {"type": "string"},
+          "confidence": {"type": "number"}
+        }
+      }
+    }
+  }
+}

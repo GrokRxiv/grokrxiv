@@ -1,0 +1,80 @@
+# infra/compose.cloud.yml
+# Cloud topology: full containerization, optional GPU passthrough.
+# Use on Linux hosts with nvidia-container-toolkit installed.
+
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: grokrxiv-ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  vllm:
+    # Optional: only enable if you want vLLM running too. LiteLLM can route to
+    # either backend without changing GrokRxiv code.
+    image: vllm/vllm-openai:latest
+    container_name: grokrxiv-vllm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["--model", "Qwen/Qwen2.5-32B-Instruct-AWQ", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    profiles: ["vllm"]   # docker compose --profile vllm up
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: grokrxiv-litellm
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    volumes:
+      - ./litellm/config.cloud.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  orchestrator:
+    image: grokrxiv/orchestrator:latest-amd64
+    container_name: grokrxiv-orchestrator
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      OLLAMA_HOST: http://ollama:11434
+      VLLM_BASE_URL: http://vllm:8000
+      GROKRXIV_LITELLM_URL: http://litellm:4000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    depends_on:
+      - litellm
+      - redis
+    ports:
+      - "8080:8080"
+
+volumes:
+  ollama-models:

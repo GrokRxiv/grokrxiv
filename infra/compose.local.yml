@@ -1,0 +1,57 @@
+# infra/compose.local.yml
+# Mac M-series local-dev / local-prod topology.
+#
+# Critical rule: NEVER run Ollama/MLX/vLLM in a container on Mac.
+# Docker on Mac has no GPU passthrough; container inference drops to CPU and
+# is unusable for 32B-class models. Run the inference servers natively
+# (brew install ollama, or download the .app) and only containerize the
+# surrounding services.
+
+version: "3.9"
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: grokrxiv-litellm
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-dev}
+      DATABASE_URL: ""   # Optional; LiteLLM has its own DB for logs
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: grokrxiv-open-webui
+    environment:
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:-dev}
+      WEBUI_AUTH: "False"   # local-only; no login required
+    ports:
+      - "3001:8080"
+    depends_on:
+      - litellm
+    restart: unless-stopped
+    volumes:
+      - open-webui-data:/app/backend/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: grokrxiv-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
+
+# Notes:
+# - The grokrxiv orchestrator is run on the host via `cargo run` or `grokrxiv serve`.
+# - Ollama runs natively on host at http://localhost:11434.
+# - From containers, host services are reachable via host.docker.internal.
+# - Supabase is managed separately via `supabase start` (already in docker).

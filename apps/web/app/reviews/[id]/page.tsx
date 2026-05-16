@@ -9,9 +9,11 @@ import { Separator } from "@/components/ui/separator";
 import { AgentAccordion } from "@/components/agent-accordion";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { MarkdownBody } from "@/components/markdown-body";
+import { ReviewToc } from "@/components/review-toc";
 import { JsonLd } from "@/components/json-ld";
 import { getPaperByIdAnon, getReviewByIdAnon } from "@/lib/supabase/anon";
 import { CANONICAL_URL } from "@/lib/env";
+import { buildTocFromMarkdown } from "@/lib/toc";
 import {
   PUBLIC_REVIEW_STATUSES,
   type Paper,
@@ -145,12 +147,19 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
     ],
   };
 
+  const metaReviewMd = buildMetaReviewMarkdown(review);
+  const tocItems = [
+    { id: "meta-review", text: "Meta review", level: 2 as const },
+    ...buildTocFromMarkdown(metaReviewMd),
+    { id: "specialist-agents", text: "Specialist agents", level: 2 as const },
+  ];
+
   return (
     <>
       <JsonLd data={jsonLd} />
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <article className="flex min-w-0 flex-col gap-6">
-          <header className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_240px_280px]">
+        <article className="prose-review flex min-w-0 max-w-3xl flex-col gap-6">
+          <header className="flex flex-col gap-3 not-prose">
             <div className="flex flex-wrap items-center gap-2">
               <ReviewStatusBadge status={review.status} />
               {paper.field ? (
@@ -203,17 +212,21 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
           <Separator />
 
           <section className="flex flex-col gap-4">
-            <h2 className="text-xl font-semibold">Meta review</h2>
-            <MetaReviewBody review={review} />
+            <h2 id="meta-review">Meta review</h2>
+            <MetaReviewBody markdown={metaReviewMd} />
           </section>
 
           <Separator />
 
-          <section className="flex flex-col gap-4">
-            <h2 className="text-xl font-semibold">Specialist agents</h2>
+          <section className="flex flex-col gap-4 not-prose">
+            <h2 id="specialist-agents" className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2">
+              Specialist agents
+            </h2>
             <AgentAccordion agents={review.agents ?? []} />
           </section>
         </article>
+
+        <ReviewToc items={tocItems} />
 
         <aside className="lg:sticky lg:top-20 lg:self-start">
           <Card>
@@ -272,24 +285,29 @@ function ReviewSkeleton() {
   );
 }
 
-function MetaReviewBody({ review }: { review: Review }) {
+function buildMetaReviewMarkdown(review: Review): string {
   const mr = review.meta_review;
-  if (!mr) return <p>No meta review yet.</p>;
-  const md = [
+  if (!mr) return "No meta review yet.";
+  return [
     mr.summary,
     "",
-    "**Strengths**",
+    "## Strengths",
     ...mr.strengths.map((s) => `- ${s}`),
     "",
-    "**Weaknesses**",
+    "## Weaknesses",
     ...mr.weaknesses.map((s) => `- ${s}`),
     "",
-    "**Questions**",
+    "## Questions",
     ...mr.questions.map((s) => `- ${s}`),
     "",
-    `**Recommendation:** ${mr.recommendation} (confidence ${mr.confidence.toFixed(2)})`,
+    "## Recommendation",
+    "",
+    `**${mr.recommendation}** (confidence ${mr.confidence.toFixed(2)})`,
   ].join("\n");
-  return <MarkdownBody>{md}</MarkdownBody>;
+}
+
+function MetaReviewBody({ markdown }: { markdown: string }) {
+  return <MarkdownBody>{markdown}</MarkdownBody>;
 }
 
 function buildBibtex(paper: Paper, review: Review, id: string): string {

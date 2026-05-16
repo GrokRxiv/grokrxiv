@@ -2,6 +2,7 @@ id: citation
 role: "Verify each bibliography entry exists and is relevantly cited."
 provider: gemini
 model: gemini-2.5-flash
+runner: api
 prompt_template: prompts/citation.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/citation_review.schema.json

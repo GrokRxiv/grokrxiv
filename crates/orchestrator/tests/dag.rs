@@ -117,6 +117,7 @@ fn fake_paper() -> PaperExtract {
         }],
         figures: vec![],
         bibliography: vec![],
+        source_format: None,
     }
 }
 

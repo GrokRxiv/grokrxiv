@@ -24,8 +24,14 @@ default:
 
 install:
     pnpm install
+    cargo install --path crates/orchestrator --features full --bin grokrxiv --locked
+    @echo "✓ dependencies installed; `grokrxiv` is on $CARGO_HOME/bin"
+
+# Install just the cargo dependencies without building the CLI binary.
+install-deps:
+    pnpm install
     cargo fetch
-    @echo "✓ dependencies installed"
+    @echo "✓ dependencies fetched"
 
 supabase:
     @command -v supabase >/dev/null || {{ echo "supabase CLI not installed"; exit 1 }}
@@ -74,6 +80,15 @@ web:
 orch:
     cargo run -p grokrxiv-orchestrator -- serve
 
+# Run the orchestrator's HTTP API + supervisor + scheduler via the installed
+# `grokrxiv` binary (after `just install`).
+serve:
+    grokrxiv serve
+
+# Run the preflight checks via the installed `grokrxiv` binary.
+doctor:
+    grokrxiv doctor
+
 dev:
     @echo "Starting web (3000) + orchestrator (8080) in parallel..."
     (trap 'kill 0' SIGINT; \
@@ -105,3 +120,23 @@ clean:
     -supabase stop 2>/dev/null
     cargo clean
     rm -rf apps/web/.next apps/web/node_modules node_modules tests/e2e-web/node_modules
+
+# Bring up local Mac dev topology (Ollama on host; surrounding services in docker).
+up-local:
+    docker compose -f infra/compose.local.yml --env-file .env up -d
+    @echo "✓ LiteLLM:    http://localhost:4000"
+    @echo "✓ Open WebUI: http://localhost:3001"
+    @echo "✓ Redis:      localhost:6379"
+    @echo "→ Make sure Ollama is running natively: brew services start ollama"
+
+# Bring up cloud topology (full containerized; needs nvidia-container-toolkit on host).
+up-cloud:
+    docker compose -f infra/compose.cloud.yml --env-file .env up -d
+    @echo "✓ Ollama:       http://localhost:11434"
+    @echo "✓ LiteLLM:      http://localhost:4000"
+    @echo "✓ Orchestrator: http://localhost:8080"
+
+# Tear down whichever stack is up (idempotent across both).
+down:
+    -docker compose -f infra/compose.local.yml down
+    -docker compose -f infra/compose.cloud.yml down

@@ -12,6 +12,10 @@ default-run = "grokrxiv-orchestrator"
 name = "grokrxiv-orchestrator"
 path = "src/main.rs"
 
+[[bin]]
+name = "grokrxiv"
+path = "src/main.rs"
+
 [lib]
 path = "src/lib.rs"
 
@@ -25,6 +29,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+jsonschema = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -43,6 +48,7 @@ hex = "0.4"
 octocrab = { workspace = true }
 clap = { version = "=4.5.20", features = ["derive", "string"] }
 clap_lex = "=0.7.2"
+toml = "0.8"
 
 grokrxiv-schemas = { path = "../schemas" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }

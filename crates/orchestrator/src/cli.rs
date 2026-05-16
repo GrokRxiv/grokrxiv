@@ -5,7 +5,15 @@
 //! CLI path call the same plumbing — no duplication.
 
 use clap::{Parser, Subcommand};
+use grokrxiv_schemas::AgentRole;
 use uuid::Uuid;
+
+use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
+use crate::doctor as doctor_mod;
+use crate::runtime_config::{
+    parse_role_model, parse_role_runner, render as render_runtime_config, RuntimeConfig,
+    RuntimeConfigOverrides,
+};
 
 type PaperListRow = (
     Uuid,
@@ -27,6 +35,81 @@ pub struct Cli {
     /// Subcommand to dispatch. Defaults to `Serve` when unset.
     #[command(subcommand)]
     pub command: Option<Command>,
+
+    /// Whether agents should run in `review_only` mode (default) or
+    /// `review_and_revise` mode (emit a `revision_artifact` alongside the
+    /// usual review output). RPT2 Track F.
+    #[arg(long, value_enum, global = true, default_value_t = AgentMode::ReviewOnly)]
+    pub mode: AgentMode,
+
+    /// When `--mode review_and_revise`, controls what gets patched: the
+    /// paper's LaTeX source (`paper_latex`, default) or GrokRxiv's own
+    /// review output (`grokrxiv_review_output`).
+    #[arg(long, value_enum, global = true, default_value_t = RevisionTarget::PaperLatex)]
+    pub revision_target: RevisionTarget,
+
+    // ---------- RPT2 Track I global runner/sandbox/cost/profile flags ----------
+    /// Default runner backend for all roles.
+    #[arg(long, value_enum, global = true)]
+    pub runner: Option<AgentRunnerKind>,
+    /// Per-role runner override, e.g. `--runner-for technical_correctness=cli`.
+    /// Repeatable.
+    #[arg(long, global = true, value_parser = parse_role_runner, value_name = "ROLE=RUNNER")]
+    pub runner_for: Vec<(AgentRole, AgentRunnerKind)>,
+    /// Sandbox policy applied to runners that support it.
+    #[arg(long, value_enum, global = true)]
+    pub sandbox: Option<SandboxPolicy>,
+    /// Cloud agent provider (e.g. `vercel_open_agents`, `e2b`).
+    #[arg(long, global = true)]
+    pub cloud_provider: Option<String>,
+    /// LiteLLM gateway URL (overrides env).
+    #[arg(long, global = true)]
+    pub litellm_url: Option<String>,
+    /// Ollama host (overrides env).
+    #[arg(long, global = true)]
+    pub ollama_host: Option<String>,
+    /// Per-role model override, e.g. `--model-for summary=claude-haiku-4-5`.
+    /// Repeatable.
+    #[arg(long, global = true, value_parser = parse_role_model, value_name = "ROLE=MODEL")]
+    pub model_for: Vec<(AgentRole, String)>,
+    /// Hard cap on total cost (USD) for one review.
+    #[arg(long, global = true)]
+    pub max_cost_usd: Option<f64>,
+    /// Skip the review cache.
+    #[arg(long, global = true)]
+    pub no_cache: bool,
+    /// Offline mode (disallow network where avoidable).
+    #[arg(long, global = true)]
+    pub offline: bool,
+    /// Plan-only: print what would run but don't make LLM calls.
+    #[arg(long, global = true)]
+    pub dry_run: bool,
+    /// Emit JSON instead of human-readable text on commands that support it.
+    #[arg(long, global = true)]
+    pub json: bool,
+    /// Named TOML profile to load.
+    #[arg(long, global = true, default_value = "default")]
+    pub profile: String,
+    /// Path to the TOML config file. Defaults to `~/.grokrxiv/config.toml`.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<std::path::PathBuf>,
+    /// `config show` flag: print provider secrets in cleartext.
+    #[arg(long, global = true)]
+    pub show_secrets: bool,
+}
+
+/// Hint for `grokrxiv review <source>` when the source can't be inferred.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum SourceType {
+    /// arXiv id or URL.
+    Arxiv,
+    /// Local PDF file.
+    Pdf,
+    /// Local LaTeX (.tex) file.
+    Tex,
+    /// Mixed bundle / unknown.
+    Mixed,
 }
 
 /// Top-level CLI subcommand variants.
@@ -37,7 +120,8 @@ pub enum Command {
     Serve,
     /// Print which env vars / external deps / DB / LLM providers are reachable.
     Doctor,
-    /// Print the resolved orchestrator config. Secrets are redacted unless --show-secrets.
+    /// Print the resolved orchestrator config (legacy env-only view + the
+    /// layered RuntimeConfig). Secrets are redacted unless `--show-secrets`.
     Config {
         /// Print provider secrets in cleartext instead of `***`.
         #[arg(long)]
@@ -88,8 +172,24 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Re-run the review DAG against an already-ingested paper.
+    /// The canonical end-to-end entry point.
+    ///
+    /// `source` can be:
+    /// - an arXiv id (e.g. `2605.12484`),
+    /// - an arXiv URL (`https://arxiv.org/abs/...` / `/pdf/...`),
+    /// - a local PDF path (`./paper.pdf`),
+    /// - a local LaTeX path (`./paper.tex`),
+    /// - `-` to read from stdin (use `--type` to disambiguate kind),
+    /// - `@<path>` to read a newline-delimited file of one source per line.
     Review {
+        /// Source: arXiv id | URL | path | `-` | `@file`.
+        source: String,
+        /// Force the source kind when it can't be inferred (e.g. stdin).
+        #[arg(long, value_enum)]
+        r#type: Option<SourceType>,
+    },
+    /// Re-run the review DAG against an already-ingested paper.
+    ReReview {
         /// UUID of the paper to re-review.
         paper_id: Uuid,
     },
@@ -222,10 +322,44 @@ pub enum RenderFormat {
 
 /// Run the parsed CLI. Returns a process exit code.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    // Resolve layered runtime config once per invocation. The result is held
+    // in scope for any subcommand that wants to consult it (today: `config`,
+    // `doctor`, `review`). Tracks H1/H2 already thread role-level overrides
+    // through the agent registry at boot; here we expose the surface, leaving
+    // the registry composition for those tracks to consume.
+    let overrides = RuntimeConfigOverrides {
+        runner: cli.runner,
+        sandbox: cli.sandbox,
+        mode: Some(cli.mode),
+        revision_target: Some(cli.revision_target),
+        cloud_provider: cli.cloud_provider.clone(),
+        litellm_url: cli.litellm_url.clone(),
+        ollama_host: cli.ollama_host.clone(),
+        max_cost_usd: cli.max_cost_usd,
+        no_cache: cli.no_cache,
+        offline: cli.offline,
+        runner_for: cli.runner_for.clone(),
+        model_for: cli.model_for.clone(),
+    };
+    let runtime_cfg =
+        RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref()).ok();
+    let json = cli.json;
+    let show_secrets = cli.show_secrets;
+    let profile = cli.profile.clone();
+    let dry_run = cli.dry_run;
+
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => super::serve::run().await,
-        Command::Doctor => doctor().await,
-        Command::Config { show_secrets } => print_config(show_secrets),
+        Command::Doctor => {
+            let code = doctor_mod::doctor(&profile, json).await?;
+            if code != 0 {
+                anyhow::bail!("doctor: one or more critical checks failed");
+            }
+            Ok(())
+        }
+        Command::Config {
+            show_secrets: cmd_show,
+        } => print_config(show_secrets || cmd_show, runtime_cfg.as_ref(), json),
         Command::Migrate => migrate().await,
         Command::Categories => print_categories(),
         Command::Ingest { arxiv_ids } => ingest_many(&arxiv_ids).await,
@@ -238,14 +372,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::IngestDaily => ingest_daily().await,
         Command::List { what } => list(what).await,
         Command::Show { review_id, json } => show(review_id, json).await,
-        Command::Review { paper_id } => review_paper(paper_id).await,
+        Command::Review { source, r#type } => {
+            review_source(&source, r#type, json, dry_run).await
+        }
+        Command::ReReview { paper_id } => review_paper(paper_id).await,
         Command::Verify { review_id } => verify(review_id).await,
         Command::Render {
             review_id,
             format,
             out,
         } => render(review_id, format, out).await,
-        Command::Approve { review_id } => approve(review_id).await,
+        Command::Approve { review_id } => approve(review_id, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
         Command::Withdraw { review_id, reason } => withdraw(review_id, &reason).await,
@@ -264,41 +401,51 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 // "not yet implemented in stub build" message that points at the right task.
 // ---------------------------------------------------------------------------
 
-async fn doctor() -> anyhow::Result<()> {
+fn print_config(
+    show_secrets: bool,
+    runtime: Option<&RuntimeConfig>,
+    json: bool,
+) -> anyhow::Result<()> {
     let cfg = super::Config::from_env();
-    let ok = |b: bool| if b { "  ok " } else { "MISS " };
-    let anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok();
-    let openai = std::env::var("OPENAI_API_KEY").is_ok();
-    let gemini = std::env::var("GOOGLE_GENERATIVE_AI_API_KEY").is_ok();
-    let database = std::env::var("DATABASE_URL").is_ok();
-
-    println!("GrokRxiv doctor:");
-    println!(
-        "  [{}] ANTHROPIC_API_KEY              (required for /preview)",
-        ok(anthropic)
-    );
-    println!(
-        "  [{}] OPENAI_API_KEY                 (optional)",
-        ok(openai)
-    );
-    println!(
-        "  [{}] GOOGLE_GENERATIVE_AI_API_KEY   (optional)",
-        ok(gemini)
-    );
-    println!(
-        "  [{}] DATABASE_URL                   (required for persistence)",
-        ok(database)
-    );
-    println!("  [{}] ORCHESTRATOR_BIND = {}", ok(true), cfg.bind);
-
-    if !anthropic || !database {
-        anyhow::bail!("doctor: required env vars missing");
+    if json {
+        // Compact JSON: env-derived legacy fields + the resolved layered runtime
+        // config (if it resolved). Secret values are redacted by `render_runtime_config`.
+        let runtime_json: serde_json::Value = match runtime {
+            Some(r) => serde_json::from_str(&render_runtime_config(r, true, show_secrets))
+                .unwrap_or(serde_json::Value::Null),
+            None => serde_json::Value::Null,
+        };
+        let env_redact = |key: &str| -> String {
+            match std::env::var(key) {
+                Ok(s) if show_secrets => s,
+                Ok(_) => "***".to_string(),
+                Err(_) => "<unset>".to_string(),
+            }
+        };
+        let redact = |v: Option<&str>| -> String {
+            match v {
+                Some(s) if show_secrets => s.to_string(),
+                Some(_) => "***".to_string(),
+                None => "<unset>".to_string(),
+            }
+        };
+        let payload = serde_json::json!({
+            "bind": cfg.bind,
+            "database_url": redact(cfg.database_url.as_deref()),
+            "arxiv_user_agent": cfg.arxiv_user_agent,
+            "admin_token": redact(cfg.admin_token.as_deref()),
+            "github_webhook_secret": redact(cfg.github_webhook_secret.as_deref()),
+            "web_revalidate_url": cfg.web_revalidate_url,
+            "revalidate_secret": redact(cfg.revalidate_secret.as_deref()),
+            "ANTHROPIC_API_KEY": env_redact("ANTHROPIC_API_KEY"),
+            "OPENAI_API_KEY": env_redact("OPENAI_API_KEY"),
+            "GOOGLE_GENERATIVE_AI_API_KEY": env_redact("GOOGLE_GENERATIVE_AI_API_KEY"),
+            "VLLM_BASE_URL": std::env::var("VLLM_BASE_URL").unwrap_or_else(|_| "<unset>".to_string()),
+            "runtime": runtime_json,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
     }
-    Ok(())
-}
-
-fn print_config(show_secrets: bool) -> anyhow::Result<()> {
-    let cfg = super::Config::from_env();
     let redact = |v: Option<&str>| -> String {
         match v {
             Some(s) if show_secrets => s.to_string(),
@@ -350,6 +497,13 @@ fn print_config(show_secrets: bool) -> anyhow::Result<()> {
         "VLLM_BASE_URL         = {}",
         std::env::var("VLLM_BASE_URL").unwrap_or_else(|_| "<unset>".to_string())
     );
+    if let Some(r) = runtime {
+        println!();
+        println!("Runtime (layered config):");
+        for line in render_runtime_config(r, false, show_secrets).lines() {
+            println!("  {line}");
+        }
+    }
     Ok(())
 }
 
@@ -625,6 +779,265 @@ async fn review_paper(paper_id: Uuid) -> anyhow::Result<()> {
     }
 }
 
+/// Source resolution for `grokrxiv review <source>`.
+#[derive(Debug, Clone)]
+enum ResolvedSource {
+    /// arXiv id (already normalised).
+    Arxiv(String),
+    /// Local file path. Kind is best-guess from the extension.
+    LocalFile(std::path::PathBuf, SourceType),
+}
+
+/// Try to recognise the source as an arXiv id or arXiv URL. Returns the bare
+/// id (without version suffix) when matched.
+fn parse_arxiv_source(s: &str) -> Option<String> {
+    let s = s.trim();
+    // Bare modern ID, e.g. "2605.12484" or "2605.12484v3"
+    if let Some(id) = parse_bare_modern(s) {
+        return Some(id);
+    }
+    // Modern URL: https://arxiv.org/abs/<id> or /pdf/<id>[.pdf]
+    if let Some(id) = parse_arxiv_url(s) {
+        return Some(id);
+    }
+    // Legacy: archive/7digits, e.g. math-ph/0506010
+    if parse_legacy_id(s).is_some() {
+        return Some(s.to_string());
+    }
+    None
+}
+
+fn parse_bare_modern(s: &str) -> Option<String> {
+    // YYMM.NNNNN with optional version
+    let mut parts = s.splitn(2, 'v');
+    let base = parts.next()?;
+    let (a, b) = base.split_once('.')?;
+    if a.len() < 4 || a.chars().any(|c| !c.is_ascii_digit()) {
+        return None;
+    }
+    if b.len() < 4 || b.chars().any(|c| !c.is_ascii_digit()) {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+fn parse_arxiv_url(s: &str) -> Option<String> {
+    let stripped = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))?;
+    let stripped = stripped.strip_prefix("arxiv.org/").unwrap_or(stripped);
+    let stripped = stripped
+        .strip_prefix("abs/")
+        .or_else(|| stripped.strip_prefix("pdf/"))?;
+    let stripped = stripped.strip_suffix(".pdf").unwrap_or(stripped);
+    parse_bare_modern(stripped).or_else(|| parse_legacy_id(stripped))
+}
+
+fn parse_legacy_id(s: &str) -> Option<String> {
+    // archive[.subj]/7digits
+    let (archive, rest) = s.split_once('/')?;
+    if archive.is_empty() || !archive.chars().all(|c| c.is_ascii_alphabetic() || c == '-' || c == '.') {
+        return None;
+    }
+    let rest = rest.strip_prefix(|c: char| !c.is_ascii_digit()).unwrap_or(rest);
+    if rest.len() != 7 || rest.chars().any(|c| !c.is_ascii_digit()) {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+fn guess_local_kind(path: &std::path::Path) -> SourceType {
+    match path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) {
+        Some(ref ext) if ext == "pdf" => SourceType::Pdf,
+        Some(ref ext) if ext == "tex" => SourceType::Tex,
+        _ => SourceType::Mixed,
+    }
+}
+
+/// Expand a single source argument into one or more resolved sources.
+///
+/// - `@file` reads a newline-delimited file.
+/// - `-` reads stdin (with optional `--type`).
+/// - Otherwise we try arXiv id/URL first, then fall back to local file.
+async fn resolve_source(
+    source: &str,
+    type_hint: Option<SourceType>,
+) -> anyhow::Result<Vec<ResolvedSource>> {
+    if let Some(path) = source.strip_prefix('@') {
+        let body = tokio::fs::read_to_string(path).await?;
+        let mut out = Vec::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            out.extend(Box::pin(resolve_source(line, type_hint)).await?);
+        }
+        return Ok(out);
+    }
+    if source == "-" {
+        // Drain stdin into a temp file. The kind defaults to Mixed.
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::with_capacity(1024 * 64);
+        tokio::io::stdin().read_to_end(&mut buf).await?;
+        let kind = type_hint.unwrap_or(SourceType::Mixed);
+        let ext = match kind {
+            SourceType::Pdf => ".pdf",
+            SourceType::Tex => ".tex",
+            SourceType::Arxiv | SourceType::Mixed => ".bin",
+        };
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "grokrxiv-stdin-{}{ext}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::write(&path, &buf).await?;
+        return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
+    }
+    if let Some(id) = parse_arxiv_source(source) {
+        return Ok(vec![ResolvedSource::Arxiv(id)]);
+    }
+    let path = std::path::PathBuf::from(source);
+    if path.is_file() {
+        let kind = type_hint.unwrap_or_else(|| guess_local_kind(&path));
+        return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
+    }
+    anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, not a local file)")
+}
+
+/// Canonical end-to-end entry point — `grokrxiv review <source>`.
+async fn review_source(
+    source: &str,
+    type_hint: Option<SourceType>,
+    json: bool,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let resolved = resolve_source(source, type_hint).await?;
+    if dry_run {
+        let plan: Vec<serde_json::Value> = resolved
+            .iter()
+            .map(|s| match s {
+                ResolvedSource::Arxiv(id) => serde_json::json!({"kind": "arxiv", "id": id}),
+                ResolvedSource::LocalFile(p, k) => serde_json::json!({
+                    "kind": "local",
+                    "path": p.display().to_string(),
+                    "type": format!("{k:?}"),
+                }),
+            })
+            .collect();
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"plan": plan}))?
+            );
+        } else {
+            println!("dry-run plan:");
+            for p in plan {
+                println!("  {}", p);
+            }
+        }
+        return Ok(());
+    }
+
+    // arXiv sources are dispatched through the existing ingest_many path which
+    // handles parallelism + rate limiting. Local files are not supported
+    // end-to-end in RPT2 — we surface a clear error pointing the operator
+    // back at the arXiv path.
+    let arxiv_ids: Vec<String> = resolved
+        .iter()
+        .filter_map(|s| match s {
+            ResolvedSource::Arxiv(id) => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    let local: Vec<String> = resolved
+        .iter()
+        .filter_map(|s| match s {
+            ResolvedSource::LocalFile(p, _) => Some(p.display().to_string()),
+            _ => None,
+        })
+        .collect();
+    if !local.is_empty() {
+        anyhow::bail!(
+            "local-file review path is not wired in this build ({} local input(s) deferred to a follow-up). \
+             Use an arXiv id/URL for the canonical end-to-end review.",
+            local.len()
+        );
+    }
+    if arxiv_ids.is_empty() {
+        anyhow::bail!("no reviewable sources resolved from `{source}`");
+    }
+
+    if json {
+        review_arxiv_ids_json(&arxiv_ids).await
+    } else {
+        ingest_many(&arxiv_ids).await
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn review_arxiv_ids_json(arxiv_ids: &[String]) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let supervisor = super::supervisor::Supervisor::spawn(state.clone());
+
+    let mut results: Vec<serde_json::Value> = Vec::with_capacity(arxiv_ids.len());
+    for id in arxiv_ids {
+        let review_id =
+            super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+        // Pull status + per-agent verifier_status for the JSON envelope so the
+        // smoke test can `jq -e .agents | length == 6 and all(.verifier_status==pass)`.
+        let mut envelope = serde_json::json!({
+            "arxiv_id": id,
+            "review_id": review_id,
+            "status": "awaiting_moderation",
+        });
+        if let Some(pool) = state.db.as_ref() {
+            if let Ok((status,)) = sqlx::query_as::<_, (String,)>(
+                "select status from reviews where id = $1",
+            )
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            {
+                envelope["status"] = serde_json::Value::String(status);
+            }
+            let agents: Vec<(String, Option<String>)> = sqlx::query_as(
+                "select role, verifier_status from review_agents where review_id = $1 order by role",
+            )
+            .bind(review_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+            let agents_json: Vec<serde_json::Value> = agents
+                .into_iter()
+                .map(|(role, vs)| {
+                    serde_json::json!({
+                        "role": role,
+                        "verifier_status": vs.unwrap_or_else(|| "unknown".to_string()),
+                    })
+                })
+                .collect();
+            envelope["agents"] = serde_json::Value::Array(agents_json);
+        }
+        results.push(envelope);
+    }
+    if results.len() == 1 {
+        println!("{}", serde_json::to_string_pretty(&results[0])?);
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({"reviews": results}))?
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-ingest"))]
+async fn review_arxiv_ids_json(_arxiv_ids: &[String]) -> anyhow::Result<()> {
+    anyhow::bail!("review --json requires --features full (grokrxiv-ingest)")
+}
+
 async fn verify(review_id: Uuid) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
@@ -672,14 +1085,18 @@ async fn render(
     }
 }
 
-async fn approve(review_id: Uuid) -> anyhow::Result<()> {
+async fn approve(review_id: Uuid, json: bool) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
-    approve_impl(&state, review_id).await
+    approve_impl(&state, review_id, json).await
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn approve_impl(state: &super::AppState, review_id: Uuid) -> anyhow::Result<()> {
+async fn approve_impl(
+    state: &super::AppState,
+    review_id: Uuid,
+    json: bool,
+) -> anyhow::Result<()> {
     use grokrxiv_publisher::{AdminCaller, GithubPublisher, OpenReviewPr};
     use grokrxiv_schemas::ReviewStatus;
 
@@ -744,7 +1161,14 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid) -> anyhow::Resul
             .bind(&simulated)
             .execute(pool)
             .await;
-        println!("pr_url={simulated}");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open"})
+            );
+        } else {
+            println!("pr_url={simulated}");
+        }
         return Ok(());
     };
 
@@ -783,12 +1207,23 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid) -> anyhow::Resul
         .execute(pool)
         .await;
 
-    println!("pr_url={pr_url}");
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"review_id": review_id, "pr_url": pr_url, "status": "pr_open"})
+        );
+    } else {
+        println!("pr_url={pr_url}");
+    }
     Ok(())
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]
-async fn approve_impl(_state: &super::AppState, review_id: Uuid) -> anyhow::Result<()> {
+async fn approve_impl(
+    _state: &super::AppState,
+    review_id: Uuid,
+    _json: bool,
+) -> anyhow::Result<()> {
     anyhow::bail!(
         "approve <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )

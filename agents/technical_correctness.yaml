@@ -4,6 +4,7 @@ provider: claude
 # Claim-by-claim audit gets the flagship model — subtle math/logic bugs are
 # exactly what Opus catches that Sonnet misses.
 model: claude-opus-4-7
+runner: api
 prompt_template: prompts/technical_correctness.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/technical_review.schema.json

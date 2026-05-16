@@ -1,0 +1,54 @@
+# infra/litellm/config.cloud.yaml
+# LiteLLM gateway router — cloud topology.
+# Identical to config.yaml except api_base points at in-VPC DNS for the
+# containerized Ollama (and optional vLLM) services rather than the Mac host.
+
+model_list:
+  # Containerized Ollama — reachable via in-VPC service DNS
+  - model_name: qwen-32b
+    litellm_params:
+      model: ollama/qwen2.5:32b-instruct-q4_K_M
+      api_base: http://ollama:11434
+
+  - model_name: llama-8b
+    litellm_params:
+      model: ollama/llama3.1:8b-instruct-q4_K_M
+      api_base: http://ollama:11434
+
+  - model_name: deepseek-coder-lite
+    litellm_params:
+      model: ollama/deepseek-coder-v2:16b
+      api_base: http://ollama:11434
+
+  # Optional vLLM (only routed when the `vllm` compose profile is active).
+  - model_name: qwen-32b-vllm
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-32B-Instruct-AWQ
+      api_base: http://vllm:8000/v1
+      api_key: "EMPTY"
+
+  # Frontier APIs — optional pass-through (the api runner uses these directly)
+  - model_name: claude-opus
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  drop_params: True
+  set_verbose: False
+  json_logs: True
+
+router_settings:
+  redis_host: redis
+  redis_port: 6379
+  routing_strategy: simple-shuffle
+  retry_after: 1
+  num_retries: 2
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

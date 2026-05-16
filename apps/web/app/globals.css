@@ -56,3 +56,183 @@
     color: var(--color-foreground);
   }
 }
+
+/* Review page typography.
+   We don't load @tailwindcss/typography, so style the markdown body
+   explicitly. Anything wrapped in `.prose-review` gets paper-style headings,
+   spacing, code blocks, etc. Use `.not-prose` on a child to opt out. */
+.prose-review {
+  color: var(--color-foreground);
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+.prose-review :where(.not-prose, .not-prose *) {
+  all: revert;
+}
+
+.prose-review > * + * {
+  margin-top: 1rem;
+}
+
+.prose-review h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.prose-review h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.3;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.5rem;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+  scroll-margin-top: 5rem;
+}
+
+.prose-review h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  scroll-margin-top: 5rem;
+}
+
+.prose-review h4 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose-review p {
+  line-height: 1.75;
+  margin-bottom: 1rem;
+}
+
+.prose-review a {
+  color: var(--color-foreground);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-muted-foreground);
+}
+
+.prose-review a:hover {
+  text-decoration-color: var(--color-foreground);
+}
+
+.prose-review strong {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.prose-review em {
+  font-style: italic;
+}
+
+.prose-review code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.875em;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  padding: 0.125em 0.375em;
+  border-radius: 0.25rem;
+}
+
+.prose-review pre {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.prose-review pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+.prose-review blockquote {
+  border-left: 4px solid var(--color-border);
+  padding-left: 1rem;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.prose-review ul {
+  list-style-type: disc;
+  margin-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.prose-review ol {
+  list-style-type: decimal;
+  margin-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.prose-review li {
+  margin-bottom: 0.375rem;
+  line-height: 1.65;
+}
+
+.prose-review li > ul,
+.prose-review li > ol {
+  margin-top: 0.375rem;
+  margin-bottom: 0.375rem;
+}
+
+.prose-review hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 2rem 0;
+}
+
+.prose-review table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  font-size: 0.9375rem;
+}
+
+.prose-review th,
+.prose-review td {
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.prose-review th {
+  background: var(--color-muted);
+  font-weight: 600;
+}
+
+/* KaTeX display blocks need a little breathing room and horizontal scroll for
+   long expressions on narrow screens. */
+.prose-review .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+  margin: 1.25rem 0;
+}
+
+.prose-review .katex {
+  font-size: 1.05em;
+}

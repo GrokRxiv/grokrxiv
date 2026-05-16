@@ -6,11 +6,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod agents;
 pub mod arxiv_rate_limit;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod doctor;
 pub mod routes;
+pub mod runtime_config;
 pub mod scheduler;
 pub mod serve;
 pub mod state;
@@ -18,6 +21,7 @@ pub mod stubs;
 pub mod supervisor;
 
 pub use config::Config;
+pub use runtime_config::{RuntimeConfig, RuntimeConfigOverrides};
 pub use state::AppState;
 
 /// Build the axum router for the orchestrator. Exposed so integration tests
@@ -29,5 +33,30 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/preview", post(routes::preview::preview))
         .route("/ingest", post(routes::ingest::ingest))
         .route("/webhook/github", post(routes::webhook::github))
+        // RPT2 Track I — operator-facing write endpoints reached via the
+        // Next.js /api/v1/* proxy. The proxy enforces bearer auth; these
+        // handlers run on the orchestrator's private network.
+        .route("/internal/v1/review", post(routes::internal::review_post))
+        .route(
+            "/internal/v1/reviews/:id/approve",
+            post(routes::internal::approve),
+        )
+        .route(
+            "/internal/v1/reviews/:id/reject",
+            post(routes::internal::reject),
+        )
+        .route(
+            "/internal/v1/reviews/:id/render",
+            post(routes::internal::render),
+        )
+        .route(
+            "/internal/v1/reviews/:id/apply-revisions",
+            post(routes::internal::apply_revisions),
+        )
+        .route(
+            "/internal/v1/reviews/:id/verify",
+            post(routes::internal::verify),
+        )
+        .route("/internal/v1/doctor", get(routes::internal::doctor))
         .with_state(state)
 }

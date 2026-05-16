@@ -1,0 +1,65 @@
+# GrokRxiv layered config example. Drop this at `~/.grokrxiv/config.toml`
+# (or pass `--config <path>` to override) and select a profile with
+# `grokrxiv --profile <name> ...`. The default profile is "default".
+#
+# Resolution order (later wins): defaults → this file → env vars → CLI flags.
+
+# -----------------------------------------------------------------------------
+# Profile: default — what most operators want.
+# -----------------------------------------------------------------------------
+[profiles.default]
+runner          = "api"
+sandbox         = "none"
+mode            = "review_only"
+litellm_url     = "http://localhost:4000"
+no_cache        = false
+offline         = false
+max_cost_usd    = 0.50
+
+# Per-role overrides. The role key uses the snake_case role name.
+[profiles.default.runner_for]
+# Force the technical-correctness role onto the local Claude CLI:
+# technical_correctness = "cli"
+
+[profiles.default.model_for]
+# summary               = "claude-haiku-4-5"
+# technical_correctness = "claude-opus-4-7"
+
+# -----------------------------------------------------------------------------
+# Profile: dev — cheap, fast, no real PRs.
+# -----------------------------------------------------------------------------
+[profiles.dev]
+runner          = "api"
+sandbox         = "none"
+mode            = "review_only"
+max_cost_usd    = 0.05
+no_cache        = true
+
+[profiles.dev.model_for]
+summary               = "claude-haiku-4-5"
+technical_correctness = "claude-haiku-4-5"
+novelty               = "claude-haiku-4-5"
+reproducibility       = "claude-haiku-4-5"
+citation              = "claude-haiku-4-5"
+meta_reviewer         = "claude-haiku-4-5"
+
+# -----------------------------------------------------------------------------
+# Profile: local — everything via LiteLLM / Ollama on the dev machine.
+# -----------------------------------------------------------------------------
+[profiles.local]
+runner          = "local_inference"
+sandbox         = "container"
+litellm_url     = "http://localhost:4000"
+ollama_host     = "http://localhost:11434"
+offline         = false
+
+# -----------------------------------------------------------------------------
+# Profile: cloud — Vercel Open Agents for tool-using rungs, API otherwise.
+# -----------------------------------------------------------------------------
+[profiles.cloud]
+runner          = "api"
+cloud_provider  = "vercel_open_agents"
+
+[profiles.cloud.runner_for]
+technical_correctness = "cloud"
+reproducibility       = "cloud"

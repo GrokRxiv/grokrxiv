@@ -4,6 +4,7 @@ provider: claude
 # Plain-language TL;DR is a Haiku-class task — ~15× cheaper than Opus per
 # token. Bump to Sonnet/Opus if quality regresses.
 model: claude-haiku-4-5-20251001
+runner: api
 prompt_template: prompts/summary.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/summary_review.schema.json

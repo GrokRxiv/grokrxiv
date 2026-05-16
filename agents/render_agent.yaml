@@ -1,0 +1,15 @@
+id: render_agent
+role: "Render the final review.{html,md,tex} artifacts from the 6 review outputs."
+provider: claude
+# Render is a polish pass — Haiku is sufficient; promote to Sonnet if quality drops.
+model: claude-haiku-4-5-20251001
+runner: api
+prompt_template: prompts/render_agent.md
+input_schema: schemas/meta_review.schema.json
+output_schema: schemas/render_artifact.schema.json
+verifiers:
+  - json_schema
+  - render
+max_retries: 2
+timeout_secs: 90
+escalation: skip

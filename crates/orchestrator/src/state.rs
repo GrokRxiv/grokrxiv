@@ -7,6 +7,11 @@ use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
 use reqwest::Client;
 use sqlx::PgPool;
 
+use crate::agents::runners::api::ApiRunner;
+use crate::agents::{
+    build_agent, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent, SandboxPolicy,
+    ToolPolicy,
+};
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
 
@@ -14,6 +19,10 @@ use crate::config::Config;
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
 /// Per-agent provider and model routing table.
 pub type RoleRouting = HashMap<grokrxiv_schemas::AgentRole, (Arc<dyn LLMProvider>, String)>;
+/// Per-role `ReviewAgent` registry, keyed by review role.
+pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<dyn ReviewAgent>>;
+/// Per-kind `AgentRunner` registry, keyed by runner backend.
+pub type RunnerRegistry = HashMap<AgentRunnerKind, Arc<dyn AgentRunner>>;
 /// Role-specific JSON schema documents.
 #[cfg(feature = "grokrxiv-verifier")]
 pub type AgentSchemaMap = HashMap<grokrxiv_schemas::AgentRole, serde_json::Value>;
@@ -104,6 +113,16 @@ pub struct AppState {
     /// preview model so an unavailable provider cannot route a non-Claude model
     /// string into Claude.
     pub role_routing: Arc<RoleRouting>,
+    /// Per-role `ReviewAgent` instances built from `agents/*.yaml`. Populated
+    /// alongside `role_routing` so the supervisor can delegate to
+    /// `agent.run(&runner, input)` instead of calling the provider directly.
+    /// Empty when no provider registry is available (e.g. `from_env` returned
+    /// `None`); in that case the supervisor falls back to constructing an agent
+    /// on the fly from the passed-in provider.
+    pub agents: Arc<AgentRegistry>,
+    /// Per-`AgentRunnerKind` runner backends. RPT2 Track A registers only the
+    /// `ApiRunner`; CLI/cloud/local-inference are filled by other tracks.
+    pub runners: Arc<RunnerRegistry>,
 }
 
 impl AppState {
@@ -134,7 +153,45 @@ impl AppState {
         let (agent_schemas, verifiers) = build_agent_schemas_and_verifiers();
 
         let fallback_model = config.preview_model.clone();
-        let role_routing = Arc::new(build_role_routing(&providers, &fallback_model));
+        let role_yaml = load_role_configs();
+        let role_routing = Arc::new(build_role_routing(
+            &providers,
+            &fallback_model,
+            &role_yaml,
+        ));
+
+        // Build the runner registry. RPT2 Track A registers only the API
+        // runner; CLI/cloud/local-inference runners come from later tracks.
+        let provider_map_by_string: HashMap<String, Arc<dyn LLMProvider>> = match &providers {
+            Some(reg) => reg
+                .by_name
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+            None => HashMap::new(),
+        };
+        let api_runner: Arc<dyn AgentRunner> =
+            Arc::new(ApiRunner::new(provider_map_by_string));
+        let mut runners_map: RunnerRegistry = HashMap::new();
+        runners_map.insert(AgentRunnerKind::Api, api_runner);
+        let runners = Arc::new(runners_map);
+
+        // Build the per-role `ReviewAgent` registry from the YAML configs +
+        // the in-memory schemas. Only populated when the verifier feature is
+        // on (so schemas exist). When `providers` is `None` the registry is
+        // still built — the supervisor's per-call resolver will detect a
+        // missing runner provider and fall back to a one-shot `ApiRunner`
+        // wired to the passed-in provider.
+        let agents = {
+            #[cfg(feature = "grokrxiv-verifier")]
+            {
+                Arc::new(build_agent_registry(&role_yaml, &agent_schemas))
+            }
+            #[cfg(not(feature = "grokrxiv-verifier"))]
+            {
+                Arc::new(AgentRegistry::new())
+            }
+        };
 
         Ok(Self {
             db,
@@ -147,59 +204,64 @@ impl AppState {
             #[cfg(feature = "grokrxiv-verifier")]
             verifiers,
             role_routing,
+            agents,
+            runners,
         })
     }
 }
 
-/// Minimal YAML shape we read from `agents/*.yaml`. The full agent config has
-/// more fields (verifiers, retries, etc.) but only `provider` and `model`
-/// drive routing.
-#[derive(serde::Deserialize)]
+/// Minimal YAML shape we read from `agents/*.yaml`. Captures the per-role
+/// fields the orchestrator cares about: the routing target (`provider`,
+/// `model`), the optional runner backend, and the agent-level timeout /
+/// retry caps used to build [`AgentSpec`].
+#[derive(serde::Deserialize, Clone)]
 struct AgentRouting {
     provider: String,
     model: String,
+    #[serde(default)]
+    runner: Option<AgentRunnerKind>,
+    #[serde(default)]
+    max_retries: Option<u8>,
+    #[serde(default)]
+    timeout_secs: Option<u32>,
 }
 
-/// Walk `agents/*.yaml` and build the per-role `(provider, model)` map. If a
-/// YAML declares a provider whose API key isn't set in this process, the
-/// routing entry falls back to Claude with the orchestrator's
-/// `PREVIEW_MODEL` (a Claude-compatible id) so the single-provider M1 path
-/// still produces real calls. A warning is logged recording which provider
-/// was declared in YAML so operators see the routing drift.
-fn build_role_routing(providers: &Option<ProviderRegistry>, fallback_model: &str) -> RoleRouting {
-    use grokrxiv_schemas::AgentRole;
-    let mut out: RoleRouting = std::collections::HashMap::new();
-    // No providers at all means /preview will error anyway; routing is empty.
-    let Some(registry) = providers else {
-        return out;
-    };
+/// Per-role YAML config map. `None` for a role means the YAML was missing or
+/// malformed; the consumer falls back to the default provider/model.
+type RoleYamlMap = HashMap<grokrxiv_schemas::AgentRole, Option<AgentRouting>>;
 
-    // The agents/ directory lives at the repo root next to crates/. The
-    // include_str! pattern used for schemas would make these YAMLs part of the
-    // binary, but we deliberately read them at runtime so operators can tweak
-    // a deployed orchestrator's routing without rebuilding.
-    let candidates: &[(AgentRole, &str)] = &[
-        (AgentRole::Summary, "summary.yaml"),
-        (
-            AgentRole::TechnicalCorrectness,
-            "technical_correctness.yaml",
-        ),
-        (AgentRole::Novelty, "novelty.yaml"),
-        (AgentRole::Reproducibility, "reproducibility.yaml"),
-        (AgentRole::Citation, "citation.yaml"),
-        (AgentRole::MetaReviewer, "meta_reviewer.yaml"),
-    ];
+/// Roles the orchestrator wires up at boot.
+const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
+    (grokrxiv_schemas::AgentRole::Summary, "summary.yaml"),
+    (
+        grokrxiv_schemas::AgentRole::TechnicalCorrectness,
+        "technical_correctness.yaml",
+    ),
+    (grokrxiv_schemas::AgentRole::Novelty, "novelty.yaml"),
+    (
+        grokrxiv_schemas::AgentRole::Reproducibility,
+        "reproducibility.yaml",
+    ),
+    (grokrxiv_schemas::AgentRole::Citation, "citation.yaml"),
+    (grokrxiv_schemas::AgentRole::MetaReviewer, "meta_reviewer.yaml"),
+];
 
+/// Read each `agents/<role>.yaml` once. The result is consumed by both
+/// `build_role_routing` (legacy provider+model map) and `build_agent_registry`
+/// (new `ReviewAgent` map).
+fn load_role_configs() -> RoleYamlMap {
     // Resolve `agents/` relative to the workspace root. In a container the
     // binary's cwd is the repo root; in dev `cargo run` also runs from there.
     let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
-    for (role, filename) in candidates {
+
+    let mut out: RoleYamlMap = HashMap::new();
+    for (role, filename) in ROLE_FILES {
         let path = agents_dir.join(filename);
-        let routing = match std::fs::read_to_string(&path) {
+        let cfg = match std::fs::read_to_string(&path) {
             Ok(s) => match serde_yaml::from_str::<AgentRouting>(&s) {
-                Ok(r) => r,
+                Ok(r) => Some(r),
                 Err(e) => {
                     tracing::warn!(
                         role = ?role,
@@ -207,11 +269,7 @@ fn build_role_routing(providers: &Option<ProviderRegistry>, fallback_model: &str
                         err = %e,
                         "could not parse agent yaml; falling back to default provider/model"
                     );
-                    out.insert(
-                        *role,
-                        (registry.default.clone(), fallback_model.to_string()),
-                    );
-                    continue;
+                    None
                 }
             },
             Err(e) => {
@@ -221,18 +279,43 @@ fn build_role_routing(providers: &Option<ProviderRegistry>, fallback_model: &str
                     err = %e,
                     "agent yaml missing; falling back to default provider/model"
                 );
-                out.insert(
-                    *role,
-                    (registry.default.clone(), fallback_model.to_string()),
-                );
-                continue;
+                None
             }
         };
+        out.insert(*role, cfg);
+    }
+    out
+}
 
+/// Build the per-role `(provider, model)` map. If a YAML declares a provider
+/// whose API key isn't set in this process, the routing entry falls back to
+/// Claude with the orchestrator's `PREVIEW_MODEL` (a Claude-compatible id) so
+/// the single-provider M1 path still produces real calls. A warning is
+/// logged recording which provider was declared in YAML so operators see the
+/// routing drift.
+fn build_role_routing(
+    providers: &Option<ProviderRegistry>,
+    fallback_model: &str,
+    role_yaml: &RoleYamlMap,
+) -> RoleRouting {
+    let mut out: RoleRouting = HashMap::new();
+    // No providers at all means /preview will error anyway; routing is empty.
+    let Some(registry) = providers else {
+        return out;
+    };
+
+    for (role, _filename) in ROLE_FILES {
+        let Some(routing) = role_yaml.get(role).and_then(|c| c.as_ref()) else {
+            out.insert(
+                *role,
+                (registry.default.clone(), fallback_model.to_string()),
+            );
+            continue;
+        };
         let declared_provider = routing.provider.as_str();
         match registry.by_name.get(declared_provider) {
             Some(p) => {
-                out.insert(*role, (p.clone(), routing.model));
+                out.insert(*role, (p.clone(), routing.model.clone()));
             }
             None => {
                 tracing::warn!(
@@ -247,6 +330,42 @@ fn build_role_routing(providers: &Option<ProviderRegistry>, fallback_model: &str
                 );
             }
         }
+    }
+    out
+}
+
+/// Build the per-role `ReviewAgent` registry from the YAML configs and the
+/// in-memory per-role JSON schemas. Roles whose YAML is missing or malformed
+/// are skipped — the supervisor will detect the gap and fall back to an
+/// on-the-fly agent for those roles. RPT2 ships every role on the `Api`
+/// runner; CLI/cloud/local-inference selection happens in later tracks.
+#[cfg(feature = "grokrxiv-verifier")]
+fn build_agent_registry(
+    role_yaml: &RoleYamlMap,
+    schemas: &Arc<AgentSchemaMap>,
+) -> AgentRegistry {
+    let mut out: AgentRegistry = HashMap::new();
+    for (role, _filename) in ROLE_FILES {
+        let Some(cfg) = role_yaml.get(role).and_then(|c| c.as_ref()) else {
+            continue;
+        };
+        let schema = schemas
+            .get(role)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+        let spec = AgentSpec {
+            role: *role,
+            runner: cfg.runner.unwrap_or_default(),
+            sandbox: SandboxPolicy::None,
+            mode: AgentMode::ReviewOnly,
+            provider: cfg.provider.clone(),
+            model: cfg.model.clone(),
+            schema,
+            tool_policy: ToolPolicy::default(),
+            max_retries: cfg.max_retries.unwrap_or(2),
+            timeout_secs: cfg.timeout_secs.unwrap_or(180),
+        };
+        out.insert(*role, Arc::from(build_agent(spec)));
     }
     out
 }
