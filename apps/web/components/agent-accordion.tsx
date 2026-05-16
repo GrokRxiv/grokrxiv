@@ -33,16 +33,23 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
     (a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role),
   );
   return (
-    <Accordion type="multiple" className="w-full">
+    <Accordion type="multiple" className="flex w-full flex-col gap-2">
       {ordered.map((agent) => (
-        <AccordionItem key={agent.role} value={agent.role}>
-          <AccordionTrigger>
-            <div className="flex flex-1 items-center justify-between gap-3 pr-2">
-              <div className="flex items-center gap-3">
-                <span className="font-medium">
+        <AccordionItem
+          key={agent.role}
+          value={agent.role}
+          className="rounded-lg border border-[color:var(--color-border)] bg-slate-900/40 px-4 [&]:border-b"
+        >
+          <AccordionTrigger className="py-3 hover:no-underline">
+            <div className="flex flex-1 flex-wrap items-center justify-between gap-3 pr-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-semibold text-slate-100">
                   {ROLE_LABEL[agent.role] ?? agent.role}
                 </span>
-                <Badge variant="outline" className="font-mono text-xs">
+                <Badge
+                  variant="secondary"
+                  className="bg-slate-800 font-mono text-xs text-slate-100"
+                >
                   {agent.model}
                 </Badge>
               </div>
@@ -50,7 +57,7 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
             </div>
           </AccordionTrigger>
           <AccordionContent>
-            <pre className="overflow-x-auto rounded-md bg-[color:var(--color-muted)] p-4 text-xs">
+            <pre className="overflow-x-auto rounded-md bg-slate-950/60 p-4 text-xs text-slate-100">
               {JSON.stringify(agent.output, null, 2)}
             </pre>
           </AccordionContent>

@@ -174,6 +174,25 @@ impl AppState {
             Arc::new(ApiRunner::new(provider_map_by_string));
         let mut runners_map: RunnerRegistry = HashMap::new();
         runners_map.insert(AgentRunnerKind::Api, api_runner);
+        // RPT2 G follow-up: register the other 3 runner kinds so the supervisor's
+        // `--runner cli` / `--runner cloud` / `--runner local_inference` flag
+        // can route through them at runtime. Each constructs cheaply; they only
+        // hit network / spawn subprocesses when actually invoked.
+        runners_map.insert(
+            AgentRunnerKind::Cli,
+            Arc::new(crate::agents::runners::cli::CliRunner::new())
+                as Arc<dyn AgentRunner>,
+        );
+        runners_map.insert(
+            AgentRunnerKind::Cloud,
+            Arc::new(crate::agents::runners::cloud::CloudRunner::new())
+                as Arc<dyn AgentRunner>,
+        );
+        runners_map.insert(
+            AgentRunnerKind::LocalInference,
+            Arc::new(crate::agents::runners::local_inference::LocalInferenceRunner::new())
+                as Arc<dyn AgentRunner>,
+        );
         let runners = Arc::new(runners_map);
 
         // Build the per-role `ReviewAgent` registry from the YAML configs +

@@ -343,6 +343,35 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let runtime_cfg =
         RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref()).ok();
+    // RPT2 G follow-up: export the resolved per-role runner choice into env vars
+    // the supervisor reads in its agent resolver. This is how `--runner cli` /
+    // `--runner-for technical_correctness=cli` actually overrides the YAML's
+    // `runner:` field at runtime (the supervisor's `resolve_agent` checks
+    // `GROKRXIV_RUNNER_OVERRIDE` / `GROKRXIV_RUNNER_OVERRIDE_<ROLE>` env vars).
+    if let Some(rt) = runtime_cfg.as_ref() {
+        // Always export `default_runner` so the supervisor can pick up the
+        // CLI's `--runner` flag (the resolved RuntimeConfig already merges
+        // CLI > ENV > TOML > default).
+        let kind = rt.default_runner;
+        if let Ok(s) = serde_json::to_string(&kind) {
+            let bare = s.trim_matches('"');
+            std::env::set_var("GROKRXIV_RUNNER_OVERRIDE", bare);
+        }
+        for (role, kind) in &rt.runner_for {
+            let role_slug = match role {
+                grokrxiv_schemas::AgentRole::Summary => "SUMMARY",
+                grokrxiv_schemas::AgentRole::TechnicalCorrectness => "TECHNICAL_CORRECTNESS",
+                grokrxiv_schemas::AgentRole::Novelty => "NOVELTY",
+                grokrxiv_schemas::AgentRole::Reproducibility => "REPRODUCIBILITY",
+                grokrxiv_schemas::AgentRole::Citation => "CITATION",
+                grokrxiv_schemas::AgentRole::MetaReviewer => "META_REVIEWER",
+            };
+            if let Ok(s) = serde_json::to_string(kind) {
+                let bare = s.trim_matches('"');
+                std::env::set_var(format!("GROKRXIV_RUNNER_OVERRIDE_{role_slug}"), bare);
+            }
+        }
+    }
     let json = cli.json;
     let show_secrets = cli.show_secrets;
     let profile = cli.profile.clone();

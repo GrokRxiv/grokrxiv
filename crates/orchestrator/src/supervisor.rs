@@ -232,11 +232,41 @@ pub async fn run_review_dag(
         (agent, runner, default_model.clone())
     };
 
+    // RPT2 G follow-up: the CLI's `--runner` / `--runner-for` flags land in
+    // these env vars before this function runs. They override the YAML's
+    // `runner:` field per role. Format:
+    //   GROKRXIV_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
+    //   GROKRXIV_RUNNER_OVERRIDE_<ROLE> = same enum, per role (snake_case role name)
+    // The CLI's `Command::Review` handler exports these from RuntimeConfig
+    // before dispatching to the supervisor.
+    let runner_override_for = |role: AgentRole| -> Option<AgentRunnerKind> {
+        let role_slug = match role {
+            AgentRole::Summary => "summary",
+            AgentRole::TechnicalCorrectness => "technical_correctness",
+            AgentRole::Novelty => "novelty",
+            AgentRole::Reproducibility => "reproducibility",
+            AgentRole::Citation => "citation",
+            AgentRole::MetaReviewer => "meta_reviewer",
+        };
+        let per_role_var = format!("GROKRXIV_RUNNER_OVERRIDE_{}", role_slug.to_uppercase());
+        std::env::var(&per_role_var)
+            .ok()
+            .or_else(|| std::env::var("GROKRXIV_RUNNER_OVERRIDE").ok())
+            .and_then(|s| match s.as_str() {
+                "api" => Some(AgentRunnerKind::Api),
+                "cli" => Some(AgentRunnerKind::Cli),
+                "cloud" => Some(AgentRunnerKind::Cloud),
+                "local_inference" => Some(AgentRunnerKind::LocalInference),
+                _ => None,
+            })
+    };
+
     let resolve_agent = |role: AgentRole|
         -> (Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String) {
         if let Some(agent) = state.agents.get(&role) {
             let model = agent.spec().model.clone();
-            let runner_kind = agent.spec().runner;
+            // Runtime override beats YAML's runner: field for this run.
+            let runner_kind = runner_override_for(role).unwrap_or(agent.spec().runner);
             if let Some(runner) = state.runners.get(&runner_kind) {
                 return (agent.clone(), runner.clone(), model);
             }

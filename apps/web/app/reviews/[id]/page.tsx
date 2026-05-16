@@ -157,20 +157,28 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
   return (
     <>
       <JsonLd data={jsonLd} />
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_240px_280px]">
-        <article className="prose-review flex min-w-0 max-w-3xl flex-col gap-6">
-          <header className="flex flex-col gap-3 not-prose">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <article className="flex min-w-0 flex-col gap-6">
+          <header className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <ReviewStatusBadge status={review.status} />
               {paper.field ? (
                 <Badge variant="outline">{paper.field}</Badge>
               ) : null}
-              {Object.entries(review.models_used ?? {}).map(([role, model]) => (
-                <Badge key={role} variant="secondary" className="font-mono">
-                  {role}: {model}
-                </Badge>
-              ))}
             </div>
+            {review.models_used && Object.keys(review.models_used).length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(review.models_used).map(([role, model]) => (
+                  <Badge
+                    key={role}
+                    variant="secondary"
+                    className="bg-slate-800 font-mono text-xs text-slate-100"
+                  >
+                    {role}: {model}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
             <h1 className="text-balance text-3xl font-bold tracking-tight md:text-4xl">
               {paper.title}
             </h1>
@@ -212,23 +220,32 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
           <Separator />
 
           <section className="flex flex-col gap-4">
-            <h2 id="meta-review">Meta review</h2>
-            <MetaReviewBody markdown={metaReviewMd} />
+            <h2
+              id="meta-review"
+              className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2"
+            >
+              Meta review
+            </h2>
+            <div className="prose-review">
+              <MetaReviewBody markdown={metaReviewMd} />
+            </div>
           </section>
 
           <Separator />
 
-          <section className="flex flex-col gap-4 not-prose">
-            <h2 id="specialist-agents" className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2">
+          <section className="flex flex-col gap-4">
+            <h2
+              id="specialist-agents"
+              className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2"
+            >
               Specialist agents
             </h2>
             <AgentAccordion agents={review.agents ?? []} />
           </section>
         </article>
 
-        <ReviewToc items={tocItems} />
-
-        <aside className="lg:sticky lg:top-20 lg:self-start">
+        <aside className="flex flex-col gap-6 lg:sticky lg:top-20 lg:self-start">
+          <ReviewToc items={tocItems} />
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Artifacts</CardTitle>

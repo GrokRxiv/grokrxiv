@@ -1,3 +1,5 @@
+import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import type { ReviewStatus, VerifierStatus } from "@/lib/types";
 
@@ -37,8 +39,27 @@ const VERIFIER_VARIANT: Record<
   fail: "destructive",
 };
 
+const VERIFIER_ICON: Record<VerifierStatus, React.ReactNode> = {
+  pass: <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />,
+  warn: <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />,
+  fail: <XCircle className="h-3.5 w-3.5" aria-hidden="true" />,
+};
+
+const VERIFIER_LABEL: Record<VerifierStatus, string> = {
+  pass: "Pass",
+  warn: "Warn",
+  fail: "Fail",
+};
+
 export function VerifierStatusBadge({ status }: { status: VerifierStatus }) {
   return (
-    <Badge variant={VERIFIER_VARIANT[status]}>verifier: {status}</Badge>
+    <Badge
+      variant={VERIFIER_VARIANT[status]}
+      className="inline-flex items-center gap-1.5"
+      aria-label={`Verifier: ${VERIFIER_LABEL[status]}`}
+    >
+      {VERIFIER_ICON[status]}
+      <span>{VERIFIER_LABEL[status]}</span>
+    </Badge>
   );
 }

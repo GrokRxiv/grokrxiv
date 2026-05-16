@@ -47,7 +47,7 @@ export function ReviewToc({ items }: { items: TocItem[] }) {
   return (
     <nav
       aria-label="Table of contents"
-      className="hidden lg:block lg:sticky lg:top-20 lg:self-start"
+      className="hidden lg:block"
     >
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[color:var(--color-muted-foreground)]">
         On this page
