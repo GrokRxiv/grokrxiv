@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# GrokRxiv local-stack preflight.
+#
+# Verifies that everything `just smoke` and the M1 driver need is up before
+# we burn time running the actual tests. Each check is one short line; any
+# failure exits non-zero with a single actionable message.
+#
+# Usage:   bash scripts/preflight.sh
+# Or:      just preflight
+
+set -euo pipefail
+
+ok()   { printf "\033[32m✓\033[0m %s\n" "$*"; }
+step() { printf "\033[36m→\033[0m %s\n" "$*"; }
+fail() { printf "\033[31m✗\033[0m %s\n" "$*"; exit 1; }
+
+step "docker daemon"
+docker info >/dev/null 2>&1 \
+  || fail "Docker daemon not running. Run \`open -a Docker\` and retry."
+ok "docker up"
+
+step "supabase containers"
+if ! docker ps --format '{{.Names}}' | grep -q "^supabase_db_grokrxiv$"; then
+  step "supabase not running — starting (this can take ~30 s on cold cache)"
+  command -v supabase >/dev/null 2>&1 \
+    || fail "supabase CLI not on PATH. brew install supabase/tap/supabase"
+  supabase start >/dev/null 2>&1 \
+    || fail "supabase start failed — run it manually for the error message"
+fi
+ok "supabase up"
+
+step "postgres reachable on 127.0.0.1:54322"
+CID="$(docker ps -qf 'name=supabase_db_grokrxiv' | head -1)"
+[[ -n "${CID}" ]] || fail "no supabase_db_grokrxiv container found"
+docker exec -i "${CID}" pg_isready -U postgres -d postgres >/dev/null 2>&1 \
+  || fail "postgres not accepting connections inside the container"
+ok "postgres ready"
+
+step "ANTHROPIC_API_KEY"
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  fail "ANTHROPIC_API_KEY not set. Required for the /preview path and the M1 review DAG."
+fi
+ok "ANTHROPIC_API_KEY set (${#ANTHROPIC_API_KEY} chars)"
+
+step "agent routing lint"
+bash scripts/validate-agent-routing.sh
+ok "agent routing lint passed"
+
+step "compose services (informational — not required to be up at this point)"
+if curl -sf -m 2 http://localhost:8080/healthz >/dev/null 2>&1; then
+  ok "orchestrator healthy"
+else
+  step "orchestrator not yet up (run \`docker compose up -d\` next)"
+fi
+if curl -sf -m 2 http://localhost:3000/ >/dev/null 2>&1; then
+  ok "web up"
+else
+  step "web not yet up (run \`docker compose up -d\` next)"
+fi
+
+echo
+ok "preflight PASSED"

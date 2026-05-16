@@ -1,0 +1,13 @@
+id: citation
+role: "Verify each bibliography entry exists and is relevantly cited."
+provider: gemini
+model: gemini-2.5-flash
+prompt_template: prompts/citation.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/citation_review.schema.json
+verifiers:
+  - json_schema
+  - citation_existence
+max_retries: 2
+timeout_secs: 120
+escalation: human

@@ -1,0 +1,29 @@
+[package]
+name = "grokrxiv-publisher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Supabase Storage upload + GitHub PR opener for approved GrokRxiv reviews."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+octocrab = { workspace = true }
+base64 = "0.22"
+chrono = { workspace = true }
+uuid = { workspace = true }
+grokrxiv-schemas = { path = "../schemas" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

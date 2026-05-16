@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/agent_record.schema.json",
+  "title": "AgentRecord",
+  "description": "Wrapper around an individual specialist agent's output, persisted in `review_agents` and bundled in the artifact zip.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "technical_correctness",
+        "novelty",
+        "reproducibility",
+        "citation",
+        "meta_reviewer"
+      ]
+    },
+    "model": { "type": "string", "minLength": 1 },
+    "prompt_hash": { "type": "string" },
+    "tokens_in": { "type": "integer", "minimum": 0 },
+    "tokens_out": { "type": "integer", "minimum": 0 },
+    "latency_ms": { "type": "integer", "minimum": 0 },
+    "output": {
+      "description": "Role-specific typed artifact. Validated by the orchestrator against the matching role schema.",
+      "oneOf": [
+        { "$ref": "summary_review.schema.json" },
+        { "$ref": "technical_review.schema.json" },
+        { "$ref": "novelty_review.schema.json" },
+        { "$ref": "reproducibility_review.schema.json" },
+        { "$ref": "citation_review.schema.json" },
+        { "$ref": "meta_review.schema.json" }
+      ]
+    },
+    "verifier_status": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail"]
+    },
+    "verifier_notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "verifier": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "warn", "fail"] },
+          "message": { "type": "string" }
+        },
+        "required": ["verifier", "status"]
+      }
+    }
+  },
+  "required": ["role", "model", "output", "verifier_status"]
+}

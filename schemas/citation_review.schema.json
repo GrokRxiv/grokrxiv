@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/citation_review.schema.json",
+  "title": "CitationReview",
+  "description": "Per-reference verification of existence, relevance, and accuracy.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "citation": { "$ref": "citation.schema.json" },
+          "exists": {
+            "type": "boolean",
+            "description": "Whether the cited work was located via Crossref / Semantic Scholar / arXiv."
+          },
+          "resolved_doi": { "type": ["string", "null"] },
+          "resolved_url": { "type": ["string", "null"] },
+          "relevance": {
+            "type": "string",
+            "enum": ["high", "medium", "low", "unrelated"]
+          },
+          "notes": { "type": ["string", "null"] }
+        },
+        "required": ["citation", "exists", "resolved_doi", "resolved_url", "relevance", "notes"]
+      }
+    },
+    "missing_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "reason": { "type": "string" }
+        },
+        "required": ["title", "reason"]
+      }
+    },
+    "summary": { "type": "string" },
+    "confidence": { "type": "number" }
+  },
+  "required": ["entries", "missing_references", "summary", "confidence"]
+}

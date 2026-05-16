@@ -1,0 +1,17 @@
+id: meta_reviewer
+role: "Synthesize the five specialist reviews into a final, human-readable review with recommendation."
+provider: claude
+# Synthesis of the 5 specialist outputs — Sonnet 4.6 handles it at ~5× lower
+# cost than Opus. Promote to Opus if the recommendation quality drops.
+model: claude-sonnet-4-6
+prompt_template: prompts/meta_reviewer.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/meta_review.schema.json
+verifiers:
+  - json_schema
+  - tone
+  - render
+  - cross_agent_consistency
+max_retries: 2
+timeout_secs: 180
+escalation: human

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/review.schema.json",
+  "title": "Review",
+  "description": "Top-level review document persisted as JSON. Mirrors apps/web/lib/types.ts::Review.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "paper_id": { "type": "string", "format": "uuid" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "awaiting_moderation",
+        "in_review",
+        "pr_open",
+        "published",
+        "corrected",
+        "withdrawn"
+      ]
+    },
+    "github_pr_url": { "type": "string", "format": "uri" },
+    "github_review_url": { "type": "string", "format": "uri" },
+    "html_path": { "type": "string" },
+    "pdf_path": { "type": "string" },
+    "zip_path": { "type": "string" },
+    "models_used": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Map of agent role -> model identifier used for that role on this run."
+    },
+    "meta_review": { "$ref": "meta_review.schema.json" },
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "agent_record.schema.json" }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "published_at": { "type": "string", "format": "date-time" }
+  },
+  "required": [
+    "id",
+    "paper_id",
+    "status",
+    "models_used",
+    "meta_review",
+    "agents",
+    "created_at"
+  ]
+}

@@ -1,0 +1,68 @@
+# =============================================================================
+# COPY THIS FILE INTO THE SEPARATE `github.com/GrokRxiv/reviews` REPOSITORY
+# at `.github/workflows/merge-webhook.yml`.
+#
+# Purpose: when a review PR merges into `main` of the reviews repo, fire a
+# webhook to the Rust orchestrator so it can mark the review `published` and
+# trigger ISR revalidation on grokrxiv.org.
+#
+# Required repository secrets (in the `reviews` repo, NOT this one):
+#   ORCHESTRATOR_URL              e.g. https://orchestrator.grokrxiv.org
+#   ORCHESTRATOR_WEBHOOK_SECRET   shared HMAC secret used to sign the payload
+# =============================================================================
+
+name: reviews-merge-webhook
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-orchestrator:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    # All untrusted PR fields (title, html_url, repository name, etc.) are
+    # injected via `env:` and consumed as shell variables; never interpolated
+    # directly into `run:` scripts. This prevents script injection from a
+    # malicious PR title or branch name.
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Build payload
+        run: |
+          jq -n \
+            --arg repo  "$REPO" \
+            --arg pr    "$PR_NUMBER" \
+            --arg sha   "$PR_MERGE_SHA" \
+            --arg url   "$PR_URL" \
+            --arg title "$PR_TITLE" \
+            '{event:"merged", repo:$repo, pr:($pr|tonumber), sha:$sha, url:$url, title:$title}' \
+            > payload.json
+
+      - name: Sign payload (HMAC-SHA256)
+        id: sign
+        env:
+          SECRET: ${{ secrets.ORCHESTRATOR_WEBHOOK_SECRET }}
+        run: |
+          sig="sha256=$(openssl dgst -sha256 -hmac "$SECRET" payload.json | awk '{print $2}')"
+          echo "signature=$sig" >> "$GITHUB_OUTPUT"
+
+      - name: POST to orchestrator
+        env:
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          SIGNATURE: ${{ steps.sign.outputs.signature }}
+        run: |
+          curl --fail-with-body \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: ${SIGNATURE}" \
+            --data-binary @payload.json \
+            "${ORCHESTRATOR_URL}/webhook/github"

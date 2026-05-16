@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/author.schema.json",
+  "title": "Author",
+  "description": "A paper author, mirrored from apps/web/lib/types.ts::Author.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "affiliation": { "type": "string" },
+    "email": { "type": "string", "format": "email" }
+  },
+  "required": ["name"]
+}

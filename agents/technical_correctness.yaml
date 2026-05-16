@@ -1,0 +1,16 @@
+id: technical_correctness
+role: "Verify mathematical, logical, and empirical claims of the paper."
+provider: claude
+# Claim-by-claim audit gets the flagship model — subtle math/logic bugs are
+# exactly what Opus catches that Sonnet misses.
+model: claude-opus-4-7
+prompt_template: prompts/technical_correctness.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/technical_review.schema.json
+verifiers:
+  - json_schema
+  - tone
+  - citation_existence
+max_retries: 2
+timeout_secs: 180
+escalation: human

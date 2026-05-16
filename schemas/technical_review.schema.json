@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/technical_review.schema.json",
+  "title": "TechnicalReview",
+  "description": "Claim-by-claim assessment of mathematical, logical, and empirical correctness.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "claim": { "type": "string" },
+          "location": {
+            "type": ["string", "null"],
+            "description": "Section/figure/equation reference inside the paper."
+          },
+          "assessment": {
+            "type": "string",
+            "enum": ["supported", "partially_supported", "unsupported", "incorrect"]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "minor", "major", "critical"]
+          },
+          "evidence": { "type": ["string", "null"] },
+          "suggested_fix": { "type": ["string", "null"] }
+        },
+        "required": ["id", "claim", "location", "assessment", "severity", "evidence", "suggested_fix"]
+      }
+    },
+    "overall_correctness": {
+      "type": "string",
+      "enum": ["sound", "mostly_sound", "questionable", "unsound"]
+    },
+    "confidence": { "type": "number" }
+  },
+  "required": ["claims", "overall_correctness", "confidence"]
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/paper_extract.schema.json",
+  "title": "PaperExtract",
+  "description": "Structured extraction of an arXiv paper. Input artifact consumed by every specialist agent.",
+  "$comment": "Pipeline extraction artifact (PDF text + structure + bibliography) consumed by the reviewer DAG. NOT a mirror of the `papers` SQL table — the DB row stores only normalized metadata (title, authors, abstract, field, submitted_date, dates). Do not derive serde or TS types from this schema for the DB layer.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "arxiv_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "authors": {
+      "type": "array",
+      "items": { "$ref": "author.schema.json" },
+      "minItems": 1
+    },
+    "abstract": { "type": "string" },
+    "field": { "type": "string", "description": "Primary arXiv category, e.g. cs.AI" },
+    "sections": {
+      "type": "array",
+      "description": "Ordered list of paper sections after PDF/LaTeX extraction.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "heading": { "type": "string" },
+          "level": { "type": "integer", "minimum": 1, "maximum": 6 },
+          "text": { "type": "string" }
+        },
+        "required": ["heading", "text"]
+      }
+    },
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "caption": { "type": "string" },
+          "image_path": { "type": "string" }
+        },
+        "required": ["id"]
+      }
+    },
+    "bibliography": {
+      "type": "array",
+      "items": { "$ref": "citation.schema.json" }
+    }
+  },
+  "required": ["arxiv_id", "title", "authors"]
+}

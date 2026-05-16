@@ -1,0 +1,19 @@
+[package]
+name = "grokrxiv-schemas"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed artifact schemas (serde structs) shared across the GrokRxiv pipeline."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+schemars = { version = "0.8", optional = true }
+
+[features]
+default = []
+json-schema = ["schemars"]

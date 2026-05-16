@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/review_bundle_metadata.schema.json",
+  "title": "ReviewBundleMetadata",
+  "description": "metadata.json embedded inside every review bundle.zip. Self-contained: lists every artifact in the bundle and the provenance needed to reproduce the run.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "bundle_id": { "type": "string", "format": "uuid" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "paper": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arxiv_id": { "type": "string" },
+        "title": { "type": "string" },
+        "authors": {
+          "type": "array",
+          "items": { "$ref": "author.schema.json" }
+        },
+        "field": { "type": "string" }
+      },
+      "required": ["arxiv_id", "title", "authors"]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "awaiting_moderation",
+            "in_review",
+            "pr_open",
+            "published",
+            "corrected",
+            "withdrawn"
+          ]
+        },
+        "github_pr_url": { "type": "string", "format": "uri" },
+        "github_review_url": { "type": "string", "format": "uri" },
+        "models_used": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "meta_review": { "$ref": "meta_review.schema.json" }
+      },
+      "required": ["id", "status", "models_used", "meta_review"]
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Every file shipped inside the bundle, with sha256 for tamper-detection.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": ["html", "markdown", "latex", "pdf", "json", "image", "other"]
+          },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        },
+        "required": ["path", "kind", "sha256"]
+      },
+      "minItems": 1
+    },
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "agent_record.schema.json" }
+    },
+    "verifier_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "json_schema": { "type": "string", "enum": ["pass", "warn", "fail"] },
+        "citation_existence": { "type": "string", "enum": ["pass", "warn", "fail"] },
+        "tone": { "type": "string", "enum": ["pass", "warn", "fail"] },
+        "render": { "type": "string", "enum": ["pass", "warn", "fail"] },
+        "cross_agent_consistency": { "type": "string", "enum": ["pass", "warn", "fail"] }
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "generated_at",
+    "paper",
+    "review",
+    "artifacts",
+    "agents"
+  ]
+}

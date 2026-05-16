@@ -1,0 +1,26 @@
+# GrokRxiv tone verifier banlist (MVP, rule-based).
+# Lines starting with `#` are comments. One word/phrase per line.
+# Matched as case-insensitive whole words.
+
+# Ad-hominem
+stupid
+idiot
+idiotic
+moron
+moronic
+incompetent
+lazy
+
+# Insulting / dismissive
+garbage
+trash
+worthless
+clueless
+
+# Profanity (light list; expand as needed)
+damn
+hell
+shit
+fuck
+fucking
+bullshit

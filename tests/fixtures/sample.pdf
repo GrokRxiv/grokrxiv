@@ -1,0 +1,64 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1571 >>
+stream
+BT /F1 11 Tf 60 750 Td 13 TL
+(1. Introduction) Tj T*
+(This is a synthetic GrokRxiv test fixture PDF used by the) Tj T*
+(preview-acceptance Playwright spec. It is deliberately small \(so the repo) Tj T*
+(stays lean\) but contains enough extractable text to clear the orchestrator's) Tj T*
+(200-character low-text guard. The paper is not real research.) Tj T*
+() Tj T*
+(2. Background) Tj T*
+(GrokRxiv runs a typed multi-agent review DAG. The preview) Tj T*
+(path extracts text, runs a single Claude pass to produce a structured) Tj T*
+(MetaReview, and returns the rendered HTML plus a base64-encoded zip bundle) Tj T*
+(of all artifacts. This fixture exercises every step of that pipeline.) Tj T*
+() Tj T*
+(3. Methodology) Tj T*
+(The fixture's only methodology is: place enough plain ASCII) Tj T*
+(text into a one-page PDF that the pdf-extract Rust crate yields more than) Tj T*
+(two hundred characters when invoked on the bytes.) Tj T*
+() Tj T*
+(4. Results) Tj T*
+(No results are claimed. This is a smoke fixture, not a paper.) Tj T*
+() Tj T*
+(5. Discussion) Tj T*
+(Downstream tests assert that an upload of this fixture) Tj T*
+(reaches the 'Sample ready' state in the web dropzone, that the resulting) Tj T*
+(iframe renders a TL;DR section, and that the download bundle anchor points) Tj T*
+(at a non-trivial blob: URL.) Tj T*
+() Tj T*
+(6. Conclusion) Tj T*
+(If you are reading this from inside the Playwright trace,) Tj T*
+(the upload-acceptance test ran. If you are reading it inside the iframe) Tj T*
+(preview, the rendered HTML pipeline executed end-to-end.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000317 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1939
+%%EOF

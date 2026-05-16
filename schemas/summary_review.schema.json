@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/summary_review.schema.json",
+  "title": "SummaryReview",
+  "description": "Plain-language summary of the paper produced by the `summary` agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "plain_language_summary": {
+      "type": "string",
+      "description": "One- to three-paragraph summary aimed at a literate non-expert."
+    },
+    "key_contributions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "audience": {
+      "type": ["string", "null"],
+      "description": "Who the paper is most useful to."
+    },
+    "tldr": {
+      "type": "string",
+      "description": "Single-sentence elevator pitch."
+    }
+  },
+  "required": ["plain_language_summary", "key_contributions", "audience", "tldr"]
+}

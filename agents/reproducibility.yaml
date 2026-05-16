@@ -1,0 +1,15 @@
+id: reproducibility
+role: "Assess code/data availability and reproducibility of empirical claims."
+provider: openai
+# OpenAI-family routes use provider `openai` in this repo; there is no separate
+# `codex` provider alias.
+model: gpt-5.5
+prompt_template: prompts/reproducibility.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/reproducibility_review.schema.json
+verifiers:
+  - json_schema
+  - tone
+max_retries: 2
+timeout_secs: 120
+escalation: skip

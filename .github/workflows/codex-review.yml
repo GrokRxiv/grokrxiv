@@ -1,0 +1,125 @@
+# Codex AI review — runs on every PR. Required to pass before merge.
+# Uses the Anthropic API (Claude) to review the PR diff and post a structured
+# comment. Fails the check if Claude reports any "blocking" severity issues.
+# Requires repo secret ANTHROPIC_API_KEY. If the secret is absent the job
+# fails closed so the gate is never silently bypassed.
+
+name: codex-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: codex-review-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: codex review
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify ANTHROPIC_API_KEY is configured
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is required for the codex review gate."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Compute PR diff
+        run: |
+          git fetch --no-tags origin "$PR_BASE_SHA" "$PR_HEAD_SHA"
+          git diff --unified=3 "$PR_BASE_SHA"..."$PR_HEAD_SHA" > pr.diff
+          bytes=$(wc -c < pr.diff)
+          echo "diff bytes: $bytes"
+          if [ "$bytes" -gt 200000 ]; then
+            echo "Diff is large; truncating to 200 KB for the review prompt."
+            head -c 200000 pr.diff > pr.diff.trunc && mv pr.diff.trunc pr.diff
+          fi
+
+      - name: Call Claude for review
+        run: |
+          # Build a JSON request to Anthropic /v1/messages asking for a JSON
+          # response with {summary, blocking: [...], warnings: [...]}.
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+
+          diff = open("pr.diff").read()
+          system = (
+            "You are Codex, a strict but constructive code reviewer for GrokRxiv. "
+            "Read the diff. Reply with VALID JSON ONLY, no prose, schema:\n"
+            "{ \"summary\": string, "
+            "  \"blocking\": [{\"file\": string, \"line\": number|null, \"issue\": string}], "
+            "  \"warnings\": [{\"file\": string, \"line\": number|null, \"issue\": string}] }\n"
+            "Only flag actually material problems: bugs, security holes, RLS leaks, "
+            "secret leaks, broken contracts, missing error handling at boundaries, "
+            "or things that violate the project's locked decisions (private-first "
+            "moderation, arXiv compliance, JSON-schema parity)."
+          )
+          body = {
+            "model": "claude-opus-4-7",
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [{"role": "user", "content": f"Diff:\n```diff\n{diff}\n```"}]
+          }
+          req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(body).encode(),
+            headers={
+              "Content-Type": "application/json",
+              "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+              "anthropic-version": "2023-06-01",
+            },
+          )
+          with urllib.request.urlopen(req, timeout=180) as r:
+            resp = json.load(r)
+          text = "".join(b.get("text", "") for b in resp.get("content", []))
+          # Tolerate optional code fences.
+          text = text.strip()
+          if text.startswith("```"):
+            text = text.strip("`").split("\n", 1)[1].rsplit("```", 1)[0]
+          review = json.loads(text)
+          json.dump(review, open("review.json", "w"))
+          print(json.dumps(review, indent=2))
+          PY
+
+      - name: Post review comment
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          r = json.load(open("review.json"))
+          parts = ["## Codex review\n", r.get("summary", ""), ""]
+          if r.get("blocking"):
+            parts.append("### Blocking")
+            for b in r["blocking"]:
+              loc = f"`{b.get('file','?')}`" + (f":{b['line']}" if b.get("line") else "")
+              parts.append(f"- {loc} — {b['issue']}")
+            parts.append("")
+          if r.get("warnings"):
+            parts.append("### Warnings")
+            for w in r["warnings"]:
+              loc = f"`{w.get('file','?')}`" + (f":{w['line']}" if w.get("line") else "")
+              parts.append(f"- {loc} — {w['issue']}")
+          body = "\n".join(parts)
+          open("comment.md", "w").write(body)
+          PY
+          gh pr comment "$PR_NUMBER" --body-file comment.md
+
+      - name: Fail if blocking issues
+        run: |
+          python3 -c "import json,sys; r=json.load(open('review.json')); sys.exit(1 if r.get('blocking') else 0)"

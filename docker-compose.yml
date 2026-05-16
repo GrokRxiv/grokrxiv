@@ -1,0 +1,103 @@
+# GrokRxiv — local-dev stack (orchestrator + web).
+#
+# Postgres + Storage + Auth + Studio are provided by the Supabase CLI's own
+# Docker stack (`supabase start`), which mirrors the production environment.
+# This compose file adds the two services that aren't part of Supabase:
+#
+#   * orchestrator — Rust HTTP API + tokio supervisor (the same binary you
+#                    get from `cargo build`). Mounts ./agents, ./schemas,
+#                    ./prompts read-only.
+#   * web          — Next.js dev server with HMR.
+#
+# Usage:
+#
+#   # 1. Start Supabase (Postgres on :54322, Storage on :54321, Studio :54323):
+#   supabase start
+#
+#   # 2. Provide your API key(s):
+#   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+#
+#   # 3. Bring up orchestrator + web:
+#   docker compose up --build
+#
+#   # Visit http://localhost:3000.
+#
+# This stack is for local development only. Production deploys use Vercel
+# (web), Railway (orchestrator), and Supabase Cloud (Postgres + Storage).
+
+name: grokrxiv
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: infra/docker/orchestrator.Dockerfile
+    container_name: grokrxiv-orchestrator
+    environment:
+      ORCHESTRATOR_BIND: "0.0.0.0:8080"
+      # Talk to the Supabase CLI's Postgres on the host. `host.docker.internal`
+      # resolves to the macOS/Windows host's loopback inside containers.
+      DATABASE_URL: "postgres://postgres:postgres@host.docker.internal:54322/postgres"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GOOGLE_GENERATIVE_AI_API_KEY: "${GOOGLE_GENERATIVE_AI_API_KEY:-}"
+      VLLM_BASE_URL: "${VLLM_BASE_URL:-}"
+      ARXIV_USER_AGENT: "${ARXIV_USER_AGENT:-GrokRxiv/0.1 (+local-dev)}"
+      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-local-dev-secret}"
+      WEB_REVALIDATE_URL: "http://web:3000/api/revalidate"
+      REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
+      PREVIEW_MODEL: "${PREVIEW_MODEL:-claude-opus-4-7}"
+      RUST_LOG: "info,grokrxiv_orchestrator=debug"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./agents:/etc/grokrxiv/agents:ro
+      - ./schemas:/etc/grokrxiv/schemas:ro
+      - ./prompts:/etc/grokrxiv/prompts:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/orchestrator", "doctor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  web:
+    image: node:20-alpine
+    container_name: grokrxiv-web
+    depends_on:
+      orchestrator:
+        condition: service_started
+    working_dir: /workspace/apps/web
+    environment:
+      NEXT_PUBLIC_SITE_URL: "http://localhost:3000"
+      # Inside the container, host services are reached via host.docker.internal.
+      NEXT_PUBLIC_SUPABASE_URL: "${NEXT_PUBLIC_SUPABASE_URL:-http://host.docker.internal:54321}"
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}"
+      SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:-}"
+      # Inside the docker network, web reaches the orchestrator by service name.
+      ORCHESTRATOR_INTERNAL_URL: "http://orchestrator:8080"
+      REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
+      GROKRXIV_PUBLIC_URL: "${GROKRXIV_PUBLIC_URL:-https://grokrxiv.org}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./:/workspace
+      - web-node-modules:/workspace/apps/web/node_modules
+      - web-root-node-modules:/workspace/node_modules
+    ports:
+      - "3000:3000"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        corepack enable
+        corepack prepare pnpm@9.12.0 --activate
+        pnpm install --prefer-frozen-lockfile
+        pnpm --filter @grokrxiv/web dev
+
+volumes:
+  web-node-modules:
+  web-root-node-modules:

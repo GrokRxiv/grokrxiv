@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/citation.schema.json",
+  "title": "Citation",
+  "description": "A single bibliographic reference extracted from or asserted by the paper.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "type": "string",
+      "description": "Stable in-paper citation key (e.g., bibtex key or numeric label)."
+    },
+    "raw": {
+      "type": ["string", "null"],
+      "description": "Raw bibliography string as it appears in the paper."
+    },
+    "title": { "type": ["string", "null"] },
+    "authors": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "year": { "type": ["integer", "null"] },
+    "venue": { "type": ["string", "null"] },
+    "doi": { "type": ["string", "null"] },
+    "arxiv_id": { "type": ["string", "null"] },
+    "url": { "type": ["string", "null"] }
+  },
+  "required": ["key", "raw", "title", "authors", "year", "venue", "doi", "arxiv_id", "url"]
+}

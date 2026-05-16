@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/novelty_review.schema.json",
+  "title": "NoveltyReview",
+  "description": "Related-work delta and novelty assessment.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "novelty_score": {
+      "type": "number",
+      "description": "0 = pure replication, 1 = substantially novel contribution."
+    },
+    "related_work": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "citation_key": { "type": ["string", "null"] },
+          "title": { "type": "string" },
+          "relation": {
+            "type": "string",
+            "enum": ["builds_on", "competing", "prior_art", "orthogonal"]
+          },
+          "delta": {
+            "type": "string",
+            "description": "What this paper adds or differs from the related work."
+          }
+        },
+        "required": ["citation_key", "title", "relation", "delta"]
+      }
+    },
+    "missing_prior_art": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "reason": { "type": "string" }
+        },
+        "required": ["title", "reason"]
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["significant", "incremental", "marginal", "duplicative"]
+    },
+    "confidence": { "type": "number" }
+  },
+  "required": ["novelty_score", "related_work", "missing_prior_art", "verdict", "confidence"]
+}
