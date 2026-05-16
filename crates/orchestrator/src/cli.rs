@@ -1204,8 +1204,8 @@ async fn approve_impl(
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
     // Read the review row + the joined paper for branch + field + arxiv_id.
-    let row: (Uuid, String, String, Option<String>) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field \
+    let row: (Uuid, String, String, Option<String>, Uuid) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id \
          from reviews r join papers p on p.id = r.paper_id \
          where r.id = $1",
     )
@@ -1213,7 +1213,7 @@ async fn approve_impl(
     .fetch_one(pool)
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field) = row;
+    let (_, arxiv_id, title, field, paper_id) = row;
 
     // Read on-disk artifacts produced by the M1 run.
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1305,6 +1305,9 @@ async fn approve_impl(
         .execute(pool)
         .await;
 
+    // FP-RPT3c C2 — close any superseded PR for this paper.
+    close_superseded_pr_if_any_cli(pool, &publisher, &admin, paper_id, &pr_url).await;
+
     if json {
         println!(
             "{}",
@@ -1314,6 +1317,60 @@ async fn approve_impl(
         println!("pr_url={pr_url}");
     }
     Ok(())
+}
+
+/// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
+/// `grokrxiv approve` CLI command (which doesn't go through the supervisor
+/// background worker) also closes the prior PR on supersede.
+#[cfg(feature = "grokrxiv-publisher")]
+async fn close_superseded_pr_if_any_cli(
+    pool: &sqlx::PgPool,
+    publisher: &grokrxiv_publisher::GithubPublisher,
+    admin: &grokrxiv_publisher::AdminCaller,
+    paper_id: Uuid,
+    new_pr_url: &str,
+) {
+    let prior = match crate::db::fetch_superseded_pr_url(pool, paper_id).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::warn!(%paper_id, err = %e, "supersede: fetch_superseded_pr_url failed");
+            return;
+        }
+    };
+    let Some(prior_url) = prior else { return };
+    let Some(prior_n) = grokrxiv_publisher::parse_pr_number(&prior_url) else {
+        tracing::warn!(
+            %paper_id,
+            %prior_url,
+            "supersede: prior PR URL did not parse to a numeric id (simulated PR?)",
+        );
+        return;
+    };
+    let new_n_str = grokrxiv_publisher::parse_pr_number(new_pr_url)
+        .map(|n| format!("#{n}"))
+        .unwrap_or_else(|| new_pr_url.to_string());
+    let comment = format!(
+        "Superseded by {new_n_str}.\n\
+         The new review run incorporated extraction-pipeline fixes and the prior review row was transitioned to status='withdrawn'.",
+    );
+    if let Err(e) = publisher
+        .close_pr_with_comment(admin, prior_n, &comment)
+        .await
+    {
+        tracing::warn!(
+            %paper_id,
+            prior_pr = %prior_url,
+            err = %e,
+            "supersede: close_pr_with_comment failed — leaving prior PR as-is (likely already closed)",
+        );
+    } else {
+        tracing::info!(
+            %paper_id,
+            prior_pr = %prior_url,
+            new_pr = %new_pr_url,
+            "supersede: closed prior PR",
+        );
+    }
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]

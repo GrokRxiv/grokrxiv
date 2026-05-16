@@ -25,6 +25,8 @@ export async function listPublishedReviewsAnon(opts: {
   limit?: number;
   page?: number;
   field?: string;
+  /** Optional case-insensitive search over `papers.title` and `papers.abstract`. */
+  q?: string;
 }): Promise<{ data: ReviewWithPaper[]; total: number }> {
   if (!isSupabaseConfigured()) return { data: [], total: 0 };
   const supabase = client();
@@ -32,17 +34,29 @@ export async function listPublishedReviewsAnon(opts: {
   const page = opts.page ?? 1;
   const from = (page - 1) * limit;
   const to = from + limit - 1;
-  let q = supabase
+  // Filtering / searching on the joined paper table requires `!inner` so the
+  // ILIKE / EQ runs server-side and the count is accurate.
+  const wantsPaperFilter =
+    (opts.field && opts.field.length > 0) || (opts.q && opts.q.length > 0);
+  const paperSelect = wantsPaperFilter ? "paper:papers!inner(*)" : "paper:papers(*)";
+  let qb = supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*)",
+      `id, paper_id, status, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, ${paperSelect}`,
       { count: "exact" },
     )
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .order("published_at", { ascending: false, nullsFirst: false })
     .range(from, to);
-  if (opts.field) q = q.eq("papers.field", opts.field);
-  const { data, count, error } = await q;
+  if (opts.field) qb = qb.eq("paper.field", opts.field);
+  if (opts.q && opts.q.length > 0) {
+    const needle = opts.q.replace(/[%_]/g, "\\$&");
+    qb = qb.or(
+      `title.ilike.%${needle}%,abstract.ilike.%${needle}%`,
+      { foreignTable: "paper" },
+    );
+  }
+  const { data, count, error } = await qb;
   if (error || !data) return { data: [], total: 0 };
   return {
     data: data as unknown as ReviewWithPaper[],

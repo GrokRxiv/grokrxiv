@@ -151,6 +151,45 @@ impl GithubPublisher {
         Ok(pr.html_url)
     }
 
+    /// Close an existing pull request and post a single explanatory comment.
+    /// Used by the supersede flow: when a paper is re-reviewed and a new PR
+    /// opens, the prior PR is closed with a pointer to the new one.
+    ///
+    /// Errors are returned but the caller should treat them as non-fatal —
+    /// see callers in `supervisor::run_publish` and `cli::approve_impl`.
+    pub async fn close_pr_with_comment(
+        &self,
+        _caller: &AdminCaller,
+        pr_number: u64,
+        comment_md: &str,
+    ) -> Result<()> {
+        // 1) Close the PR. Updates use PATCH /repos/{owner}/{repo}/pulls/{N}
+        //    with `state: "closed"`.
+        let _patched: PullRequestResponse = self
+            .api_patch(
+                &format!("pulls/{pr_number}"),
+                &PullRequestUpdate {
+                    state: "closed".into(),
+                },
+            )
+            .await
+            .with_context(|| format!("close PR #{pr_number}"))?;
+
+        // 2) Post the explanatory comment. PRs use the *issues* comments
+        //    endpoint — see https://docs.github.com/en/rest/issues/comments.
+        let _: IssueCommentResponse = self
+            .api_post(
+                &format!("issues/{pr_number}/comments"),
+                &IssueCommentRequest {
+                    body: comment_md.to_string(),
+                },
+            )
+            .await
+            .with_context(|| format!("comment on PR #{pr_number}"))?;
+
+        Ok(())
+    }
+
     async fn api_get<T: serde::de::DeserializeOwned>(&self, suffix: &str) -> Result<T> {
         let url = format!("/repos/{}/{}/{suffix}", self.owner, self.repo);
         self.client.get(&url, None::<&()>).await.map_err(Into::into)
@@ -164,6 +203,30 @@ impl GithubPublisher {
         let url = format!("/repos/{}/{}/{suffix}", self.owner, self.repo);
         self.client.post(&url, Some(body)).await.map_err(Into::into)
     }
+
+    async fn api_patch<B: Serialize + ?Sized, T: serde::de::DeserializeOwned>(
+        &self,
+        suffix: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = format!("/repos/{}/{}/{suffix}", self.owner, self.repo);
+        self.client
+            .patch(&url, Some(body))
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Parse a GitHub pull-request URL like `https://github.com/<owner>/<repo>/pull/123`
+/// and return the trailing `<N>` as a `u64`. Returns `None` if the URL doesn't
+/// match the expected shape — callers should treat that as "nothing to close".
+pub fn parse_pr_number(url: &str) -> Option<u64> {
+    let (_, tail) = url.rsplit_once("/pull/")?;
+    // Strip any trailing query / anchor / slash if present.
+    let n_str = tail
+        .split(|c: char| c == '/' || c == '?' || c == '#')
+        .next()?;
+    n_str.parse::<u64>().ok()
 }
 
 /// Inputs to [`GithubPublisher::open_review_pr`].
@@ -281,7 +344,25 @@ struct PullRequestRequest {
 
 #[derive(Deserialize)]
 struct PullRequestResponse {
+    #[serde(default)]
     html_url: String,
+}
+
+#[derive(Serialize)]
+struct PullRequestUpdate {
+    state: String,
+}
+
+#[derive(Serialize)]
+struct IssueCommentRequest {
+    body: String,
+}
+
+#[derive(Deserialize)]
+struct IssueCommentResponse {
+    #[allow(dead_code)]
+    #[serde(default)]
+    id: u64,
 }
 
 #[cfg(test)]
@@ -393,6 +474,81 @@ mod tests {
         .expect("build");
         assert!(body.starts_with("Looks fine."));
         assert!(body.ends_with("grokrxiv-review-id: 33333333-3333-3333-3333-333333333333\n"));
+    }
+
+    #[tokio::test]
+    async fn close_pr_with_comment_fires_patch_and_comment() {
+        let server = MockServer::start().await;
+
+        let patch_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let comment_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let patch_hits_c = patch_hits.clone();
+        let comment_hits_c = comment_hits.clone();
+
+        Mock::given(method("PATCH"))
+            .and(path_regex(r"^/repos/GrokRxiv/reviews/pulls/17$"))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |_: &wiremock::Request| {
+                patch_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"html_url":"https://github.com/GrokRxiv/reviews/pull/17","state":"closed"}"#,
+                )
+            })
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/repos/GrokRxiv/reviews/issues/17/comments$"))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |_: &wiremock::Request| {
+                comment_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(201).set_body_string(r#"{"id":1234}"#)
+            })
+            .mount(&server)
+            .await;
+
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "reviews");
+        let admin = AdminCaller::from_admin_endpoint();
+        publisher
+            .close_pr_with_comment(
+                &admin,
+                17,
+                "Superseded by #42.\nThe new review run incorporated extraction-pipeline fixes.",
+            )
+            .await
+            .expect("close should succeed");
+
+        assert_eq!(
+            patch_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "PATCH /pulls/17 must fire exactly once",
+        );
+        assert_eq!(
+            comment_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "POST /issues/17/comments must fire exactly once",
+        );
+    }
+
+    #[test]
+    fn parse_pr_number_extracts_trailing_id() {
+        assert_eq!(
+            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/17"),
+            Some(17),
+        );
+        assert_eq!(
+            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/123/files"),
+            Some(123),
+        );
+        assert_eq!(
+            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/9?w=1"),
+            Some(9),
+        );
+        assert_eq!(parse_pr_number("https://example.com/no-pull-segment"), None);
+        assert_eq!(
+            parse_pr_number("https://github.com/GrokRxiv/reviews/pull/SIMULATED-abc123"),
+            None,
+        );
     }
 
     #[test]
