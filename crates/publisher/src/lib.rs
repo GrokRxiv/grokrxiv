@@ -13,7 +13,7 @@
 pub mod github;
 pub mod supabase;
 
-pub use github::{GithubPublisher, OpenReviewPr};
+pub use github::{parse_pr_number, GithubPublisher, OpenReviewPr};
 pub use supabase::SupabaseStorage;
 
 /// Zero-sized capability token proving the caller came in through the

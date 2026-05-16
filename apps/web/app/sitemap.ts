@@ -9,6 +9,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   "use cache";
   const base: MetadataRoute.Sitemap = [
     { url: `${CANONICAL_URL}/`, changeFrequency: "hourly", priority: 1 },
+    { url: `${CANONICAL_URL}/reviews`, changeFrequency: "hourly", priority: 0.9 },
     { url: `${CANONICAL_URL}/about`, changeFrequency: "monthly", priority: 0.6 },
     { url: `${CANONICAL_URL}/api-docs`, changeFrequency: "monthly", priority: 0.5 },
     { url: `${CANONICAL_URL}/legal`, changeFrequency: "yearly", priority: 0.3 },

@@ -1559,8 +1559,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .ref_id
         .ok_or_else(|| anyhow::anyhow!("run_publish: ref_id (review id) required"))?;
 
-    let row: (Uuid, String, String, Option<String>) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field \
+    let row: (Uuid, String, String, Option<String>, Uuid) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id \
          from reviews r join papers p on p.id = r.paper_id \
          where r.id = $1",
     )
@@ -1568,7 +1568,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     .fetch_one(pool)
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field) = row;
+    let (_, arxiv_id, title, field, paper_id) = row;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
@@ -1643,7 +1643,66 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .execute(pool)
         .await;
     tracing::info!(%review_id, %pr_url, "publish complete");
+
+    // FP-RPT3c C2 — close any superseded PR for this paper.
+    close_superseded_pr_if_any(pool, &publisher, &admin, paper_id, &pr_url).await;
     Ok(())
+}
+
+/// Look up the most recently superseded review's PR URL for this paper and,
+/// if found, close that PR on the moderation repo with a comment pointing at
+/// the new one. Failures here are logged but never fail the new-PR open path
+/// — the PR may already have been closed by hand, the GitHub token may have
+/// lost scope, etc.
+#[cfg(feature = "grokrxiv-publisher")]
+async fn close_superseded_pr_if_any(
+    pool: &sqlx::PgPool,
+    publisher: &grokrxiv_publisher::GithubPublisher,
+    admin: &grokrxiv_publisher::AdminCaller,
+    paper_id: Uuid,
+    new_pr_url: &str,
+) {
+    let prior = match crate::db::fetch_superseded_pr_url(pool, paper_id).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::warn!(%paper_id, err = %e, "supersede: fetch_superseded_pr_url failed");
+            return;
+        }
+    };
+    let Some(prior_url) = prior else { return };
+    let Some(prior_n) = grokrxiv_publisher::parse_pr_number(&prior_url) else {
+        tracing::warn!(
+            %paper_id,
+            %prior_url,
+            "supersede: prior PR URL did not parse to a numeric id (simulated PR?)",
+        );
+        return;
+    };
+    let new_n_str = grokrxiv_publisher::parse_pr_number(new_pr_url)
+        .map(|n| format!("#{n}"))
+        .unwrap_or_else(|| new_pr_url.to_string());
+    let comment = format!(
+        "Superseded by {new_n_str}.\n\
+         The new review run incorporated extraction-pipeline fixes and the prior review row was transitioned to status='withdrawn'.",
+    );
+    if let Err(e) = publisher
+        .close_pr_with_comment(admin, prior_n, &comment)
+        .await
+    {
+        tracing::warn!(
+            %paper_id,
+            prior_pr = %prior_url,
+            err = %e,
+            "supersede: close_pr_with_comment failed — leaving prior PR as-is (likely already closed)",
+        );
+    } else {
+        tracing::info!(
+            %paper_id,
+            prior_pr = %prior_url,
+            new_pr = %new_pr_url,
+            "supersede: closed prior PR",
+        );
+    }
 }
 
 // Stub variants used when the matching feature isn't active so the supervisor
