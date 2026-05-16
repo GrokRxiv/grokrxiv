@@ -38,8 +38,13 @@ pub fn submit_schema() -> Value {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "abstract", "sections", "bibliography", "figures", "equations"],
+        "required": ["title", "abstract", "sections", "bibliography", "figures", "equations", "reason"],
         "properties": {
+            "reason": {
+                "description": "Optional escape hatch (FP-RPT3a A4): set to `paper_is_blank` when the PDF carries no extractable content.",
+                "type": ["string", "null"],
+                "enum": [null, "paper_is_blank"]
+            },
             "title": { "type": "string" },
             "abstract": { "type": "string" },
             "sections": {
@@ -318,7 +323,8 @@ mod tests {
             ],
             "equations": [
                 { "id": "eq1", "tex": "x^2", "context": "Intro" }
-            ]
+            ],
+            "reason": null
         })
     }
 

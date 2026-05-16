@@ -3,8 +3,13 @@
   "title": "VlmExtractorAgent submit payload",
   "type": "object",
   "additionalProperties": false,
-  "required": ["title", "abstract", "sections", "bibliography", "figures", "equations"],
+  "required": ["title", "abstract", "sections", "bibliography", "figures", "equations", "reason"],
   "properties": {
+    "reason": {
+      "description": "Optional escape hatch: set to `paper_is_blank` when the PDF carries no extractable content so the semantic-success check (FP-RPT3a A4) does not mark the stage degraded.",
+      "type": ["string", "null"],
+      "enum": [null, "paper_is_blank"]
+    },
     "title": { "type": "string" },
     "abstract": { "type": "string" },
     "sections": {

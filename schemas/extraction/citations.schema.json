@@ -4,8 +4,13 @@
   "description": "Enriched citation graph emitted by the Stage 7 CitationContextualizerAgent. Each entry pairs a bibliography key with its resolved metadata and a list of use-sites classified by semantic role.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["citations"],
+  "required": ["citations", "reason"],
   "properties": {
+    "reason": {
+      "description": "Optional escape hatch: set to `no_citations_in_paper` when the paper genuinely has no bibliography entries so the semantic-success check (FP-RPT3a A4) does not mark the stage degraded.",
+      "type": ["string", "null"],
+      "enum": [null, "no_citations_in_paper", "paper_is_blank"]
+    },
     "citations": {
       "type": "array",
       "items": {

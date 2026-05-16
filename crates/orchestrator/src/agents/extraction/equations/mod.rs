@@ -305,7 +305,8 @@ mod agent_tests {
                 "mathml": "<math><mi>a</mi><mo>+</mo><mi>b</mi></math>",
                 "semantic_tag": "algebraic",
                 "hash": "deadbeef00000000"
-            }]
+            }],
+            "reason": null
         });
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_call("list_equations", json!({}), "c1"),

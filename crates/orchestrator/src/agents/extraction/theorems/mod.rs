@@ -305,14 +305,16 @@ mod tests {
         let good = json!({
             "theorem_graph": [
                 {"id":"T1","type":"theorem","statement":"X.","section":"sec-2","depends_on":[]}
-            ]
+            ],
+            "reason": null
         });
         assert!(validator.validate(&good).is_ok());
         // Missing depends_on -> invalid.
         let bad = json!({
             "theorem_graph": [
                 {"id":"T1","type":"theorem","statement":"X.","section":"sec-2"}
-            ]
+            ],
+            "reason": null
         });
         assert!(validator.validate(&bad).is_err());
     }
@@ -358,7 +360,8 @@ mod tests {
                     "section": "sec-2",
                     "depends_on": ["thm:foo"]
                 }
-            ]
+            ],
+            "reason": null
         });
 
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![

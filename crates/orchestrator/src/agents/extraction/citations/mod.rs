@@ -43,8 +43,13 @@ fn output_schema() -> Value {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "additionalProperties": false,
-        "required": ["citations"],
+        "required": ["citations", "reason"],
         "properties": {
+            "reason": {
+                "description": "Optional escape hatch (FP-RPT3a A4).",
+                "type": ["string", "null"],
+                "enum": [null, "no_citations_in_paper", "paper_is_blank"]
+            },
             "citations": {
                 "type": "array",
                 "items": {
@@ -360,7 +365,8 @@ mod tests {
                     "sentence": "We build on [@foo2024].",
                     "use": "extends"
                 }]
-            }]
+            }],
+            "reason": null
         });
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_call("list_citation_sites", json!({}), "c1"),

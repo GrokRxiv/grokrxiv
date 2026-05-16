@@ -5,8 +5,13 @@
   "description": "Output of the TheoremGraphExtractorAgent (Stage 6). One entry per theorem-like block (theorem/lemma/proposition/corollary/definition/proof/remark/example) with a depends_on edge list resolved from \\ref{}.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["theorem_graph"],
+  "required": ["theorem_graph", "reason"],
   "properties": {
+    "reason": {
+      "description": "Optional escape hatch: set to `no_theorems_in_paper` when the paper genuinely has no theorem-like blocks so the semantic-success check (FP-RPT3a A4) does not mark the stage degraded.",
+      "type": ["string", "null"],
+      "enum": [null, "no_theorems_in_paper", "paper_is_blank"]
+    },
     "theorem_graph": {
       "type": "array",
       "items": {

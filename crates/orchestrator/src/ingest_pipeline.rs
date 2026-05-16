@@ -244,6 +244,15 @@ async fn run_inner(
     // `tool_call_log.jsonl` via `paper_artifacts.rs:297`.
     let mut tool_call_log_entries: Vec<Value> = Vec::new();
 
+    // Concatenated TeX source from the unpacked workdir; used by the
+    // semantic-success check for the macros stage to differentiate
+    // "paper genuinely has no macros" from "tool failed to find them".
+    let raw_tex_concat = read_workdir_tex_concat(workdir.path());
+    let semantic_ctx = SemanticSuccessCtx {
+        extract: &extract,
+        raw_tex: raw_tex_concat.as_deref(),
+    };
+
     // --- Stage 3 (VLM) — only when no TeX path was available ---
     if !opts.should_skip("vlm") && staged.source_tarball.is_none() {
         let vlm = VlmExtractorAgent::new();
@@ -262,7 +271,13 @@ async fn run_inner(
             apply_vlm(&mut bundle, &out.output);
         }
         push_tool_calls(&mut tool_call_log_entries, "vlm", outcome.as_ref());
-        record_agent_outcome(&mut stage_reports, "vlm", outcome.as_ref(), opts);
+        record_agent_outcome(
+            &mut stage_reports,
+            "vlm",
+            outcome.as_ref(),
+            opts,
+            &semantic_ctx,
+        );
     } else if staged.source_tarball.is_some() {
         stage_reports.push(StageReport::skipped("vlm", "tex path active"));
     }
@@ -321,10 +336,34 @@ async fn run_inner(
     push_tool_calls(&mut tool_call_log_entries, "theorems", theorems_res.as_ref());
     push_tool_calls(&mut tool_call_log_entries, "citations", citations_res.as_ref());
 
-    record_agent_outcome(&mut stage_reports, "macros", macros_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "equations", equations_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "theorems", theorems_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "citations", citations_res.as_ref(), opts);
+    record_agent_outcome(
+        &mut stage_reports,
+        "macros",
+        macros_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "equations",
+        equations_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "theorems",
+        theorems_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "citations",
+        citations_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
 
     apply_equations(&mut bundle, arxiv_id, equations_res);
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
@@ -551,6 +590,30 @@ fn unpack_tarball(workdir: &Path, bytes: &[u8]) -> Result<()> {
     let mut archive = tar::Archive::new(&mut decoder);
     archive.unpack(workdir).context("unpack tar.gz")?;
     Ok(())
+}
+
+/// Read every `*.tex` file in the workdir and return their concatenation.
+/// Used by the FP-RPT3a A4 semantic-success check for the macros stage —
+/// if the concatenated source contains any `\newcommand` / `\def` /
+/// `\renewcommand` / `\DeclareMathOperator` but the agent submitted
+/// `expansions_applied: []`, we flag the stage as degraded.
+fn read_workdir_tex_concat(workdir: &Path) -> Option<String> {
+    let mut out = String::new();
+    let entries = std::fs::read_dir(workdir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("tex") {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                out.push_str(&contents);
+                out.push('\n');
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Write the rendered `body.md` into the extraction workdir so Stages 4-7's
@@ -1079,6 +1142,7 @@ fn record_agent_outcome(
     name: &str,
     res: Option<&StageOutcome>,
     opts: &IngestOptions,
+    semantic_ctx: &SemanticSuccessCtx<'_>,
 ) {
     if opts.should_skip(name) {
         out.push(StageReport::skipped(name, "skipped via --skip-stages"));
@@ -1087,6 +1151,7 @@ fn record_agent_outcome(
     match res {
         Some(outcome) => {
             let summary = tool_call_summary(&outcome.tool_calls);
+            let semantic = semantic_check(name, &outcome.output, semantic_ctx);
             let mut report = StageReport::ok(
                 name,
                 Some(outcome.latency_ms),
@@ -1097,12 +1162,148 @@ fn record_agent_outcome(
             report.runner = Some(outcome.runner.clone());
             report.iters = Some(outcome.iters);
             report.tool_call_summary = Some(summary);
+            if let Some(warning) = semantic {
+                report.status = "degraded".into();
+                report.warnings.push(warning);
+            }
             out.push(report);
         }
         None => {
             out.push(StageReport::degraded(name, "agent returned no output"));
         }
     }
+}
+
+/// Context the semantic-success check needs to decide whether an "empty"
+/// submission is genuine or a tool failure.
+pub(crate) struct SemanticSuccessCtx<'a> {
+    pub extract: &'a PaperExtract,
+    /// Concatenated TeX source from the unpacked tarball when present;
+    /// used by the macros rule to detect any `\newcommand` etc.
+    pub raw_tex: Option<&'a str>,
+}
+
+/// Returns `Some(warning_message)` if the stage's output looks empty when
+/// the paper clearly has content of the relevant kind. Agents can override
+/// by adding the optional top-level `reason: "no_<thing>_in_paper"` field
+/// — when set to a non-null value we accept the empty submission and skip
+/// the warning.
+fn semantic_check(
+    name: &str,
+    output: &Value,
+    ctx: &SemanticSuccessCtx<'_>,
+) -> Option<String> {
+    // Honour the agent's explicit override.
+    let reason = output.get("reason").and_then(Value::as_str);
+    if reason.is_some_and(|r| !r.is_empty()) {
+        return None;
+    }
+
+    match name {
+        "equations" => {
+            let n = output
+                .get("equations")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let sections = ctx.extract.sections.len();
+            if n == 0 && sections > 0 {
+                Some(format!(
+                    "agent submitted {{equations:[]}} but paper has {sections} sections — likely tool failure"
+                ))
+            } else {
+                None
+            }
+        }
+        "theorems" => {
+            let n = output
+                .get("theorem_graph")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or_else(|| {
+                    output
+                        .get("nodes")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                });
+            if n == 0 && has_theorem_like_heading(ctx.extract) {
+                Some(
+                    "agent submitted empty theorem_graph but paper has theorem/lemma/proposition/corollary/proof/definition headings — likely tool failure".to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "citations" => {
+            let n = output
+                .get("citations")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let bib = ctx.extract.bibliography.len();
+            if n == 0 && bib > 0 {
+                Some(format!(
+                    "agent submitted {{citations:[]}} but paper has {bib} bibliography entries — likely tool failure"
+                ))
+            } else {
+                None
+            }
+        }
+        "macros" => {
+            let n = output
+                .get("expansions_applied")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if n == 0 && ctx.raw_tex.is_some_and(raw_tex_has_macro_definition) {
+                Some(
+                    "agent submitted empty expansions_applied but raw TeX contains \\newcommand/\\def/\\renewcommand/\\DeclareMathOperator — likely tool failure".to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "vlm" => {
+            let title = output.get("title").and_then(Value::as_str).unwrap_or("");
+            let abstract_ = output.get("abstract").and_then(Value::as_str).unwrap_or("");
+            if title.is_empty() || abstract_.is_empty() {
+                Some("VLM extractor produced an empty title or abstract".to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn has_theorem_like_heading(extract: &PaperExtract) -> bool {
+    // Cheap word-level scan; the patterns are anchored to common LaTeX/markdown
+    // styles so we don't need a regex compile per check.
+    let needles = [
+        "theorem",
+        "lemma",
+        "proposition",
+        "corollary",
+        "proof",
+        "definition",
+    ];
+    for s in &extract.sections {
+        let h = s.heading.to_lowercase();
+        for n in &needles {
+            if h.contains(n) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn raw_tex_has_macro_definition(tex: &str) -> bool {
+    tex.contains("\\newcommand")
+        || tex.contains("\\def")
+        || tex.contains("\\renewcommand")
+        || tex.contains("\\DeclareMathOperator")
 }
 
 /// Build a compact `{count, by_tool}` summary of a stage's tool-call audit
@@ -1300,4 +1501,171 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
         bibliography,
         source_format: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for FP-RPT3a A4 semantic-success rules
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod a4_tests {
+    use super::*;
+    use grokrxiv_schemas::{Citation, PaperExtract, Section};
+
+    fn extract_with(sections: Vec<&str>, bib: usize) -> PaperExtract {
+        PaperExtract {
+            arxiv_id: "test".into(),
+            title: "t".into(),
+            authors: vec![],
+            abstract_: "a".into(),
+            field: None,
+            sections: sections
+                .into_iter()
+                .map(|h| Section {
+                    heading: h.into(),
+                    body_markdown: "body".into(),
+                })
+                .collect(),
+            figures: vec![],
+            bibliography: (0..bib)
+                .map(|i| Citation {
+                    raw: format!("ref{i}"),
+                    doi: None,
+                    arxiv_id: None,
+                    title: None,
+                })
+                .collect(),
+            source_format: None,
+        }
+    }
+
+    #[test]
+    fn equations_empty_with_sections_is_degraded() {
+        let extract = extract_with(vec!["Intro", "Methods", "Results"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "equations": [], "reason": null });
+        let w = semantic_check("equations", &out, &ctx);
+        assert!(w.is_some(), "should warn when 3 sections but 0 equations");
+        assert!(w.unwrap().contains("3 sections"));
+    }
+
+    #[test]
+    fn equations_reason_overrides_warning() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "equations": [], "reason": "no_equations_in_paper" });
+        assert!(semantic_check("equations", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn theorems_warns_when_theorem_heading_present() {
+        let extract = extract_with(vec!["Introduction", "Main Theorem", "Proof"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "theorem_graph": [], "reason": null });
+        assert!(semantic_check("theorems", &out, &ctx).is_some());
+    }
+
+    #[test]
+    fn theorems_no_warning_when_no_theorem_headings() {
+        let extract = extract_with(vec!["Intro", "Discussion"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "theorem_graph": [], "reason": null });
+        assert!(semantic_check("theorems", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn citations_warns_when_bibliography_nonempty() {
+        let extract = extract_with(vec!["Intro"], 5);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "citations": [], "reason": null });
+        let w = semantic_check("citations", &out, &ctx);
+        assert!(w.is_some());
+        assert!(w.unwrap().contains("5 bibliography entries"));
+    }
+
+    #[test]
+    fn macros_warns_when_raw_tex_has_newcommand() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let tex = "\\newcommand{\\R}{\\mathbb{R}}\n";
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: Some(tex),
+        };
+        let out = json!({ "normalized_tex": "x", "expansions_applied": [], "reason": null });
+        assert!(semantic_check("macros", &out, &ctx).is_some());
+    }
+
+    #[test]
+    fn macros_quiet_when_raw_tex_has_no_definitions() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let tex = "Plain TeX with no definitions.\n";
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: Some(tex),
+        };
+        let out = json!({ "normalized_tex": "x", "expansions_applied": [], "reason": null });
+        assert!(semantic_check("macros", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn vlm_warns_when_title_or_abstract_empty() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "title": "", "abstract": "x" });
+        assert!(semantic_check("vlm", &out, &ctx).is_some());
+        let out2 = json!({ "title": "x", "abstract": "" });
+        assert!(semantic_check("vlm", &out2, &ctx).is_some());
+        let out3 = json!({ "title": "x", "abstract": "y" });
+        assert!(semantic_check("vlm", &out3, &ctx).is_none());
+    }
+
+    #[test]
+    fn record_agent_outcome_marks_status_degraded_with_warning() {
+        let extract = extract_with(vec!["Intro", "Methods"], 7);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let outcome = StageOutcome {
+            output: json!({ "citations": [], "reason": null }),
+            tool_calls: vec![],
+            cost_usd: 0.0,
+            latency_ms: 0,
+            iters: 1,
+            model: "test-model".into(),
+            runner: "api".into(),
+        };
+        let mut reports: Vec<StageReport> = Vec::new();
+        let opts = IngestOptions::default();
+        record_agent_outcome(&mut reports, "citations", Some(&outcome), &opts, &ctx);
+        assert_eq!(reports.len(), 1);
+        let r = &reports[0];
+        assert_eq!(r.status, "degraded");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("7 bibliography entries")),
+            "warnings: {:?}",
+            r.warnings
+        );
+        // metadata still surfaces on a degraded stage.
+        assert_eq!(r.model.as_deref(), Some("test-model"));
+        assert_eq!(r.runner.as_deref(), Some("api"));
+        assert_eq!(r.iters, Some(1));
+    }
 }

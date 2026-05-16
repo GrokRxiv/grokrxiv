@@ -300,7 +300,8 @@ Then \R^n is the space.";
             "normalized_tex": "Then \\mathbb{R}^n is the space.",
             "expansions_applied": [
                 { "name": "\\R", "body": "\\mathbb{R}", "occurrences": 1 }
-            ]
+            ],
+            "reason": null
         });
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_call("list_files", json!({"glob": "**/*.tex"}), "c1"),
