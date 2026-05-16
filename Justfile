@@ -89,6 +89,10 @@ serve:
 doctor:
     grokrxiv doctor
 
+# Install pandoc + latexml (TeX→Markdown + semantic-AST pipeline).
+setup-pandoc:
+    brew install pandoc latexml
+
 dev:
     @echo "Starting web (3000) + orchestrator (8080) in parallel..."
     (trap 'kill 0' SIGINT; \

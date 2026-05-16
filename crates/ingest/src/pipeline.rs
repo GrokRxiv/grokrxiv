@@ -33,7 +33,7 @@ pub async fn ingest(arxiv_id: &str) -> Result<PaperExtract> {
 
     // 1. Try TeX source first.
     let tex_result = match download_source(&source_url(arxiv_id)).await {
-        Ok(bytes) => match parse_bundle(&bytes) {
+        Ok(bytes) => match parse_bundle(&bytes).await {
             Ok(extract) => Some(extract),
             Err(e) => {
                 warn!(error = %e, arxiv_id, "tex source parse failed; falling back to pdf");
