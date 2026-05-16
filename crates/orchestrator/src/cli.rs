@@ -96,6 +96,13 @@ pub struct Cli {
     /// `config show` flag: print provider secrets in cleartext.
     #[arg(long, global = true)]
     pub show_secrets: bool,
+    /// Track 8a: dump the rendered prompt for each role to
+    /// `./debug-prompts/<arxiv_id>/<role>.md` after the review finishes.
+    /// Exports `GROKRXIV_DEBUG_PROMPT_DIR` for the supervisor; the supervisor
+    /// writes one file per role per paper. The directory is printed at the
+    /// end of the run.
+    #[arg(long, global = true)]
+    pub debug_prompt: bool,
 }
 
 /// Hint for `grokrxiv review <source>` when the source can't be inferred.
@@ -376,8 +383,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let show_secrets = cli.show_secrets;
     let profile = cli.profile.clone();
     let dry_run = cli.dry_run;
+    let debug_prompt = cli.debug_prompt;
 
-    match cli.command.unwrap_or(Command::Serve) {
+    // Track 8a: when `--debug-prompt` is set, export the directory the
+    // supervisor will dump rendered prompts to. Resolved before the env is
+    // forked off into spawned tasks. Default is `./debug-prompts`.
+    let debug_prompt_dir: Option<std::path::PathBuf> = if debug_prompt {
+        let dir = std::path::PathBuf::from("debug-prompts");
+        std::env::set_var("GROKRXIV_DEBUG_PROMPT_DIR", &dir);
+        Some(dir)
+    } else {
+        std::env::remove_var("GROKRXIV_DEBUG_PROMPT_DIR");
+        None
+    };
+
+    let command = cli.command.unwrap_or(Command::Serve);
+    let is_review_command = matches!(
+        command,
+        Command::Review { .. }
+            | Command::Ingest { .. }
+            | Command::ReReview { .. }
+            | Command::IngestRange { .. }
+            | Command::IngestDaily
+    );
+
+    let result = match command {
         Command::Serve => super::serve::run().await,
         Command::Doctor => {
             let code = doctor_mod::doctor(&profile, json).await?;
@@ -421,7 +451,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => correct(review_id, &rationale_md).await,
         Command::Open { review_id } => open_review(review_id),
         Command::TailJobs { kind, state } => tail_jobs(kind, state).await,
+    };
+
+    if let Some(dir) = debug_prompt_dir.as_ref() {
+        if is_review_command {
+            println!("debug_prompt_dir={}", dir.display());
+        }
     }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
