@@ -14,6 +14,7 @@ use grokrxiv_llm_adapter::{
     ChatRequest, ContentPart, LLMProvider, Message as LlmMessage, ResponseFormat, Role,
     ToolChatRequest,
 };
+use tracing::warn;
 
 use crate::agents::extraction::ToolCtx;
 use crate::agents::traits::AgentRunner;
@@ -79,12 +80,27 @@ impl AgentRunner for ApiRunner {
                 // transient burst-reject to "OpenAI rate limit"; that's
                 // why the wrapping exists.
                 anyhow::anyhow!(
-                    "provider={} model={} role={:?}: {e}",
+                    "provider={} model={} role={:?}: {e:#}",
                     spec.provider,
                     spec.model,
                     spec.role
                 )
             })?;
+
+        if resp.text.trim().is_empty() {
+            let raw_preview = serde_json::to_string(&resp.raw).unwrap_or_default();
+            warn!(
+                provider = %spec.provider,
+                model = %spec.model,
+                role = ?spec.role,
+                content_len = resp.text.len(),
+                tokens_in = resp.usage.tokens_in,
+                tokens_out = resp.usage.tokens_out,
+                finish_reason = ?resp.finish_reason,
+                raw_preview = %&raw_preview.chars().take(800).collect::<String>(),
+                "provider returned empty text body"
+            );
+        }
 
         let (output, usage) = match parse_strict_json(&resp.text) {
             Ok(v) => (v, resp.usage),
@@ -103,12 +119,27 @@ impl AgentRunner for ApiRunner {
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(
-                            "provider={} model={} role={:?} (corrective retry): {e}",
+                            "provider={} model={} role={:?} (corrective retry): {e:#}",
                             spec.provider,
                             spec.model,
                             spec.role
                         )
                     })?;
+                if retry.text.trim().is_empty() {
+                    let raw_preview = serde_json::to_string(&retry.raw).unwrap_or_default();
+                    warn!(
+                        provider = %spec.provider,
+                        model = %spec.model,
+                        role = ?spec.role,
+                        attempt = "corrective_retry",
+                        content_len = retry.text.len(),
+                        tokens_in = retry.usage.tokens_in,
+                        tokens_out = retry.usage.tokens_out,
+                        finish_reason = ?retry.finish_reason,
+                        raw_preview = %&raw_preview.chars().take(800).collect::<String>(),
+                        "provider returned empty text body on corrective retry"
+                    );
+                }
                 match parse_strict_json(&retry.text) {
                     Ok(v) => (v, retry.usage),
                     Err(e) => {
