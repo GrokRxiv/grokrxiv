@@ -252,13 +252,22 @@ fn build_command(
     let program = runner.binary_for(&spec.provider)?;
     let role_slug = role_slug(spec.role);
 
+    // A7: for claude AND gemini, the JSON-only output contract is enforced
+    // via the `/grokrxiv-review` skill which both CLIs resolve from a
+    // `/skill-name` prefix on the prompt body (neither CLI has a `--skill`
+    // flag). codex uses `--output-schema` instead, so no prefix there.
+    let provider_prompt = if spec.provider == "claude" || spec.provider == "gemini" {
+        format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    };
+
     let (args, schema_path) = match spec.provider.as_str() {
         "claude" => {
             // Pass the prompt via stdin (`-p -`) to avoid argv-length limits.
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
-            // invoked via `/skill-name` at the start of the prompt itself
-            // (the help text says "Skills still resolve via /skill-name").
-            // The prompt prefix is prepended in `build_prompt_for_claude`.
+            // invoked via `/skill-name` at the start of the prompt body
+            // (help text: "Skills still resolve via /skill-name").
             let args = vec![
                 "-p".to_string(),
                 "-".to_string(),
@@ -282,32 +291,38 @@ fn build_command(
                 "--json".to_string(),
                 "--output-schema".to_string(),
                 path.to_string_lossy().into_owned(),
-                prompt.to_string(),
+                provider_prompt.clone(),
             ];
             (args, Some(path))
         }
         "gemini" => {
+            // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
+            // model output in `{"session_id": ..., "response": "<inner>",
+            // "stats": {...}}` — `extract_json_text` unwraps that wrapper
+            // before schema validation. Without `-o json` gemini emits prose,
+            // which forces every CLI Gemini call into the corrective-retry
+            // path (B3). The prompt itself carries the `/grokrxiv-review`
+            // prefix so the model knows to emit only the role-schema JSON.
             let args = vec![
                 "-p".to_string(),
-                prompt.to_string(),
+                provider_prompt.clone(),
                 "--model".to_string(),
                 spec.model.clone(),
                 "--approval-mode".to_string(),
                 "plan".to_string(),
+                "-o".to_string(),
+                "json".to_string(),
             ];
             (args, None)
         }
         other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
     };
 
-    // For claude, prepend the `/grokrxiv-review` skill invocation to the
-    // prompt so claude resolves the skill (the help text confirms skills
-    // are invoked via `/skill-name`, not a CLI flag).
-    let stdin_payload = if spec.provider == "claude" {
-        format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
-    } else {
-        prompt.to_string()
-    };
+    // `stdin_payload` is only consumed by the claude branch (which reads
+    // `-p -`); for codex and gemini the prompt is already in argv. We still
+    // populate the field for symmetry / debugging so `BuiltCommand` always
+    // captures the prompt the model will actually see.
+    let stdin_payload = provider_prompt;
 
     Ok(BuiltCommand {
         program,
@@ -421,6 +436,21 @@ fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
                 return trimmed.to_string();
             };
             match wrapper.get("result") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => trimmed.to_string(),
+            }
+        }
+        "gemini" => {
+            // A7: `gemini -o json` returns
+            // {"session_id": "...", "response": "<inner>", "stats": {...}}.
+            // Unwrap the `response` field; fall back to the raw body if the
+            // shape isn't what we expect (e.g. gemini emitted an error blob
+            // we'd rather surface verbatim than swallow).
+            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                return trimmed.to_string();
+            };
+            match wrapper.get("response") {
                 Some(serde_json::Value::String(s)) => s.clone(),
                 Some(other) => other.to_string(),
                 None => trimmed.to_string(),
@@ -701,11 +731,27 @@ mod tests {
         );
 
         let args = &built.args;
+
+        // A7 lock-in #1: `-p` carries the prompt body with the
+        // `/grokrxiv-review` skill prefix prepended. The prompt is passed as
+        // a positional argv value (gemini's headless mode reads from `-p`),
+        // not stdin — so the exact string we send is what the model sees.
+        let prompt_idx = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in gemini args");
+        let prompt_value = args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in gemini args");
         assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-p" && w[1] == "the prompt body"),
-            "missing -p <prompt> pair in {args:?}"
+            prompt_value.starts_with("/grokrxiv-review"),
+            "expected -p value to start with /grokrxiv-review, got {prompt_value:?}"
         );
+        assert!(
+            prompt_value.contains("the prompt body"),
+            "expected -p value to contain the original prompt, got {prompt_value:?}"
+        );
+
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"),
@@ -716,6 +762,25 @@ mod tests {
                 .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
             "missing --approval-mode plan pair in {args:?}"
         );
+
+        // A7 lock-in #2: `-o json` is set so gemini emits the
+        // `{"session_id": ..., "response": "<inner>", "stats": {...}}`
+        // wrapper that `extract_json_text` unwraps below. Without this flag
+        // gemini emits prose and every CLI Gemini call falls into the
+        // corrective-retry path (B3).
+        assert!(
+            args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
+            "missing `-o json` pair in {args:?}"
+        );
+
+        // A7 lock-in #3: stdin_payload mirrors the argv prompt (so the field
+        // can be used for debug logs of the exact text the model received).
+        assert!(
+            built.stdin_payload.starts_with("/grokrxiv-review"),
+            "stdin_payload should also carry the /grokrxiv-review prefix, got {:?}",
+            built.stdin_payload
+        );
+
         assert!(built.schema_path.is_none());
     }
 
@@ -753,6 +818,36 @@ mod tests {
         .to_string();
         let got = extract_json_text("claude", &wrapped);
         assert_eq!(got, "{\"foo\":\"bar\"}");
+    }
+
+    /// A7: Gemini's `-o json` mode wraps the model output in a
+    /// `{"session_id": "...", "response": "<inner>", "stats": {...}}`
+    /// envelope. `extract_json_text("gemini", ...)` must return only the
+    /// inner string so downstream JSON-schema validation runs against the
+    /// model's actual reply, not the envelope. Sample shape captured live
+    /// from `gemini -o json -p '...'`.
+    #[test]
+    fn test_extract_json_text_unwraps_gemini_wrapper() {
+        let wrapped = serde_json::json!({
+            "session_id": "abc-123",
+            "response": "{\"summary\":\"ok\"}",
+            "stats": {
+                "models": {"gemini-2.5-flash": {"tokens": {"total": 99}}}
+            }
+        })
+        .to_string();
+        let got = extract_json_text("gemini", &wrapped);
+        assert_eq!(got, "{\"summary\":\"ok\"}");
+    }
+
+    /// When the gemini wrapper is missing (e.g. an error blob slipped
+    /// through), fall back to returning the raw stdout so the operator can
+    /// see whatever gemini actually emitted.
+    #[test]
+    fn test_extract_json_text_gemini_falls_back_when_no_wrapper() {
+        let raw = "not a json wrapper";
+        let got = extract_json_text("gemini", raw);
+        assert_eq!(got, raw);
     }
 
     #[test]
