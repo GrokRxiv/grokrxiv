@@ -303,7 +303,6 @@ impl GeminiProvider {
 
         let mut text_parts: Vec<String> = Vec::new();
         let mut tool_calls: Vec<ProviderToolCall> = Vec::new();
-        let mut counter = 0usize;
         for p in parts {
             if let Some(text) = p.get("text").and_then(Value::as_str) {
                 text_parts.push(text.to_string());
@@ -315,9 +314,17 @@ impl GeminiProvider {
                     .unwrap_or_default()
                     .to_string();
                 let arguments = fc.get("args").cloned().unwrap_or(Value::Null);
-                counter += 1;
+                // Gemini's `functionResponse.name` semantics require us to
+                // echo the function NAME back on the user-turn tool result,
+                // NOT a synthesised id. The extraction loop forwards the
+                // ProviderToolCall.id verbatim into `tool_use_id` and
+                // `tool_message_to_gemini` then maps that into
+                // `functionResponse.name`. If we synthesise `call_N` here,
+                // every multi-turn Gemini conversation breaks at iter 2
+                // because the response name doesn't match any registered
+                // function declaration.
                 tool_calls.push(ProviderToolCall {
-                    id: format!("call_{counter}"),
+                    id: name.clone(),
                     name,
                     arguments,
                 });
