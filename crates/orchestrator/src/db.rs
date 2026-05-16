@@ -143,12 +143,33 @@ pub async fn upsert_paper(
 
 /// Insert a new review row for `paper_id` at `awaiting_moderation`. Returns
 /// the new review id.
+///
+/// Any pre-existing review for the same paper in a non-terminal status is
+/// transitioned to `withdrawn` first, so re-reviewing a paper SUPERSEDES the
+/// old review rather than creating a parallel one. The previous reviews'
+/// row ids (and `pr_url` from `moderation_queue`, if any) are returned so the
+/// caller can close the old PR on the GitHub mirror.
 pub async fn insert_review(
     pool: &PgPool,
     paper_id: Uuid,
     models_used: Value,
     meta_review: Option<Value>,
 ) -> sqlx::Result<Uuid> {
+    let mut tx = pool.begin().await?;
+
+    // Withdraw any active reviews for this paper. 'draft', 'in_review',
+    // 'awaiting_moderation', 'pr_open', 'published', 'corrected' all count as
+    // active and get superseded by the new run; 'withdrawn' rows are left as-is.
+    sqlx::query(
+        "update reviews \
+         set status='withdrawn', superseded_at=now() \
+         where paper_id=$1 \
+           and status in ('draft','in_review','awaiting_moderation','pr_open','published','corrected')",
+    )
+    .bind(paper_id)
+    .execute(&mut *tx)
+    .await?;
+
     let id = Uuid::new_v4();
     let status = serde_plain(&ReviewStatus::AwaitingModeration);
     sqlx::query(
@@ -160,9 +181,34 @@ pub async fn insert_review(
     .bind(status)
     .bind(models_used)
     .bind(meta_review)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
     Ok(id)
+}
+
+/// Look up the PR URL of the most recently superseded review for a paper, if
+/// any. The publisher uses this to close the stale PR on `grokrxiv-reviews`
+/// after the new review's PR is opened.
+pub async fn fetch_superseded_pr_url(
+    pool: &PgPool,
+    paper_id: Uuid,
+) -> sqlx::Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "select mq.pr_url \
+         from reviews r \
+         left join moderation_queue mq on mq.review_id = r.id \
+         where r.paper_id = $1 \
+           and r.status = 'withdrawn' \
+           and r.superseded_at is not null \
+         order by r.superseded_at desc \
+         limit 1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(url,)| url))
 }
 
 /// Persist a single specialist agent's output against a review.
