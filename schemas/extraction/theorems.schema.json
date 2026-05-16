@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://grokrxiv.org/schemas/extraction/theorems.schema.json",
+  "title": "TheoremGraph",
+  "description": "Output of the TheoremGraphExtractorAgent (Stage 6). One entry per theorem-like block (theorem/lemma/proposition/corollary/definition/proof/remark/example) with a depends_on edge list resolved from \\ref{}.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["theorem_graph"],
+  "properties": {
+    "theorem_graph": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "statement", "section", "depends_on"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": [
+              "theorem",
+              "lemma",
+              "proposition",
+              "corollary",
+              "definition",
+              "proof",
+              "remark",
+              "example"
+            ]
+          },
+          "statement": { "type": "string" },
+          "section": { "type": "string" },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

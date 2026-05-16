@@ -49,6 +49,7 @@ octocrab = { workspace = true }
 clap = { version = "=4.5.20", features = ["derive", "string"] }
 clap_lex = "=0.7.2"
 toml = "0.8"
+regex = "1"
 
 grokrxiv-schemas = { path = "../schemas" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }
