@@ -37,6 +37,19 @@ pub struct WorkItem {
 /// Maximum retry attempts for any single job.
 pub const MAX_RETRIES: u32 = 3;
 
+/// FP-RPT3b B2: minimum number of specialists that must hold a
+/// `verifier_status = pass` for the meta-reviewer node to be considered safe
+/// to run. With fewer than this many passing specialists the synthesis input
+/// is degenerate (one or two prose blobs cannot anchor a balanced meta-review),
+/// so the DAG aborts and the review row is moved to `withdrawn` with a
+/// structured `meta_review.error` describing the failure.
+///
+/// Threshold = 3 of 5: lenient enough to ride out a single transient provider
+/// error or a soft verifier warning rebadged as a fail, strict enough that the
+/// meta-reviewer never sees the corner case of "one specialist plus
+/// hallucination".
+pub const MIN_SPECIALIST_QUORUM: usize = 3;
+
 /// In-memory supervisor handle.
 #[derive(Clone)]
 pub struct Supervisor {
@@ -476,6 +489,11 @@ pub async fn run_review_dag(
     // Persist + verify each specialist's output against its role-specific
     // verifier ladder. The ladder uses the role-specific JSON schema as its
     // first rung (replacing the previous permissive-object workaround).
+    //
+    // FP-RPT3b B2: capture each role's `verifier_status` so the quorum check
+    // below can refuse to run meta_reviewer on degenerate input.
+    let mut specialist_verifier_status: Vec<(AgentRole, Option<VerifierStatus>)> =
+        Vec::with_capacity(specialist_results.len());
     for (role, output, tokens_in, tokens_out, latency_ms, used_model, cache_hit) in
         &specialist_results
     {
@@ -512,7 +530,59 @@ pub async fn run_review_dag(
             )
             .await;
         }
+        specialist_verifier_status.push((*role, v_status));
         tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
+    }
+
+    // FP-RPT3b B2: quorum gate. Count specialists holding `verifier_status =
+    // pass`; if fewer than `MIN_SPECIALIST_QUORUM` (3) cleared the bar, abort
+    // before the meta-reviewer runs. The synthesis node has no fallback
+    // heuristic for partial-failure input — running it would produce a
+    // confidently-wrong MetaReview anchored on whatever survived. We persist
+    // a structured error onto `reviews.meta_review` and let the DAG bail.
+    let passing_roles: Vec<&'static str> = specialist_verifier_status
+        .iter()
+        .filter(|(_, s)| *s == Some(VerifierStatus::Pass))
+        .map(|(r, _)| role_slug(*r))
+        .collect();
+    if passing_roles.len() < MIN_SPECIALIST_QUORUM {
+        let err_payload = json!({
+            "error": format!(
+                "quorum: only {} of 5 specialists passed verification (need >= {})",
+                passing_roles.len(),
+                MIN_SPECIALIST_QUORUM,
+            ),
+            "passing_roles": passing_roles,
+            "min_quorum": MIN_SPECIALIST_QUORUM,
+        });
+        // Persist the structured error onto the review row so operators can
+        // see why meta was skipped. Keeping this in the same shape as a
+        // successful meta-review (top-level JSON) lets the moderation UI
+        // surface it without a schema change.
+        sqlx::query("update reviews set meta_review = $2 where id = $1")
+            .bind(review_id)
+            .bind(err_payload.clone())
+            .execute(pool)
+            .await?;
+        // The DB enum has no `failed` state (see migration 20250513000001 +
+        // ReviewStatus comment): the closest signal is `withdrawn`, matching
+        // the catch-all at the outer error path (~L666). The structured
+        // `meta_review.error` is what makes this debuggable.
+        let _ = crate::db::set_review_status(
+            pool,
+            review_id,
+            grokrxiv_schemas::ReviewStatus::Withdrawn,
+            None,
+        )
+        .await;
+        tracing::warn!(
+            %review_id,
+            passing = passing_roles.len(),
+            quorum = MIN_SPECIALIST_QUORUM,
+            error = %err_payload.get("error").and_then(|v| v.as_str()).unwrap_or(""),
+            "FP-RPT3b B2: specialist quorum not met; skipping meta_reviewer"
+        );
+        return Ok(());
     }
 
     // Meta-reviewer: real synthesis node. FP6 A1: feed it ONLY the five
@@ -1080,10 +1150,22 @@ fn dump_debug_prompt(
 
 fn build_meta_synthesis_prompt(meta_input: &serde_json::Value) -> String {
     let pretty = serde_json::to_string_pretty(meta_input).unwrap_or_else(|_| "{}".into());
+    // FP-RPT3b B1: the meta_input contract (built at supervisor.rs:527-529)
+    // contains only the `specialists` key. The paper extract is intentionally
+    // omitted (FP6 A1) because each specialist already incorporated the paper
+    // into their reasoning. The previous prompt template lied about a `paper`
+    // key that does not exist in the JSON the model receives.
     format!(
-        "Below is a JSON object with two keys: `paper` (the ingested paper extract) \
-         and `specialists` (the five specialist reviewers' outputs keyed by their \
-         role slug: summary, technical_correctness, novelty, reproducibility, citation).\n\n\
+        "Below is a JSON object with one key, `specialists`, containing the five \
+         specialist reviewers' outputs keyed by role slug:\n\
+         - `summary` → {{tldr, plain_language_summary, key_contributions[], audience}}\n\
+         - `technical_correctness` → {{claims[], overall_correctness, confidence}}\n\
+         - `novelty` → {{verdict, novelty_score, related_work[], missing_prior_art[], confidence}}\n\
+         - `reproducibility` → {{reproducibility_score, code_availability, code_url, \
+            data_availability, data_url, environment, concerns[], confidence}}\n\
+         - `citation` → {{entries[], missing_references[], summary, confidence}}\n\n\
+         The paper extract itself is NOT included — each specialist already reasoned \
+         over it. Treat the specialist outputs as your sole evidence.\n\n\
          {pretty}\n\n\
          Task: Synthesize these five specialist reviews into a single MetaReview JSON \
          object with fields summary, strengths, weaknesses, questions, recommendation \
@@ -1993,5 +2075,156 @@ mod tests {
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
         );
+    }
+
+    /// FP-RPT3b B1 regression: the meta-synthesis prompt must NOT document a
+    /// `paper` input key. The meta_input contract (supervisor.rs:527–529) only
+    /// contains `specialists`; advertising a `paper` key misleads the model
+    /// into hallucinating evidence it does not have.
+    #[test]
+    fn meta_synthesis_prompt_does_not_document_paper_key() {
+        let meta_input = serde_json::json!({
+            "specialists": {
+                "summary": {"tldr": "x"},
+                "technical_correctness": {"claims": [], "overall_correctness": "pass", "confidence": 0.5},
+                "novelty": {"verdict": "moderate", "novelty_score": 0.5, "related_work": [], "missing_prior_art": [], "confidence": 0.5},
+                "reproducibility": {"reproducibility_score": 0.5, "code_availability": "present", "code_url": null, "data_availability": "present", "data_url": null, "environment": "x", "concerns": [], "confidence": 0.5},
+                "citation": {"entries": [], "missing_references": [], "summary": "x", "confidence": 0.5},
+            }
+        });
+        let prompt = build_meta_synthesis_prompt(&meta_input);
+
+        // The prose preamble must not list `paper` as one of the documented
+        // input keys. We check both the backtick-quoted form and the
+        // "two keys" phrase that the stale template used.
+        assert!(
+            !prompt.contains("`paper`"),
+            "prompt must not document a `paper` input key, got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("two keys"),
+            "prompt must say `one key`, not `two keys`, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("one key"),
+            "prompt should describe the single-key shape, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("`specialists`"),
+            "prompt should document the `specialists` key, got: {prompt}"
+        );
+    }
+
+    /// FP-RPT3b B2: the quorum constant is 3-of-5 by design. Lock the value
+    /// so a thoughtless edit can't quietly degrade the gate.
+    #[test]
+    fn min_specialist_quorum_is_three() {
+        assert_eq!(MIN_SPECIALIST_QUORUM, 3);
+    }
+
+    /// FP-RPT3b B2: helper that mirrors the quorum-count predicate in
+    /// `run_review_dag`. Counts specialists with `verifier_status = pass` and
+    /// compares against `MIN_SPECIALIST_QUORUM`.
+    fn quorum_passes(statuses: &[Option<grokrxiv_schemas::VerifierStatus>]) -> bool {
+        statuses
+            .iter()
+            .filter(|s| **s == Some(grokrxiv_schemas::VerifierStatus::Pass))
+            .count()
+            >= MIN_SPECIALIST_QUORUM
+    }
+
+    #[test]
+    fn quorum_fires_when_only_two_specialists_pass() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Fail),
+            Some(VerifierStatus::Warn),
+            None,
+        ];
+        assert!(
+            !quorum_passes(&statuses),
+            "quorum should NOT pass at 2-of-5; meta_reviewer must be skipped"
+        );
+    }
+
+    #[test]
+    fn quorum_allows_meta_when_all_five_specialists_pass() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![Some(VerifierStatus::Pass); 5];
+        assert!(
+            quorum_passes(&statuses),
+            "quorum should pass at 5-of-5"
+        );
+    }
+
+    #[test]
+    fn quorum_allows_meta_at_exactly_three_pass() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Warn),
+            Some(VerifierStatus::Fail),
+        ];
+        assert!(
+            quorum_passes(&statuses),
+            "quorum should pass at exactly the 3-of-5 threshold"
+        );
+    }
+
+    /// Common case: one specialist degrades (e.g., transient API hiccup);
+    /// the other four pass. Meta should still run.
+    #[test]
+    fn quorum_allows_meta_when_four_of_five_pass() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Fail),
+        ];
+        assert!(
+            quorum_passes(&statuses),
+            "4-of-5 should clear the quorum; meta runs on the surviving four"
+        );
+    }
+
+    /// FP-RPT3b B2: lock the structured error payload shape so the
+    /// moderation UI / log scrapers can parse it without speculative
+    /// schema-guessing.
+    #[test]
+    fn quorum_error_payload_is_structured() {
+        let passing_roles: Vec<&'static str> = vec!["summary", "novelty"];
+        let payload = serde_json::json!({
+            "error": format!(
+                "quorum: only {} of 5 specialists passed verification (need >= {})",
+                passing_roles.len(),
+                MIN_SPECIALIST_QUORUM,
+            ),
+            "passing_roles": passing_roles,
+            "min_quorum": MIN_SPECIALIST_QUORUM,
+        });
+
+        let err_msg = payload
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("error key is a string");
+        assert!(
+            err_msg.starts_with("quorum: only 2 of 5 specialists passed"),
+            "structured error message has wrong prefix: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("need >= 3"),
+            "structured error must surface the quorum threshold: {err_msg}"
+        );
+        assert_eq!(
+            payload["passing_roles"],
+            serde_json::json!(["summary", "novelty"])
+        );
+        assert_eq!(payload["min_quorum"], serde_json::json!(3));
     }
 }

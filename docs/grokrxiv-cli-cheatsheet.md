@@ -55,7 +55,9 @@ Cost: ~$0.18–0.22 per paper (Tier-2 Anthropic + OpenAI + paid Gemini Pro).
 
 ### B. CLI path (local subscriptions: claude / codex / gemini)
 
-Spawns `claude -p`, `codex exec`, or `gemini -p` based on each role's YAML `provider:` field. Auth comes from `~/.claude`, `~/.codex`, `~/.config/gemini` on the host. Zero API spend; uses your existing subscriptions.
+Spawns `claude -p`, `codex exec`, or `gemini -p` based on each role's YAML `provider:` field. Auth comes from `~/.claude.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json` (+ `~/.config/gcloud/application_default_credentials.json`) on the host.
+
+> **B4 (FP-RPT3b) cost note:** marginal cost is per-provider, not uniformly $0. Claude Max + Pro = $0 against the subscription cap; codex on ChatGPT Plus uses the Plus tier's bundled allowance; gemini routes through your gcloud `quota_project_id` and is billed per token. `CliRunner` logs `event=cli_auth_path` once per provider per run so you can verify. See `feedback_cli_path_is_cost_control.md` in this operator's memory for the full audit.
 
 ```sh
 # Pure CLI (every role goes through the local CLI of its provider)

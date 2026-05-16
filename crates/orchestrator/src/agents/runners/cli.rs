@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -23,6 +24,65 @@ use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
+
+/// FP-RPT3b B5: structured errors returned by `CliRunner::run`. Wrapped into
+/// the `anyhow::Error` chain so callers can detect them via
+/// `err.downcast_ref::<CliError>()` and decide whether to fall back to a
+/// different runner instead of bubbling up as a generic subprocess failure.
+#[derive(Debug)]
+pub enum CliError {
+    /// The CLI subprocess emitted a known quota / rate-limit / billing signal
+    /// on stderr. `provider` is the provider tag (`claude`, `openai`,
+    /// `gemini`); `message` is the first 200 chars of stderr for forensics.
+    QuotaExhausted {
+        /// Provider tag from `AgentSpec.provider`.
+        provider: String,
+        /// First slice of the subprocess stderr that triggered the
+        /// classification. Truncated to 200 chars.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CliError::QuotaExhausted { provider, message } => write!(
+                f,
+                "{provider} CLI quota exhausted. Set --runner api or wait for reset. \
+                 stderr={message}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CliError {}
+
+/// Match a subprocess stderr buffer against the known quota / rate-limit /
+/// billing signatures (case-insensitive substring). Returns `Some(snippet)`
+/// when a signature matches, where `snippet` is the first 200 chars of stderr
+/// suitable for inclusion in the structured error message.
+fn detect_quota_signal(stderr: &str) -> Option<String> {
+    let lower = stderr.to_lowercase();
+    const SIGNATURES: &[&str] = &[
+        "rate limit",
+        "rate-limit",
+        "rate_limit",
+        "quota exceeded",
+        "quota exhausted",
+        "insufficient_quota",
+        "insufficient quota",
+        "billing",
+        "payment required",
+        "resource_exhausted",
+        "resource exhausted",
+        "429",
+    ];
+    if SIGNATURES.iter().any(|sig| lower.contains(sig)) {
+        let snippet: String = stderr.chars().take(200).collect();
+        return Some(snippet);
+    }
+    None
+}
 
 /// Default subprocess timeout (seconds) when `GROKRXIV_CLI_TIMEOUT_SECS` is
 /// unset.
@@ -44,6 +104,14 @@ You are a specialist reviewer for grokrxiv. The user supplies:
 
 You MUST output a SINGLE JSON object that validates against the schema. NO prose, NO markdown fences, NO commentary. If you cannot, output `{\"error\":\"<one-line reason>\"}`.
 ";
+
+/// FP-RPT3b B4: one-shot guard per provider for the auth-path log line.
+/// `CliRunner` is constructed once and shared, so we only need a single
+/// `OnceLock` per provider tag to make sure the auth surface is logged
+/// exactly once per orchestrator process.
+static CLAUDE_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
+static CODEX_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
+static GEMINI_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 
 /// Spawns local CLI binaries (`claude` / `codex` / `gemini`). The binary path
 /// for each is overridable via `GROKRXIV_CLAUDE_BIN` / `GROKRXIV_CODEX_BIN` /
@@ -111,6 +179,11 @@ impl AgentRunner for CliRunner {
         let started = Instant::now();
         let timeout_dur = cli_timeout();
 
+        // FP-RPT3b B4: surface the per-provider auth path at INFO level once
+        // per process so the operator can audit the $0-marginal-cost claim
+        // against the actual auth tier.
+        log_auth_path_once(&spec.provider);
+
         // 2. Pre-flight: ensure the Claude skill is installed on disk before
         //    spawning. Idempotent.
         if spec.provider == "claude" {
@@ -123,7 +196,7 @@ impl AgentRunner for CliRunner {
 
         // 3. First attempt.
         let built = build_command(self, spec, &prompt)?;
-        let raw_stdout = match exec_and_capture(&built, timeout_dur, spec.role).await {
+        let raw_stdout = match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
             Ok(s) => s,
             Err(e) => {
                 cleanup_schema_path(&built.schema_path);
@@ -144,7 +217,7 @@ impl AgentRunner for CliRunner {
                     prompt = prompt,
                 );
                 let built2 = build_command(self, spec, &corrective)?;
-                let raw2 = match exec_and_capture(&built2, timeout_dur, spec.role).await {
+                let raw2 = match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
                     Ok(s) => s,
                     Err(e) => {
                         cleanup_schema_path(&built2.schema_path);
@@ -334,10 +407,16 @@ fn build_command(
 
 /// Spawn the built command, pipe the prompt to stdin (claude), enforce the
 /// supervisor's timeout, capture stdout/stderr, surface non-zero exit codes.
+///
+/// FP-RPT3b B5: when the subprocess exits non-zero AND its stderr matches a
+/// known quota signature, the returned error wraps `CliError::QuotaExhausted`
+/// so the supervisor can detect it via downcast and dispatch a per-stage
+/// `cli_quota_fallback` (Team X2's yaml field) without re-parsing log text.
 async fn exec_and_capture(
     built: &BuiltCommand,
     timeout_dur: Duration,
     role: grokrxiv_schemas::AgentRole,
+    provider: &str,
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new(&built.program);
     cmd.args(&built.args);
@@ -391,6 +470,22 @@ async fn exec_and_capture(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        // FP-RPT3b B5: classify as a structured quota error when stderr
+        // matches a known signature. The caller can then fall back to a
+        // different runner instead of treating it as a generic subprocess
+        // failure.
+        if let Some(snippet) = detect_quota_signal(&stderr) {
+            return Err(anyhow::Error::new(CliError::QuotaExhausted {
+                provider: provider.to_string(),
+                message: snippet,
+            })
+            .context(format!(
+                "`{}` exited with {:?} for role {:?}",
+                built.program,
+                output.status.code(),
+                role,
+            )));
+        }
         anyhow::bail!(
             "`{}` exited with {:?} for role {:?}: {stderr}",
             built.program,
@@ -562,6 +657,276 @@ fn cleanup_schema_path(path: &Option<PathBuf>) {
     if let Some(p) = path {
         let _ = std::fs::remove_file(p);
     }
+}
+
+/// FP-RPT3b B4: log the per-provider auth surface exactly once per process.
+/// Best-effort: any I/O failure becomes `auth_method=unknown` rather than a
+/// hard error. Reads config files but never writes to them.
+fn log_auth_path_once(provider: &str) {
+    match provider {
+        "claude" => {
+            if CLAUDE_AUTH_LOGGED.set(()).is_ok() {
+                let (auth_method, account_type, billing_type) = inspect_claude_auth();
+                tracing::info!(
+                    event = "cli_auth_path",
+                    provider = "claude",
+                    auth_method = %auth_method,
+                    account_type = %account_type,
+                    billing_type = %billing_type,
+                    "claude CLI auth path"
+                );
+            }
+        }
+        "openai" => {
+            if CODEX_AUTH_LOGGED.set(()).is_ok() {
+                let (auth_method, plan_type) = inspect_codex_auth();
+                tracing::info!(
+                    event = "cli_auth_path",
+                    provider = "openai",
+                    auth_method = %auth_method,
+                    plan_type = %plan_type,
+                    "codex CLI auth path"
+                );
+                // Per the FP-RPT3b audit: codex's `chatgpt_plus` / `chatgpt_pro`
+                // tiers include a metered API budget but are NOT a flat $0
+                // subscription. Warn unless the auth tier is explicitly
+                // recognised as a personal subscription with included usage.
+                if auth_method != "chatgpt_subscription" {
+                    tracing::warn!(
+                        provider = "openai",
+                        auth_method = %auth_method,
+                        "codex CLI runs against OpenAI API — will incur per-token billing"
+                    );
+                }
+            }
+        }
+        "gemini" => {
+            if GEMINI_AUTH_LOGGED.set(()).is_ok() {
+                let (auth_method, account, quota_project) = inspect_gemini_auth();
+                tracing::info!(
+                    event = "cli_auth_path",
+                    provider = "gemini",
+                    auth_method = %auth_method,
+                    account = %account,
+                    quota_project = %quota_project,
+                    "gemini CLI auth path"
+                );
+                // gemini CLI on `cloud-platform` scope routes through the
+                // gcloud quota project, which is metered. Same warning pattern
+                // as codex.
+                if auth_method != "personal_subscription" {
+                    tracing::warn!(
+                        provider = "gemini",
+                        auth_method = %auth_method,
+                        "gemini CLI runs against Google AI / Vertex API — will incur per-token billing"
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Best-effort read of `~/.claude.json` to surface `oauthAccount.billingType`
+/// and `oauthAccount.organizationType`. Returns a `(auth_method, account_type,
+/// billing_type)` triple where each field falls back to `"unknown"` on any
+/// I/O / parse failure.
+fn inspect_claude_auth() -> (String, String, String) {
+    let Ok(home) = std::env::var("HOME") else {
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let path = PathBuf::from(home).join(".claude.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let oauth = val.get("oauthAccount").cloned().unwrap_or(serde_json::Value::Null);
+    let billing_type = oauth
+        .get("billingType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let account_type = oauth
+        .get("organizationType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    // Derive an auth_method tag from the observed fields. `stripe_subscription`
+    // + `claude_max` (or `claude_pro`) on the org indicates the operator's
+    // CLI is backed by their personal Anthropic subscription. Anything else
+    // we tag as `api_key` so the operator can spot the cost path immediately.
+    let auth_method = match (billing_type.as_str(), account_type.as_str()) {
+        ("stripe_subscription", t) if t.starts_with("claude_") => "personal_subscription",
+        ("stripe_subscription", _) => "stripe_subscription",
+        (_, "unknown") => "unknown",
+        _ => "api_key",
+    }
+    .to_string();
+    (auth_method, account_type, billing_type)
+}
+
+/// Best-effort read of `~/.codex/auth.json` to surface whether the codex CLI
+/// is authenticated against a ChatGPT subscription (token JWT carries
+/// `chatgpt_plan_type`) or a raw `OPENAI_API_KEY`. Returns `(auth_method,
+/// plan_type)`.
+fn inspect_codex_auth() -> (String, String) {
+    let Ok(home) = std::env::var("HOME") else {
+        return ("unknown".into(), "unknown".into());
+    };
+    let path = PathBuf::from(home).join(".codex").join("auth.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return ("unknown".into(), "unknown".into());
+    };
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return ("unknown".into(), "unknown".into());
+    };
+
+    // If `OPENAI_API_KEY` is set on the file, codex routes through the API
+    // path and bills per token.
+    if let Some(serde_json::Value::String(_)) = val.get("OPENAI_API_KEY") {
+        return ("api_key".into(), "n/a".into());
+    }
+
+    // Otherwise look for a ChatGPT-tier JWT under `tokens.id_token`. We do
+    // NOT validate or contact a server — just decode the middle base64
+    // segment to read the `chatgpt_plan_type` claim if it exists.
+    let id_token = val
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let plan_type = decode_jwt_claim(id_token, "chatgpt_plan_type").unwrap_or_else(|| "unknown".into());
+    let auth_method = if plan_type != "unknown" {
+        "chatgpt_subscription"
+    } else if id_token.is_empty() {
+        "unknown"
+    } else {
+        "oauth"
+    };
+    (auth_method.into(), plan_type)
+}
+
+/// Best-effort read of `~/.config/gcloud/application_default_credentials.json`
+/// (used by the `gemini` CLI when invoked under `gcloud` auth). Returns
+/// `(auth_method, account, quota_project)`.
+fn inspect_gemini_auth() -> (String, String, String) {
+    let Ok(home) = std::env::var("HOME") else {
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let path = PathBuf::from(home)
+        .join(".config")
+        .join("gcloud")
+        .join("application_default_credentials.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        // Fall back to `~/.gemini/oauth_creds.json` (the standalone gemini CLI
+        // path). We just record that we found an OAuth credential blob — the
+        // scope tells us this is the gcloud metered path.
+        let alt = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".gemini")
+            .join("oauth_creds.json");
+        if alt.exists() {
+            return ("gcloud_oauth".into(), "unknown".into(), "unknown".into());
+        }
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return ("unknown".into(), "unknown".into(), "unknown".into());
+    };
+    let typ = val.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let account = val
+        .get("account")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let quota_project = val
+        .get("quota_project_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let auth_method = match typ {
+        "authorized_user" => "gcloud_oauth",
+        "service_account" => "service_account",
+        _ => "unknown",
+    }
+    .to_string();
+    (auth_method, account, quota_project)
+}
+
+/// Minimal JWT claim decoder. Splits on `.`, base64url-decodes the payload,
+/// and returns the string-valued claim if found. Returns `None` on any
+/// decode failure; we never want auth-logging to crash a run.
+fn decode_jwt_claim(jwt: &str, claim: &str) -> Option<String> {
+    let payload = jwt.split('.').nth(1)?;
+    // base64url decode (no padding). Reuse the URL-safe alphabet via a
+    // tiny manual implementation so we don't pull in a new dep.
+    let bytes = base64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get(claim).and_then(|x| x.as_str()).map(String::from)
+}
+
+/// Decode a base64url string (no padding). Returns `None` on any failure.
+fn base64url_decode(s: &str) -> Option<Vec<u8>> {
+    // Convert URL-safe alphabet back to standard.
+    let mut std_b64: String = s
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    // Add the padding base64 requires.
+    while std_b64.len() % 4 != 0 {
+        std_b64.push('=');
+    }
+    // Use a tiny inline base64 decoder against the standard alphabet.
+    decode_b64_standard(&std_b64)
+}
+
+fn decode_b64_standard(s: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (i, &c) in ALPHABET.iter().enumerate() {
+        lookup[c as usize] = i as u8;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut buf = [0u8; 4];
+        let mut pad = 0;
+        for (i, &c) in chunk.iter().enumerate() {
+            if c == b'=' {
+                pad += 1;
+                buf[i] = 0;
+            } else {
+                let v = lookup[c as usize];
+                if v == 255 {
+                    return None;
+                }
+                buf[i] = v;
+            }
+        }
+        let n = (buf[0] as u32) << 18
+            | (buf[1] as u32) << 12
+            | (buf[2] as u32) << 6
+            | (buf[3] as u32);
+        // First byte is always present unless the entire chunk is padding.
+        out.push((n >> 16) as u8);
+        // Second byte is missing only if 2+ trailing `=` were present.
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        // Third byte is missing if any trailing `=` was present.
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 /// Install `~/.claude/skills/grokrxiv-review/SKILL.md` if it isn't already
@@ -894,5 +1259,192 @@ mod tests {
         // Smoke: just ensure binary_for resolves and we don't panic.
         let r = CliRunner::new();
         assert_eq!(r.binary_for("claude").unwrap(), "claude");
+    }
+
+    // -----------------------------------------------------------------
+    // FP-RPT3b B5: quota signal detection
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn quota_signal_matches_rate_limit_variants() {
+        assert!(detect_quota_signal("Error: rate limit exceeded for user").is_some());
+        assert!(detect_quota_signal("ERROR: Rate-Limit reached").is_some());
+        assert!(detect_quota_signal("rate_limit hit").is_some());
+    }
+
+    #[test]
+    fn quota_signal_matches_quota_variants() {
+        assert!(detect_quota_signal("quota exceeded for project foo").is_some());
+        assert!(detect_quota_signal("Quota Exhausted").is_some());
+        assert!(detect_quota_signal("insufficient_quota").is_some());
+        assert!(detect_quota_signal("insufficient quota in account").is_some());
+    }
+
+    #[test]
+    fn quota_signal_matches_billing_and_429() {
+        assert!(detect_quota_signal("billing: please add a payment method").is_some());
+        assert!(detect_quota_signal("Payment Required").is_some());
+        assert!(detect_quota_signal("HTTP 429 Too Many Requests").is_some());
+        assert!(detect_quota_signal("resource_exhausted").is_some());
+        assert!(detect_quota_signal("Resource Exhausted").is_some());
+    }
+
+    #[test]
+    fn quota_signal_ignores_generic_errors() {
+        assert!(detect_quota_signal("connection refused").is_none());
+        assert!(detect_quota_signal("invalid JSON").is_none());
+        assert!(detect_quota_signal("").is_none());
+    }
+
+    #[test]
+    fn quota_signal_truncates_to_200_chars() {
+        let huge = "rate limit exceeded ".repeat(50);
+        let snippet = detect_quota_signal(&huge).expect("matches");
+        assert!(snippet.chars().count() <= 200);
+    }
+
+    #[test]
+    fn cli_error_display_includes_provider_and_fallback_hint() {
+        let err = CliError::QuotaExhausted {
+            provider: "openai".into(),
+            message: "Error: rate limit exceeded".into(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("openai"), "display missing provider tag: {s}");
+        assert!(s.contains("--runner api"), "display missing fallback hint: {s}");
+    }
+
+    /// FP-RPT3b B5: end-to-end quota detection via a fake subprocess. Writes
+    /// a tiny shell script that emits a known quota signature on stderr and
+    /// exits 1, then asserts `exec_and_capture` returns an `anyhow::Error`
+    /// whose chain carries `CliError::QuotaExhausted`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_classifies_quota_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("grokrxiv-cli-quota-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-cli.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'Error: rate limit exceeded for user' >&2\nexit 1\n",
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+        };
+
+        let err = exec_and_capture(
+            &built,
+            Duration::from_secs(5),
+            grokrxiv_schemas::AgentRole::Summary,
+            "openai",
+        )
+        .await
+        .expect_err("subprocess should exit non-zero");
+
+        let downcast = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>())
+            .expect("error chain should carry CliError");
+        match downcast {
+            CliError::QuotaExhausted { provider, message } => {
+                assert_eq!(provider, "openai");
+                assert!(
+                    message.to_lowercase().contains("rate limit"),
+                    "stderr snippet missing rate-limit signal: {message}"
+                );
+            }
+        }
+    }
+
+    /// FP-RPT3b B5: non-quota subprocess failures must NOT be classified as
+    /// QuotaExhausted; they should keep bubbling up as generic anyhow errors.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_does_not_misclassify_generic_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("grokrxiv-cli-generic-fail-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-cli.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'segfault in libfoo.so' >&2\nexit 139\n",
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+        };
+
+        let err = exec_and_capture(
+            &built,
+            Duration::from_secs(5),
+            grokrxiv_schemas::AgentRole::Summary,
+            "claude",
+        )
+        .await
+        .expect_err("subprocess should exit non-zero");
+
+        let downcast = err.chain().find_map(|cause| cause.downcast_ref::<CliError>());
+        assert!(
+            downcast.is_none(),
+            "non-quota failures must not be tagged as QuotaExhausted"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // FP-RPT3b B4: JWT-claim helper used by codex auth inspection
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn jwt_claim_decoder_extracts_string_claim() {
+        // Build a JWT-shaped string: header.payload.sig where the payload is
+        // base64url-encoded JSON.
+        let payload = serde_json::json!({"chatgpt_plan_type": "plus", "sub": "x"});
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let payload_b64 = b64url_encode(&payload_bytes);
+        let jwt = format!("HEADER.{payload_b64}.SIG");
+        assert_eq!(
+            decode_jwt_claim(&jwt, "chatgpt_plan_type"),
+            Some("plus".into())
+        );
+        assert_eq!(decode_jwt_claim(&jwt, "missing"), None);
+        assert_eq!(decode_jwt_claim("notajwt", "x"), None);
+    }
+
+    /// Reference base64url encoder for the JWT decoder unit test.
+    fn b64url_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0];
+            let b1 = chunk.get(1).copied().unwrap_or(0);
+            let b2 = chunk.get(2).copied().unwrap_or(0);
+            let n = (b0 as u32) << 16 | (b1 as u32) << 8 | (b2 as u32);
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(ALPHABET[(n & 0x3f) as usize] as char);
+            }
+        }
+        out
     }
 }
