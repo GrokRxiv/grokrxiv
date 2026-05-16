@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://grokrxiv.org/schemas/extraction/equations.schema.json",
+  "title": "EquationCanonicalization",
+  "description": "Output of the EquationCanonicalizerAgent (Stage 5). Lists every equation in the paper with a canonical TeX form, MathML rendering, semantic tag, and fuzzy dedup hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["equations"],
+  "properties": {
+    "equations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "canonical_tex", "mathml", "semantic_tag", "hash"],
+        "properties": {
+          "id": { "type": "string" },
+          "canonical_tex": { "type": "string" },
+          "mathml": { "type": "string" },
+          "semantic_tag": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "inequality",
+              "definition",
+              "theorem-statement",
+              "pde",
+              "algebraic",
+              "other"
+            ]
+          },
+          "hash": { "type": "string" }
+        }
+      }
+    }
+  }
+}

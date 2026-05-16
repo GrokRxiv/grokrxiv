@@ -1,0 +1,16 @@
+id: equation_canonicalizer
+role: "Stage 5 — canonicalise every equation in the paper into a normalised TeX form, MathML rendering, and a short semantic tag."
+provider: gemini
+# Pro is justified here: the LLM has to walk every math node, infer semantic
+# intent, and produce stable canonical TeX. ~$0.02/paper.
+model: gemini-2.5-pro
+runner: api
+prompt_template: prompts/extraction/equations.md
+output_schema: schemas/extraction/equations.schema.json
+verifiers:
+  - json_schema
+max_iters: 60
+max_cost_usd: 0.05
+max_retries: 2
+timeout_secs: 600
+escalation: skip
