@@ -29,6 +29,7 @@ pub mod r#loop;
 pub mod macros;
 pub mod theorems;
 pub mod tools;
+pub mod vlm;
 
 pub use r#loop::run_tool_loop;
 
