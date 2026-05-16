@@ -1,52 +1,77 @@
-//! Top-level orchestration helper that chains arXiv metadata fetch → TeX
-//! source (preferred) or PDF (fallback) extraction → [`PaperExtract`].
+//! Top-level deterministic ingest helpers — Stages 1 + 2 of the RPT3
+//! 8-stage pipeline. These are the **deterministic** halves; the orchestrator
+//! crate owns Stages 3–8 (extraction agents + persistence) because they
+//! require a DB pool, runner registry, and the storage SDK.
 //!
-//! Source-format policy (FP6.5 + RPT1, 2026-05-15):
-//! - TeX is preferred; review reads from it when available
-//! - PDF is the fallback when the arXiv source bundle is absent or unparseable
-//! - PDF is always downloaded too (it's the viewable artifact)
-//! - The resulting [`PaperExtract`] carries `source_format = "tex" | "pdf"`
+//! Source-format policy:
+//! - TeX is preferred; review reads from it when available.
+//! - PDF is the fallback when the arXiv source bundle is absent or
+//!   unparseable.
+//! - PDF + source tarball bytes are always returned so the orchestrator can
+//!   route them to Tier-2 storage in Stage 8.
+//!
+//! Back-compat: [`ingest`] still returns a `PaperExtract` so legacy callers
+//! (the M1 smoke test, the review-only `run_review_for_paper_full` re-ingest
+//! path) keep working. [`ingest_staged`] is the new entry point for the
+//! orchestrator's full pipeline.
 
 use anyhow::Result;
+use bytes::Bytes;
+use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::arxiv::fetch_metadata;
+use crate::arxiv::{fetch_metadata, ArxivMeta};
 use crate::download::{download_pdf, download_source};
 use crate::extract::{extract_bibliography, pdf_to_text, split_sections};
 use crate::tex::{parse_bundle, source_url};
 use crate::types::{Citation, PaperExtract, Section};
 
-/// End-to-end ingest from an arXiv id to a fully-populated [`PaperExtract`].
+/// Output of Stages 1 + 2 — everything an orchestrator needs to drive the
+/// extraction-agent fan-out and the storage Stage-8 persist.
+pub struct DeterministicIngest {
+    /// arXiv Atom metadata (title/authors/abstract/category, plus pdf_url).
+    pub meta: ArxivMeta,
+    /// Built `PaperExtract` (title/abstract/sections/bibliography). The
+    /// section bodies are the Pandoc+LaTeXML markdown the review path
+    /// consumes.
+    pub extract: PaperExtract,
+    /// Raw PDF bytes (always fetched — it's the archival viewable artifact).
+    /// `None` only when the upstream PDF endpoint failed; pipeline continues.
+    pub pdf_bytes: Option<Bytes>,
+    /// Raw TeX tar.gz bytes when an arXiv source bundle was available.
+    /// `None` for PDF-only papers — Stage 3 (`VlmExtractorAgent`) takes over.
+    pub source_tarball: Option<Bytes>,
+    /// LaTeXML-derived semantic AST. `Some` only when Stage 2 ran the LaTeXML
+    /// pipeline (TeX source + latexml on PATH) successfully. The orchestrator
+    /// hands this to extraction agents via `ExtractionContext.semantic_ast`.
+    pub semantic_ast: Option<Value>,
+}
+
+/// Deterministic Stages 1 + 2: arXiv metadata fetch → TeX source (preferred)
+/// or PDF (fallback) → [`DeterministicIngest`].
 ///
-/// Strategy:
-/// 1. Fetch Atom metadata (title/authors/abstract/category).
-/// 2. Try to download the TeX source bundle. If it parses, use TeX-derived
-///    title/abstract/sections/bibliography.
-/// 3. If source is missing or unparseable, fall back to the PDF extraction
-///    path. Same shape, lossier on math papers.
-/// 4. PDF is always downloaded for the viewable artifact (currently
-///    not persisted to `paper_assets` — see
-///    `docs/ingest-tex-with-pdf-fallback-applied.md` for deferral notes).
-pub async fn ingest(arxiv_id: &str) -> Result<PaperExtract> {
+/// Stage 3+ extraction agents and Stage 8 persistence live in the
+/// orchestrator crate (see `grokrxiv_orchestrator::ingest_pipeline`).
+pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
     let meta = fetch_metadata(arxiv_id).await?;
     let primary = meta.primary_category();
 
-    // 1. Try TeX source first.
-    let tex_result = match download_source(&source_url(arxiv_id)).await {
+    // 1. Try TeX source first (Stage 1: source acquisition).
+    let (tex_extract, source_tarball) = match download_source(&source_url(arxiv_id)).await {
         Ok(bytes) => match parse_bundle(&bytes).await {
-            Ok(extract) => Some(extract),
+            Ok(extract) => (Some(extract), Some(bytes)),
             Err(e) => {
                 warn!(error = %e, arxiv_id, "tex source parse failed; falling back to pdf");
-                None
+                (None, None)
             }
         },
         Err(e) => {
             info!(error = %e, arxiv_id, "tex source unavailable; falling back to pdf");
-            None
+            (None, None)
         }
     };
 
-    // 2. Always grab the PDF (for fallback and/or viewable artifact).
+    // 2. Always grab the PDF (Stage 1: archival artifact).
     let pdf_bytes = match meta.pdf_url.as_deref() {
         Some(url) => match download_pdf(url).await {
             Ok(bytes) => Some(bytes),
@@ -58,9 +83,8 @@ pub async fn ingest(arxiv_id: &str) -> Result<PaperExtract> {
         None => None,
     };
 
-    // 3. Build the extract, preferring TeX when present.
-    let (title, abstract_text, sections, bibliography, source_format) = if let Some(t) = tex_result
-    {
+    // 3. Build the extract, preferring TeX when present (Stage 2).
+    let (extract, semantic_ast) = if let Some(t) = tex_extract {
         info!(arxiv_id, "ingest source=tex");
         let title = if t.title.is_empty() { meta.title.clone() } else { t.title };
         let abstract_text = if t.abstract_text.is_empty() {
@@ -68,39 +92,53 @@ pub async fn ingest(arxiv_id: &str) -> Result<PaperExtract> {
         } else {
             t.abstract_text
         };
-        (
+        let extract = PaperExtract {
+            arxiv_id: meta.arxiv_id.clone(),
             title,
-            abstract_text,
-            t.sections,
-            t.bibliography,
-            Some("tex".to_string()),
-        )
+            authors: meta.authors.clone(),
+            abstract_: abstract_text,
+            field: primary.clone(),
+            sections: t.sections,
+            figures: Vec::new(),
+            bibliography: t.bibliography,
+            source_format: Some("tex".to_string()),
+        };
+        (extract, t.semantic_ast)
     } else {
         info!(arxiv_id, "ingest source=pdf");
         let (sections, bibliography) = pdf_extract(pdf_bytes.as_ref());
-        (
-            meta.title.clone(),
-            meta.abstract_text.clone(),
+        let extract = PaperExtract {
+            arxiv_id: meta.arxiv_id.clone(),
+            title: meta.title.clone(),
+            authors: meta.authors.clone(),
+            abstract_: meta.abstract_text.clone(),
+            field: primary,
             sections,
+            figures: Vec::new(),
             bibliography,
-            Some("pdf".to_string()),
-        )
+            source_format: Some("pdf".to_string()),
+        };
+        (extract, None)
     };
 
-    Ok(PaperExtract {
-        arxiv_id: meta.arxiv_id,
-        title,
-        authors: meta.authors,
-        abstract_: abstract_text,
-        field: primary,
-        sections,
-        figures: Vec::new(),
-        bibliography,
-        source_format,
+    Ok(DeterministicIngest {
+        meta,
+        extract,
+        pdf_bytes,
+        source_tarball,
+        semantic_ast,
     })
 }
 
-fn pdf_extract(bytes: Option<&bytes::Bytes>) -> (Vec<Section>, Vec<Citation>) {
+/// Legacy entry point: returns only the [`PaperExtract`]. Preserved so the
+/// M1 smoke test and the review-only re-ingest path in the supervisor keep
+/// working unchanged.
+pub async fn ingest(arxiv_id: &str) -> Result<PaperExtract> {
+    let staged = ingest_staged(arxiv_id).await?;
+    Ok(staged.extract)
+}
+
+fn pdf_extract(bytes: Option<&Bytes>) -> (Vec<Section>, Vec<Citation>) {
     let Some(bytes) = bytes else {
         return (Vec::new(), Vec::new());
     };

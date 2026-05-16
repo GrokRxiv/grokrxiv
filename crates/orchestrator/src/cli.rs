@@ -103,6 +103,18 @@ pub struct Cli {
     /// end of the run.
     #[arg(long, global = true)]
     pub debug_prompt: bool,
+    /// RPT3 Wave-3 Team-F: skip selected extraction stages. Comma-separated
+    /// names from `{vlm, macros, equations, theorems, citations}`. Each
+    /// skipped stage produces a `status: "skipped"` entry in
+    /// `extraction_report.json`. Exported as `GROKRXIV_INGEST_SKIP_STAGES`.
+    #[arg(long, global = true, value_name = "STAGES")]
+    pub skip_stages: Option<String>,
+    /// RPT3 Wave-3 Team-F: skip Tier-2 (Supabase) writes even when
+    /// `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set. Tier-1 (the
+    /// local grokrxiv-data clone) is still written. Exported as
+    /// `GROKRXIV_DRY_RUN_STORAGE=1`.
+    #[arg(long, global = true)]
+    pub dry_run_storage: bool,
 }
 
 /// Hint for `grokrxiv review <source>` when the source can't be inferred.
@@ -396,6 +408,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         std::env::remove_var("GROKRXIV_DEBUG_PROMPT_DIR");
         None
     };
+
+    // RPT3 Wave-3 Team-F: forward `--no-cache` / `--skip-stages` /
+    // `--dry-run-storage` to the staged ingest orchestrator via env vars.
+    // (The supervisor reads these in `ingest_options_from_env`.)
+    if cli.no_cache {
+        std::env::set_var("GROKRXIV_INGEST_NO_CACHE", "1");
+    } else {
+        std::env::remove_var("GROKRXIV_INGEST_NO_CACHE");
+    }
+    if let Some(stages) = cli.skip_stages.as_deref() {
+        std::env::set_var("GROKRXIV_INGEST_SKIP_STAGES", stages);
+    } else {
+        std::env::remove_var("GROKRXIV_INGEST_SKIP_STAGES");
+    }
+    if cli.dry_run_storage {
+        std::env::set_var("GROKRXIV_DRY_RUN_STORAGE", "1");
+    } else if std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref() != Ok("1") {
+        std::env::remove_var("GROKRXIV_DRY_RUN_STORAGE");
+    }
 
     let command = cli.command.unwrap_or(Command::Serve);
     let is_review_command = matches!(

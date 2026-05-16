@@ -135,8 +135,6 @@ pub async fn run_one_paper_blocking(
 
 #[cfg(feature = "grokrxiv-ingest")]
 async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<Uuid> {
-    use grokrxiv_schemas::PaperExtract;
-
     let pool = state
         .db
         .as_ref()
@@ -146,20 +144,72 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("no LLM provider configured"))?;
 
-    // 1. Ingest — fetch arXiv metadata + PDF + bibliography.
     tracing::info!(arxiv_id, "M1: ingest start");
-    let extract: PaperExtract = {
-        let _permit = state.arxiv.acquire().await;
-        grokrxiv_ingest::pipeline::ingest(arxiv_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("ingest: {e}"))?
-    };
 
-    // 2. Persist paper row.
-    let paper_id = crate::db::upsert_paper(pool, &extract, None).await?;
+    // RPT3 Wave-3 Team-F: when the storage feature is on, the orchestrator's
+    // staged ingest pipeline runs Stages 1–8 (acquisition → format conversion
+    // → extraction agents → persist to grokrxiv-data + Supabase + paper_assets
+    // pointers). The review path then reads from the persisted
+    // `review_input.json`.
+    let (paper_id, extract);
+    #[cfg(feature = "grokrxiv-storage")]
+    {
+        let opts = ingest_options_from_env();
+        match crate::ingest_pipeline::run_ingest_pipeline(state, arxiv_id, &opts).await {
+            Ok(out) => {
+                paper_id = out.paper_id;
+                extract = out.extract;
+            }
+            Err(e) => {
+                tracing::warn!(arxiv_id, err = %format!("{e:#}"), "staged ingest pipeline failed; falling back to deterministic-only path");
+                let pe = {
+                    let _permit = state.arxiv.acquire().await;
+                    grokrxiv_ingest::pipeline::ingest(arxiv_id)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("ingest: {e}"))?
+                };
+                paper_id = crate::db::upsert_paper(pool, &pe, None).await?;
+                extract = pe;
+            }
+        }
+    }
+    #[cfg(not(feature = "grokrxiv-storage"))]
+    {
+        let pe = {
+            let _permit = state.arxiv.acquire().await;
+            grokrxiv_ingest::pipeline::ingest(arxiv_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("ingest: {e}"))?
+        };
+        paper_id = crate::db::upsert_paper(pool, &pe, None).await?;
+        extract = pe;
+    }
     tracing::info!(arxiv_id, %paper_id, "M1: paper persisted");
 
     run_review_dag(state, pool, providers.default.clone(), paper_id, extract).await
+}
+
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+fn ingest_options_from_env() -> crate::ingest_pipeline::IngestOptions {
+    let no_cache =
+        matches!(std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(), Ok("1"));
+    let dry_run_storage =
+        matches!(std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(), Ok("1"));
+    let skip_stages: Vec<String> = std::env::var("GROKRXIV_INGEST_SKIP_STAGES")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::ingest_pipeline::IngestOptions {
+        no_cache,
+        skip_stages,
+        dry_run_storage,
+    }
 }
 
 /// Drive the review DAG for a paper row that is already present in the database.
@@ -1391,6 +1441,57 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
     .await
     .map_err(|e| anyhow::anyhow!("load paper row: {e}"))?;
     let (arxiv_id, title, abstract_, field, _submitted) = row;
+
+    // RPT3 Wave-3 Team-F: prefer the persisted review_input.json (Tier-1)
+    // when this paper was extracted in a previous run. The body_markdown +
+    // section bodies are loaded from the local grokrxiv-data clone; falling
+    // back to a fresh deterministic re-ingest only when the cached pointer
+    // is missing or the local files can't be read.
+    #[cfg(feature = "grokrxiv-storage")]
+    {
+        if let Ok(Some(assets)) = crate::db::read_paper_assets(pool, paper_id).await {
+            if matches!(assets.extraction_status, crate::db::ExtractionStatus::Ready) {
+                if let Some(git_path) = assets.git_path.as_deref() {
+                    let repo_root: std::path::PathBuf = std::env::var("GROKRXIV_DATA_REPO_PATH")
+                        .ok()
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| {
+                            std::path::PathBuf::from(
+                                "/Users/mlong/Documents/Development/grokrxiv-data",
+                            )
+                        });
+                    let ri_path = repo_root.join(git_path).join("review_input.json");
+                    if let Ok(bytes) = std::fs::read(&ri_path) {
+                        if let Ok(ri) = serde_json::from_slice::<grokrxiv_storage::ReviewInput>(
+                            &bytes,
+                        ) {
+                            match crate::ingest_pipeline::load_paper_extract(&repo_root, &ri) {
+                                Ok(extract) => {
+                                    tracing::info!(
+                                        %paper_id,
+                                        arxiv_id,
+                                        git_path,
+                                        "review: loaded extract from cached review_input.json"
+                                    );
+                                    return run_review_dag(
+                                        state,
+                                        pool,
+                                        providers.default.clone(),
+                                        paper_id,
+                                        extract,
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(arxiv_id, err = %format!("{e:#}"), "review_input.json present but load_paper_extract failed; re-ingesting");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // The DAG's call sites only need title/abstract/field/arxiv_id — sections
     // and bibliography are nice-to-have. Re-ingest to get them when possible;
