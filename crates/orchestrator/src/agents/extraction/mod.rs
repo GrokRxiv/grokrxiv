@@ -24,6 +24,7 @@ pub use crate::agents::types::{
     ExtractionContext, ExtractionRun, Message, ToolCall, ToolCallRecord, ToolCompletion, ToolSpec,
 };
 
+pub mod citations;
 pub mod r#loop;
 pub mod tools;
 

@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CitationContextualizer output",
+  "description": "Enriched citation graph emitted by the Stage 7 CitationContextualizerAgent. Each entry pairs a bibliography key with its resolved metadata and a list of use-sites classified by semantic role.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["citations"],
+  "properties": {
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "raw", "resolved_doi", "resolved_arxiv_id", "contexts"],
+        "properties": {
+          "key": { "type": "string" },
+          "raw": { "type": "string" },
+          "resolved_doi": { "type": ["string", "null"] },
+          "resolved_arxiv_id": { "type": ["string", "null"] },
+          "contexts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["section", "sentence", "use"],
+              "properties": {
+                "section": { "type": "string" },
+                "sentence": { "type": "string" },
+                "use": {
+                  "type": "string",
+                  "enum": [
+                    "extends",
+                    "contradicts",
+                    "relies_on",
+                    "compared_with",
+                    "cited_in_passing",
+                    "background"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
