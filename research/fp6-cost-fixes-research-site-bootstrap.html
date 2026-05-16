@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FP6 — Pipeline Cost Fixes + Research Site + Repo Bootstrap (Plus FP7/FP8 Scope Lock)</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="fp6--pipeline-cost-fixes--research-site--repo-bootstrap-plus-fp7fp8-scope-lock"><a class="anchor" aria-label="anchor" href="#fp6--pipeline-cost-fixes--research-site--repo-bootstrap-plus-fp7fp8-scope-lock">#</a>FP6 — Pipeline Cost Fixes + Research Site + Repo Bootstrap (Plus FP7/FP8 Scope Lock)</h1>
+<h2 id="context"><a class="anchor" aria-label="anchor" href="#context">#</a>Context</h2>
+<p>After FP5 shipped the architecture-of-record for a 2-tier hybrid, the operator asked three sharp questions:</p>
+<ol>
+<li>
+<p><strong>Were the cost estimates accurate?</strong> Yes — the measured <strong>$0.38/paper</strong> was real. BUT 97% was concentrated in two roles, and 56% was traced to a <strong>single implementation bug</strong>: <code>meta_reviewer</code> re-sends the full 52K-token paper extract alongside the 5 specialist outputs, when the prompt template only ever uses the specialist outputs. Pure waste.</p>
+</li>
+<li>
+<p><strong>Why is the API route so expensive — isn't it enterprise-ready?</strong> The frontier APIs <em>are</em> enterprise-ready. Our <em>implementation</em> wasn't cost-optimized. Specifically: meta_reviewer bloat; same 52K paper extract stored 5× in <code>review_agents.input_artifact</code> JSONB (~260K tokens/paper of dup rows); Anthropic prompt cache enabled only on system messages, not user prompt; OpenAI/Gemini cache headers not wired at all; no <code>review_cache</code> table to skip re-runs.</p>
+</li>
+<li>
+<p><strong>Can we wire a pricing API into an admin console?</strong> Yes — but <strong>not</strong> via CostGoat/AIPricing/PricePerToken (none expose a public API). Correct integration: <strong><a href="https://github.com/BerriAI/litellm/blob/main/litellm/model_prices_and_context_window_backup.json">LiteLLM's <code>model_prices_and_context_window.json</code></a></strong> on GitHub — static JSON, no auth, ~500 models with input/output/cache pricing. Drop-in for FP8 pricing console.</p>
+</li>
+</ol>
+<p><strong>Honest cost projection after FP6 cost fixes (API-only, no hybrid):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Before FP6</th>
+<th>After FP6 cost fixes</th>
+<th>After FP6 + 2-tier hybrid (FP5)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per paper</td>
+<td>$0.38</td>
+<td><strong>~$0.12</strong></td>
+<td>~$0.0066 marginal</td>
+</tr>
+<tr>
+<td>50/day MVP</td>
+<td>$6,935/yr</td>
+<td><strong>~$2,190/yr</strong></td>
+<td>$120/yr marginal</td>
+</tr>
+<tr>
+<td>Full arXiv (2,200/day)</td>
+<td>$305K/yr</td>
+<td><strong>~$96K/yr</strong></td>
+<td>requires hybrid</td>
+</tr>
+</tbody>
+</table>
+<p>The FP5 hybrid stays the right MVP architecture, but FP6 cost fixes are independent and benefit every tier — they land first.</p>
+<p><strong>Format shift introduced during planning:</strong></p>
+<p>The operator asked whether plan/research docs should be HTML instead of markdown ("Markdown is the draft. HTML is what humans read."). Decision: research artifacts get <strong>dual format</strong> — <code>.md</code> canonical + auto-generated <code>.html</code> artifact. Plan files stay <code>.md</code> while in flight, get an HTML mirror on ship. A standalone local Next.js viewer surfaces all HTML artifacts with search + index. A <code>publish-plan</code> skill + Stop-hook automates the markdown→HTML conversion when a plan ships.</p>
+<p><strong>Repo bootstrap also expanded into FP6 scope:</strong></p>
+<p>The repo is not yet a git repo. The operator asked to also: <code>git init</code>; add <code>CLAUDE.md</code> (Claude conventions for this repo); add <code>SKILLS.md</code> index pointing at <code>.claude/skills/</code>; add <code>.claude/settings.json</code> with hooks declarations; add <code>README.md</code>. These land in FP6 Track D as the foundation other tracks need.</p>
+<p><strong>Scope expansion from clarifications (already locked, but deferred to FP7/FP8)</strong>:</p>
+<ul>
+<li>4 auth providers: Google, GitHub, Email magic link, ORCID → FP7</li>
+<li>User/admin consoles → FP7</li>
+<li>API console + pricing console (pricing + breakdown tabs) → FP8</li>
+<li>Standalone HTML cost-breakdown doc for various Agent workloads (API/Subscription/SDK) → FP8</li>
+<li><strong>New agent abstraction</strong> — two modes: <code>review_only</code> (current) | <code>review_and_revise</code> (agents emit <code>revision_artifact</code> patches to LaTeX source → PR with per-artifact accept/reject checkboxes) → FP8</li>
+</ul>
+<p>The plan splits into three FPs, each with a clear goal:</p>
+<ul>
+<li><strong>FP6</strong> (build NOW, parallel agent team): cost fixes + HTML research artifacts + local Next.js viewer + repo bootstrap + publish-plan skill</li>
+<li><strong>FP7</strong> (scope locked, build NEXT): auth + user/admin consoles</li>
+<li><strong>FP8</strong> (scope locked, build AFTER): API console + pricing console + cost HTML doc + revision-mode agents</li>
+</ul>
+<hr>
+<h2 id="fp6--pipeline-cost-fixes--research-site--repo-bootstrap-build-now"><a class="anchor" aria-label="anchor" href="#fp6--pipeline-cost-fixes--research-site--repo-bootstrap-build-now">#</a>FP6 — Pipeline Cost Fixes + Research Site + Repo Bootstrap (build NOW)</h2>
+<h3 id="goal"><a class="anchor" aria-label="anchor" href="#goal">#</a>Goal</h3>
+<blockquote>
+<p><strong>Cut measured per-paper API cost from <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.38</mn><mi>t</mi><mi>o</mi><mo>≤</mo></mrow><annotation encoding="application/x-tex">0.38 to ≤</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7804em;vertical-align:-0.136em;"></span><span class="mord">0.38</span><span class="mord mathnormal">t</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≤</span></span></span></span>0.15</strong> (≥60% reduction) AND <strong>stand up a local-only research site</strong> at <code>research/site/</code> that surfaces rich self-contained HTML versions of every <code>research/*.md</code> doc with search + index AND <strong>bootstrap the repo</strong> (git init, CLAUDE.md, SKILLS.md, hooks, README.md) AND <strong>automate plan-ship → HTML publishing</strong> via a skill + hook. Land all five tracks via a parallel agent team in a single pass.</p>
+</blockquote>
+<h3 id="track-a--pipeline-cost-fixes-4-parallel-subagents"><a class="anchor" aria-label="anchor" href="#track-a--pipeline-cost-fixes-4-parallel-subagents">#</a>Track A — Pipeline cost fixes (4 parallel subagents)</h3>
+<p>Each subagent owns one fix end-to-end (code + migration + test).</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Fix</th>
+<th>Files</th>
+<th>Estimated savings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td><strong>Trim meta_reviewer input</strong> — drop the paper extract from artifact passed to <code>meta_reviewer</code>; pass only the 5 specialist outputs (~10K tokens vs 62K)</td>
+<td><code>crates/orchestrator/src/supervisor.rs</code> (~line 320, <code>meta_input</code> construction); <code>prompts/meta_reviewer.md</code> to confirm no paper-extract refs</td>
+<td><strong>$0.13/paper (56% of that role, 34% overall)</strong></td>
+</tr>
+<tr>
+<td>A2</td>
+<td><strong>Dedupe <code>input_artifact</code> storage</strong> — new migration <code>migrations/*_review_inputs.sql</code> adding <code>review_inputs(review_id PK, paper_id, artifact JSONB)</code>; drop/migrate <code>review_agents.input_artifact</code>; supervisor writes the artifact once per review</td>
+<td><code>supabase/migrations/</code>, <code>crates/orchestrator/src/db.rs</code>, <code>crates/orchestrator/src/supervisor.rs</code></td>
+<td>~260K tokens/paper of dup rows eliminated; minor insert-path latency win</td>
+</tr>
+<tr>
+<td>A3</td>
+<td><strong>Enable prompt caching across all 3 providers</strong> — Anthropic: add <code>cache_control</code> on user prompt (not just system); OpenAI: pass <code>prompt_cache_key</code> on gpt-5.x where supported; Gemini: explicit cache for prompts >32K tokens. Cache key: <code>(role, prompt_template_hash)</code></td>
+<td><code>crates/llm-adapter/src/providers/{claude,openai,gemini}.rs</code>; unit tests asserting cache headers</td>
+<td><strong>~10–20% on retries + cross-paper system reuse</strong>; ~$0.01–0.02/paper</td>
+</tr>
+<tr>
+<td>A4</td>
+<td><strong>Per-paper output cache</strong> — migration adding <code>review_cache(paper_id, role, content_hash, output JSONB, verifier_status, created_at, expires_at)</code>; supervisor checks cache before each agent call, skips on hit, writes on success; TTL = 30 days; invalidated on paper metadata update</td>
+<td><code>supabase/migrations/</code>, <code>crates/orchestrator/src/supervisor.rs</code>, <code>crates/orchestrator/src/db.rs</code></td>
+<td>~$700/yr at 50/day with 10% re-submission; scales with volume</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Verifier</strong>: rerun <code>tests/m1-pipeline.sh</code>. Capture per-paper cost from <code>review_agents.tokens_in/tokens_out</code> × LiteLLM model prices. Acceptance: ≤ $0.15/paper end-to-end.</p>
+<h3 id="track-b--html-research-artifacts-1-subagent"><a class="anchor" aria-label="anchor" href="#track-b--html-research-artifacts-1-subagent">#</a>Track B — HTML research artifacts (1 subagent)</h3>
+<p>Convert each <code>research/*.md</code> to a self-contained <code>.html</code> and keep both formats. Each HTML is:</p>
+<ul>
+<li>Single file, opens via <code>file://</code> in any browser</li>
+<li>Inline CSS (dark theme, scannable, 8px baseline grid, ≥4.5 contrast)</li>
+<li>Inline JS only where needed (collapsible sections, copy-to-clipboard on code blocks)</li>
+<li>SVG diagrams (replace ASCII boxes with proper SVG)</li>
+<li>Color-coded severity tags, syntax-highlighted code, rich tables</li>
+<li>Self-contained head metadata (no external font/css/js refs)</li>
+</ul>
+<p>Build pipeline:</p>
+<ul>
+<li>Shared CSS template at <code>research/_template/style.css</code> (inlined at build time)</li>
+<li>Node script <code>research/_template/build.mjs</code> reads every <code>research/*.md</code>, runs through <code>remark</code> + <code>rehype</code> + <code>rehype-pretty-code</code> + custom CSS injection, writes <code>research/{name}.html</code></li>
+<li>Re-runs automatically whenever a <code>.md</code> changes (Track E hook triggers it)</li>
+<li>Idempotent — running twice produces byte-identical output</li>
+</ul>
+<p>Files:</p>
+<ul>
+<li><code>research/_template/style.css</code> (new)</li>
+<li><code>research/_template/build.mjs</code> (new)</li>
+<li><code>research/_template/package.json</code> (new — local dev deps: <code>remark</code>, <code>remark-html</code>, <code>remark-gfm</code>, <code>remark-math</code>, <code>rehype-katex</code>, <code>rehype-pretty-code</code>)</li>
+<li><code>research/processing-costs.html</code> (generated)</li>
+<li><code>research/processing-costs-plan.html</code> (generated)</li>
+<li><code>research/cost-breakdown.html</code> (generated)</li>
+<li><code>.gitignore</code> excludes <code>research/_template/node_modules/</code></li>
+</ul>
+<h3 id="track-c--local-nextjs-research-viewer-1-subagent"><a class="anchor" aria-label="anchor" href="#track-c--local-nextjs-research-viewer-1-subagent">#</a>Track C — Local Next.js research viewer (1 subagent)</h3>
+<p>Standalone Next.js app at <code>research/site/</code>. <strong>Not deployed.</strong> <strong>Not coupled to <code>apps/web</code>.</strong> Surfaces the generated HTML artifacts with search + navigable sidebar.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Task</th>
+<th>Files</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td>Scaffold standalone Next.js project (own <code>package.json</code>, own deps); dev port 3100 to avoid clashing with <code>apps/web</code> on 3000</td>
+<td><code>research/site/package.json</code>, <code>research/site/next.config.mjs</code>, <code>research/site/tsconfig.json</code></td>
+</tr>
+<tr>
+<td>C2</td>
+<td>Root layout: dark theme, sidebar with doc list + search box + active highlight</td>
+<td><code>research/site/app/layout.tsx</code>, <code>research/site/app/globals.css</code></td>
+</tr>
+<tr>
+<td>C3</td>
+<td>Index <code>app/page.tsx</code>: lists all <code>research/*.html</code> files with title (parsed from <code>&#x3C;h1></code>), summary (first <code>&#x3C;p></code>), word count, modified time</td>
+<td><code>research/site/app/page.tsx</code></td>
+</tr>
+<tr>
+<td>C4</td>
+<td>Doc viewer <code>app/[slug]/page.tsx</code>: reads sibling <code>research/{slug}.html</code>, embeds inside chrome via <code>&#x3C;iframe srcDoc={html} sandbox="allow-same-origin"></code> — sandboxed iframe isolates the doc from the host app and avoids any inline-HTML injection risk</td>
+<td><code>research/site/app/[slug]/page.tsx</code></td>
+</tr>
+<tr>
+<td>C5</td>
+<td>Search index: at build time, <code>lib/search.ts</code> walks all HTML, strips tags, builds a flat-text index keyed by slug; client-side fuzzy search via <code>fuse.js</code> (small, no server)</td>
+<td><code>research/site/lib/search.ts</code>, <code>research/site/components/search-box.tsx</code></td>
+</tr>
+<tr>
+<td>C6</td>
+<td>README at <code>research/site/README.md</code>: <code>cd research/site &#x26;&#x26; pnpm install &#x26;&#x26; pnpm dev</code> → opens <code>localhost:3100</code></td>
+<td><code>research/site/README.md</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Explicitly NOT in this track</strong>: no changes to <code>apps/web/</code> at all; no shared components; no deployment config.</p>
+<p><strong>Verifier</strong>: <code>cd research/site &#x26;&#x26; pnpm install &#x26;&#x26; pnpm dev</code> → open <code>localhost:3100</code> → all current research docs visible in sidebar, click each → renders, search finds matching terms across docs. <code>apps/web</code> builds + runs unchanged.</p>
+<h3 id="track-d--repo-bootstrap-1-subagent-runs-first--others-depend"><a class="anchor" aria-label="anchor" href="#track-d--repo-bootstrap-1-subagent-runs-first--others-depend">#</a>Track D — Repo bootstrap (1 subagent, runs FIRST — others depend)</h3>
+<p>The repo is not yet a git repo. Bootstrap it so the rest of FP6 has version control.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Task</th>
+<th>Files</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td><code>git init</code> at repo root; add <code>.gitignore</code> (Node, Rust, Python, OS files, <code>.env</code>, <code>node_modules</code>, <code>target</code>, build artifacts)</td>
+<td><code>.gitignore</code> (new)</td>
+</tr>
+<tr>
+<td>D2</td>
+<td><code>CLAUDE.md</code> — repo conventions: how to run M1 smoke, schema-strict mode, where agents/ schemas/ prompts/ live, FP convention, ChatGPT vs API key separation, do-not-modify list (e.g., <code>/legal</code> disclaimer policy from FP3)</td>
+<td><code>CLAUDE.md</code> (new)</td>
+</tr>
+<tr>
+<td>D3</td>
+<td><code>SKILLS.md</code> — index of <code>.claude/skills/</code> skills with one-line descriptions; for now: <code>publish-plan</code> (Track E), <code>grokrxiv-review</code> (referenced in FP5 §4.3 for future Tier-2 enforcement)</td>
+<td><code>SKILLS.md</code> (new)</td>
+</tr>
+<tr>
+<td>D4</td>
+<td><code>.claude/settings.json</code> — hooks block declaring the Stop-hook (Track E); permissions block; allowed Bash commands matching project workflow (cargo, pnpm, supabase, sqlx)</td>
+<td><code>.claude/settings.json</code> (new)</td>
+</tr>
+<tr>
+<td>D5</td>
+<td><code>README.md</code> — public-facing project overview: what GrokRxiv is, status, quickstart, link to research site + production website</td>
+<td><code>README.md</code> (new)</td>
+</tr>
+<tr>
+<td>D6</td>
+<td>Initial commit with everything currently in the working tree</td>
+<td>git commit on <code>main</code> branch</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Verifier</strong>: <code>git status</code> clean after commit; <code>git log</code> shows initial commit; <code>.claude/settings.json</code> parses (jq); <code>claude</code> CLI sees the hooks declaration.</p>
+<h3 id="track-e--plan-ship-hook--publish-plan-skill-1-subagent-depends-on-track-d"><a class="anchor" aria-label="anchor" href="#track-e--plan-ship-hook--publish-plan-skill-1-subagent-depends-on-track-d">#</a>Track E — Plan-ship hook + publish-plan skill (1 subagent, depends on Track D)</h3>
+<p>Automate the markdown→HTML flow for plans and any new research doc.</p>
+<p><strong>Skill: <code>.claude/skills/publish-plan/SKILL.md</code></strong></p>
+<pre><code>---
+name: publish-plan
+description: Publish a shipped plan or research doc to the research/ HTML artifacts and update the local research site index.
+---
+
+When invoked with a markdown file path:
+1. Read the markdown file
+2. Run `research/_template/build.mjs &#x3C;path>` to generate the matching `.html` artifact in research/
+3. Touch `research/site/lib/.search-index-dirty` so the next dev server reload regenerates the search index
+4. Echo the resulting HTML path
+
+Use cases:
+- Agent has just edited `~/.claude/plans/fpN-*.md` to mark a pass Shipped
+- Agent has just written/updated a `research/*.md` doc
+</code></pre>
+<p><strong>Hook: <code>.claude/settings.json</code> → Stop hook</strong></p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="jsonc" data-theme="github-dark"><code data-language="jsonc" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span></span>
+<span data-line=""><span style="color:#79B8FF">  "hooks"</span><span style="color:#E1E4E8">: {</span></span>
+<span data-line=""><span style="color:#79B8FF">    "Stop"</span><span style="color:#E1E4E8">: [</span></span>
+<span data-line=""><span style="color:#E1E4E8">      {</span></span>
+<span data-line=""><span style="color:#79B8FF">        "matcher"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">""</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#79B8FF">        "hooks"</span><span style="color:#E1E4E8">: [</span></span>
+<span data-line=""><span style="color:#E1E4E8">          {</span></span>
+<span data-line=""><span style="color:#79B8FF">            "type"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"command"</span><span style="color:#E1E4E8">,</span></span>
+<span data-line=""><span style="color:#79B8FF">            "command"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"bash .claude/hooks/maybe-publish-research.sh"</span></span>
+<span data-line=""><span style="color:#E1E4E8">          }</span></span>
+<span data-line=""><span style="color:#E1E4E8">        ]</span></span>
+<span data-line=""><span style="color:#E1E4E8">      }</span></span>
+<span data-line=""><span style="color:#E1E4E8">    ]</span></span>
+<span data-line=""><span style="color:#E1E4E8">  }</span></span>
+<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<p><strong>Script: <code>.claude/hooks/maybe-publish-research.sh</code></strong></p>
+<ul>
+<li>Walks <code>research/*.md</code> and <code>~/.claude/plans/*.md</code></li>
+<li>For each, compares mtime to the matching <code>.html</code> (if any)</li>
+<li>If <code>.md</code> is newer (or no <code>.html</code> exists), runs the build script for that file</li>
+<li>Outputs a short summary (<code>Generated 2 HTML artifacts: X, Y</code>)</li>
+<li>Exits 0 on success; exits 1 on build failure (prevents silent rot)</li>
+</ul>
+<p>Files:</p>
+<ul>
+<li><code>.claude/skills/publish-plan/SKILL.md</code> (new)</li>
+<li><code>.claude/hooks/maybe-publish-research.sh</code> (new, executable)</li>
+<li><code>.claude/settings.json</code> (extends from D4)</li>
+</ul>
+<p><strong>Verifier</strong>: edit <code>research/cost-breakdown.md</code> → save → wait for Stop event → <code>research/cost-breakdown.html</code> regenerates. Also: invoke <code>publish-plan</code> skill explicitly on <code>~/.claude/plans/fp6-*.md</code> → produces <code>research/fp6-cost-fixes-research-site-bootstrap.html</code> and it appears in the Next.js viewer at <code>localhost:3100/fp6-cost-fixes-research-site-bootstrap</code>.</p>
+<h3 id="parallel-agent-team-layout"><a class="anchor" aria-label="anchor" href="#parallel-agent-team-layout">#</a>Parallel agent team layout</h3>
+<pre><code>                        Orchestrator (Claude main)
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+       Track D (FIRST)     Tracks A1-A4         Track B
+       repo bootstrap     (parallel cost       HTML build
+       git init,          fixes — 4            pipeline +
+       CLAUDE.md,         subagents)            convert existing
+       hooks dir                                docs
+              │                  │                  │
+              └────────┬─────────┴────────┬─────────┘
+                       ▼                  ▼
+                  Track E             Track C
+                  publish-plan        Next.js viewer
+                  skill + hook        on top of HTML
+                       │                  │
+                       └─────────┬────────┘
+                                 ▼
+                 Integration: m1-pipeline.sh + research site smoke
+                 Measure new $/paper. Update cost-breakdown.md.
+                 publish-plan hook auto-regens HTML for shipped plan.
+                 Commit + tag fp6-shipped.
+</code></pre>
+<p><strong>Ordering constraints</strong>:</p>
+<ul>
+<li>Track D must finish before Track E (E needs <code>.claude/settings.json</code>)</li>
+<li>Track B must finish before Track C (C reads B's HTML output)</li>
+<li>Tracks A1–A4 are mutually independent and run in parallel from the start</li>
+<li>Track A depends on nothing in B/C/D/E and can ship its commit independently if needed</li>
+</ul>
+<h3 id="fp6-acceptance-criteria"><a class="anchor" aria-label="anchor" href="#fp6-acceptance-criteria">#</a>FP6 acceptance criteria</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> Measured per-paper cost ≤ <strong>$0.15</strong> on a real M1 smoke run; new measurements appended to <code>research/cost-breakdown.md</code> (and auto-regenerated to <code>cost-breakdown.html</code>)</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>review_inputs</code> table exists and populated; <code>review_agents.input_artifact</code> migrated</li>
+<li class="task-list-item"><input type="checkbox" disabled> Prompt caching enabled on Claude/OpenAI/Gemini paths (unit tests assert cache headers)</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>review_cache</code> table exists; hit/miss counter visible in logs</li>
+<li class="task-list-item"><input type="checkbox" disabled> All current <code>research/*.md</code> have matching <code>research/*.html</code> (self-contained, dark theme, render via <code>file://</code>)</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>research/site/</code> runs at <code>localhost:3100</code>, sidebar lists every doc, search works, zero coupling to <code>apps/web</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>apps/web</code> builds and runs unchanged (no header link, no diff)</li>
+<li class="task-list-item"><input type="checkbox" disabled> Repo is a git repo with <code>CLAUDE.md</code>, <code>SKILLS.md</code>, <code>.claude/settings.json</code>, <code>.claude/hooks/</code>, <code>README.md</code>, and a clean initial commit</li>
+<li class="task-list-item"><input type="checkbox" disabled> Stop hook regenerates <code>.html</code> when a <code>.md</code> in <code>research/</code> or <code>~/.claude/plans/</code> changes</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>publish-plan</code> skill, invoked on the FP6 plan file, produces <code>research/fp6-*.html</code> and it shows up in the viewer</li>
+</ul>
+<hr>
+<h2 id="fp7--auth--user-console--admin-console-plan-only-build-after-fp6"><a class="anchor" aria-label="anchor" href="#fp7--auth--user-console--admin-console-plan-only-build-after-fp6">#</a>FP7 — Auth + User Console + Admin Console (PLAN ONLY; build after FP6)</h2>
+<h3 id="goal-1"><a class="anchor" aria-label="anchor" href="#goal-1">#</a>Goal</h3>
+<blockquote>
+<p>Wire end-to-end user identity across <strong>Google, GitHub, Email magic link, ORCID</strong>. Ship a user console where authors view their submitted papers + review status. Ship an admin console replacing CLI-only moderation with a queue UI.</p>
+</blockquote>
+<h3 id="tracks-sketch--full-file-written-on-fp6-ship"><a class="anchor" aria-label="anchor" href="#tracks-sketch--full-file-written-on-fp6-ship">#</a>Tracks (sketch — full file written on FP6 ship)</h3>
+<p><strong>T1 — Supabase Auth providers</strong>: enable Google/GitHub/ORCID OAuth + Email magic link; <code>apps/web/middleware.ts</code> for session refresh.
+<strong>T2 — User &#x26; permission tables</strong>: extend <code>auth.users</code> with <code>display_name</code>, <code>orcid_id</code>, <code>github_handle</code>, <code>role</code> (<code>user|moderator|admin</code>); <code>reviews.submitted_by</code> nullable FK; RLS update.
+<strong>T3 — User console at <code>/dashboard</code></strong>: list user's reviews, status, GitHub PR links; "submit new paper" CTA.
+<strong>T4 — Admin console at <code>/admin</code></strong>: moderation queue UI (approve/reject/request-changes), all-reviews list, user role management.
+<strong>T5 — Auth-gated routes</strong>: <code>/dashboard/*</code> requires session; <code>/admin/*</code> requires <code>role ≥ moderator</code>.</p>
+<h3 id="acceptance"><a class="anchor" aria-label="anchor" href="#acceptance">#</a>Acceptance</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> All 4 providers work on a deployed preview</li>
+<li class="task-list-item"><input type="checkbox" disabled> User can submit, see their dashboard, follow status</li>
+<li class="task-list-item"><input type="checkbox" disabled> Moderator can act from <code>/admin</code>; decisions land in <code>moderation_queue</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> RLS prevents cross-user data leaks</li>
+</ul>
+<hr>
+<h2 id="fp8--api-console--pricing--cost-html-doc--revision-agents-plan-only-build-after-fp7"><a class="anchor" aria-label="anchor" href="#fp8--api-console--pricing--cost-html-doc--revision-agents-plan-only-build-after-fp7">#</a>FP8 — API Console + Pricing + Cost HTML Doc + Revision Agents (PLAN ONLY; build after FP7)</h2>
+<h3 id="goal-2"><a class="anchor" aria-label="anchor" href="#goal-2">#</a>Goal</h3>
+<blockquote>
+<p>Open GrokRxiv as a programmable service (API keys, usage, transparent pricing). Add the new <strong><code>review_and_revise</code> agent mode</strong>: agents emit not just review feedback but also <code>revision_artifact</code> patches to the LaTeX source → produces a PR with per-artifact accept/reject checkboxes for human review.</p>
+</blockquote>
+<h3 id="tracks-sketch--full-file-written-on-fp6-ship-1"><a class="anchor" aria-label="anchor" href="#tracks-sketch--full-file-written-on-fp6-ship-1">#</a>Tracks (sketch — full file written on FP6 ship)</h3>
+<p><strong>T1 — API keys + usage</strong>: <code>api_keys(user_id, key_hash, scopes)</code>, <code>api_usage(api_key_id, ts, tokens, cost)</code>; <code>/dashboard/api</code> for issue/revoke + chart.
+<strong>T2 — API pricing console</strong> at <code>/dashboard/pricing</code> — two tabs:</p>
+<ul>
+<li>Tab A: GrokRxiv service pricing (tiered free/pro/enterprise)</li>
+<li>Tab B: LLM cost breakdown per review (uses LiteLLM JSON price data)
+<strong>T3 — Cost-comparison HTML doc</strong> at <code>research/cost-comparison.html</code>: interactive (vanilla JS), 6 workloads × 4 deployment modes (API/Subscription/SDK/OSS), live calculator embedded; ships into research site automatically via the publish hook.
+<strong>T4 — Revision-mode agents</strong>:</li>
+<li><code>agent_mode</code> enum: <code>review_only</code> | <code>review_and_revise</code></li>
+<li>Per-role schemas gain optional <code>revision_artifact: { section, original, proposed, rationale, confidence }</code></li>
+<li>New supervisor stage <code>apply_revisions</code> merges accepted artifacts into a fork of the paper's LaTeX</li>
+<li>New <code>revision_artifact.schema.json</code></li>
+<li>Output: a draft PR with <code>accept</code>/<code>reject</code> checkboxes per artifact; a webhook updates DB on tick</li>
+<li>Default mode stays <code>review_only</code> (backward compat)
+<strong>T5 — Public API docs</strong> at <code>/api-docs</code>: auth (bearer), endpoints, rate limits, pricing per endpoint, curl/Python/JS examples.</li>
+</ul>
+<h3 id="acceptance-1"><a class="anchor" aria-label="anchor" href="#acceptance-1">#</a>Acceptance</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> User mints API key + calls <code>/api/v1/reviews</code> with bearer auth</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>/dashboard/pricing</code> both tabs render with live LiteLLM data</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>/research/cost-comparison</code> (HTML doc) lets visitors input workload params and see API/Sub/SDK costs</li>
+<li class="task-list-item"><input type="checkbox" disabled> <code>mode=review_and_revise</code> produces PR with per-artifact accept/reject checkboxes</li>
+<li class="task-list-item"><input type="checkbox" disabled> Cost tracking within ±5% of provider-dashboard spend</li>
+</ul>
+<hr>
+<h2 id="verification-fp6-end-to-end"><a class="anchor" aria-label="anchor" href="#verification-fp6-end-to-end">#</a>Verification (FP6 end-to-end)</h2>
+<ol>
+<li><code>tests/m1-pipeline.sh</code> — must pass 8/8 like FP4</li>
+<li>Inspect <code>review_agents</code> for smoke-test paper; confirm:
+<ul>
+<li><code>meta_reviewer.tokens_in</code> &#x3C; 15K (was 62K)</li>
+<li><code>input_artifact</code> no longer dup'd across 5 rows (FK now)</li>
+<li>Cache hit counter non-zero on retries</li>
+</ul>
+</li>
+<li>Open <code>research/processing-costs.html</code> directly in browser via <code>file://</code> — renders self-contained, dark theme, tables/code blocks styled</li>
+<li><code>cd research/site &#x26;&#x26; pnpm install &#x26;&#x26; pnpm dev</code> → <code>localhost:3100</code> → sidebar lists all 3+ docs → search finds "meta_reviewer" matches across docs</li>
+<li><code>apps/web</code> builds + runs unchanged (<code>cd apps/web &#x26;&#x26; pnpm dev</code> at <code>localhost:3000</code>)</li>
+<li><code>git log</code> shows clean initial commit + per-track commits</li>
+<li>Touch <code>research/cost-breakdown.md</code> → Stop hook regenerates <code>cost-breakdown.html</code> automatically</li>
+<li>Compute per-paper cost from real <code>tokens_in/out</code> × LiteLLM prices → append "After FP6" section to <code>research/cost-breakdown.md</code> → hook regenerates HTML → it appears in the viewer at <code>localhost:3100/cost-breakdown</code></li>
+<li>Update this plan-index file: mark FP6 Shipped, write <code>fp7-auth-and-consoles.md</code> + <code>fp8-api-pricing-revision-agents.md</code> permanent files from the sketches above</li>
+</ol>
+<h2 id="critical-files-fp6"><a class="anchor" aria-label="anchor" href="#critical-files-fp6">#</a>Critical files (FP6)</h2>
+<p><strong>Track A (cost fixes)</strong>:</p>
+<ul>
+<li><code>crates/orchestrator/src/supervisor.rs</code> — meta_input construction (~line 320), retry loop (~line 409), new cache lookup before each agent call</li>
+<li><code>crates/orchestrator/src/db.rs</code> — <code>review_inputs</code> + <code>review_cache</code> accessors</li>
+<li><code>crates/llm-adapter/src/providers/{claude,openai,gemini}.rs</code> — cache header wiring</li>
+<li><code>supabase/migrations/</code> — two new migration files</li>
+<li><code>prompts/meta_reviewer.md</code> — confirm no paper-extract refs</li>
+<li><code>agents/meta_reviewer.yaml</code> — optional update to encode the new input contract</li>
+</ul>
+<p><strong>Track B (HTML build pipeline)</strong>:</p>
+<ul>
+<li><code>research/_template/style.css</code> (new — shared inline CSS)</li>
+<li><code>research/_template/build.mjs</code> (new — md→html converter)</li>
+<li><code>research/_template/package.json</code> (new)</li>
+<li><code>research/{processing-costs,processing-costs-plan,cost-breakdown}.html</code> (generated)</li>
+</ul>
+<p><strong>Track C (Next.js viewer)</strong>:</p>
+<ul>
+<li><code>research/site/</code> (entire new standalone project — see Track C table above)</li>
+<li><strong>No files in <code>apps/web/</code> are touched.</strong></li>
+</ul>
+<p><strong>Track D (repo bootstrap)</strong>:</p>
+<ul>
+<li><code>.gitignore</code> (new)</li>
+<li><code>CLAUDE.md</code> (new)</li>
+<li><code>SKILLS.md</code> (new)</li>
+<li><code>.claude/settings.json</code> (new)</li>
+<li><code>README.md</code> (new)</li>
+<li><code>git init</code> + initial commit</li>
+</ul>
+<p><strong>Track E (publish-plan skill + hook)</strong>:</p>
+<ul>
+<li><code>.claude/skills/publish-plan/SKILL.md</code> (new)</li>
+<li><code>.claude/hooks/maybe-publish-research.sh</code> (new, executable)</li>
+<li><code>.claude/settings.json</code> (hooks block, extends from D4)</li>
+</ul>
+<hr>
+<h1 id="grokrxiv--plan-index-preserved-index-stays-markdown-per-harness-convention"><a class="anchor" aria-label="anchor" href="#grokrxiv--plan-index-preserved-index-stays-markdown-per-harness-convention">#</a>GrokRxiv — Plan Index (preserved; index stays markdown per harness convention)</h1>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Pass</th>
+<th>Status</th>
+<th>File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FP1</td>
+<td>Monorepo scaffold</td>
+<td>Shipped</td>
+<td><a href="./fp1-monorepo-scaffold.md"><code>fp1-monorepo-scaffold.md</code></a></td>
+</tr>
+<tr>
+<td>FP2</td>
+<td>Honest end-to-end</td>
+<td>Shipped</td>
+<td><a href="./fp2-honest-end-to-end.md"><code>fp2-honest-end-to-end.md</code></a></td>
+</tr>
+<tr>
+<td>FP3</td>
+<td>Codex audit follow-through</td>
+<td>Shipped</td>
+<td><a href="./fp3-codex-audit-followthrough.md"><code>fp3-codex-audit-followthrough.md</code></a></td>
+</tr>
+<tr>
+<td>FP4</td>
+<td>Real typed DAG + responsive</td>
+<td>Shipped</td>
+<td><a href="./fp4-real-dag-and-responsive.md"><code>fp4-real-dag-and-responsive.md</code></a></td>
+</tr>
+<tr>
+<td>FP5</td>
+<td>Processing-costs design (doc only)</td>
+<td>Shipped (doc only)</td>
+<td><a href="./fp5-processing-costs-architecture.md"><code>fp5-processing-costs-architecture.md</code></a></td>
+</tr>
+<tr>
+<td>FP6</td>
+<td>Pipeline cost fixes + research site + repo bootstrap</td>
+<td><strong>In progress</strong></td>
+<td><a href="./fp6-cost-fixes-research-site-bootstrap.md"><code>fp6-cost-fixes-research-site-bootstrap.md</code></a></td>
+</tr>
+<tr>
+<td>FP7</td>
+<td>Auth + user/admin consoles</td>
+<td>Planned</td>
+<td><a href="./fp7-auth-and-consoles.md"><code>fp7-auth-and-consoles.md</code></a></td>
+</tr>
+<tr>
+<td>FP8</td>
+<td>API console + pricing + revision agents</td>
+<td>Planned</td>
+<td><a href="./fp8-api-pricing-revision-agents.md"><code>fp8-api-pricing-revision-agents.md</code></a></td>
+</tr>
+</tbody>
+</table>
+</main>
+<footer class="doc-footer">
+<p>fp6-cost-fixes-research-site-bootstrap.md &middot; generated 2026-05-16T00:30:05.818Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>
