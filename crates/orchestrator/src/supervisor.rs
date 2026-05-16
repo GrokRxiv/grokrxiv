@@ -329,9 +329,17 @@ pub async fn run_review_dag(
     let specialist_content_hash =
         sha256_hex(&serde_json::to_vec(&specialist_input).unwrap_or_default());
 
+    // Track 8a: optional dump of each rendered prompt to disk for inspection.
+    // Triggered by the CLI's `--debug-prompt` flag → `GROKRXIV_DEBUG_PROMPT_DIR`
+    // env var. Best-effort: any I/O failure is swallowed by `dump_debug_prompt`.
+    let debug_root = debug_prompt_root();
+
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
         let prompt = build_specialist_prompt(role, extract_arc.as_ref());
+        if let Some(root) = debug_root.as_deref() {
+            dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
+        }
         let system = role_system_prompt(role);
         let (agent, runner, role_model) = resolve_agent(role);
         let sem = sem.clone();
@@ -466,6 +474,14 @@ pub async fn run_review_dag(
         "specialists": serde_json::Value::Object(specialists_map),
     });
     let meta_prompt = build_meta_synthesis_prompt(&meta_input);
+    if let Some(root) = debug_root.as_deref() {
+        dump_debug_prompt(
+            root,
+            &extract_arc.arxiv_id,
+            AgentRole::MetaReviewer,
+            &meta_prompt,
+        );
+    }
     let meta_system = role_system_prompt(AgentRole::MetaReviewer);
 
     let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer);
@@ -759,24 +775,147 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole) -> String {
     )
 }
 
+/// Per-role character budget for the rendered section bodies. Reserved for
+/// the **body block only** — title/abstract/heading-index/bibliography are
+/// outside this budget. Track 8a: the previous prompt builder only emitted
+/// headings, which left every specialist reasoning from abstract + an outline
+/// instead of the full paper. The budgets below are tuned so the most
+/// content-hungry role (technical correctness) sees ~240k chars, which is
+/// roughly the long-context window of the role's model after schema overhead.
+///
+/// `MetaReviewer` is `0`: it only ever sees specialist outputs (FP6 A1).
+#[cfg(feature = "grokrxiv-ingest")]
+fn body_budget_chars(role: grokrxiv_schemas::AgentRole) -> usize {
+    use grokrxiv_schemas::AgentRole;
+    match role {
+        AgentRole::Summary => 48_000,
+        AgentRole::TechnicalCorrectness => 240_000,
+        AgentRole::Novelty => 120_000,
+        AgentRole::Reproducibility => 80_000,
+        AgentRole::Citation => 120_000,
+        AgentRole::MetaReviewer => 0,
+    }
+}
+
+/// Render a single section in its canonical `## {heading}\n\n{body}\n\n`
+/// form. The trailing blank line keeps adjacent sections visually separated.
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_section(heading: &str, body: &str) -> String {
+    format!("## {heading}\n\n{body}\n\n")
+}
+
+/// Truncate `s` to roughly `budget` chars using the "first 60%, last 40%"
+/// split. Char-based (not byte-based) so we never split a multi-byte codepoint.
+/// If `s` already fits, returns it untouched.
+#[cfg(feature = "grokrxiv-ingest")]
+fn truncate_60_40(s: &str, budget: usize) -> String {
+    let total = s.chars().count();
+    if total <= budget {
+        return s.to_string();
+    }
+    let marker = "\n\n[…truncated…]\n\n";
+    let marker_len = marker.chars().count();
+    let usable = budget.saturating_sub(marker_len);
+    let head_n = (usable * 60) / 100;
+    let tail_n = usable.saturating_sub(head_n);
+    let head: String = s.chars().take(head_n).collect();
+    let tail: String = s.chars().skip(total - tail_n).collect();
+    format!("{head}{marker}{tail}")
+}
+
+/// Render the section body block within `budget` chars.
+///
+/// Behavior:
+/// - Iterate sections in document order. For each:
+///   - Render `## {heading}\n\n{body}\n\n`.
+///   - If the rendered single section exceeds `budget` on its own AND nothing
+///     has been emitted yet, truncate it with the 60/40 split and emit it as
+///     the sole survivor.
+///   - Otherwise, if it fits in remaining budget, append it.
+///   - Otherwise, skip it and record the heading as truncated.
+/// - If any sections are skipped, append a single
+///   `[…remaining sections truncated; headings: a; b; c]` block.
+///
+/// `budget == 0` returns an empty string (used for `MetaReviewer`).
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_section_block(sections: &[grokrxiv_schemas::Section], budget: usize) -> String {
+    if budget == 0 || sections.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut skipped: Vec<&str> = Vec::new();
+    let mut consumed: usize = 0;
+
+    for s in sections {
+        let rendered = render_section(&s.heading, &s.body_markdown);
+        let rendered_chars = rendered.chars().count();
+
+        if consumed == 0 && rendered_chars > budget {
+            let truncated = truncate_60_40(&rendered, budget);
+            consumed = truncated.chars().count();
+            out.push_str(&truncated);
+            continue;
+        }
+
+        if consumed + rendered_chars <= budget {
+            out.push_str(&rendered);
+            consumed += rendered_chars;
+        } else {
+            skipped.push(s.heading.as_str());
+        }
+    }
+
+    if !skipped.is_empty() {
+        let headings = skipped.join("; ");
+        out.push_str(&format!(
+            "[…remaining sections truncated; headings: {headings}]\n"
+        ));
+    }
+    out
+}
+
+/// Render the bibliography block. Keys are synthesised 1-indexed
+/// (`[1] …`, `[2] …`) since `Citation` doesn't carry a BibTeX key field; this
+/// keeps the format stable across runs and is what the citation specialist
+/// expects to cross-reference.
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_bibliography(bibliography: &[grokrxiv_schemas::Citation]) -> String {
+    if bibliography.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("Bibliography ({} entries):\n", bibliography.len());
+    for (i, c) in bibliography.iter().enumerate() {
+        let key = i + 1;
+        let raw = c.raw.replace('\n', " ").trim().to_string();
+        out.push_str(&format!("[{key}] {raw}\n"));
+    }
+    out
+}
+
 #[cfg(feature = "grokrxiv-ingest")]
 fn build_specialist_prompt(
     role: grokrxiv_schemas::AgentRole,
     extract: &grokrxiv_schemas::PaperExtract,
 ) -> String {
     use grokrxiv_schemas::AgentRole;
-    let paper_block = format!(
-        "Paper title: {title}\n\nAbstract:\n{abstract_}\n\nSections (head only):\n{sections}\n",
-        title = extract.title,
-        abstract_ = extract.abstract_,
-        sections = extract
-            .sections
-            .iter()
-            .take(40)
-            .map(|s| format!("- {}", s.heading))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    );
+
+    // MetaReviewer never gets the paper body — by contract it sees only the
+    // five specialist outputs (FP6 A1). Preserve that here.
+    if matches!(role, AgentRole::MetaReviewer) {
+        return String::new();
+    }
+
+    let budget = body_budget_chars(role);
+    let heading_index: String = extract
+        .sections
+        .iter()
+        .take(40)
+        .map(|s| format!("- {}", s.heading))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body_block = render_section_block(&extract.sections, budget);
+    let bib_block = render_bibliography(&extract.bibliography);
+
     let task = match role {
         AgentRole::Summary => {
             "Produce a plain-language summary of the paper. Populate the schema's \
@@ -803,9 +942,66 @@ fn build_specialist_prompt(
              (each with `citation`, `exists`, `relevance`, and optional resolved_doi/url, \
              notes). Provide `summary` and `confidence`."
         }
-        AgentRole::MetaReviewer => "",
+        AgentRole::MetaReviewer => unreachable!("MetaReviewer handled above"),
     };
-    format!("{paper_block}\nTask: {task}")
+
+    let mut out = format!(
+        "Paper title: {title}\n\nAbstract:\n{abstract_}\n\nSection headings:\n{heading_index}\n\n",
+        title = extract.title,
+        abstract_ = extract.abstract_,
+    );
+    if !body_block.is_empty() {
+        out.push_str("Paper body:\n\n");
+        out.push_str(&body_block);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !bib_block.is_empty() {
+        out.push_str(&bib_block);
+        out.push('\n');
+    }
+    out.push_str(&format!("Task: {task}"));
+    out
+}
+
+/// Resolve the debug-prompt directory from the `GROKRXIV_DEBUG_PROMPT_DIR`
+/// env var, set by the CLI's `--debug-prompt` flag. When the var is unset
+/// (or empty) this returns `None` and the supervisor skips the dump.
+#[cfg(feature = "grokrxiv-ingest")]
+fn debug_prompt_root() -> Option<std::path::PathBuf> {
+    let raw = std::env::var("GROKRXIV_DEBUG_PROMPT_DIR").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(raw))
+}
+
+/// Best-effort dump of one role's rendered prompt under
+/// `<root>/<arxiv_id>/<role>.md`. Silently does nothing on any I/O failure —
+/// `--debug-prompt` is observational and must never crash a review.
+#[cfg(feature = "grokrxiv-ingest")]
+fn dump_debug_prompt(
+    root: &std::path::Path,
+    arxiv_id: &str,
+    role: grokrxiv_schemas::AgentRole,
+    prompt: &str,
+) {
+    let safe_id: String = arxiv_id
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '_',
+            c => c,
+        })
+        .collect();
+    let dir = root.join(safe_id);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let file = dir.join(format!("{}.md", role_slug(role)));
+    let _ = std::fs::write(&file, prompt);
 }
 
 fn build_meta_synthesis_prompt(meta_input: &serde_json::Value) -> String {
@@ -1463,5 +1659,214 @@ mod tests {
         let defaults = Cli::try_parse_from(["grokrxiv", "doctor"]).expect("defaults parse");
         assert_eq!(defaults.mode, AgentMode::ReviewOnly);
         assert_eq!(defaults.revision_target, RevisionTarget::PaperLatex);
+    }
+
+    // -----------------------------------------------------------------
+    // Track 8a: build_specialist_prompt fidelity tests.
+    //
+    // These tests cover the four behaviors the operator locked in:
+    //   1. section bodies are actually included in the rendered prompt;
+    //   2. per-role char budgets are honored, with the 60/40 truncation
+    //      marker present on overflow;
+    //   3. bibliography entries are rendered with synthesized `[N]` keys;
+    //   4. the MetaReviewer prompt omits the paper body by contract.
+    // -----------------------------------------------------------------
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    fn fake_extract(
+        sections: Vec<(&str, String)>,
+        bibliography: Vec<&str>,
+    ) -> grokrxiv_schemas::PaperExtract {
+        use grokrxiv_schemas::{Citation, PaperExtract, Section};
+        PaperExtract {
+            arxiv_id: "test/0001".into(),
+            title: "Test Title".into(),
+            authors: vec![],
+            abstract_: "Test abstract sentence.".into(),
+            field: Some("cs.LG".into()),
+            sections: sections
+                .into_iter()
+                .map(|(h, b)| Section {
+                    heading: h.into(),
+                    body_markdown: b,
+                })
+                .collect(),
+            figures: vec![],
+            bibliography: bibliography
+                .into_iter()
+                .map(|raw| Citation {
+                    raw: raw.into(),
+                    doi: None,
+                    arxiv_id: None,
+                    title: None,
+                })
+                .collect(),
+            source_format: None,
+        }
+    }
+
+    /// Track 8a-1: the first section's body_markdown lands in every
+    /// specialist prompt (sanity-check that the previous heading-only
+    /// behavior is gone).
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn specialist_prompt_includes_section_body() {
+        use grokrxiv_schemas::AgentRole;
+        let body = "Introductory text. ".repeat(50);
+        let head_200: String = body.chars().take(200).collect();
+        let extract = fake_extract(
+            vec![
+                ("1. Introduction", body.clone()),
+                ("2. Methods", "Methods text.".to_string()),
+            ],
+            vec![],
+        );
+
+        for role in [
+            AgentRole::Summary,
+            AgentRole::TechnicalCorrectness,
+            AgentRole::Novelty,
+            AgentRole::Reproducibility,
+            AgentRole::Citation,
+        ] {
+            let prompt = build_specialist_prompt(role, &extract);
+            assert!(
+                prompt.contains("## 1. Introduction"),
+                "role {role:?}: prompt missing heading: {}",
+                &prompt[..prompt.len().min(400)]
+            );
+            assert!(
+                prompt.contains(&head_200),
+                "role {role:?}: first 200 chars of body not in prompt"
+            );
+            assert!(
+                prompt.contains("## 2. Methods"),
+                "role {role:?}: second section heading missing"
+            );
+        }
+    }
+
+    /// Track 8a-2: when the total body is larger than the per-role budget,
+    /// the prompt is truncated and either (a) a section is 60/40-truncated
+    /// (sole section overflow), or (b) the remaining-sections-truncated
+    /// footer is present. Budget is honored within the marker overhead.
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn specialist_prompt_respects_per_role_budget() {
+        use grokrxiv_schemas::AgentRole;
+        // Reproducibility role: budget = 80_000. Build 8 sections of
+        // ~15_000 chars each → ~120_000 chars total, exceeds budget.
+        let big = "x".repeat(15_000);
+        let extract = fake_extract(
+            (0..8)
+                .map(|i| (
+                    // headings need 'static-ish lifetime → leak intentionally OK in tests
+                    Box::leak(format!("Section {i}").into_boxed_str()) as &str,
+                    big.clone(),
+                ))
+                .collect(),
+            vec![],
+        );
+
+        let budget = body_budget_chars(AgentRole::Reproducibility);
+        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract);
+
+        // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
+        let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
+        assert!(total_raw > budget);
+
+        // Either the per-section truncation marker is present, or the
+        // remaining-sections footer is present (both indicate truncation
+        // actually fired).
+        let has_section_marker = prompt.contains("[…truncated…]");
+        let has_footer_marker = prompt.contains("[…remaining sections truncated; headings:");
+        assert!(
+            has_section_marker || has_footer_marker,
+            "expected a truncation marker in the rendered prompt"
+        );
+
+        // Body block must fit inside its budget plus a small slack for the
+        // headings + truncation markers we render in this test. Use the
+        // raw byte length of the rendered "Paper body:" region.
+        let body_start = prompt
+            .find("Paper body:\n\n")
+            .expect("Paper body block present")
+            + "Paper body:\n\n".len();
+        let body_end = prompt
+            .find("\nTask:")
+            .unwrap_or(prompt.len());
+        let body_region_chars = prompt[body_start..body_end].chars().count();
+        // Allow up to 5% slack for the trailing remaining-sections-footer line.
+        let allowed = budget + (budget / 20);
+        assert!(
+            body_region_chars <= allowed,
+            "body region {body_region_chars} chars exceeds allowed {allowed} (budget {budget})"
+        );
+    }
+
+    /// Track 8a-3: bibliography entries appear in the rendered prompt with
+    /// 1-indexed synthesized keys.
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn specialist_prompt_renders_bibliography() {
+        use grokrxiv_schemas::AgentRole;
+        let extract = fake_extract(
+            vec![("1. Introduction", "Body.".to_string())],
+            vec![
+                "Alice et al., A foundational paper, 2020.",
+                "Bob, A follow-up paper, 2021.",
+            ],
+        );
+
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract);
+        assert!(
+            prompt.contains("Bibliography (2 entries):"),
+            "expected bibliography header in prompt"
+        );
+        assert!(
+            prompt.contains("[1] Alice et al., A foundational paper, 2020."),
+            "expected first bib entry with key [1]"
+        );
+        assert!(
+            prompt.contains("[2] Bob, A follow-up paper, 2021."),
+            "expected second bib entry with key [2]"
+        );
+    }
+
+    /// Track 8a-4: the MetaReviewer's specialist prompt is empty — by
+    /// contract it never sees the paper body, only specialist outputs
+    /// (which are added later via `build_meta_synthesis_prompt`).
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn meta_reviewer_prompt_omits_paper_body() {
+        use grokrxiv_schemas::AgentRole;
+        let extract = fake_extract(
+            vec![(
+                "1. Introduction",
+                "This is the introductory body markdown that must NOT leak.".into(),
+            )],
+            vec!["Some citation, 2020."],
+        );
+        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract);
+        assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
+        assert!(!prompt.contains("introductory body markdown"));
+        assert!(!prompt.contains("Bibliography"));
+    }
+
+    /// Track 8a-5 (regression guard): when a single section's rendered
+    /// length exceeds the budget on its own, the 60/40-truncation marker
+    /// is emitted and the section is the sole surviving body content.
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn single_giant_section_uses_60_40_truncation() {
+        use grokrxiv_schemas::AgentRole;
+        // Summary budget = 48_000. Build a single 100_000-char section.
+        let huge = "abcdefghij".repeat(10_000); // 100_000 chars
+        let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
+        let prompt = build_specialist_prompt(AgentRole::Summary, &extract);
+        assert!(
+            prompt.contains("[…truncated…]"),
+            "expected the 60/40 truncation marker for single oversized section"
+        );
     }
 }
