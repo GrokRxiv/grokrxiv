@@ -17,8 +17,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::agents::extraction::ToolCtx;
 use crate::agents::traits::AgentRunner;
-use crate::agents::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec, SandboxPolicy};
+use crate::agents::types::{
+    AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
+    ToolSpec,
+};
 
 /// Default subprocess timeout (seconds) when `GROKRXIV_CLI_TIMEOUT_SECS` is
 /// unset.
@@ -174,6 +178,58 @@ impl AgentRunner for CliRunner {
             verifier_notes: None,
         })
     }
+
+    async fn complete_with_tools(
+        &self,
+        spec: &AgentSpec,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        ctx: &ToolCtx<'_>,
+    ) -> anyhow::Result<ToolCompletion> {
+        // FP6 / RPT3 Track 8 framework: claude and codex CLIs both have
+        // tool-call streaming, but their wire formats diverge and the
+        // contracts are still moving. For Wave 1 we ship a single explicit
+        // escape valve: when `GROKRXIV_EXTRACTION_TOOL_FALLBACK=api` is set,
+        // dispatch through an in-process ApiRunner using the same
+        // provider name. This keeps the framework end-to-end testable
+        // without coupling Wave 1 to two CLIs that are still drifting.
+        let fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK")
+            .ok()
+            .filter(|s| s == "api");
+        if fallback.is_some() {
+            let providers = build_api_fallback_providers(spec)?;
+            let api = super::api::ApiRunner::new(providers);
+            return api.complete_with_tools(spec, messages, tools, ctx).await;
+        }
+        anyhow::bail!(
+            "CliRunner.complete_with_tools: `{}` CLI does not yet support the GrokRxiv \
+             tool-call protocol. Either set `GROKRXIV_EXTRACTION_TOOL_FALLBACK=api` to \
+             dispatch via the provider API for this stage, or run the extraction agent \
+             through the `api` runner (--runner api).",
+            spec.provider
+        )
+    }
+}
+
+/// Build a provider registry for the ApiRunner fallback. Pulls keys from the
+/// environment so this works in the same shell that invoked the CLI.
+fn build_api_fallback_providers(
+    spec: &AgentSpec,
+) -> anyhow::Result<std::collections::HashMap<String, std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>>
+{
+    use grokrxiv_llm_adapter::{provider_by_name, ProviderConfig};
+    let cfg = ProviderConfig::from_env();
+    let providers_iter = [spec.provider.as_str()];
+    let mut map: std::collections::HashMap<
+        String,
+        std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>,
+    > = std::collections::HashMap::new();
+    for name in providers_iter {
+        let p = provider_by_name(name, &cfg)
+            .map_err(|e| anyhow::anyhow!("api fallback: cannot build provider {name}: {e}"))?;
+        map.insert(name.to_string(), p);
+    }
+    Ok(map)
 }
 
 /// Read `GROKRXIV_CLI_TIMEOUT_SECS` (default 180s).

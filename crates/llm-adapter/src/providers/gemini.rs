@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 use crate::retry::with_backoff;
 use crate::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, LLMError, LLMProvider, ProviderConfig,
-    ResponseFormat, Role, Usage,
+    ProviderToolCall, ResponseFormat, Role, ToolChatRequest, ToolCompletion, ToolContent,
+    ToolMessage, Usage,
 };
 
 /// Default base URL for Gemini.
@@ -234,6 +235,148 @@ fn sanitize_schema_for_gemini(schema: Value) -> Value {
     }
 }
 
+impl GeminiProvider {
+    /// Build the Gemini `generateContent` body for a tool-using turn.
+    pub fn build_tools_body(req: &ToolChatRequest) -> Value {
+        let contents: Vec<Value> = req
+            .messages
+            .iter()
+            .map(tool_message_to_gemini)
+            .collect();
+
+        let function_declarations: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": sanitize_schema_for_gemini(t.input_schema.clone()),
+                })
+            })
+            .collect();
+
+        let mut body = json!({
+            "contents": contents,
+            "generationConfig": {
+                "temperature": req.temperature,
+                "maxOutputTokens": req.max_tokens
+            },
+            "tools": [{
+                "functionDeclarations": function_declarations,
+            }],
+        });
+        if let Some(sys) = &req.system {
+            body["systemInstruction"] = json!({ "parts": [{ "text": sys }] });
+        }
+        body
+    }
+
+    /// Parse a Gemini tools response into a [`ToolCompletion`].
+    pub fn parse_tools_response(value: Value) -> Result<ToolCompletion, LLMError> {
+        let candidate = value
+            .get("candidates")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let parts = candidate
+            .get("content")
+            .and_then(|c| c.get("parts"))
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<ProviderToolCall> = Vec::new();
+        let mut counter = 0usize;
+        for p in parts {
+            if let Some(text) = p.get("text").and_then(Value::as_str) {
+                text_parts.push(text.to_string());
+            }
+            if let Some(fc) = p.get("functionCall") {
+                let name = fc
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let arguments = fc.get("args").cloned().unwrap_or(Value::Null);
+                counter += 1;
+                tool_calls.push(ProviderToolCall {
+                    id: format!("call_{counter}"),
+                    name,
+                    arguments,
+                });
+            }
+        }
+        let finish_reason = match candidate.get("finishReason").and_then(Value::as_str) {
+            Some("STOP") => {
+                if !tool_calls.is_empty() {
+                    FinishReason::ToolUse
+                } else {
+                    FinishReason::Stop
+                }
+            }
+            Some("MAX_TOKENS") => FinishReason::Length,
+            Some("SAFETY") | Some("RECITATION") => FinishReason::ContentFilter,
+            _ => FinishReason::Other,
+        };
+        let usage_obj = value.get("usageMetadata").cloned().unwrap_or(json!({}));
+        let usage = Usage {
+            tokens_in: usage_obj
+                .get("promptTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            tokens_out: usage_obj
+                .get("candidatesTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            cache_hits: usage_obj
+                .get("cachedContentTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        };
+        Ok(ToolCompletion {
+            tool_calls,
+            text: text_parts.join(""),
+            finish_reason,
+            usage,
+            raw: value,
+        })
+    }
+}
+
+fn tool_message_to_gemini(m: &ToolMessage) -> Value {
+    let role = match m.role {
+        Role::User => "user",
+        Role::Assistant => "model",
+    };
+    let parts: Vec<Value> = m
+        .content
+        .iter()
+        .map(|c| match c {
+            ToolContent::Text { text } => json!({ "text": text }),
+            ToolContent::ToolUse { name, input, .. } => json!({
+                "functionCall": { "name": name, "args": input }
+            }),
+            ToolContent::ToolResult {
+                content,
+                tool_use_id,
+                ..
+            } => json!({
+                "functionResponse": {
+                    "name": tool_use_id,
+                    "response": match content {
+                        Value::Object(_) => content.clone(),
+                        other => json!({ "content": other }),
+                    }
+                }
+            }),
+        })
+        .collect();
+    json!({ "role": role, "parts": parts })
+}
+
 #[async_trait::async_trait]
 impl LLMProvider for GeminiProvider {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse, LLMError> {
@@ -285,6 +428,48 @@ impl LLMProvider for GeminiProvider {
 
     fn context_window(&self) -> usize {
         1_000_000
+    }
+
+    async fn complete_with_tools(
+        &self,
+        req: ToolChatRequest,
+    ) -> Result<ToolCompletion, LLMError> {
+        let body = Self::build_tools_body(&req);
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.base_url, req.model, self.api_key
+        );
+        let http = self.http.clone();
+        with_backoff(|| {
+            let http = http.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move {
+                let resp = http
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(LLMError::from)?;
+                let status = resp.status();
+                if status.as_u16() == 429 {
+                    let retry_after = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Duration::from_secs);
+                    return Err(LLMError::RateLimited(retry_after));
+                }
+                if !status.is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    return Err(LLMError::Provider(format!("{status}: {body_text}")));
+                }
+                let value: Value = resp.json().await.map_err(LLMError::from)?;
+                GeminiProvider::parse_tools_response(value)
+            }
+        })
+        .await
     }
 }
 
