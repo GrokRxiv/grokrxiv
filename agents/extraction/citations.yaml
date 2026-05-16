@@ -1,7 +1,10 @@
 id: citation_contextualizer
 role: "Stage 7: enrich every citation with resolved bibliographic metadata (CrossRef + arXiv, never invented) and classify each use site semantically."
 provider: gemini
-model: gemini-2.5-pro
+# Same gemini-2.5-pro reasoning-token starvation as in citation.yaml: pro
+# emitted no tool calls (stopped without submit) under our 4K tool-loop budget.
+# Flash works reliably for the lookup-heavy citation enrichment loop.
+model: gemini-2.5-flash
 runner: api
 output_schema: schemas/extraction/citations.schema.json
 tools:

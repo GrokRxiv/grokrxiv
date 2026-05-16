@@ -1,9 +1,12 @@
 id: equation_canonicalizer
 role: "Stage 5 — canonicalise every equation in the paper into a normalised TeX form, MathML rendering, and a short semantic tag."
 provider: gemini
-# Pro is justified here: the LLM has to walk every math node, infer semantic
-# intent, and produce stable canonical TeX. ~$0.02/paper.
-model: gemini-2.5-pro
+# gemini-2.5-pro burns ~6K of its max_tokens budget on hidden chain-of-thought,
+# which left zero tokens for actual output on tool-call turns and caused
+# "stopped without submit()" failures in the H2 smoke. Flash has no reasoning
+# overhead and emits tool calls reliably; equation canonicalisation is mostly
+# deterministic TeX munging that doesn't benefit from extended thinking.
+model: gemini-2.5-flash
 runner: api
 prompt_template: prompts/extraction/equations.md
 output_schema: schemas/extraction/equations.schema.json
