@@ -18,7 +18,12 @@ Diagnosis: Next.js loads `.env.local` AFTER `.env`. The placeholder anon key in 
 | Real `SUPABASE_SERVICE_ROLE_KEY` (sourced from `supabase status`) | `apps/web/.env.local` |
 | Supabase URL normalized to `http://127.0.0.1:54321` (matches the running Docker stack) | `apps/web/.env.local` |
 
-`.env.local` is gitignored, so this is a per-machine setup step that needs to happen once after `supabase start` produces keys.
+`.env.local` is gitignored, so this is a per-machine setup step when running
+the web app directly with `cd apps/web && pnpm dev`. When running through the
+root `docker-compose.yml`, Compose passes env vars into the container before
+Next.js reads `apps/web/.env*`; the Compose file therefore now defaults to the
+Supabase CLI local-dev keys instead of passing empty strings that override the
+app-local env files.
 
 ## Risk
 
@@ -47,4 +52,9 @@ cd apps/web && pnpm dev
 # In another shell:
 curl -s http://localhost:3000/api/v1/papers/2605.00403 | head -c 200
 # Should return real paper JSON, not {"error":"not_found"}.
+
+# Docker Compose path:
+docker compose up -d web
+curl -s 'http://localhost:3000/api/v1/reviews?limit=5'
+# Should return published review rows from the local Supabase database.
 ```
