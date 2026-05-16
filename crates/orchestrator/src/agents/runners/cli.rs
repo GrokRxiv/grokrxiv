@@ -614,7 +614,9 @@ mod tests {
             built.program
         );
 
-        // Args: -p - --model <m> --output-format json --skill grokrxiv-review
+        // Args: -p - --model <m> --output-format json
+        // (Skill is invoked via the `/grokrxiv-review` prompt prefix piped to
+        // stdin, NOT via a `--skill` CLI flag — claude CLI has no such flag.)
         let args = &built.args;
         assert!(args.contains(&"-p".to_string()), "missing -p in {args:?}");
         assert!(
@@ -628,13 +630,21 @@ mod tests {
             "missing --output-format json pair in {args:?}"
         );
         assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--skill" && w[1] == CLAUDE_SKILL_NAME),
-            "missing --skill grokrxiv-review pair in {args:?}"
+            !args.iter().any(|a| a == "--skill"),
+            "claude CLI does not accept --skill; it must be absent ({args:?})"
         );
 
-        // Prompt is what gets piped to stdin
-        assert_eq!(built.stdin_payload, "hello prompt");
+        // Prompt is piped to stdin with `/grokrxiv-review` prefix
+        assert!(
+            built.stdin_payload.starts_with("/grokrxiv-review"),
+            "stdin payload should be prefixed with /grokrxiv-review, got {:?}",
+            built.stdin_payload
+        );
+        assert!(
+            built.stdin_payload.contains("hello prompt"),
+            "stdin payload should contain the original prompt, got {:?}",
+            built.stdin_payload
+        );
         // No schema file for claude
         assert!(built.schema_path.is_none());
     }
