@@ -1,0 +1,18 @@
+id: citation_contextualizer
+role: "Stage 7: enrich every citation with resolved bibliographic metadata (CrossRef + arXiv, never invented) and classify each use site semantically."
+provider: gemini
+model: gemini-2.5-pro
+runner: api
+output_schema: schemas/extraction/citations.schema.json
+tools:
+  - list_citation_sites
+  - lookup_bibtex
+  - crossref_lookup
+  - arxiv_lookup
+  - search_corpus
+  - read_section
+  - submit
+max_iters: 80
+max_cost_usd: 0.05
+max_retries: 2
+timeout_secs: 240
