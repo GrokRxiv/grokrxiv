@@ -529,19 +529,136 @@ fn resolve_runner(state: &AppState) -> Option<Arc<dyn AgentRunner>> {
         .cloned()
 }
 
+/// Per-stage routing read from `agents/extraction/<role>.yaml`. Captures the
+/// fields the extraction tool-loop needs at runtime.
+#[derive(serde::Deserialize, Clone, Debug)]
+struct ExtractionRouting {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    runner: Option<crate::agents::types::AgentRunnerKind>,
+    #[serde(default)]
+    max_cost_usd: Option<f32>,
+    #[serde(default)]
+    max_iters: Option<u32>,
+    #[serde(default)]
+    timeout_secs: Option<u32>,
+    #[serde(default)]
+    max_retries: Option<u8>,
+}
+
+/// Load `agents/extraction/<stage>.yaml`. Lazy-cached per-stage so repeated
+/// agent invocations within a single ingest don't re-read the file each time.
+fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<String, Option<ExtractionRouting>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.get(stage) {
+            return cached.clone();
+        }
+    }
+
+    // Stage names from ingest_pipeline use short forms ("macros", "equations",
+    // "theorems", "citations", "vlm"); the YAML files use the same. Resolve
+    // relative to `GROKRXIV_AGENTS_DIR` (matching state.rs) or `./agents/`.
+    let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
+    let path = agents_dir.join("extraction").join(format!("{stage}.yaml"));
+    let parsed = match std::fs::read_to_string(&path) {
+        Ok(s) => match serde_yaml::from_str::<ExtractionRouting>(&s) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(
+                    stage,
+                    path = %path.display(),
+                    err = %e,
+                    "could not parse extraction yaml; falling back to default"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                stage,
+                path = %path.display(),
+                err = %e,
+                "extraction yaml missing; falling back to default"
+            );
+            None
+        }
+    };
+
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(stage.to_string(), parsed.clone());
+    }
+    parsed
+}
+
+/// Per-stage budget bundle (resolved from YAML with fallbacks). Surfaced
+/// separately from `AgentSpec` because the tool-loop's cost/iter ceilings live
+/// on its `run_tool_loop` args, not on the spec.
+#[allow(dead_code)]
+pub(crate) struct ExtractionBudget {
+    pub max_cost_usd: f32,
+    pub max_iters: u32,
+}
+
+/// Per-stage budget bundle (resolved from YAML with fallbacks). Not yet
+/// threaded through `ExtractionAgent::run` — each agent currently hardcodes
+/// its own ceilings inline. Kept as a hook so a follow-up pass can replace
+/// the inline numbers with this YAML-honored bundle without re-loading the
+/// YAML in each agent module.
+#[allow(dead_code)]
+pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
+    let routing = load_extraction_routing(stage);
+    let (cost, iters) = match stage {
+        "vlm" => (1.0, 40),
+        "macros" => (0.20, 20),
+        "equations" => (0.50, 60),
+        "theorems" => (0.80, 50),
+        "citations" => (0.50, 80),
+        _ => (0.50, 40),
+    };
+    ExtractionBudget {
+        max_cost_usd: routing
+            .as_ref()
+            .and_then(|r| r.max_cost_usd)
+            .unwrap_or(cost),
+        max_iters: routing.as_ref().and_then(|r| r.max_iters).unwrap_or(iters),
+    }
+}
+
 fn default_extraction_spec(role: &str) -> AgentSpec {
     use grokrxiv_schemas::AgentRole;
-    // The role enum is review-centric; extraction stages don't have a
-    // matching variant. We re-use `AgentRole::Summary` as a stable seed —
-    // the AgentSpec is only used to feed token-count estimation in the
-    // tool-loop's cost ceiling check.
-    let _ = role;
-    AgentSpec::api_default(
-        AgentRole::Summary,
-        "claude".to_string(),
-        std::env::var("GROKRXIV_EXTRACTION_MODEL")
-            .unwrap_or_else(|_| "claude-haiku-4-5".to_string()),
-    )
+    // The review-side AgentRole enum doesn't have extraction variants — we
+    // reuse `Summary` as a stable seed since the role field is only used for
+    // logging/observability inside the spec. The provider+model come from
+    // `agents/extraction/<role>.yaml` so each stage actually hits its
+    // configured backend (e.g. citations.yaml -> gemini-2.5-flash, not the
+    // claude-haiku-4-5 fallback the audit caught us hardcoding).
+    let routing = load_extraction_routing(role);
+    let (provider, model) = match routing.as_ref() {
+        Some(r) => (r.provider.clone(), r.model.clone()),
+        None => (
+            "claude".to_string(),
+            std::env::var("GROKRXIV_EXTRACTION_MODEL")
+                .unwrap_or_else(|_| "claude-haiku-4-5".to_string()),
+        ),
+    };
+    let mut spec = AgentSpec::api_default(AgentRole::Summary, provider, model);
+    if let Some(r) = routing {
+        if let Some(t) = r.timeout_secs {
+            spec.timeout_secs = t;
+        }
+        if let Some(n) = r.max_retries {
+            spec.max_retries = n;
+        }
+    }
+    spec
 }
 
 /// Run an extraction agent end-to-end, swallowing any error so a single
