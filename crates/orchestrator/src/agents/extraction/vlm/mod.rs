@@ -389,6 +389,8 @@ mod tests {
             paper_id: uuid::Uuid::nil(),
             arxiv_id,
             registry,
+            max_cost_usd: 1.0,
+            max_iters: 5,
         }
     }
 

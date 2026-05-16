@@ -133,7 +133,14 @@ impl ExtractionAgent for MacroExpanderAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 20, 1.00).await
+        debug_assert!(
+            ctx.max_cost_usd > 0.0,
+            "ExtractionContext.max_cost_usd must be populated (FP-RPT3a A5)"
+        );
+        let max_iters = ctx.max_iters as usize;
+        let max_cost_usd = ctx.max_cost_usd;
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
+            .await
     }
 }
 
@@ -328,6 +335,8 @@ Then \R^n is the space.";
             paper_id: Uuid::nil(),
             arxiv_id: "2401.00001v1",
             registry,
+            max_cost_usd: 0.20,
+            max_iters: 20,
         };
         let spec = fake_spec();
         let run = agent.run(runner, &spec, ec).await.expect("loop runs");

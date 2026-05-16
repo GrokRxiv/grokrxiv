@@ -653,10 +653,33 @@ struct ExtractionRouting {
     max_cost_usd: Option<f32>,
     #[serde(default)]
     max_iters: Option<u32>,
+    /// `macros.yaml` nests budgets under `loop: {max_iters, max_cost_usd}`;
+    /// the others put them at the top level. Accept either form.
+    #[serde(default, rename = "loop")]
+    loop_block: Option<ExtractionRoutingLoop>,
     #[serde(default)]
     timeout_secs: Option<u32>,
     #[serde(default)]
     max_retries: Option<u8>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct ExtractionRoutingLoop {
+    #[serde(default)]
+    max_cost_usd: Option<f32>,
+    #[serde(default)]
+    max_iters: Option<u32>,
+}
+
+impl ExtractionRouting {
+    fn resolved_max_cost_usd(&self) -> Option<f32> {
+        self.max_cost_usd
+            .or_else(|| self.loop_block.as_ref().and_then(|l| l.max_cost_usd))
+    }
+    fn resolved_max_iters(&self) -> Option<u32> {
+        self.max_iters
+            .or_else(|| self.loop_block.as_ref().and_then(|l| l.max_iters))
+    }
 }
 
 /// Load `agents/extraction/<stage>.yaml`. Lazy-cached per-stage so repeated
@@ -713,18 +736,14 @@ fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
 /// Per-stage budget bundle (resolved from YAML with fallbacks). Surfaced
 /// separately from `AgentSpec` because the tool-loop's cost/iter ceilings live
 /// on its `run_tool_loop` args, not on the spec.
-#[allow(dead_code)]
 pub(crate) struct ExtractionBudget {
     pub max_cost_usd: f32,
     pub max_iters: u32,
 }
 
-/// Per-stage budget bundle (resolved from YAML with fallbacks). Not yet
-/// threaded through `ExtractionAgent::run` — each agent currently hardcodes
-/// its own ceilings inline. Kept as a hook so a follow-up pass can replace
-/// the inline numbers with this YAML-honored bundle without re-loading the
-/// YAML in each agent module.
-#[allow(dead_code)]
+/// Per-stage budget bundle (resolved from YAML with fallbacks). FP-RPT3a A5
+/// threads these into `ExtractionContext` so each agent's `run()` can honour
+/// the YAML number instead of its hardcoded inline ceiling.
 pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     let routing = load_extraction_routing(stage);
     let (cost, iters) = match stage {
@@ -738,9 +757,12 @@ pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     ExtractionBudget {
         max_cost_usd: routing
             .as_ref()
-            .and_then(|r| r.max_cost_usd)
+            .and_then(|r| r.resolved_max_cost_usd())
             .unwrap_or(cost),
-        max_iters: routing.as_ref().and_then(|r| r.max_iters).unwrap_or(iters),
+        max_iters: routing
+            .as_ref()
+            .and_then(|r| r.resolved_max_iters())
+            .unwrap_or(iters),
     }
 }
 
@@ -792,6 +814,7 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     };
     let runner_name = runner.name().to_string();
     let registry = Arc::new(build_registry_for(agent));
+    let budget = extraction_budget_for(stage_name);
     let ctx = ExtractionContext {
         workdir,
         extract,
@@ -799,7 +822,15 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         paper_id,
         arxiv_id,
         registry,
+        max_cost_usd: budget.max_cost_usd,
+        max_iters: budget.max_iters,
     };
+    info!(
+        stage_name,
+        max_cost_usd = budget.max_cost_usd,
+        max_iters = budget.max_iters,
+        "extraction budget resolved from agents/extraction/<stage>.yaml",
+    );
     let spec = default_extraction_spec(stage_name);
     let model = spec.model.clone();
     match agent.run(runner, &spec, ctx).await {
@@ -1634,6 +1665,45 @@ mod a4_tests {
         assert!(semantic_check("vlm", &out2, &ctx).is_some());
         let out3 = json!({ "title": "x", "abstract": "y" });
         assert!(semantic_check("vlm", &out3, &ctx).is_none());
+    }
+
+    /// FP-RPT3a A5: `extraction_budget_for` honours the YAML number, not the
+    /// hardcoded inline ceiling. `agents/extraction/macros.yaml` says
+    /// `max_cost_usd: 0.20` and `max_iters: 20`, so the resolved budget MUST
+    /// match — regardless of where in the YAML structure the values live
+    /// (macros uses `loop:` block; the rest top-level).
+    #[test]
+    fn macros_budget_resolves_to_yaml_values() {
+        // Locate the agents/ dir relative to the workspace root. Tests run
+        // with CARGO_MANIFEST_DIR=<crate dir>, so go up two levels.
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../agents");
+        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
+        // Force a re-read by clearing the cache via a fresh stage name.
+        let b = extraction_budget_for("macros");
+        // YAML uses `loop: {max_cost_usd: 0.20, max_iters: 20}` — both should
+        // surface through the resolved getter, not the hardcoded $1.00.
+        assert!(
+            (b.max_cost_usd - 0.20).abs() < 1e-6,
+            "macros budget must equal $0.20 (got ${})",
+            b.max_cost_usd
+        );
+        assert_eq!(b.max_iters, 20);
+    }
+
+    /// Same idea for citations.yaml (top-level form, not nested under `loop:`).
+    #[test]
+    fn citations_budget_resolves_to_yaml_values() {
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../agents");
+        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
+        let b = extraction_budget_for("citations");
+        assert!(
+            (b.max_cost_usd - 0.50).abs() < 1e-6,
+            "citations budget must equal $0.50 (got ${})",
+            b.max_cost_usd
+        );
+        assert_eq!(b.max_iters, 80);
     }
 
     #[test]

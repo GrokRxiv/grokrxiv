@@ -177,7 +177,14 @@ impl ExtractionAgent for CitationContextualizerAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 80, 0.50).await
+        debug_assert!(
+            ctx.max_cost_usd > 0.0,
+            "ExtractionContext.max_cost_usd must be populated (FP-RPT3a A5)"
+        );
+        let max_iters = ctx.max_iters as usize;
+        let max_cost_usd = ctx.max_cost_usd;
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
+            .await
     }
 }
 
@@ -386,6 +393,8 @@ mod tests {
             paper_id: uuid::Uuid::nil(),
             arxiv_id: "2401.99999v1",
             registry,
+            max_cost_usd: 0.50,
+            max_iters: 80,
         };
         let spec = AgentSpec::api_default(
             AgentRole::Citation,

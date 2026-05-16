@@ -50,6 +50,13 @@ pub struct ExtractionContext<'a> {
     pub arxiv_id: &'a str,
     /// Toolkit available this run.
     pub registry: Arc<ToolRegistry>,
+    /// Per-stage dollar ceiling resolved from `agents/extraction/<stage>.yaml`
+    /// (FP-RPT3a A5). Each agent's `run()` forwards this to
+    /// `run_tool_loop` instead of hardcoding the budget inline.
+    pub max_cost_usd: f32,
+    /// Per-stage iteration ceiling resolved from
+    /// `agents/extraction/<stage>.yaml` (FP-RPT3a A5).
+    pub max_iters: u32,
 }
 
 /// One audit-log record per tool call inside a tool-call loop.
