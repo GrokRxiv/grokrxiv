@@ -4,6 +4,7 @@
 //! Critical checks (DB URL + at least one API runner) set the exit code to 1.
 
 use serde::Serialize;
+use std::process::Command;
 use std::time::Duration;
 
 /// Outcome of a single check.
@@ -67,6 +68,10 @@ pub struct DoctorReport {
     pub local_inference: LocalInferenceStatus,
     /// Publisher (GitHub) status.
     pub publisher: Option<CheckResult>,
+    /// Pandoc binary check (required for TeX→Markdown conversion).
+    pub pandoc: Option<CheckResult>,
+    /// LaTeXML binary check (optional; falls back to pandoc-only).
+    pub latexml: Option<CheckResult>,
 }
 
 /// Per-provider API key + reachability.
@@ -165,6 +170,10 @@ impl DoctorReport {
         println!();
         println!("Publisher:");
         print_line("github", self.publisher.as_ref());
+        println!();
+        println!("Document converters:");
+        print_line("pandoc", self.pandoc.as_ref());
+        print_line("latexml", self.latexml.as_ref());
 
         println!();
         if self.has_critical_failure() {
@@ -199,6 +208,7 @@ pub async fn doctor(profile: &str, json: bool) -> anyhow::Result<i32> {
     check_cloud_runners(&mut report).await;
     check_local_inference(&mut report).await;
     check_publisher(&mut report);
+    check_doc_converters(&mut report);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -358,4 +368,69 @@ fn check_publisher(report: &mut DoctorReport) {
         Ok(_) => CheckResult::ok("GITHUB_TOKEN set (PR opens will be live)"),
         Err(_) => CheckResult::skipped("GITHUB_TOKEN unset (approve will simulate PRs)"),
     });
+}
+
+/// Pandoc + LaTeXML reachability. Pandoc is required (FAIL if <3.0 or
+/// missing); LaTeXML is optional (Skipped if missing — the TeX pipeline
+/// falls back to pandoc-only).
+fn check_doc_converters(report: &mut DoctorReport) {
+    let pandoc_bin =
+        std::env::var("GROKRXIV_PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
+    report.pandoc = Some(match run_version(&pandoc_bin) {
+        Ok(out) => match parse_pandoc_major(&out) {
+            Some(major) if major >= 3 => CheckResult::ok(format!(
+                "pandoc {} (>= 3.0)",
+                first_version_token(&out)
+            )),
+            Some(major) => CheckResult::fail(format!(
+                "pandoc major version {major} < 3.0 (got: {})",
+                first_version_token(&out)
+            )),
+            None => CheckResult::fail(format!(
+                "could not parse pandoc version from: {}",
+                out.lines().next().unwrap_or("")
+            )),
+        },
+        Err(e) => CheckResult::fail(format!("`{pandoc_bin} --version` failed: {e}")),
+    });
+
+    let latexml_bin =
+        std::env::var("GROKRXIV_LATEXML_BIN").unwrap_or_else(|_| "latexml".to_string());
+    report.latexml = Some(match run_version(&latexml_bin) {
+        Ok(out) => CheckResult::ok(format!("latexml {}", first_version_token(&out))),
+        Err(_) => CheckResult::skipped(format!(
+            "`{latexml_bin}` not on PATH; TeX path will use pandoc-only fallback"
+        )),
+    });
+}
+
+fn run_version(bin: &str) -> anyhow::Result<String> {
+    let out = Command::new(bin)
+        .arg("--version")
+        .output()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !out.status.success() {
+        anyhow::bail!("exit status {}", out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn parse_pandoc_major(version_output: &str) -> Option<u32> {
+    let first = version_output.lines().next()?;
+    for tok in first.split_whitespace() {
+        if let Some(major) = tok.split('.').next().and_then(|s| s.parse::<u32>().ok()) {
+            return Some(major);
+        }
+    }
+    None
+}
+
+fn first_version_token(version_output: &str) -> String {
+    let first = version_output.lines().next().unwrap_or("");
+    for tok in first.split_whitespace() {
+        if tok.split('.').next().and_then(|s| s.parse::<u32>().ok()).is_some() {
+            return tok.to_string();
+        }
+    }
+    first.to_string()
 }
