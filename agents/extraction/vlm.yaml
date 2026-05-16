@@ -1,0 +1,18 @@
+id: vlm_extractor
+role: "Stage 3: extract paper structure from a PDF when no TeX source is available."
+provider: gemini
+model: gemini-2.5-pro
+fallback_models:
+  - claude-opus-4-7
+runner: api
+prompt_template: prompts/extraction/vlm.md
+output_schema: schemas/extraction/vlm.schema.json
+tools:
+  - read_pdf_page
+  - search_pdf
+  - extract_page_region
+  - submit
+max_iters: 40
+max_cost_usd: 0.10
+max_retries: 2
+timeout_secs: 300

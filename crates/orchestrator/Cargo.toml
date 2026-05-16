@@ -49,6 +49,9 @@ octocrab = { workspace = true }
 clap = { version = "=4.5.20", features = ["derive", "string"] }
 clap_lex = "=0.7.2"
 toml = "0.8"
+lopdf = "0.36"
+pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "thread_safe", "image_024"] }
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { path = "../schemas" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }

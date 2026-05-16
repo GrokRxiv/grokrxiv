@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VlmExtractorAgent submit payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "abstract", "sections", "bibliography", "figures", "equations"],
+  "properties": {
+    "title": { "type": "string" },
+    "abstract": { "type": "string" },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["heading", "body_markdown"],
+        "properties": {
+          "heading": { "type": "string" },
+          "body_markdown": { "type": "string" }
+        }
+      }
+    },
+    "bibliography": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["raw", "doi", "arxiv_id"],
+        "properties": {
+          "raw": { "type": "string" },
+          "doi": { "type": ["string", "null"] },
+          "arxiv_id": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["caption", "page"],
+        "properties": {
+          "caption": { "type": "string" },
+          "page": { "type": ["integer", "null"] }
+        }
+      }
+    },
+    "equations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "tex", "context"],
+        "properties": {
+          "id": { "type": "string" },
+          "tex": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

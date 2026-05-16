@@ -26,6 +26,7 @@ pub use crate::agents::types::{
 
 pub mod r#loop;
 pub mod tools;
+pub mod vlm;
 
 pub use r#loop::run_tool_loop;
 
