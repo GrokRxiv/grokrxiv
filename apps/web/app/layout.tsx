@@ -48,6 +48,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Blocking script that applies the saved/system theme to <html>
+            before paint. Without this the page renders light at SSR, then
+            the client's useEffect adds .dark, causing a visible flicker. */}
+        <script src="/theme-init.js" />
+      </head>
       <body className={`${sans.variable} ${mono.variable} font-sans`}>
         <Header />
         <main className="mx-auto w-full max-w-6xl px-4 py-8">{children}</main>
