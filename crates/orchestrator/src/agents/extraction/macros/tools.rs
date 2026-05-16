@@ -254,9 +254,8 @@ fn scan_tex_files(
 /// * `\def\NAME{BODY}` (no `[N]`; params inferred from `#N` references in BODY)
 /// * `\DeclareMathOperator{\NAME}{BODY}` and `\DeclareMathOperator*{\NAME}{BODY}`
 pub fn extract_definitions(src: &str, file: &str, out: &mut Vec<MacroDef>) {
-    let bytes = src.as_bytes();
     let mut i = 0usize;
-    while i < bytes.len() {
+    while i < src.len() {
         let rest = &src[i..];
         if let Some(parsed) = try_parse_def_keyword(rest) {
             let (def, consumed) = parsed;
@@ -268,7 +267,10 @@ pub fn extract_definitions(src: &str, file: &str, out: &mut Vec<MacroDef>) {
             i += consumed;
             continue;
         }
-        i += 1;
+        // Advance by one codepoint, not one byte — `&src[i..]` panics if `i`
+        // lands inside a multi-byte UTF-8 char (e.g. `ä` in a German author
+        // name in the bibliography of paper 2605.00403).
+        i += rest.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
     }
 }
 
@@ -763,5 +765,20 @@ mod tests {
         );
         let (out, _) = apply_expansions(r"\halfopen{0}{1}", &m);
         assert_eq!(out, "[0, 1)");
+    }
+
+    #[test]
+    fn extract_definitions_survives_non_ascii_source() {
+        // Regression for the panic Team H1 hit on paper 2605.00403: the
+        // bibliography contained `Stäckel` (`ä` is a 2-byte UTF-8 codepoint).
+        // The scanner used to advance by one BYTE on the no-match path, which
+        // panicked when `i` landed mid-codepoint at `&src[i..]`.
+        let src = "Some prose with German name Stäckel and an umlaut here ñ. \
+                   \\newcommand{\\R}{\\mathbb{R}} \
+                   Trailing prose with more accents: über naïve résumé.";
+        let v = defs(src);
+        assert_eq!(v.len(), 1, "should find the \\newcommand surrounded by non-ASCII");
+        assert_eq!(v[0].name, r"\R");
+        assert_eq!(v[0].body, r"\mathbb{R}");
     }
 }
