@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/meta_review.schema.json",
+  "title": "MetaReview",
+  "description": "Final synthesized review combining the five specialist outputs. Mirrors apps/web/lib/types.ts::MetaReview.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": { "type": "string" },
+    "strengths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "weaknesses": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["accept", "minor_revision", "major_revision", "reject"]
+    },
+    "confidence": { "type": "number" }
+  },
+  "required": [
+    "summary",
+    "strengths",
+    "weaknesses",
+    "questions",
+    "recommendation",
+    "confidence"
+  ]
+}

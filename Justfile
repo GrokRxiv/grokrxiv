@@ -140,3 +140,15 @@ up-cloud:
 down:
     -docker compose -f infra/compose.local.yml down
     -docker compose -f infra/compose.cloud.yml down
+
+# Install the grokrxiv-review skill into local claude / gemini / codex CLIs.
+# Drops a SKILL.md into ~/.claude/skills/ and ~/.gemini/skills/, additively
+# merges a sentinel block into ~/.codex/AGENTS.md, and mirrors the canonical
+# JSON schemas to ~/.grokrxiv/skills/schemas/. Idempotent.
+skills-install:
+    node grokrxiv-skills/bin/install.js install
+
+# Report which CLIs are present and whether the skill is installed for each.
+# Does not write anything.
+skills-status:
+    node grokrxiv-skills/bin/install.js status
