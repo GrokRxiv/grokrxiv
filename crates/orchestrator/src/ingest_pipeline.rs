@@ -54,9 +54,25 @@ use crate::agents::extraction::{
     ExtractionAgent, ToolRegistry,
 };
 use crate::agents::traits::AgentRunner;
-use crate::agents::types::{AgentSpec, ExtractionContext};
+use crate::agents::types::{AgentSpec, ExtractionContext, ToolCallRecord};
 use crate::db;
 use crate::state::AppState;
+
+/// Per-stage outcome captured from one extraction-agent run. The pipeline
+/// preserves every field so the StageReport in `extraction_report.json`
+/// has actionable provenance (model, runner, cost, latency, tool-call
+/// summary) and the full per-call audit log can be uploaded to
+/// Tier-2 storage.
+#[derive(Debug, Clone)]
+struct StageOutcome {
+    output: Value,
+    tool_calls: Vec<ToolCallRecord>,
+    cost_usd: f32,
+    latency_ms: i64,
+    iters: u32,
+    model: String,
+    runner: String,
+}
 
 /// Per-paper-level options for [`run_ingest_pipeline`]. Built from the CLI's
 /// global flags + RuntimeConfig.
@@ -185,6 +201,8 @@ async fn run_inner(
             model: None,
             runner: None,
             warnings: vec!["LaTeXML produced no semantic_ast".into()],
+            iters: None,
+            tool_call_summary: None,
         });
     } else {
         stage_reports.push(StageReport::skipped("tex_to_ast", "no tex source"));
@@ -222,11 +240,14 @@ async fn run_inner(
         }
     }
 
+    // Accumulates the per-call audit log across every stage. Persisted as
+    // `tool_call_log.jsonl` via `paper_artifacts.rs:297`.
+    let mut tool_call_log_entries: Vec<Value> = Vec::new();
+
     // --- Stage 3 (VLM) — only when no TeX path was available ---
     if !opts.should_skip("vlm") && staged.source_tarball.is_none() {
-        let started = std::time::Instant::now();
         let vlm = VlmExtractorAgent::new();
-        match run_agent_safe(
+        let outcome = run_agent_safe(
             &vlm,
             state,
             workdir.path(),
@@ -236,21 +257,12 @@ async fn run_inner(
             arxiv_id,
             "vlm",
         )
-        .await
-        {
-            Some(output) => {
-                apply_vlm(&mut bundle, &output);
-                stage_reports.push(StageReport::ok(
-                    "vlm",
-                    Some(started.elapsed().as_millis() as i64),
-                    None,
-                    Vec::new(),
-                ));
-            }
-            None => {
-                stage_reports.push(StageReport::degraded("vlm", "agent run failed"));
-            }
+        .await;
+        if let Some(ref out) = outcome {
+            apply_vlm(&mut bundle, &out.output);
         }
+        push_tool_calls(&mut tool_call_log_entries, "vlm", outcome.as_ref());
+        record_agent_outcome(&mut stage_reports, "vlm", outcome.as_ref(), opts);
     } else if staged.source_tarball.is_some() {
         stage_reports.push(StageReport::skipped("vlm", "tex path active"));
     }
@@ -304,6 +316,11 @@ async fn run_inner(
         ),
     );
 
+    push_tool_calls(&mut tool_call_log_entries, "macros", macros_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "equations", equations_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "theorems", theorems_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "citations", citations_res.as_ref());
+
     record_agent_outcome(&mut stage_reports, "macros", macros_res.as_ref(), opts);
     record_agent_outcome(&mut stage_reports, "equations", equations_res.as_ref(), opts);
     record_agent_outcome(&mut stage_reports, "theorems", theorems_res.as_ref(), opts);
@@ -313,6 +330,16 @@ async fn run_inner(
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
     apply_citations(&mut bundle, arxiv_id, citations_res);
     apply_macros(&mut bundle, macros_res); // currently records to extraction_report
+
+    // Serialize the cross-stage tool_call log as JSONL for Tier-2 audit.
+    if !tool_call_log_entries.is_empty() {
+        let jsonl = tool_call_log_entries
+            .iter()
+            .filter_map(|e| serde_json::to_string(e).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        bundle.tool_call_log = Some(jsonl.into_bytes());
+    }
 
     // --- Stage 8: persist + finalise ---
     let completed_at = Utc::now();
@@ -695,11 +722,12 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     paper_id: Uuid,
     arxiv_id: &str,
     stage_name: &str,
-) -> Option<Value> {
+) -> Option<StageOutcome> {
     let Some(runner) = resolve_runner(state) else {
         warn!(stage_name, "no runner available; skipping extraction stage");
         return None;
     };
+    let runner_name = runner.name().to_string();
     let registry = Arc::new(build_registry_for(agent));
     let ctx = ExtractionContext {
         workdir,
@@ -710,10 +738,19 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         registry,
     };
     let spec = default_extraction_spec(stage_name);
+    let model = spec.model.clone();
     match agent.run(runner, &spec, ctx).await {
         Ok(run) => {
             info!(stage_name, arxiv_id, iters = run.iters, "extraction stage ok");
-            Some(run.output)
+            Some(StageOutcome {
+                output: run.output,
+                tool_calls: run.tool_calls,
+                cost_usd: run.cost_usd,
+                latency_ms: run.latency_ms,
+                iters: run.iters,
+                model,
+                runner: runner_name,
+            })
         }
         Err(e) => {
             warn!(stage_name, arxiv_id, err = %format!("{e:#}"), "extraction stage failed");
@@ -735,7 +772,7 @@ async fn run_agent_when<A: ExtractionAgent + Sized + 'static>(
     arxiv_id: &str,
     stage_name: &str,
     agent: A,
-) -> Option<Value> {
+) -> Option<StageOutcome> {
     if !enabled {
         return None;
     }
@@ -826,8 +863,8 @@ fn apply_vlm(bundle: &mut ArtifactBundle, output: &Value) {
     }
 }
 
-fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     // The agent returns `{equations: [...]}`; references.schema requires
@@ -863,8 +900,8 @@ fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Valu
     bundle.equations = Some(json!({ "arxiv_id": arxiv_id, "equations": canonical }));
 }
 
-fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     // Agent may return `theorem_graph: [...]` or `nodes: [...]`. The
@@ -901,8 +938,8 @@ fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value
     bundle.theorem_graph = Some(json!({ "arxiv_id": arxiv_id, "nodes": nodes }));
 }
 
-fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     let citations_src = value
@@ -953,7 +990,7 @@ fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Valu
     bundle.references = Some(json!({ "arxiv_id": arxiv_id, "citations": citations }));
 }
 
-fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<Value>) {
+fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
     // The MacroExpander returns `{normalized_tex, expansions_applied}`. We
     // don't currently re-route normalized_tex back into Stage 5/6/7 because
     // those agents read from `body.md` + `semantic_ast` (already produced by
@@ -973,6 +1010,8 @@ struct StageReport {
     model: Option<String>,
     runner: Option<String>,
     warnings: Vec<String>,
+    iters: Option<u32>,
+    tool_call_summary: Option<Value>,
 }
 
 impl StageReport {
@@ -990,6 +1029,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings,
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn degraded(name: &str, warning: &str) -> Self {
@@ -1001,6 +1042,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings: vec![warning.into()],
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn skipped(name: &str, reason: &str) -> Self {
@@ -1012,6 +1055,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings: vec![reason.into()],
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn to_value(&self) -> Value {
@@ -1023,7 +1068,8 @@ impl StageReport {
             "model": self.model,
             "runner": self.runner,
             "warnings": self.warnings,
-            "tool_call_summary": Value::Null,
+            "iters": self.iters,
+            "tool_call_summary": self.tool_call_summary.clone().unwrap_or(Value::Null),
         })
     }
 }
@@ -1031,17 +1077,67 @@ impl StageReport {
 fn record_agent_outcome(
     out: &mut Vec<StageReport>,
     name: &str,
-    res: Option<&Value>,
+    res: Option<&StageOutcome>,
     opts: &IngestOptions,
 ) {
     if opts.should_skip(name) {
         out.push(StageReport::skipped(name, "skipped via --skip-stages"));
         return;
     }
-    if res.is_some() {
-        out.push(StageReport::ok(name, None, None, Vec::new()));
-    } else {
-        out.push(StageReport::degraded(name, "agent returned no output"));
+    match res {
+        Some(outcome) => {
+            let summary = tool_call_summary(&outcome.tool_calls);
+            let mut report = StageReport::ok(
+                name,
+                Some(outcome.latency_ms),
+                Some(outcome.cost_usd as f64),
+                Vec::new(),
+            );
+            report.model = Some(outcome.model.clone());
+            report.runner = Some(outcome.runner.clone());
+            report.iters = Some(outcome.iters);
+            report.tool_call_summary = Some(summary);
+            out.push(report);
+        }
+        None => {
+            out.push(StageReport::degraded(name, "agent returned no output"));
+        }
+    }
+}
+
+/// Build a compact `{count, by_tool}` summary of a stage's tool-call audit
+/// log. The full per-call log lives in `bundle.tool_call_log` (uploaded to
+/// `review-artifacts/<arxiv_id>/tool_call_log.jsonl`); the summary is what
+/// surfaces in `extraction_report.json` for Tier-1 readers.
+fn tool_call_summary(calls: &[ToolCallRecord]) -> Value {
+    use std::collections::BTreeMap;
+    let mut by_tool: BTreeMap<&str, u32> = BTreeMap::new();
+    for c in calls {
+        *by_tool.entry(c.tool.as_str()).or_insert(0) += 1;
+    }
+    let by_tool_value: serde_json::Map<String, Value> = by_tool
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), Value::from(v)))
+        .collect();
+    json!({
+        "count": calls.len(),
+        "by_tool": by_tool_value,
+    })
+}
+
+/// Append every per-call audit record from one stage's outcome into the
+/// run-wide audit log (one JSON object per entry, tagged with `stage_name`
+/// and a per-stage ordinal).
+fn push_tool_calls(out: &mut Vec<Value>, stage_name: &str, outcome: Option<&StageOutcome>) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    for (ordinal, call) in outcome.tool_calls.iter().enumerate() {
+        out.push(json!({
+            "stage_name": stage_name,
+            "ordinal": ordinal,
+            "call_record": call,
+        }));
     }
 }
 
