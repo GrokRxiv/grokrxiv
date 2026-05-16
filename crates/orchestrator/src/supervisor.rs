@@ -353,6 +353,10 @@ pub async fn run_review_dag(
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     tracing::info!(%review_id, "M1: review row created");
 
+    // Drive the DAG inside an inner async block so any error path can
+    // transition the review row off the stale `awaiting_moderation` state.
+    // We use `withdrawn` because the DB enum has no `failed` value.
+    let dag_result: anyhow::Result<()> = async {
     // The five specialist roles fan out in parallel; the meta-reviewer runs
     // after they complete so it can synthesize their outputs.
     let specialist_roles = [
@@ -644,6 +648,26 @@ pub async fn run_review_dag(
     let _ = paper_id; // not needed by the new render path
     if let Err(e) = render_to_disk(state, review_id).await {
         tracing::warn!(%review_id, err = %e, "render_to_disk failed");
+    }
+
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = dag_result {
+        tracing::error!(
+            %review_id,
+            err = %format!("{e:#}"),
+            "review DAG bailed; transitioning review row to withdrawn"
+        );
+        let _ = crate::db::set_review_status(
+            pool,
+            review_id,
+            grokrxiv_schemas::ReviewStatus::Withdrawn,
+            None,
+        )
+        .await;
+        return Err(e);
     }
 
     Ok(review_id)
