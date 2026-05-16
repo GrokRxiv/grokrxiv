@@ -1,0 +1,19 @@
+id: macro_expander
+role: "Stage 4 — expand user-defined LaTeX macros (\\newcommand / \\def / \\renewcommand / \\DeclareMathOperator) so downstream tools see standard LaTeX."
+provider: claude
+# Macro expansion is mechanical bookkeeping over short TeX snippets.
+# Haiku is plenty; gemini-2.5-flash is the documented alternative.
+model: claude-haiku-4-5-20251001
+runner: api
+output_schema: schemas/extraction/macros.schema.json
+tools:
+  - list_files
+  - read_file
+  - find_definitions
+  - apply_expansions
+  - submit
+loop:
+  max_iters: 20
+  max_cost_usd: 0.02
+max_retries: 2
+timeout_secs: 120

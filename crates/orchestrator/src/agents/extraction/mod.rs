@@ -25,6 +25,7 @@ pub use crate::agents::types::{
 };
 
 pub mod r#loop;
+pub mod macros;
 pub mod tools;
 
 pub use r#loop::run_tool_loop;

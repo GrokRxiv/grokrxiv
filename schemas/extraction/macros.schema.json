@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://grokrxiv.org/schemas/extraction/macros.schema.json",
+  "title": "MacroExpansionResult",
+  "description": "Final payload submitted by the MacroExpanderAgent (Stage 4). Carries the normalized TeX source after user-defined macro expansion plus a per-macro substitution audit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["normalized_tex", "expansions_applied"],
+  "properties": {
+    "normalized_tex": {
+      "type": "string",
+      "description": "The full TeX source with all user-defined macros expanded inline."
+    },
+    "expansions_applied": {
+      "type": "array",
+      "description": "One entry per expanded macro definition.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "body", "occurrences"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Macro control-sequence name including the leading backslash, e.g. `\\R`."
+          },
+          "body": {
+            "type": "string",
+            "description": "Macro body as defined (with `#1`/`#2`/... placeholders for parameters)."
+          },
+          "occurrences": {
+            "type": "integer",
+            "description": "Number of textual occurrences substituted during normalization."
+          }
+        }
+      }
+    }
+  }
+}
