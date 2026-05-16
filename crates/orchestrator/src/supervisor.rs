@@ -2175,6 +2175,24 @@ mod tests {
         );
     }
 
+    /// Common case: one specialist degrades (e.g., transient API hiccup);
+    /// the other four pass. Meta should still run.
+    #[test]
+    fn quorum_allows_meta_when_four_of_five_pass() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Pass),
+            Some(VerifierStatus::Fail),
+        ];
+        assert!(
+            quorum_passes(&statuses),
+            "4-of-5 should clear the quorum; meta runs on the surviving four"
+        );
+    }
+
     /// FP-RPT3b B2: lock the structured error payload shape so the
     /// moderation UI / log scrapers can parse it without speculative
     /// schema-guessing.
