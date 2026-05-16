@@ -15,5 +15,5 @@ tools:
   - resolve_label
   - submit
 max_iters: 50
-max_cost_usd: 0.08
+max_cost_usd: 0.80
 timeout_secs: 240

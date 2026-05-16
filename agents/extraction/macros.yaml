@@ -14,6 +14,6 @@ tools:
   - submit
 loop:
   max_iters: 20
-  max_cost_usd: 0.02
+  max_cost_usd: 0.20
 max_retries: 2
 timeout_secs: 120

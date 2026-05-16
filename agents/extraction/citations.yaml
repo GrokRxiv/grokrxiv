@@ -13,6 +13,6 @@ tools:
   - read_section
   - submit
 max_iters: 80
-max_cost_usd: 0.05
+max_cost_usd: 0.50
 max_retries: 2
 timeout_secs: 240

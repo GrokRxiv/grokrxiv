@@ -10,7 +10,7 @@ output_schema: schemas/extraction/equations.schema.json
 verifiers:
   - json_schema
 max_iters: 60
-max_cost_usd: 0.05
+max_cost_usd: 0.50
 max_retries: 2
 timeout_secs: 600
 escalation: skip

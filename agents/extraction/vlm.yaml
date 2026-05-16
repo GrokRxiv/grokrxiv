@@ -13,6 +13,6 @@ tools:
   - extract_page_region
   - submit
 max_iters: 40
-max_cost_usd: 0.10
+max_cost_usd: 1.0
 max_retries: 2
 timeout_secs: 300
