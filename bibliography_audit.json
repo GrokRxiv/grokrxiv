@@ -1,0 +1,39 @@
+```json
+{
+  "entries": [
+    {
+      "citation": "Cavazzuti, E., Pappalardo, M., & Passacantando, M. (2002). Nash equilibria, variational inequalities, and dynamical systems. Journal of Optimization Theory and Applications, 114(3), 491-506.",
+      "exists": true,
+      "relevance": "High. This paper connects three core concepts of the audited paper: Nash equilibria, variational inequalities, and dynamical systems, providing a foundational link for using neurodynamic approaches to solve VI problems that can model equilibria.",
+      "resolved_doi": "10.1023/A:1016056327692"
+    },
+    {
+      "citation": "Censor, Y., Gibali, A., & Reich, S. (2011). The subgradient extragradient method for solving variational inequalities in Hilbert space. Journal of Optimization Theory and Applications, 148(2), 318-335.",
+      "exists": true,
+      "relevance": "High. This paper describes a specific method (subgradient extragradient) for solving variational inequalities, which is a key area the audited paper builds upon. It represents the class of iterative algorithms that the proposed neurodynamic systems are an alternative to.",
+      "resolved_doi": "10.1007/s10957-010-9757-3"
+    },
+    {
+      "citation": "Polyakov, A. (2012). Nonlinear feedback design for fixed-time stabilization of linear control systems. IEEE Transactions on Automatic Control, 57(8), 2106-2110.",
+      "exists": true,
+      "relevance": "High. This is a key reference for the central claim of 'fixed-time' convergence. It provides the theoretical underpinning for fixed-time stability, which the audited paper applies to neurodynamic systems.",
+      "resolved_doi": "10.1109/TAC.2011.2179869",
+      "notes": "This specific paper was listed as reference [19] in the source. The bibliography likely contains other foundational work on fixed-time stability, possibly also by Polyakov, listed as reference [3]."
+    },
+    {
+      "citation": "Scutari, G., Palomar, D. P., Facchinei, F., & Pang, J. S. (2010). Convex optimization, game theory, and variational inequality theory. IEEE Signal Processing Magazine, 27(3), 22-36.",
+      "exists": true,
+      "relevance": "High. This is a broad, high-level tutorial/survey paper connecting the main theoretical pillars of the audited paper. It establishes the relationships between variational inequalities, game theory, and optimization, justifying the paper's framing and its applications.",
+      "resolved_doi": "10.1109/MSP.2010.936021"
+    },
+    {
+      "citation": "Bhat, S. P., & Bernstein, D. S. (2000). Finite-time stability of continuous autonomous systems. SIAM Journal on Control and Optimization, 38(3), 751-766.",
+      "exists": true,
+      "relevance": "High. This is a foundational paper on finite-time stability, a concept that is a slightly weaker precursor to the 'fixed-time' stability claimed in the audited paper. It is essential background for understanding the paper's contribution to convergence analysis.",
+      "resolved_doi": "10.1137/S0363012997321358"
+    }
+  ],
+  "summary": "The audited portion of the bibliography consists of highly relevant and foundational papers in the fields of variational inequalities, dynamical systems, and fixed-time stability. The citations that could be fully verified exist and strongly support the theoretical basis of the paper. The authors appear to be well-versed in the key literature. However, this audit is based on an incomplete, web-scraped list of references. A full audit would require the complete bibliography from the paper itself.",
+  "confidence": "Medium"
+}
+```

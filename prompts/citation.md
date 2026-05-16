@@ -15,6 +15,7 @@ For each `citation` you receive:
   substantively support the surrounding claim in the paper?
 - `notes`: anything noteworthy (wrong year, hallucinated author, retracted
   work, mismatched venue, etc.).
+- `explanation`: a brief explanation of why this citation is relevant to the paper, or notes on why it could not be verified.
 
 Also enumerate `missing_references`: prior work the paper should have cited but
 did not. Be conservative; do not pad the list.

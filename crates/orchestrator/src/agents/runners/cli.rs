@@ -22,7 +22,7 @@ use crate::agents::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec, San
 
 /// Default subprocess timeout (seconds) when `GROKRXIV_CLI_TIMEOUT_SECS` is
 /// unset.
-const DEFAULT_CLI_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_CLI_TIMEOUT_SECS: u64 = 360;
 
 /// Name of the Claude skill that enforces JSON-only output.
 const CLAUDE_SKILL_NAME: &str = "grokrxiv-review";
@@ -337,18 +337,73 @@ async fn exec_and_capture(
 /// ...}`; codex emits JSON directly with `--json`; gemini emits the raw
 /// completion. For claude we walk the wrapper; for the others we return the
 /// stdout unchanged.
-fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
-    if provider != "claude" {
-        return raw_stdout.trim().to_string();
-    }
-    let trimmed = raw_stdout.trim();
-    let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-        return trimmed.to_string();
+/// Strip leading ```json / ``` and trailing ``` from a JSON payload. Returns
+/// the input unchanged if no fences are present. Mirrors `strip_fences` in
+/// `agents/runners/api.rs`.
+pub fn strip_code_fences(s: &str) -> &str {
+    let t = s.trim();
+    let stripped = if let Some(rest) = t.strip_prefix("```json") {
+        rest
+    } else if let Some(rest) = t.strip_prefix("```") {
+        rest
+    } else {
+        return t;
     };
-    match wrapper.get("result") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-        None => trimmed.to_string(),
+    stripped
+        .trim_start_matches('\n')
+        .trim_end_matches("```")
+        .trim()
+}
+
+fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
+    let trimmed = raw_stdout.trim();
+    match provider {
+        "claude" => {
+            // `claude -p --output-format json` returns
+            // {"type":"result","subtype":"success","result":"<json-string>", ...}
+            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                return trimmed.to_string();
+            };
+            match wrapper.get("result") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => trimmed.to_string(),
+            }
+        }
+        "openai" => {
+            // `codex exec --json` streams JSONL events:
+            //   {"type":"thread.started",...}
+            //   {"type":"turn.started"}
+            //   {"type":"item.started", "item": {...web_search, etc.}}
+            //   ...
+            //   {"type":"item.completed", "item": {"type":"agent_message", "text":"<json>"}}
+            //   {"type":"turn.completed",...}
+            // The real output is the LAST item.completed with type=agent_message;
+            // its `text` field is the JSON we want.
+            let mut last_agent_text: Option<String> = None;
+            for line in trimmed.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if evt.get("type") == Some(&serde_json::Value::String("item.completed".into())) {
+                    if let Some(item) = evt.get("item") {
+                        if item.get("type")
+                            == Some(&serde_json::Value::String("agent_message".into()))
+                        {
+                            if let Some(serde_json::Value::String(t)) = item.get("text") {
+                                last_agent_text = Some(t.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            last_agent_text.unwrap_or_else(|| trimmed.to_string())
+        }
+        _ => trimmed.to_string(),
     }
 }
 
@@ -358,7 +413,12 @@ fn parse_and_validate(
     extracted: &str,
     schema: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let parsed: serde_json::Value = serde_json::from_str(extracted.trim())
+    // Strip ```json / ``` code fences before parsing — claude's
+    // /grokrxiv-review skill output is sometimes wrapped in a fenced code
+    // block even when --output-format=json is set. Mirrors the helper in
+    // ApiRunner.
+    let cleaned = strip_code_fences(extracted.trim());
+    let parsed: serde_json::Value = serde_json::from_str(cleaned)
         .map_err(|e| anyhow::anyhow!("not valid JSON: {e}; raw={extracted:?}"))?;
 
     // Empty schema {} = no constraint. Skip validation in that case so unit

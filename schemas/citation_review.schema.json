@@ -23,9 +23,13 @@
             "type": "string",
             "enum": ["high", "medium", "low", "unrelated"]
           },
-          "notes": { "type": ["string", "null"] }
+          "notes": { "type": ["string", "null"] },
+          "explanation": {
+            "type": "string",
+            "description": "A brief explanation of why this citation is relevant to the paper, or notes on why it could not be verified."
+          }
         },
-        "required": ["citation", "exists", "resolved_doi", "resolved_url", "relevance", "notes"]
+        "required": ["citation", "exists", "resolved_doi", "resolved_url", "relevance", "notes", "explanation"]
       }
     },
     "missing_references": {

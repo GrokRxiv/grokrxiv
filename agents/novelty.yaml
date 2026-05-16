@@ -5,7 +5,7 @@ provider: gemini
 # (limit: 0 in /v1beta). Flash works on free tier and is plenty capable for
 # novelty assessment; flip to 2.5-pro after enabling billing on the Google
 # Cloud project tied to this key.
-model: gemini-2.5-flash
+model: gemini-2.5-pro
 runner: api
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json
