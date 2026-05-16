@@ -1,0 +1,19 @@
+id: theorem_graph_extractor
+role: "Build a dependency graph over theorem-like blocks (theorem/lemma/proposition/corollary/definition/proof). Resolves \\ref{} edges."
+provider: claude
+# Cross-reference resolution + long-context reasoning over the full paper body
+# is exactly what Opus is good at. Theorem chains can span many sections.
+model: claude-opus-4-7
+runner: api
+prompt_template: prompts/extraction/theorems.md
+output_schema: schemas/extraction/theorems.schema.json
+tools:
+  - read_file
+  - query_ast
+  - list_sections
+  - read_section
+  - resolve_label
+  - submit
+max_iters: 50
+max_cost_usd: 0.08
+timeout_secs: 240
