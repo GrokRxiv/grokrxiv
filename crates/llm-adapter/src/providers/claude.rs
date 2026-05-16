@@ -20,7 +20,8 @@ use serde_json::{json, Value};
 use crate::retry::with_backoff;
 use crate::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, LLMError, LLMProvider, Message,
-    ProviderConfig, ResponseFormat, Role, Usage,
+    ProviderConfig, ProviderToolCall, ResponseFormat, Role, ToolChatRequest, ToolCompletion,
+    ToolContent, ToolMessage, Usage,
 };
 
 /// Default Anthropic endpoint.
@@ -238,6 +239,150 @@ fn base64_encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+impl ClaudeProvider {
+    /// Build the Anthropic tools-API request body.
+    pub fn build_tools_body(req: &ToolChatRequest) -> Value {
+        let messages: Vec<Value> = req.messages.iter().map(tool_message_to_json).collect();
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                })
+            })
+            .collect();
+
+        let supports_temperature =
+            !req.model.contains("opus-4") && !req.model.contains("sonnet-4");
+        let mut body = if supports_temperature {
+            json!({
+                "model": req.model,
+                "max_tokens": req.max_tokens,
+                "temperature": req.temperature,
+                "messages": messages,
+                "tools": tools,
+            })
+        } else {
+            json!({
+                "model": req.model,
+                "max_tokens": req.max_tokens,
+                "messages": messages,
+                "tools": tools,
+            })
+        };
+
+        if let Some(system) = &req.system {
+            body["system"] = Value::String(system.clone());
+        }
+        body
+    }
+
+    /// Parse an Anthropic tools-API response into a [`ToolCompletion`].
+    pub fn parse_tools_response(value: Value) -> Result<ToolCompletion, LLMError> {
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<ProviderToolCall> = Vec::new();
+        if let Some(blocks) = value.get("content").and_then(|c| c.as_array()) {
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(s) = block.get("text").and_then(Value::as_str) {
+                            text_parts.push(s.to_string());
+                        }
+                    }
+                    Some("tool_use") => {
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let arguments = block.get("input").cloned().unwrap_or(Value::Null);
+                        tool_calls.push(ProviderToolCall {
+                            id,
+                            name,
+                            arguments,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let finish_reason = match value.get("stop_reason").and_then(Value::as_str) {
+            Some("end_turn") | Some("stop_sequence") => FinishReason::Stop,
+            Some("max_tokens") => FinishReason::Length,
+            Some("tool_use") => FinishReason::ToolUse,
+            _ => FinishReason::Other,
+        };
+        let usage_obj = value.get("usage").cloned().unwrap_or(json!({}));
+        let usage = Usage {
+            tokens_in: usage_obj
+                .get("input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            tokens_out: usage_obj
+                .get("output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            cache_hits: usage_obj
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        };
+        Ok(ToolCompletion {
+            tool_calls,
+            text: text_parts.join(""),
+            finish_reason,
+            usage,
+            raw: value,
+        })
+    }
+}
+
+fn tool_message_to_json(m: &ToolMessage) -> Value {
+    let role = match m.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    };
+    let content: Vec<Value> = m
+        .content
+        .iter()
+        .map(|c| match c {
+            ToolContent::Text { text } => json!({ "type": "text", "text": text }),
+            ToolContent::ToolUse { id, name, input } => json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            }),
+            ToolContent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content_to_string(content),
+                "is_error": is_error,
+            }),
+        })
+        .collect();
+    json!({ "role": role, "content": content })
+}
+
+fn content_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 #[async_trait::async_trait]
 impl LLMProvider for ClaudeProvider {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse, LLMError> {
@@ -295,6 +440,50 @@ impl LLMProvider for ClaudeProvider {
 
     fn context_window(&self) -> usize {
         200_000
+    }
+
+    async fn complete_with_tools(
+        &self,
+        req: ToolChatRequest,
+    ) -> Result<ToolCompletion, LLMError> {
+        let body = Self::build_tools_body(&req);
+        let http = self.http.clone();
+        let url = self.base_url.clone();
+        let key = self.api_key.clone();
+        with_backoff(|| {
+            let http = http.clone();
+            let url = url.clone();
+            let key = key.clone();
+            let body = body.clone();
+            async move {
+                let resp = http
+                    .post(&url)
+                    .header("x-api-key", &key)
+                    .header("anthropic-version", ANTHROPIC_API_VERSION)
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(LLMError::from)?;
+                let status = resp.status();
+                if status.as_u16() == 429 {
+                    let retry_after = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Duration::from_secs);
+                    return Err(LLMError::RateLimited(retry_after));
+                }
+                if !status.is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    return Err(LLMError::Provider(format!("{status}: {body_text}")));
+                }
+                let value: Value = resp.json().await.map_err(LLMError::from)?;
+                ClaudeProvider::parse_tools_response(value)
+            }
+        })
+        .await
     }
 }
 

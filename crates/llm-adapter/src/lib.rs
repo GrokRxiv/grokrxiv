@@ -57,6 +57,21 @@ pub trait LLMProvider: Send + Sync {
     }
     /// Maximum context window in tokens.
     fn context_window(&self) -> usize;
+    /// Run one turn of a tool-call loop. The provider translates `req.tools`
+    /// into its native tool-call format, sends the conversation, and returns
+    /// any emitted tool calls plus the assistant message that produced them.
+    ///
+    /// Default impl errors so non-tool providers fail loudly rather than
+    /// silently degrading.
+    async fn complete_with_tools(
+        &self,
+        _req: ToolChatRequest,
+    ) -> Result<ToolCompletion, LLMError> {
+        Err(LLMError::Provider(format!(
+            "provider `{}` does not implement complete_with_tools",
+            self.name()
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +190,106 @@ pub struct Usage {
     pub tokens_out: u32,
     /// Tokens served from prompt cache, if reported by the provider.
     pub cache_hits: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call types
+// ---------------------------------------------------------------------------
+
+/// A tool the LLM may call. The provider translates this into its native
+/// representation (Anthropic `tools[]`, OpenAI `tools[].function`, Gemini
+/// `tools[].functionDeclarations[]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSpec {
+    /// Tool name (stable identifier).
+    pub name: String,
+    /// One-line description shown to the LLM.
+    pub description: String,
+    /// JSON Schema for the tool's `input` / `parameters`.
+    pub input_schema: serde_json::Value,
+}
+
+/// One message in a tool-using conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolMessage {
+    /// Speaker role.
+    pub role: Role,
+    /// Ordered content parts. Tool-using assistants may emit `ToolUse` blocks;
+    /// users may emit `ToolResult` blocks. Text is also allowed.
+    pub content: Vec<ToolContent>,
+}
+
+/// One content block in a tool-using conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolContent {
+    /// UTF-8 text segment.
+    Text {
+        /// Body of the text segment.
+        text: String,
+    },
+    /// Assistant invoking a tool.
+    ToolUse {
+        /// Provider-issued call id (echoed back in `ToolResult.tool_use_id`).
+        id: String,
+        /// Tool name (matches a `ToolSpec.name`).
+        name: String,
+        /// JSON arguments to the tool.
+        input: serde_json::Value,
+    },
+    /// User returning a tool's result to the assistant.
+    ToolResult {
+        /// Echoes the `ToolUse.id` that produced this result.
+        tool_use_id: String,
+        /// Body of the result (typically a JSON value).
+        content: serde_json::Value,
+        /// Whether the tool reported an error.
+        #[serde(default)]
+        is_error: bool,
+    },
+}
+
+/// Request body for a tool-using turn.
+#[derive(Debug, Clone)]
+pub struct ToolChatRequest {
+    /// Optional system prompt.
+    pub system: Option<String>,
+    /// Full conversation including any prior tool_use / tool_result blocks.
+    pub messages: Vec<ToolMessage>,
+    /// Tools the model may call this turn.
+    pub tools: Vec<ToolSpec>,
+    /// Model identifier.
+    pub model: String,
+    /// Max tokens for this turn.
+    pub max_tokens: u32,
+    /// Sampling temperature.
+    pub temperature: f32,
+}
+
+/// Result of one tool-using turn.
+#[derive(Debug, Clone)]
+pub struct ToolCompletion {
+    /// Tool calls the assistant issued this turn (possibly empty).
+    pub tool_calls: Vec<ProviderToolCall>,
+    /// Any free-form text the assistant produced.
+    pub text: String,
+    /// Why the model stopped generating.
+    pub finish_reason: FinishReason,
+    /// Token-usage breakdown.
+    pub usage: Usage,
+    /// Raw provider payload for debugging.
+    pub raw: serde_json::Value,
+}
+
+/// One tool call emitted by the assistant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderToolCall {
+    /// Provider-issued call id. Tool results MUST quote this id.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// JSON arguments.
+    pub arguments: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------

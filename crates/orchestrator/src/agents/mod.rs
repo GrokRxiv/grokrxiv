@@ -10,6 +10,7 @@
 //! - [`runners`] — 4 backend impls (`api`, `cli`, `cloud`, `local_inference`)
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
+pub mod extraction;
 pub mod review_agents;
 pub mod runners;
 pub mod sandbox;

@@ -12,10 +12,79 @@
 //! See `research/agent-runner.md` for the full design rationale.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
-use grokrxiv_schemas::{AgentRole, VerifierStatus};
+use grokrxiv_schemas::{AgentRole, PaperExtract, VerifierStatus};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub use grokrxiv_llm_adapter::{
+    ProviderToolCall as ToolCall, ToolChatRequest, ToolCompletion, ToolContent, ToolMessage,
+    ToolSpec,
+};
+
+/// Shorthand for one message in a tool-using conversation. The shape is
+/// identical to [`grokrxiv_llm_adapter::ToolMessage`]; this alias keeps the
+/// orchestrator's call sites tidy.
+pub type Message = ToolMessage;
+
+use crate::agents::extraction::ToolRegistry;
+
+/// Context handed to the tool-call loop. Borrows the workdir, paper extract,
+/// and optional semantic AST so tool implementations can read them without
+/// cloning.
+pub struct ExtractionContext<'a> {
+    /// Working directory rooted at the unpacked paper source bundle. Tools
+    /// like `list_files` and `read_file` are scoped to this.
+    pub workdir: &'a Path,
+    /// The paper extract (sections, bibliography, figures, ...).
+    pub extract: &'a PaperExtract,
+    /// LaTeXML-derived semantic AST; populated when the deterministic Stage 2
+    /// succeeded. Drives `query_ast`.
+    pub semantic_ast: Option<&'a serde_json::Value>,
+    /// DB UUID of the paper this extraction is running against.
+    pub paper_id: Uuid,
+    /// arXiv identifier (version-suffixed) for tools that need to look up
+    /// metadata.
+    pub arxiv_id: &'a str,
+    /// Toolkit available this run.
+    pub registry: Arc<ToolRegistry>,
+}
+
+/// One audit-log record per tool call inside a tool-call loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    /// Iteration number (zero-based) the call occurred on.
+    pub iter: u32,
+    /// Tool name (matches a `ToolSpec.name`).
+    pub tool: String,
+    /// Arguments the model passed to the tool.
+    pub arguments: serde_json::Value,
+    /// Tool result that came back. For `submit` this is the validated payload;
+    /// for failures this is the error string under a `"_error"` key.
+    pub result: serde_json::Value,
+    /// Whether the call succeeded.
+    pub ok: bool,
+    /// Wall-clock duration of the call in milliseconds.
+    pub latency_ms: i64,
+}
+
+/// Result of running an extraction agent end-to-end through the tool-call loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionRun {
+    /// Final validated `submit(...)` payload.
+    pub output: serde_json::Value,
+    /// Audit log of every tool call (including the final `submit`).
+    pub tool_calls: Vec<ToolCallRecord>,
+    /// Rough USD cost across all turns (best-effort; 0.0 when the runner
+    /// didn't surface usage).
+    pub cost_usd: f32,
+    /// Wall-clock latency end-to-end in milliseconds.
+    pub latency_ms: i64,
+    /// Number of model turns consumed (not the number of tool calls).
+    pub iters: u32,
+}
 
 /// Which execution backend handles this role's work.
 ///

@@ -19,7 +19,8 @@ use serde_json::{json, Value};
 use crate::retry::with_backoff;
 use crate::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, LLMError, LLMProvider, Message,
-    ProviderConfig, ResponseFormat, Role, Usage,
+    ProviderConfig, ProviderToolCall, ResponseFormat, Role, ToolChatRequest, ToolCompletion,
+    ToolContent, ToolMessage, Usage,
 };
 
 /// Default OpenAI base URL.
@@ -238,6 +239,170 @@ fn openai_error_code(body_text: &str) -> Option<String> {
         .and_then(|v| v.as_str().map(ToOwned::to_owned))
 }
 
+impl OpenAIProvider {
+    /// Build the OpenAI chat-completions request body for a tool-using turn.
+    pub fn build_tools_body(req: &ToolChatRequest) -> Value {
+        let mut messages: Vec<Value> = Vec::with_capacity(req.messages.len() + 1);
+        if let Some(s) = &req.system {
+            messages.push(json!({ "role": "system", "content": s }));
+        }
+        for m in &req.messages {
+            push_openai_tool_messages(m, &mut messages);
+        }
+
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                })
+            })
+            .collect();
+
+        let mut body = json!({
+            "model": req.model,
+            "messages": messages,
+            "tools": tools,
+            "max_completion_tokens": req.max_tokens,
+        });
+        if !uses_openai_reasoning_controls(&req.model) {
+            body["temperature"] = json!(req.temperature);
+        } else {
+            body["reasoning_effort"] = json!("medium");
+        }
+        body
+    }
+
+    /// Parse an OpenAI tools-API response into a [`ToolCompletion`].
+    pub fn parse_tools_response(value: Value) -> Result<ToolCompletion, LLMError> {
+        let choice = value
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let message = choice.get("message").cloned().unwrap_or(Value::Null);
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut tool_calls: Vec<ProviderToolCall> = Vec::new();
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for c in calls {
+                let id = c
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let function = c.get("function").cloned().unwrap_or(Value::Null);
+                let name = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let args_str = function
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let arguments: Value =
+                    serde_json::from_str(args_str).unwrap_or(Value::Null);
+                tool_calls.push(ProviderToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+        let finish_reason = match choice.get("finish_reason").and_then(Value::as_str) {
+            Some("stop") => FinishReason::Stop,
+            Some("length") => FinishReason::Length,
+            Some("tool_calls") | Some("function_call") => FinishReason::ToolUse,
+            Some("content_filter") => FinishReason::ContentFilter,
+            _ => FinishReason::Other,
+        };
+        let usage_obj = value.get("usage").cloned().unwrap_or(json!({}));
+        let usage = Usage {
+            tokens_in: usage_obj
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            tokens_out: usage_obj
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            cache_hits: usage_obj
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        };
+        Ok(ToolCompletion {
+            tool_calls,
+            text,
+            finish_reason,
+            usage,
+            raw: value,
+        })
+    }
+}
+
+fn push_openai_tool_messages(m: &ToolMessage, out: &mut Vec<Value>) {
+    let role = match m.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    };
+    let mut text_buf = String::new();
+    let mut tool_calls: Vec<Value> = Vec::new();
+    let mut emitted_tool_results = false;
+    for part in &m.content {
+        match part {
+            ToolContent::Text { text } => {
+                text_buf.push_str(text);
+            }
+            ToolContent::ToolUse { id, name, input } => {
+                tool_calls.push(json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": serde_json::to_string(input).unwrap_or_else(|_| "{}".into()),
+                    }
+                }));
+            }
+            ToolContent::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                out.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_use_id,
+                    "content": match content {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    },
+                }));
+                emitted_tool_results = true;
+            }
+        }
+    }
+    if emitted_tool_results && text_buf.is_empty() && tool_calls.is_empty() {
+        return;
+    }
+    let mut msg = json!({ "role": role, "content": text_buf });
+    if !tool_calls.is_empty() {
+        msg["tool_calls"] = Value::Array(tool_calls);
+    }
+    out.push(msg);
+}
+
 #[async_trait::async_trait]
 impl LLMProvider for OpenAIProvider {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse, LLMError> {
@@ -293,6 +458,52 @@ impl LLMProvider for OpenAIProvider {
 
     fn context_window(&self) -> usize {
         128_000
+    }
+
+    async fn complete_with_tools(
+        &self,
+        req: ToolChatRequest,
+    ) -> Result<ToolCompletion, LLMError> {
+        let body = Self::build_tools_body(&req);
+        let url = format!("{}/chat/completions", self.base_url);
+        let http = self.http.clone();
+        let key = self.api_key.clone();
+        with_backoff(|| {
+            let http = http.clone();
+            let url = url.clone();
+            let key = key.clone();
+            let body = body.clone();
+            async move {
+                let resp = http
+                    .post(&url)
+                    .bearer_auth(&key)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(LLMError::from)?;
+                let status = resp.status();
+                if status.as_u16() == 429 {
+                    let retry_after = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Duration::from_secs);
+                    let body_text = resp.text().await.unwrap_or_default();
+                    if openai_error_code(&body_text).as_deref() == Some("insufficient_quota") {
+                        return Err(LLMError::QuotaExceeded(format!("{status}: {body_text}")));
+                    }
+                    return Err(LLMError::RateLimited(retry_after));
+                }
+                if !status.is_success() {
+                    let body_text = resp.text().await.unwrap_or_default();
+                    return Err(LLMError::Provider(format!("{status}: {body_text}")));
+                }
+                let value: Value = resp.json().await.map_err(LLMError::from)?;
+                OpenAIProvider::parse_tools_response(value)
+            }
+        })
+        .await
     }
 }
 

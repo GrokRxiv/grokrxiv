@@ -1,0 +1,563 @@
+//! The tool-call loop that drives every extraction agent.
+//!
+//! ```text
+//! loop:
+//!   resp = runner.complete_with_tools(messages, tools, ctx)
+//!   for each tool_call in resp.tool_calls:
+//!     if name == "submit":
+//!         validate payload vs agent.schema()
+//!         return Ok(ExtractionRun{...})
+//!     else:
+//!         result = registry[name].call(args, ctx)
+//!         messages.append(assistant tool_use + user tool_result)
+//!   if no tool_calls: bail
+//!   if cost > ceiling: bail
+//!   if iters > max_iters: bail
+//! ```
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use serde_json::{json, Value};
+
+use crate::agents::extraction::{ExtractionAgent, ToolCtx};
+use crate::agents::traits::AgentRunner;
+use crate::agents::types::{
+    AgentSpec, ExtractionContext, ExtractionRun, Message, ToolCall, ToolCallRecord, ToolContent,
+};
+use grokrxiv_llm_adapter::Role as LlmRole;
+
+/// Run the multi-turn tool-call loop until the agent calls `submit(...)`.
+///
+/// `max_iters` bounds the number of model turns (NOT the number of tool calls
+/// — a single turn may produce many parallel tool calls). `max_cost_usd` is a
+/// best-effort dollar ceiling; we bail as soon as we cross it.
+pub async fn run_tool_loop(
+    agent: &dyn ExtractionAgent,
+    runner: Arc<dyn AgentRunner>,
+    spec: &AgentSpec,
+    ctx: ExtractionContext<'_>,
+    max_iters: usize,
+    max_cost_usd: f32,
+) -> anyhow::Result<ExtractionRun> {
+    let started = Instant::now();
+    let tool_ctx = ToolCtx::from_extraction(&ctx);
+    let tools = agent.tools();
+
+    let mut messages: Vec<Message> = vec![Message {
+        role: LlmRole::User,
+        content: vec![ToolContent::Text {
+            text: agent.user_kickoff(&ctx),
+        }],
+    }];
+
+    let mut prior_messages = with_system(agent.system_prompt(), messages.clone());
+
+    let mut tool_call_log: Vec<ToolCallRecord> = Vec::new();
+    let mut iters: u32 = 0;
+    let mut cost_accum: f32 = 0.0;
+    let mut retried_submit = false;
+
+    while (iters as usize) < max_iters {
+        let resp = runner
+            .complete_with_tools(spec, &prior_messages, &tools, &tool_ctx)
+            .await?;
+        cost_accum += estimated_cost_usd(spec, &resp.usage);
+        if cost_accum > max_cost_usd {
+            anyhow::bail!(
+                "extraction agent {} exceeded cost ceiling ${} (accum=${})",
+                agent.name(),
+                max_cost_usd,
+                cost_accum
+            );
+        }
+
+        if resp.tool_calls.is_empty() {
+            anyhow::bail!(
+                "extraction agent {} stopped without submit() on iter {}",
+                agent.name(),
+                iters
+            );
+        }
+
+        // Append the assistant turn that issued the tool calls.
+        let mut assistant_content: Vec<ToolContent> = Vec::new();
+        if !resp.text.is_empty() {
+            assistant_content.push(ToolContent::Text { text: resp.text.clone() });
+        }
+        for call in &resp.tool_calls {
+            assistant_content.push(ToolContent::ToolUse {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input: call.arguments.clone(),
+            });
+        }
+        messages.push(Message {
+            role: LlmRole::Assistant,
+            content: assistant_content,
+        });
+
+        // Process each tool call. If we see `submit`, validate + return.
+        let mut user_results: Vec<ToolContent> = Vec::new();
+        for call in &resp.tool_calls {
+            let call_started = Instant::now();
+            if call.name == "submit" {
+                match validate_submit(&call.arguments, agent.schema()) {
+                    Ok(()) => {
+                        tool_call_log.push(ToolCallRecord {
+                            iter: iters,
+                            tool: "submit".to_string(),
+                            arguments: call.arguments.clone(),
+                            result: call.arguments.clone(),
+                            ok: true,
+                            latency_ms: call_started.elapsed().as_millis() as i64,
+                        });
+                        return Ok(ExtractionRun {
+                            output: call.arguments.clone(),
+                            tool_calls: tool_call_log,
+                            cost_usd: cost_accum,
+                            latency_ms: started.elapsed().as_millis() as i64,
+                            iters: iters + 1,
+                        });
+                    }
+                    Err(e) if !retried_submit => {
+                        // One corrective retry: append a tool_result that
+                        // explains the validation failure and let the agent
+                        // try again on the next turn.
+                        retried_submit = true;
+                        let err_msg = format!(
+                            "submit() payload failed schema validation: {e}. Please call submit \
+                             again with a corrected payload that matches the schema exactly."
+                        );
+                        tool_call_log.push(ToolCallRecord {
+                            iter: iters,
+                            tool: "submit".to_string(),
+                            arguments: call.arguments.clone(),
+                            result: json!({ "_error": err_msg.clone() }),
+                            ok: false,
+                            latency_ms: call_started.elapsed().as_millis() as i64,
+                        });
+                        user_results.push(ToolContent::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: Value::String(err_msg),
+                            is_error: true,
+                        });
+                    }
+                    Err(e) => {
+                        anyhow::bail!(
+                            "extraction agent {} submit() failed validation twice: {e}",
+                            agent.name(),
+                        );
+                    }
+                }
+            } else {
+                let result = invoke_tool(call, &ctx, &tool_ctx).await;
+                let latency_ms = call_started.elapsed().as_millis() as i64;
+                match result {
+                    Ok(v) => {
+                        tool_call_log.push(ToolCallRecord {
+                            iter: iters,
+                            tool: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                            result: v.clone(),
+                            ok: true,
+                            latency_ms,
+                        });
+                        user_results.push(ToolContent::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: v,
+                            is_error: false,
+                        });
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        tool_call_log.push(ToolCallRecord {
+                            iter: iters,
+                            tool: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                            result: json!({ "_error": err_msg.clone() }),
+                            ok: false,
+                            latency_ms,
+                        });
+                        user_results.push(ToolContent::ToolResult {
+                            tool_use_id: call.id.clone(),
+                            content: Value::String(err_msg),
+                            is_error: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !user_results.is_empty() {
+            messages.push(Message {
+                role: LlmRole::User,
+                content: user_results,
+            });
+        }
+        prior_messages = with_system(agent.system_prompt(), messages.clone());
+        iters += 1;
+    }
+
+    anyhow::bail!(
+        "extraction agent {} exhausted max_iters={}",
+        agent.name(),
+        max_iters
+    );
+}
+
+fn with_system(_system: String, body: Vec<Message>) -> Vec<Message> {
+    // The runners are responsible for placing `agent.system_prompt()` into the
+    // provider's `system` slot. The loop only owns the conversation body.
+    body
+}
+
+async fn invoke_tool(
+    call: &ToolCall,
+    ctx: &ExtractionContext<'_>,
+    tool_ctx: &ToolCtx<'_>,
+) -> anyhow::Result<Value> {
+    let tool = ctx
+        .registry
+        .get(&call.name)
+        .ok_or_else(|| anyhow::anyhow!("unknown tool: {}", call.name))?;
+    tool.call(call.arguments.clone(), tool_ctx).await
+}
+
+fn validate_submit(
+    payload: &Value,
+    schema: &Value,
+) -> anyhow::Result<()> {
+    // Empty / null schema = no constraint (used by unit tests with stub agents).
+    if schema.is_null()
+        || (schema.is_object()
+            && schema.as_object().map(|m| m.is_empty()).unwrap_or(false))
+    {
+        return Ok(());
+    }
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| anyhow::anyhow!("invalid agent schema: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(payload)
+        .map(|e| e.to_string())
+        .collect();
+    if !errors.is_empty() {
+        anyhow::bail!("{}", errors.join("; "));
+    }
+    Ok(())
+}
+
+/// Best-effort USD cost estimate using a flat per-million rate. We deliberately
+/// avoid a real price table here — the orchestrator's costs.yaml is the source
+/// of truth for production; this is a coarse ceiling check.
+fn estimated_cost_usd(_spec: &AgentSpec, usage: &grokrxiv_llm_adapter::Usage) -> f32 {
+    // Rough average across providers: $3/M input, $15/M output. Good enough
+    // for the cost-ceiling guard; precise accounting happens downstream.
+    let in_usd = (usage.tokens_in as f32) * 3.0 / 1_000_000.0;
+    let out_usd = (usage.tokens_out as f32) * 15.0 / 1_000_000.0;
+    in_usd + out_usd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::extraction::{ExtractionRole, ToolRegistry};
+    use crate::agents::types::AgentSpec;
+    use async_trait::async_trait;
+    use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, ToolSpec, Usage};
+    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// A scripted runner: hand it a queue of [`ToolCompletion`]s and it
+    /// returns them in order, ignoring the messages/tools it receives. Used
+    /// by every loop-level unit test.
+    pub struct ScriptedRunner {
+        queue: Mutex<Vec<ToolCompletion>>,
+        pub seen_tools: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedRunner {
+        pub fn new(turns: Vec<ToolCompletion>) -> Self {
+            Self {
+                queue: Mutex::new(turns),
+                seen_tools: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgentRunner for ScriptedRunner {
+        fn name(&self) -> &'static str {
+            "scripted"
+        }
+        async fn run(
+            &self,
+            _spec: &AgentSpec,
+            _input: &crate::agents::types::AgentInput,
+        ) -> anyhow::Result<crate::agents::types::AgentRun> {
+            unimplemented!("scripted runner is tool-only")
+        }
+        async fn complete_with_tools(
+            &self,
+            _spec: &AgentSpec,
+            _messages: &[Message],
+            tools: &[ToolSpec],
+            _ctx: &ToolCtx<'_>,
+        ) -> anyhow::Result<ToolCompletion> {
+            self.seen_tools
+                .lock()
+                .unwrap()
+                .push(tools.iter().map(|t| t.name.clone()).collect());
+            let mut q = self.queue.lock().unwrap();
+            if q.is_empty() {
+                anyhow::bail!("scripted runner queue exhausted");
+            }
+            Ok(q.remove(0))
+        }
+    }
+
+    /// A trivial extraction agent whose schema accepts anything. We use it
+    /// for all loop tests.
+    struct FakeAgent {
+        tools: Vec<ToolSpec>,
+        schema: serde_json::Value,
+    }
+    impl FakeAgent {
+        fn new(extra_schema: Option<serde_json::Value>) -> Self {
+            let registry = ToolRegistry::with_core_tools();
+            let tools = registry.specs();
+            Self {
+                tools,
+                schema: extra_schema.unwrap_or_else(|| json!({})),
+            }
+        }
+    }
+    #[async_trait]
+    impl ExtractionAgent for FakeAgent {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        fn role(&self) -> ExtractionRole {
+            ExtractionRole::MacroExpander
+        }
+        fn schema(&self) -> &serde_json::Value {
+            &self.schema
+        }
+        fn tools(&self) -> Vec<ToolSpec> {
+            self.tools.clone()
+        }
+    }
+
+    fn paper_extract() -> PaperExtract {
+        PaperExtract {
+            arxiv_id: "2401.00001v1".into(),
+            title: "A Toy Paper".into(),
+            authors: vec![],
+            abstract_: "abs".into(),
+            field: None,
+            sections: vec![],
+            figures: vec![],
+            bibliography: vec![],
+            source_format: None,
+        }
+    }
+
+    fn ctx<'a>(
+        workdir: &'a std::path::Path,
+        extract: &'a PaperExtract,
+        registry: Arc<ToolRegistry>,
+    ) -> ExtractionContext<'a> {
+        ExtractionContext {
+            workdir,
+            extract,
+            semantic_ast: None,
+            paper_id: uuid::Uuid::nil(),
+            arxiv_id: "2401.00001v1",
+            registry,
+        }
+    }
+
+    fn fake_spec() -> AgentSpec {
+        AgentSpec::api_default(
+            AgentRole::Summary,
+            "claude".to_string(),
+            "claude-test".to_string(),
+        )
+    }
+
+    fn turn_submit(payload: serde_json::Value) -> ToolCompletion {
+        ToolCompletion {
+            tool_calls: vec![ProviderToolCall {
+                id: "call_submit".into(),
+                name: "submit".into(),
+                arguments: payload,
+            }],
+            text: String::new(),
+            finish_reason: FinishReason::ToolUse,
+            usage: Usage::default(),
+            raw: json!({}),
+        }
+    }
+
+    fn turn_call(name: &str, args: serde_json::Value, id: &str) -> ToolCompletion {
+        ToolCompletion {
+            tool_calls: vec![ProviderToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments: args,
+            }],
+            text: String::new(),
+            finish_reason: FinishReason::ToolUse,
+            usage: Usage::default(),
+            raw: json!({}),
+        }
+    }
+
+    fn turn_empty() -> ToolCompletion {
+        ToolCompletion {
+            tool_calls: vec![],
+            text: "I give up".into(),
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            raw: json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn happy_path_submit_terminates() {
+        let agent = FakeAgent::new(None);
+        let runner: Arc<dyn AgentRunner> =
+            Arc::new(ScriptedRunner::new(vec![turn_submit(json!({"ok": 1}))]));
+        let tmp = tempdir();
+        let pe = paper_extract();
+        let registry = Arc::new(ToolRegistry::with_core_tools());
+        let ec = ctx(tmp.path(), &pe, registry.clone());
+        let spec = fake_spec();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        assert_eq!(run.output, json!({"ok": 1}));
+        assert_eq!(run.iters, 1);
+        assert_eq!(run.tool_calls.len(), 1);
+        assert_eq!(run.tool_calls[0].tool, "submit");
+    }
+
+    #[tokio::test]
+    async fn invokes_tools_then_submits() {
+        let agent = FakeAgent::new(None);
+        let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
+            turn_call("list_files", json!({}), "c1"),
+            turn_submit(json!({"done": true})),
+        ]));
+        let tmp = tempdir();
+        // touch a file so list_files has something
+        std::fs::write(tmp.path().join("main.tex"), "hi").unwrap();
+        let pe = paper_extract();
+        let registry = Arc::new(ToolRegistry::with_core_tools());
+        let ec = ctx(tmp.path(), &pe, registry.clone());
+        let spec = fake_spec();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        assert_eq!(run.output, json!({"done": true}));
+        assert_eq!(run.iters, 2);
+        assert!(
+            run.tool_calls.iter().any(|c| c.tool == "list_files" && c.ok),
+            "expected a successful list_files entry, got {:?}",
+            run.tool_calls
+        );
+    }
+
+    #[tokio::test]
+    async fn cost_ceiling_aborts() {
+        let agent = FakeAgent::new(None);
+        // Cheap usage isn't enough; we craft an expensive turn that
+        // immediately busts the ceiling.
+        let mut t = turn_call("list_files", json!({}), "c1");
+        t.usage = Usage {
+            tokens_in: 10_000_000,
+            tokens_out: 10_000_000,
+            cache_hits: 0,
+        };
+        let runner: Arc<dyn AgentRunner> =
+            Arc::new(ScriptedRunner::new(vec![t, turn_submit(json!({}))]));
+        let tmp = tempdir();
+        let pe = paper_extract();
+        let registry = Arc::new(ToolRegistry::with_core_tools());
+        let ec = ctx(tmp.path(), &pe, registry.clone());
+        let spec = fake_spec();
+        let err = run_tool_loop(&agent, runner, &spec, ec, 5, 0.01)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("cost ceiling"),
+            "expected cost ceiling error, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_invalid_submit_retries_once() {
+        // Schema requires `id: integer`. First submit is wrong type, second is right.
+        let schema = json!({
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "type": "integer" } }
+        });
+        let agent = FakeAgent::new(Some(schema));
+        let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
+            turn_submit(json!({"id": "oops"})),
+            turn_submit(json!({"id": 7})),
+        ]));
+        let tmp = tempdir();
+        let pe = paper_extract();
+        let registry = Arc::new(ToolRegistry::with_core_tools());
+        let ec = ctx(tmp.path(), &pe, registry.clone());
+        let spec = fake_spec();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        assert_eq!(run.output, json!({"id": 7}));
+        // First submit recorded as failure, second as success.
+        let submits: Vec<&ToolCallRecord> =
+            run.tool_calls.iter().filter(|c| c.tool == "submit").collect();
+        assert_eq!(submits.len(), 2);
+        assert!(!submits[0].ok);
+        assert!(submits[1].ok);
+    }
+
+    #[tokio::test]
+    async fn no_tool_call_aborts() {
+        let agent = FakeAgent::new(None);
+        let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![turn_empty()]));
+        let tmp = tempdir();
+        let pe = paper_extract();
+        let registry = Arc::new(ToolRegistry::with_core_tools());
+        let ec = ctx(tmp.path(), &pe, registry.clone());
+        let spec = fake_spec();
+        let err = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap_err();
+        assert!(
+            err.to_string().contains("stopped without submit"),
+            "expected stopped-without-submit error, got {err}"
+        );
+    }
+
+    /// Minimal temp-dir helper: makes a fresh directory under `$TMPDIR` and
+    /// returns it as a guard that removes itself on drop. We don't want to
+    /// pull in `tempfile` just for these tests.
+    pub struct TempDir(pub PathBuf);
+    impl TempDir {
+        pub fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    pub fn tempdir() -> TempDir {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "grokrxiv-extraction-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        TempDir(p)
+    }
+}
