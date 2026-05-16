@@ -206,9 +206,28 @@ pub async fn run_tool_loop(
     );
 }
 
-fn with_system(_system: String, body: Vec<Message>) -> Vec<Message> {
-    // The runners are responsible for placing `agent.system_prompt()` into the
-    // provider's `system` slot. The loop only owns the conversation body.
+fn with_system(system: String, mut body: Vec<Message>) -> Vec<Message> {
+    // External audit (H2): the runners' `complete_with_tools` impls send
+    // `system: None`, and this function used to drop the agent's system
+    // prompt entirely. As a result every extraction agent ran without its
+    // persona / output contract, which is why agents "stopped without
+    // submit()" - they had no idea what they were supposed to produce.
+    //
+    // Until the AgentRunner trait grows a dedicated `system` parameter, we
+    // smuggle the prompt in as a leading user message so the model sees it
+    // on every turn. This is suboptimal for Anthropic's prompt-caching (the
+    // system slot is the cacheable one) but it's correct for behaviour.
+    let system = system.trim().to_string();
+    if system.is_empty() {
+        return body;
+    }
+    body.insert(
+        0,
+        Message {
+            role: LlmRole::User,
+            content: vec![ToolContent::Text { text: system }],
+        },
+    );
     body
 }
 
