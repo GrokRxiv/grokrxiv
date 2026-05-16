@@ -147,6 +147,18 @@ impl AgentRunner for ApiRunner {
                 match parse_strict_json(&retry.text) {
                     Ok(v) => (v, retry.usage),
                     Err(e) => {
+                        warn!(
+                            provider = %spec.provider,
+                            model = %spec.model,
+                            role = ?spec.role,
+                            first_finish = ?resp.finish_reason,
+                            retry_finish = ?retry.finish_reason,
+                            first_tokens_out = resp.usage.tokens_out,
+                            retry_tokens_out = retry.usage.tokens_out,
+                            first_len = resp.text.len(),
+                            retry_len = retry.text.len(),
+                            "parse failure after corrective retry"
+                        );
                         return Err(anyhow::anyhow!(
                             "parse failure after corrective retry: first={first_err}; retry={e}; \
                              raw_first={raw_first:?}; raw_retry={raw_retry:?}",

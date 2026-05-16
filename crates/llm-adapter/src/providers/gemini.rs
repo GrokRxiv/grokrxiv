@@ -89,7 +89,16 @@ impl GeminiProvider {
             "contents": contents,
             "generationConfig": {
                 "temperature": req.temperature,
-                "maxOutputTokens": req.max_tokens
+                "maxOutputTokens": req.max_tokens,
+                // Gemini 2.5 (both pro and flash) silently allocates up to
+                // ~6K tokens of "extended thinking" out of maxOutputTokens,
+                // which left zero tokens for the actual response body on
+                // long structured-output tasks (citation review with
+                // ~20 entries). Set thinkingBudget=0 to disable the hidden
+                // reasoning step so the full token budget goes to the visible
+                // response. We accept a small quality dip on novelty/citation
+                // in exchange for non-empty output bodies.
+                "thinkingConfig": { "thinkingBudget": 0 }
             }
         });
 
@@ -260,7 +269,12 @@ impl GeminiProvider {
             "contents": contents,
             "generationConfig": {
                 "temperature": req.temperature,
-                "maxOutputTokens": req.max_tokens
+                "maxOutputTokens": req.max_tokens,
+                // See `build_body` for the rationale. Same fix applies to the
+                // tool-use path: Gemini's hidden thinking step starves the
+                // tool-call response of tokens, causing "stopped without
+                // submit()" failures in the extraction loop.
+                "thinkingConfig": { "thinkingBudget": 0 }
             },
             "tools": [{
                 "functionDeclarations": function_declarations,
