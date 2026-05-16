@@ -63,7 +63,11 @@ impl AgentRunner for ApiRunner {
                 content: vec![ContentPart::Text(user_prompt)],
             }],
             model: model.clone(),
-            max_tokens: 6_000,
+            // The citation reviewer emits one entry per bibliography reference
+            // (~50-100 entries per paper), each with title/authors/explanation.
+            // 6K tokens is not enough; we've seen truncated JSON on 89-ref
+            // papers. 16K is a safe ceiling for every role's schema.
+            max_tokens: 16_000,
             temperature: 0.2,
             response_format: ResponseFormat::JsonSchema(schema),
             cache_system: true,
@@ -189,7 +193,11 @@ impl AgentRunner for ApiRunner {
             messages: messages.to_vec(),
             tools: tools.to_vec(),
             model: spec.model.clone(),
-            max_tokens: 4_000,
+            // Tool-loop turns are usually short (one or a few tool calls)
+            // but gemini-2.5-pro burns ~6K on hidden chain-of-thought before
+            // any visible output. Give enough headroom that flash + pro both
+            // have room to actually emit a tool call.
+            max_tokens: 16_000,
             temperature: 0.2,
         };
         provider
