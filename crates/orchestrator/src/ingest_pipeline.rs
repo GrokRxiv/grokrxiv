@@ -204,6 +204,17 @@ async fn run_inner(
         }
     }
 
+    // Make the rendered markdown available to Stages 4-7. Without this,
+    // `list_citation_sites`, `extract_equations`, and `list_theorems` all
+    // silently degrade because their tools read `workdir/body.md` and got
+    // NoSuchFile. Written BEFORE Stages 4-7 fan out so all four parallel
+    // agents see the file.
+    let body_md_str = bundle
+        .body_markdown
+        .clone()
+        .unwrap_or_else(|| build_body_markdown(&extract));
+    write_body_md_to_workdir(workdir.path(), &body_md_str).await?;
+
     // semantic_ast embedded into the bundle for Tier-2 routing decisions.
     if let Some(ast) = semantic_ast.as_ref() {
         if let Ok(bytes) = serde_json::to_vec_pretty(ast) {
@@ -512,6 +523,17 @@ fn unpack_tarball(workdir: &Path, bytes: &[u8]) -> Result<()> {
     let mut decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
     let mut archive = tar::Archive::new(&mut decoder);
     archive.unpack(workdir).context("unpack tar.gz")?;
+    Ok(())
+}
+
+/// Write the rendered `body.md` into the extraction workdir so Stages 4-7's
+/// tools (`list_citation_sites`, `extract_equations` fallback, `list_sections`,
+/// `read_section`) can read it. Exposed so a regression test can confirm the
+/// file ends up on disk where the tools expect it.
+pub async fn write_body_md_to_workdir(workdir: &Path, body_md: &str) -> Result<()> {
+    tokio::fs::write(workdir.join("body.md"), body_md)
+        .await
+        .context("write body.md to extraction workdir")?;
     Ok(())
 }
 
