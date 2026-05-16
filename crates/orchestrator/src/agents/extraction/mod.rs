@@ -231,6 +231,12 @@ pub trait ExtractionAgent: Send + Sync {
     where
         Self: Sized,
     {
-        run_tool_loop(self, runner, spec, ctx, 30, 5.0).await
+        debug_assert!(
+            ctx.max_cost_usd > 0.0,
+            "ExtractionContext.max_cost_usd must be populated (FP-RPT3a A5)"
+        );
+        let max_iters = ctx.max_iters as usize;
+        let max_cost_usd = ctx.max_cost_usd;
+        run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
 }

@@ -344,6 +344,26 @@ async fn pipeline_repeated_persist_is_idempotent() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Regression for FP-RPT3a A1: the ingest pipeline MUST write `body.md` into
+/// the extraction workdir before Stages 4-7 fan out, otherwise
+/// `list_citation_sites`, the `extract_equations` fallback, and
+/// `list_sections` all silently degrade on NoSuchFile and the
+/// references/equations/theorems artifacts come out empty.
+///
+/// The integration path is gated behind extensive provider plumbing, so we
+/// exercise the dedicated helper directly — the helper is what `run_inner`
+/// calls, so a failure here would also break the live pipeline.
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+#[tokio::test]
+async fn write_body_md_to_workdir_puts_body_where_tools_read_it() -> anyhow::Result<()> {
+    let work = TempDir::new()?;
+    let body = "## Introduction\n\nWe propose a toy framework. See [@MacLane1971].\n";
+    grokrxiv_orchestrator::ingest_pipeline::write_body_md_to_workdir(work.path(), body).await?;
+    let on_disk = std::fs::read_to_string(work.path().join("body.md"))?;
+    assert_eq!(on_disk, body);
+    Ok(())
+}
+
 /// The `load_paper_extract` helper reconstructs a `PaperExtract` from
 /// `review_input.json` + the referenced Tier-1 files. This is the bridge
 /// between the persisted artifacts and the review DAG's `build_specialist_prompt`.

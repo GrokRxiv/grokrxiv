@@ -54,9 +54,25 @@ use crate::agents::extraction::{
     ExtractionAgent, ToolRegistry,
 };
 use crate::agents::traits::AgentRunner;
-use crate::agents::types::{AgentSpec, ExtractionContext};
+use crate::agents::types::{AgentSpec, ExtractionContext, ToolCallRecord};
 use crate::db;
 use crate::state::AppState;
+
+/// Per-stage outcome captured from one extraction-agent run. The pipeline
+/// preserves every field so the StageReport in `extraction_report.json`
+/// has actionable provenance (model, runner, cost, latency, tool-call
+/// summary) and the full per-call audit log can be uploaded to
+/// Tier-2 storage.
+#[derive(Debug, Clone)]
+struct StageOutcome {
+    output: Value,
+    tool_calls: Vec<ToolCallRecord>,
+    cost_usd: f32,
+    latency_ms: i64,
+    iters: u32,
+    model: String,
+    runner: String,
+}
 
 /// Per-paper-level options for [`run_ingest_pipeline`]. Built from the CLI's
 /// global flags + RuntimeConfig.
@@ -185,6 +201,8 @@ async fn run_inner(
             model: None,
             runner: None,
             warnings: vec!["LaTeXML produced no semantic_ast".into()],
+            iters: None,
+            tool_call_summary: None,
         });
     } else {
         stage_reports.push(StageReport::skipped("tex_to_ast", "no tex source"));
@@ -204,6 +222,17 @@ async fn run_inner(
         }
     }
 
+    // Make the rendered markdown available to Stages 4-7. Without this,
+    // `list_citation_sites`, `extract_equations`, and `list_theorems` all
+    // silently degrade because their tools read `workdir/body.md` and got
+    // NoSuchFile. Written BEFORE Stages 4-7 fan out so all four parallel
+    // agents see the file.
+    let body_md_str = bundle
+        .body_markdown
+        .clone()
+        .unwrap_or_else(|| build_body_markdown(&extract));
+    write_body_md_to_workdir(workdir.path(), &body_md_str).await?;
+
     // semantic_ast embedded into the bundle for Tier-2 routing decisions.
     if let Some(ast) = semantic_ast.as_ref() {
         if let Ok(bytes) = serde_json::to_vec_pretty(ast) {
@@ -211,11 +240,23 @@ async fn run_inner(
         }
     }
 
+    // Accumulates the per-call audit log across every stage. Persisted as
+    // `tool_call_log.jsonl` via `paper_artifacts.rs:297`.
+    let mut tool_call_log_entries: Vec<Value> = Vec::new();
+
+    // Concatenated TeX source from the unpacked workdir; used by the
+    // semantic-success check for the macros stage to differentiate
+    // "paper genuinely has no macros" from "tool failed to find them".
+    let raw_tex_concat = read_workdir_tex_concat(workdir.path());
+    let semantic_ctx = SemanticSuccessCtx {
+        extract: &extract,
+        raw_tex: raw_tex_concat.as_deref(),
+    };
+
     // --- Stage 3 (VLM) — only when no TeX path was available ---
     if !opts.should_skip("vlm") && staged.source_tarball.is_none() {
-        let started = std::time::Instant::now();
         let vlm = VlmExtractorAgent::new();
-        match run_agent_safe(
+        let outcome = run_agent_safe(
             &vlm,
             state,
             workdir.path(),
@@ -225,21 +266,18 @@ async fn run_inner(
             arxiv_id,
             "vlm",
         )
-        .await
-        {
-            Some(output) => {
-                apply_vlm(&mut bundle, &output);
-                stage_reports.push(StageReport::ok(
-                    "vlm",
-                    Some(started.elapsed().as_millis() as i64),
-                    None,
-                    Vec::new(),
-                ));
-            }
-            None => {
-                stage_reports.push(StageReport::degraded("vlm", "agent run failed"));
-            }
+        .await;
+        if let Some(ref out) = outcome {
+            apply_vlm(&mut bundle, &out.output);
         }
+        push_tool_calls(&mut tool_call_log_entries, "vlm", outcome.as_ref());
+        record_agent_outcome(
+            &mut stage_reports,
+            "vlm",
+            outcome.as_ref(),
+            opts,
+            &semantic_ctx,
+        );
     } else if staged.source_tarball.is_some() {
         stage_reports.push(StageReport::skipped("vlm", "tex path active"));
     }
@@ -293,15 +331,54 @@ async fn run_inner(
         ),
     );
 
-    record_agent_outcome(&mut stage_reports, "macros", macros_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "equations", equations_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "theorems", theorems_res.as_ref(), opts);
-    record_agent_outcome(&mut stage_reports, "citations", citations_res.as_ref(), opts);
+    push_tool_calls(&mut tool_call_log_entries, "macros", macros_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "equations", equations_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "theorems", theorems_res.as_ref());
+    push_tool_calls(&mut tool_call_log_entries, "citations", citations_res.as_ref());
+
+    record_agent_outcome(
+        &mut stage_reports,
+        "macros",
+        macros_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "equations",
+        equations_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "theorems",
+        theorems_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
+    record_agent_outcome(
+        &mut stage_reports,
+        "citations",
+        citations_res.as_ref(),
+        opts,
+        &semantic_ctx,
+    );
 
     apply_equations(&mut bundle, arxiv_id, equations_res);
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
     apply_citations(&mut bundle, arxiv_id, citations_res);
     apply_macros(&mut bundle, macros_res); // currently records to extraction_report
+
+    // Serialize the cross-stage tool_call log as JSONL for Tier-2 audit.
+    if !tool_call_log_entries.is_empty() {
+        let jsonl = tool_call_log_entries
+            .iter()
+            .filter_map(|e| serde_json::to_string(e).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        bundle.tool_call_log = Some(jsonl.into_bytes());
+    }
 
     // --- Stage 8: persist + finalise ---
     let completed_at = Utc::now();
@@ -515,6 +592,41 @@ fn unpack_tarball(workdir: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Read every `*.tex` file in the workdir and return their concatenation.
+/// Used by the FP-RPT3a A4 semantic-success check for the macros stage —
+/// if the concatenated source contains any `\newcommand` / `\def` /
+/// `\renewcommand` / `\DeclareMathOperator` but the agent submitted
+/// `expansions_applied: []`, we flag the stage as degraded.
+fn read_workdir_tex_concat(workdir: &Path) -> Option<String> {
+    let mut out = String::new();
+    let entries = std::fs::read_dir(workdir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("tex") {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                out.push_str(&contents);
+                out.push('\n');
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Write the rendered `body.md` into the extraction workdir so Stages 4-7's
+/// tools (`list_citation_sites`, `extract_equations` fallback, `list_sections`,
+/// `read_section`) can read it. Exposed so a regression test can confirm the
+/// file ends up on disk where the tools expect it.
+pub async fn write_body_md_to_workdir(workdir: &Path, body_md: &str) -> Result<()> {
+    tokio::fs::write(workdir.join("body.md"), body_md)
+        .await
+        .context("write body.md to extraction workdir")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Agent runner wrappers
 // ---------------------------------------------------------------------------
@@ -541,10 +653,33 @@ struct ExtractionRouting {
     max_cost_usd: Option<f32>,
     #[serde(default)]
     max_iters: Option<u32>,
+    /// `macros.yaml` nests budgets under `loop: {max_iters, max_cost_usd}`;
+    /// the others put them at the top level. Accept either form.
+    #[serde(default, rename = "loop")]
+    loop_block: Option<ExtractionRoutingLoop>,
     #[serde(default)]
     timeout_secs: Option<u32>,
     #[serde(default)]
     max_retries: Option<u8>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct ExtractionRoutingLoop {
+    #[serde(default)]
+    max_cost_usd: Option<f32>,
+    #[serde(default)]
+    max_iters: Option<u32>,
+}
+
+impl ExtractionRouting {
+    fn resolved_max_cost_usd(&self) -> Option<f32> {
+        self.max_cost_usd
+            .or_else(|| self.loop_block.as_ref().and_then(|l| l.max_cost_usd))
+    }
+    fn resolved_max_iters(&self) -> Option<u32> {
+        self.max_iters
+            .or_else(|| self.loop_block.as_ref().and_then(|l| l.max_iters))
+    }
 }
 
 /// Load `agents/extraction/<stage>.yaml`. Lazy-cached per-stage so repeated
@@ -601,18 +736,14 @@ fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
 /// Per-stage budget bundle (resolved from YAML with fallbacks). Surfaced
 /// separately from `AgentSpec` because the tool-loop's cost/iter ceilings live
 /// on its `run_tool_loop` args, not on the spec.
-#[allow(dead_code)]
 pub(crate) struct ExtractionBudget {
     pub max_cost_usd: f32,
     pub max_iters: u32,
 }
 
-/// Per-stage budget bundle (resolved from YAML with fallbacks). Not yet
-/// threaded through `ExtractionAgent::run` — each agent currently hardcodes
-/// its own ceilings inline. Kept as a hook so a follow-up pass can replace
-/// the inline numbers with this YAML-honored bundle without re-loading the
-/// YAML in each agent module.
-#[allow(dead_code)]
+/// Per-stage budget bundle (resolved from YAML with fallbacks). FP-RPT3a A5
+/// threads these into `ExtractionContext` so each agent's `run()` can honour
+/// the YAML number instead of its hardcoded inline ceiling.
 pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     let routing = load_extraction_routing(stage);
     let (cost, iters) = match stage {
@@ -626,9 +757,12 @@ pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     ExtractionBudget {
         max_cost_usd: routing
             .as_ref()
-            .and_then(|r| r.max_cost_usd)
+            .and_then(|r| r.resolved_max_cost_usd())
             .unwrap_or(cost),
-        max_iters: routing.as_ref().and_then(|r| r.max_iters).unwrap_or(iters),
+        max_iters: routing
+            .as_ref()
+            .and_then(|r| r.resolved_max_iters())
+            .unwrap_or(iters),
     }
 }
 
@@ -673,12 +807,14 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     paper_id: Uuid,
     arxiv_id: &str,
     stage_name: &str,
-) -> Option<Value> {
+) -> Option<StageOutcome> {
     let Some(runner) = resolve_runner(state) else {
         warn!(stage_name, "no runner available; skipping extraction stage");
         return None;
     };
+    let runner_name = runner.name().to_string();
     let registry = Arc::new(build_registry_for(agent));
+    let budget = extraction_budget_for(stage_name);
     let ctx = ExtractionContext {
         workdir,
         extract,
@@ -686,12 +822,29 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         paper_id,
         arxiv_id,
         registry,
+        max_cost_usd: budget.max_cost_usd,
+        max_iters: budget.max_iters,
     };
+    info!(
+        stage_name,
+        max_cost_usd = budget.max_cost_usd,
+        max_iters = budget.max_iters,
+        "extraction budget resolved from agents/extraction/<stage>.yaml",
+    );
     let spec = default_extraction_spec(stage_name);
+    let model = spec.model.clone();
     match agent.run(runner, &spec, ctx).await {
         Ok(run) => {
             info!(stage_name, arxiv_id, iters = run.iters, "extraction stage ok");
-            Some(run.output)
+            Some(StageOutcome {
+                output: run.output,
+                tool_calls: run.tool_calls,
+                cost_usd: run.cost_usd,
+                latency_ms: run.latency_ms,
+                iters: run.iters,
+                model,
+                runner: runner_name,
+            })
         }
         Err(e) => {
             warn!(stage_name, arxiv_id, err = %format!("{e:#}"), "extraction stage failed");
@@ -713,7 +866,7 @@ async fn run_agent_when<A: ExtractionAgent + Sized + 'static>(
     arxiv_id: &str,
     stage_name: &str,
     agent: A,
-) -> Option<Value> {
+) -> Option<StageOutcome> {
     if !enabled {
         return None;
     }
@@ -804,8 +957,8 @@ fn apply_vlm(bundle: &mut ArtifactBundle, output: &Value) {
     }
 }
 
-fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     // The agent returns `{equations: [...]}`; references.schema requires
@@ -841,8 +994,8 @@ fn apply_equations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Valu
     bundle.equations = Some(json!({ "arxiv_id": arxiv_id, "equations": canonical }));
 }
 
-fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     // Agent may return `theorem_graph: [...]` or `nodes: [...]`. The
@@ -879,8 +1032,8 @@ fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value
     bundle.theorem_graph = Some(json!({ "arxiv_id": arxiv_id, "nodes": nodes }));
 }
 
-fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Value>) {
-    let Some(value) = res else {
+fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<StageOutcome>) {
+    let Some(value) = res.map(|o| o.output) else {
         return;
     };
     let citations_src = value
@@ -931,7 +1084,7 @@ fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Valu
     bundle.references = Some(json!({ "arxiv_id": arxiv_id, "citations": citations }));
 }
 
-fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<Value>) {
+fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
     // The MacroExpander returns `{normalized_tex, expansions_applied}`. We
     // don't currently re-route normalized_tex back into Stage 5/6/7 because
     // those agents read from `body.md` + `semantic_ast` (already produced by
@@ -951,6 +1104,8 @@ struct StageReport {
     model: Option<String>,
     runner: Option<String>,
     warnings: Vec<String>,
+    iters: Option<u32>,
+    tool_call_summary: Option<Value>,
 }
 
 impl StageReport {
@@ -968,6 +1123,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings,
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn degraded(name: &str, warning: &str) -> Self {
@@ -979,6 +1136,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings: vec![warning.into()],
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn skipped(name: &str, reason: &str) -> Self {
@@ -990,6 +1149,8 @@ impl StageReport {
             model: None,
             runner: None,
             warnings: vec![reason.into()],
+            iters: None,
+            tool_call_summary: None,
         }
     }
     fn to_value(&self) -> Value {
@@ -1001,7 +1162,8 @@ impl StageReport {
             "model": self.model,
             "runner": self.runner,
             "warnings": self.warnings,
-            "tool_call_summary": Value::Null,
+            "iters": self.iters,
+            "tool_call_summary": self.tool_call_summary.clone().unwrap_or(Value::Null),
         })
     }
 }
@@ -1009,17 +1171,205 @@ impl StageReport {
 fn record_agent_outcome(
     out: &mut Vec<StageReport>,
     name: &str,
-    res: Option<&Value>,
+    res: Option<&StageOutcome>,
     opts: &IngestOptions,
+    semantic_ctx: &SemanticSuccessCtx<'_>,
 ) {
     if opts.should_skip(name) {
         out.push(StageReport::skipped(name, "skipped via --skip-stages"));
         return;
     }
-    if res.is_some() {
-        out.push(StageReport::ok(name, None, None, Vec::new()));
-    } else {
-        out.push(StageReport::degraded(name, "agent returned no output"));
+    match res {
+        Some(outcome) => {
+            let summary = tool_call_summary(&outcome.tool_calls);
+            let semantic = semantic_check(name, &outcome.output, semantic_ctx);
+            let mut report = StageReport::ok(
+                name,
+                Some(outcome.latency_ms),
+                Some(outcome.cost_usd as f64),
+                Vec::new(),
+            );
+            report.model = Some(outcome.model.clone());
+            report.runner = Some(outcome.runner.clone());
+            report.iters = Some(outcome.iters);
+            report.tool_call_summary = Some(summary);
+            if let Some(warning) = semantic {
+                report.status = "degraded".into();
+                report.warnings.push(warning);
+            }
+            out.push(report);
+        }
+        None => {
+            out.push(StageReport::degraded(name, "agent returned no output"));
+        }
+    }
+}
+
+/// Context the semantic-success check needs to decide whether an "empty"
+/// submission is genuine or a tool failure.
+pub(crate) struct SemanticSuccessCtx<'a> {
+    pub extract: &'a PaperExtract,
+    /// Concatenated TeX source from the unpacked tarball when present;
+    /// used by the macros rule to detect any `\newcommand` etc.
+    pub raw_tex: Option<&'a str>,
+}
+
+/// Returns `Some(warning_message)` if the stage's output looks empty when
+/// the paper clearly has content of the relevant kind. Agents can override
+/// by adding the optional top-level `reason: "no_<thing>_in_paper"` field
+/// — when set to a non-null value we accept the empty submission and skip
+/// the warning.
+fn semantic_check(
+    name: &str,
+    output: &Value,
+    ctx: &SemanticSuccessCtx<'_>,
+) -> Option<String> {
+    // Honour the agent's explicit override.
+    let reason = output.get("reason").and_then(Value::as_str);
+    if reason.is_some_and(|r| !r.is_empty()) {
+        return None;
+    }
+
+    match name {
+        "equations" => {
+            let n = output
+                .get("equations")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let sections = ctx.extract.sections.len();
+            if n == 0 && sections > 0 {
+                Some(format!(
+                    "agent submitted {{equations:[]}} but paper has {sections} sections — likely tool failure"
+                ))
+            } else {
+                None
+            }
+        }
+        "theorems" => {
+            let n = output
+                .get("theorem_graph")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or_else(|| {
+                    output
+                        .get("nodes")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                });
+            if n == 0 && has_theorem_like_heading(ctx.extract) {
+                Some(
+                    "agent submitted empty theorem_graph but paper has theorem/lemma/proposition/corollary/proof/definition headings — likely tool failure".to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "citations" => {
+            let n = output
+                .get("citations")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let bib = ctx.extract.bibliography.len();
+            if n == 0 && bib > 0 {
+                Some(format!(
+                    "agent submitted {{citations:[]}} but paper has {bib} bibliography entries — likely tool failure"
+                ))
+            } else {
+                None
+            }
+        }
+        "macros" => {
+            let n = output
+                .get("expansions_applied")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if n == 0 && ctx.raw_tex.is_some_and(raw_tex_has_macro_definition) {
+                Some(
+                    "agent submitted empty expansions_applied but raw TeX contains \\newcommand/\\def/\\renewcommand/\\DeclareMathOperator — likely tool failure".to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "vlm" => {
+            let title = output.get("title").and_then(Value::as_str).unwrap_or("");
+            let abstract_ = output.get("abstract").and_then(Value::as_str).unwrap_or("");
+            if title.is_empty() || abstract_.is_empty() {
+                Some("VLM extractor produced an empty title or abstract".to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn has_theorem_like_heading(extract: &PaperExtract) -> bool {
+    // Cheap word-level scan; the patterns are anchored to common LaTeX/markdown
+    // styles so we don't need a regex compile per check.
+    let needles = [
+        "theorem",
+        "lemma",
+        "proposition",
+        "corollary",
+        "proof",
+        "definition",
+    ];
+    for s in &extract.sections {
+        let h = s.heading.to_lowercase();
+        for n in &needles {
+            if h.contains(n) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn raw_tex_has_macro_definition(tex: &str) -> bool {
+    tex.contains("\\newcommand")
+        || tex.contains("\\def")
+        || tex.contains("\\renewcommand")
+        || tex.contains("\\DeclareMathOperator")
+}
+
+/// Build a compact `{count, by_tool}` summary of a stage's tool-call audit
+/// log. The full per-call log lives in `bundle.tool_call_log` (uploaded to
+/// `review-artifacts/<arxiv_id>/tool_call_log.jsonl`); the summary is what
+/// surfaces in `extraction_report.json` for Tier-1 readers.
+fn tool_call_summary(calls: &[ToolCallRecord]) -> Value {
+    use std::collections::BTreeMap;
+    let mut by_tool: BTreeMap<&str, u32> = BTreeMap::new();
+    for c in calls {
+        *by_tool.entry(c.tool.as_str()).or_insert(0) += 1;
+    }
+    let by_tool_value: serde_json::Map<String, Value> = by_tool
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), Value::from(v)))
+        .collect();
+    json!({
+        "count": calls.len(),
+        "by_tool": by_tool_value,
+    })
+}
+
+/// Append every per-call audit record from one stage's outcome into the
+/// run-wide audit log (one JSON object per entry, tagged with `stage_name`
+/// and a per-stage ordinal).
+fn push_tool_calls(out: &mut Vec<Value>, stage_name: &str, outcome: Option<&StageOutcome>) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    for (ordinal, call) in outcome.tool_calls.iter().enumerate() {
+        out.push(json!({
+            "stage_name": stage_name,
+            "ordinal": ordinal,
+            "call_record": call,
+        }));
     }
 }
 
@@ -1182,4 +1532,210 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
         bibliography,
         source_format: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for FP-RPT3a A4 semantic-success rules
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod a4_tests {
+    use super::*;
+    use grokrxiv_schemas::{Citation, PaperExtract, Section};
+
+    fn extract_with(sections: Vec<&str>, bib: usize) -> PaperExtract {
+        PaperExtract {
+            arxiv_id: "test".into(),
+            title: "t".into(),
+            authors: vec![],
+            abstract_: "a".into(),
+            field: None,
+            sections: sections
+                .into_iter()
+                .map(|h| Section {
+                    heading: h.into(),
+                    body_markdown: "body".into(),
+                })
+                .collect(),
+            figures: vec![],
+            bibliography: (0..bib)
+                .map(|i| Citation {
+                    raw: format!("ref{i}"),
+                    doi: None,
+                    arxiv_id: None,
+                    title: None,
+                })
+                .collect(),
+            source_format: None,
+        }
+    }
+
+    #[test]
+    fn equations_empty_with_sections_is_degraded() {
+        let extract = extract_with(vec!["Intro", "Methods", "Results"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "equations": [], "reason": null });
+        let w = semantic_check("equations", &out, &ctx);
+        assert!(w.is_some(), "should warn when 3 sections but 0 equations");
+        assert!(w.unwrap().contains("3 sections"));
+    }
+
+    #[test]
+    fn equations_reason_overrides_warning() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "equations": [], "reason": "no_equations_in_paper" });
+        assert!(semantic_check("equations", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn theorems_warns_when_theorem_heading_present() {
+        let extract = extract_with(vec!["Introduction", "Main Theorem", "Proof"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "theorem_graph": [], "reason": null });
+        assert!(semantic_check("theorems", &out, &ctx).is_some());
+    }
+
+    #[test]
+    fn theorems_no_warning_when_no_theorem_headings() {
+        let extract = extract_with(vec!["Intro", "Discussion"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "theorem_graph": [], "reason": null });
+        assert!(semantic_check("theorems", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn citations_warns_when_bibliography_nonempty() {
+        let extract = extract_with(vec!["Intro"], 5);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "citations": [], "reason": null });
+        let w = semantic_check("citations", &out, &ctx);
+        assert!(w.is_some());
+        assert!(w.unwrap().contains("5 bibliography entries"));
+    }
+
+    #[test]
+    fn macros_warns_when_raw_tex_has_newcommand() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let tex = "\\newcommand{\\R}{\\mathbb{R}}\n";
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: Some(tex),
+        };
+        let out = json!({ "normalized_tex": "x", "expansions_applied": [], "reason": null });
+        assert!(semantic_check("macros", &out, &ctx).is_some());
+    }
+
+    #[test]
+    fn macros_quiet_when_raw_tex_has_no_definitions() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let tex = "Plain TeX with no definitions.\n";
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: Some(tex),
+        };
+        let out = json!({ "normalized_tex": "x", "expansions_applied": [], "reason": null });
+        assert!(semantic_check("macros", &out, &ctx).is_none());
+    }
+
+    #[test]
+    fn vlm_warns_when_title_or_abstract_empty() {
+        let extract = extract_with(vec!["Intro"], 0);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let out = json!({ "title": "", "abstract": "x" });
+        assert!(semantic_check("vlm", &out, &ctx).is_some());
+        let out2 = json!({ "title": "x", "abstract": "" });
+        assert!(semantic_check("vlm", &out2, &ctx).is_some());
+        let out3 = json!({ "title": "x", "abstract": "y" });
+        assert!(semantic_check("vlm", &out3, &ctx).is_none());
+    }
+
+    /// FP-RPT3a A5: `extraction_budget_for` honours the YAML number, not the
+    /// hardcoded inline ceiling. `agents/extraction/macros.yaml` says
+    /// `max_cost_usd: 0.20` and `max_iters: 20`, so the resolved budget MUST
+    /// match — regardless of where in the YAML structure the values live
+    /// (macros uses `loop:` block; the rest top-level).
+    #[test]
+    fn macros_budget_resolves_to_yaml_values() {
+        // Locate the agents/ dir relative to the workspace root. Tests run
+        // with CARGO_MANIFEST_DIR=<crate dir>, so go up two levels.
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../agents");
+        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
+        // Force a re-read by clearing the cache via a fresh stage name.
+        let b = extraction_budget_for("macros");
+        // YAML uses `loop: {max_cost_usd: 0.20, max_iters: 20}` — both should
+        // surface through the resolved getter, not the hardcoded $1.00.
+        assert!(
+            (b.max_cost_usd - 0.20).abs() < 1e-6,
+            "macros budget must equal $0.20 (got ${})",
+            b.max_cost_usd
+        );
+        assert_eq!(b.max_iters, 20);
+    }
+
+    /// Same idea for citations.yaml (top-level form, not nested under `loop:`).
+    #[test]
+    fn citations_budget_resolves_to_yaml_values() {
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../agents");
+        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
+        let b = extraction_budget_for("citations");
+        assert!(
+            (b.max_cost_usd - 0.50).abs() < 1e-6,
+            "citations budget must equal $0.50 (got ${})",
+            b.max_cost_usd
+        );
+        assert_eq!(b.max_iters, 80);
+    }
+
+    #[test]
+    fn record_agent_outcome_marks_status_degraded_with_warning() {
+        let extract = extract_with(vec!["Intro", "Methods"], 7);
+        let ctx = SemanticSuccessCtx {
+            extract: &extract,
+            raw_tex: None,
+        };
+        let outcome = StageOutcome {
+            output: json!({ "citations": [], "reason": null }),
+            tool_calls: vec![],
+            cost_usd: 0.0,
+            latency_ms: 0,
+            iters: 1,
+            model: "test-model".into(),
+            runner: "api".into(),
+        };
+        let mut reports: Vec<StageReport> = Vec::new();
+        let opts = IngestOptions::default();
+        record_agent_outcome(&mut reports, "citations", Some(&outcome), &opts, &ctx);
+        assert_eq!(reports.len(), 1);
+        let r = &reports[0];
+        assert_eq!(r.status, "degraded");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("7 bibliography entries")),
+            "warnings: {:?}",
+            r.warnings
+        );
+        // metadata still surfaces on a degraded stage.
+        assert_eq!(r.model.as_deref(), Some("test-model"));
+        assert_eq!(r.runner.as_deref(), Some("api"));
+        assert_eq!(r.iters, Some(1));
+    }
 }

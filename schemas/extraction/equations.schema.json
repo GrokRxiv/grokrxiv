@@ -5,7 +5,7 @@
   "description": "Output of the EquationCanonicalizerAgent (Stage 5). Lists every equation in the paper with a canonical TeX form, MathML rendering, semantic tag, and fuzzy dedup hash.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["equations"],
+  "required": ["equations", "reason"],
   "properties": {
     "equations": {
       "type": "array",
@@ -32,6 +32,11 @@
           "hash": { "type": "string" }
         }
       }
+    },
+    "reason": {
+      "description": "Optional escape hatch: when the agent returns an empty list because the paper genuinely has no equations, it can set this to `no_equations_in_paper` so the semantic-success check (FP-RPT3a A4) does not mark the stage degraded.",
+      "type": ["string", "null"],
+      "enum": [null, "no_equations_in_paper", "paper_is_blank"]
     }
   }
 }

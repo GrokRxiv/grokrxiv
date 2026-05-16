@@ -43,8 +43,13 @@ fn output_schema() -> Value {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "additionalProperties": false,
-        "required": ["citations"],
+        "required": ["citations", "reason"],
         "properties": {
+            "reason": {
+                "description": "Optional escape hatch (FP-RPT3a A4).",
+                "type": ["string", "null"],
+                "enum": [null, "no_citations_in_paper", "paper_is_blank"]
+            },
             "citations": {
                 "type": "array",
                 "items": {
@@ -172,7 +177,14 @@ impl ExtractionAgent for CitationContextualizerAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 80, 0.50).await
+        debug_assert!(
+            ctx.max_cost_usd > 0.0,
+            "ExtractionContext.max_cost_usd must be populated (FP-RPT3a A5)"
+        );
+        let max_iters = ctx.max_iters as usize;
+        let max_cost_usd = ctx.max_cost_usd;
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
+            .await
     }
 }
 
@@ -360,7 +372,8 @@ mod tests {
                     "sentence": "We build on [@foo2024].",
                     "use": "extends"
                 }]
-            }]
+            }],
+            "reason": null
         });
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_call("list_citation_sites", json!({}), "c1"),
@@ -380,6 +393,8 @@ mod tests {
             paper_id: uuid::Uuid::nil(),
             arxiv_id: "2401.99999v1",
             registry,
+            max_cost_usd: 0.50,
+            max_iters: 80,
         };
         let spec = AgentSpec::api_default(
             AgentRole::Citation,

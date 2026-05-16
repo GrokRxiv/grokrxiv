@@ -122,15 +122,14 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(
-            self,
-            runner,
-            spec,
-            ctx,
-            self.max_iters,
-            self.max_cost_usd,
-        )
-        .await
+        debug_assert!(
+            ctx.max_cost_usd > 0.0,
+            "ExtractionContext.max_cost_usd must be populated (FP-RPT3a A5)"
+        );
+        let max_iters = ctx.max_iters as usize;
+        let max_cost_usd = ctx.max_cost_usd;
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
+            .await
     }
 }
 
@@ -305,14 +304,16 @@ mod tests {
         let good = json!({
             "theorem_graph": [
                 {"id":"T1","type":"theorem","statement":"X.","section":"sec-2","depends_on":[]}
-            ]
+            ],
+            "reason": null
         });
         assert!(validator.validate(&good).is_ok());
         // Missing depends_on -> invalid.
         let bad = json!({
             "theorem_graph": [
                 {"id":"T1","type":"theorem","statement":"X.","section":"sec-2"}
-            ]
+            ],
+            "reason": null
         });
         assert!(validator.validate(&bad).is_err());
     }
@@ -340,6 +341,8 @@ mod tests {
             paper_id: uuid::Uuid::nil(),
             arxiv_id: "2401.99999v1",
             registry,
+            max_cost_usd: 1.0,
+            max_iters: 10,
         };
 
         let submit_payload = json!({
@@ -358,7 +361,8 @@ mod tests {
                     "section": "sec-2",
                     "depends_on": ["thm:foo"]
                 }
-            ]
+            ],
+            "reason": null
         });
 
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
