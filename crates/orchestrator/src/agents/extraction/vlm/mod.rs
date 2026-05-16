@@ -123,9 +123,10 @@ impl VlmExtractorAgent {
     /// Default loop budget for the VLM agent — generous enough to walk a
     /// long paper a page at a time. Mirrors `agents/extraction/vlm.yaml`.
     pub const DEFAULT_MAX_ITERS: usize = 40;
-    /// Per-paper USD ceiling. ~$0.10 buys ~10 turns of Gemini 2.5 Pro on
-    /// typical paper sizes.
-    pub const DEFAULT_MAX_COST_USD: f32 = 0.10;
+    /// Per-paper USD ceiling. Bumped from 0.10 in H2: when no TeX source is
+    /// available the VLM is the only structural extractor and a generous
+    /// budget is cheaper than failing to ingest the paper.
+    pub const DEFAULT_MAX_COST_USD: f32 = 1.00;
 
     /// Construct a fresh agent with the default loop budget and a registry
     /// containing the four PDF tools.

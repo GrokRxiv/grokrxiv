@@ -172,7 +172,7 @@ impl ExtractionAgent for CitationContextualizerAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 80, 0.05).await
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 80, 0.50).await
     }
 }
 

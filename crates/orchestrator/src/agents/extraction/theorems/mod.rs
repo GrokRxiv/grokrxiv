@@ -56,7 +56,7 @@ impl TheoremGraphExtractorAgent {
             schema,
             tool_specs,
             max_iters: 50,
-            max_cost_usd: 0.08,
+            max_cost_usd: 0.80,
         }
     }
 

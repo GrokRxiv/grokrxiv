@@ -144,7 +144,7 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 60, 0.05).await
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 60, 0.50).await
     }
 }
 

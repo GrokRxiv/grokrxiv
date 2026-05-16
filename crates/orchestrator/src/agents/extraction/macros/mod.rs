@@ -133,7 +133,7 @@ impl ExtractionAgent for MacroExpanderAgent {
     where
         Self: Sized,
     {
-        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 20, 0.02).await
+        crate::agents::extraction::run_tool_loop(self, runner, spec, ctx, 20, 0.20).await
     }
 }
 
