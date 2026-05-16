@@ -18,8 +18,8 @@ pub mod traits;
 pub mod types;
 
 pub use review_agents::{
-    build_agent, CitationAgent, MetaReviewerAgent, NoveltyAgent, RenderAgent,
-    ReproducibilityAgent, SummaryAgent, TechnicalCorrectnessAgent,
+    build_agent, CitationAgent, MetaReviewerAgent, NoveltyAgent, RenderAgent, ReproducibilityAgent,
+    SummaryAgent, TechnicalCorrectnessAgent,
 };
 pub use traits::{AgentRunner, ReviewAgent};
 pub use types::{
@@ -54,11 +54,7 @@ mod tests {
             "fake"
         }
 
-        async fn run(
-            &self,
-            _spec: &AgentSpec,
-            _input: &AgentInput,
-        ) -> anyhow::Result<AgentRun> {
+        async fn run(&self, _spec: &AgentSpec, _input: &AgentInput) -> anyhow::Result<AgentRun> {
             Ok(self.canned.clone())
         }
     }

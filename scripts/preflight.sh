@@ -36,11 +36,18 @@ docker exec -i "${CID}" pg_isready -U postgres -d postgres >/dev/null 2>&1 \
   || fail "postgres not accepting connections inside the container"
 ok "postgres ready"
 
-step "ANTHROPIC_API_KEY"
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  fail "ANTHROPIC_API_KEY not set. Required for the /preview path and the M1 review DAG."
+step "review runner auth"
+if [[ "${GROKRXIV_RUNNER:-cli}" == "api" || "${GROKRXIV_EXTRACTOR:-cli}" == "api" ]]; then
+  if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]]; then
+    fail "API runner/extractor selected but no provider API key is set."
+  fi
+  ok "provider API key present for API path"
+else
+  command -v claude >/dev/null 2>&1 || fail "claude CLI not on PATH"
+  command -v codex  >/dev/null 2>&1 || fail "codex CLI not on PATH"
+  command -v gemini >/dev/null 2>&1 || fail "gemini CLI not on PATH"
+  ok "CLI runners present"
 fi
-ok "ANTHROPIC_API_KEY set (${#ANTHROPIC_API_KEY} chars)"
 
 step "agent routing lint"
 bash scripts/validate-agent-routing.sh

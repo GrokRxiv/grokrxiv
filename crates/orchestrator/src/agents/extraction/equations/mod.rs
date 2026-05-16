@@ -16,8 +16,8 @@
 //! - `equation_hash` (agent-specific)
 //! - `submit` (core sentinel)
 //!
-//! Model: `gemini-2.5-pro`. Loop budget: `max_iters=60`,
-//! `max_cost_usd=0.05`.
+//! Model: `gemini-2.5-flash`. Loop budget: `max_iters=60`,
+//! `max_cost_usd=0.50`.
 
 use std::sync::Arc;
 
@@ -37,7 +37,8 @@ pub use tools::{
 };
 
 /// Embedded schema — kept in sync with `schemas/extraction/equations.schema.json`.
-const SCHEMA_JSON: &str = include_str!("../../../../../../schemas/extraction/equations.schema.json");
+const SCHEMA_JSON: &str =
+    include_str!("../../../../../../schemas/extraction/equations.schema.json");
 
 /// The Stage-5 equation canonicalisation agent.
 pub struct EquationCanonicalizerAgent {
@@ -55,8 +56,8 @@ impl EquationCanonicalizerAgent {
     /// Build a fresh agent. The tool specs and the embedded schema are loaded
     /// once at construction time.
     pub fn new() -> Self {
-        let schema: Value = serde_json::from_str(SCHEMA_JSON)
-            .expect("equations.schema.json must be valid JSON");
+        let schema: Value =
+            serde_json::from_str(SCHEMA_JSON).expect("equations.schema.json must be valid JSON");
         let tool_specs = Self::build_tool_specs();
         Self { schema, tool_specs }
     }
@@ -120,16 +121,19 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
          (`\\frac` not `\\over`, `x^{-1}` not `1/x` where unambiguous, standard operator \
          names), call `render_to_mathml` to get MathML, call `equation_hash` to deduplicate, \
          and tag each with a short semantic label (`identity` / `inequality` / `definition` \
-         / `theorem-statement` / `pde` / `algebraic` / `other`). Submit the canonical list. \
-         The ONLY way to finish is by calling `submit(...)` with a payload matching the \
-         supplied JSON schema."
+         / `theorem-statement` / `pde` / `algebraic` / `other`). After `list_equations` \
+         returns, always finish with `submit(...)`: submit all discovered equations, or submit \
+         `{equations: [], reason: \"no_equations_in_paper\"}` only when the tool returns an \
+         empty list. The ONLY way to finish is by calling `submit(...)` with a payload matching \
+         the supplied JSON schema."
             .to_string()
     }
 
     fn user_kickoff(&self, ctx: &ExtractionContext<'_>) -> String {
         format!(
             "Paper: {arxiv} (title: {title}). Walk every equation in this paper and submit the \
-             canonical list. Start by calling list_equations().",
+             canonical list. Start by calling list_equations(), then call submit(...) with the \
+             final payload; do not stop with prose.",
             arxiv = ctx.arxiv_id,
             title = ctx.extract.title,
         )
@@ -317,16 +321,8 @@ mod agent_tests {
         });
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_call("list_equations", json!({}), "c1"),
-            turn_call(
-                "render_to_mathml",
-                json!({ "tex": "a+b" }),
-                "c2",
-            ),
-            turn_call(
-                "equation_hash",
-                json!({ "canonical_tex": "a+b" }),
-                "c3",
-            ),
+            turn_call("render_to_mathml", json!({ "tex": "a+b" }), "c2"),
+            turn_call("equation_hash", json!({ "canonical_tex": "a+b" }), "c3"),
             turn_submit(canonical.clone()),
         ]));
         let tmp = tempdir();
@@ -350,7 +346,9 @@ mod agent_tests {
             max_iters: 10,
         };
         let spec = fake_spec();
-        let run = run_tool_loop(&agent, runner, &spec, ec, 10, 1.0).await.unwrap();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 10, 1.0)
+            .await
+            .unwrap();
         std::env::remove_var("GROKRXIV_LATEXML_BIN");
         assert_eq!(run.output, canonical);
         assert!(

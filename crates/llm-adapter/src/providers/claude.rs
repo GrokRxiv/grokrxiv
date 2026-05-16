@@ -97,10 +97,7 @@ impl ClaudeProvider {
                         .find(|p| p.get("type").and_then(Value::as_str) == Some("text"))
                     {
                         if let Some(obj) = last_text.as_object_mut() {
-                            obj.insert(
-                                "cache_control".into(),
-                                json!({ "type": "ephemeral" }),
-                            );
+                            obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
                         }
                     }
                 }
@@ -255,8 +252,7 @@ impl ClaudeProvider {
             })
             .collect();
 
-        let supports_temperature =
-            !req.model.contains("opus-4") && !req.model.contains("sonnet-4");
+        let supports_temperature = !req.model.contains("opus-4") && !req.model.contains("sonnet-4");
         let mut body = if supports_temperature {
             json!({
                 "model": req.model,
@@ -442,10 +438,7 @@ impl LLMProvider for ClaudeProvider {
         200_000
     }
 
-    async fn complete_with_tools(
-        &self,
-        req: ToolChatRequest,
-    ) -> Result<ToolCompletion, LLMError> {
+    async fn complete_with_tools(&self, req: ToolChatRequest) -> Result<ToolCompletion, LLMError> {
         let body = Self::build_tools_body(&req);
         let http = self.http.clone();
         let url = self.base_url.clone();

@@ -233,10 +233,7 @@ async fn typed_dag_persists_six_agents_with_inputs_and_passes_verifier() {
         "expected exactly 1 review_inputs row, got {}",
         input_rows.len()
     );
-    assert!(
-        !input_rows[0].0.is_null(),
-        "review_inputs.artifact is null"
-    );
+    assert!(!input_rows[0].0.is_null(), "review_inputs.artifact is null");
 
     // Meta-reviewer row: output deserializes as MetaReview. The meta input
     // is no longer persisted (FP6 A1) — it's synthesised at render time from

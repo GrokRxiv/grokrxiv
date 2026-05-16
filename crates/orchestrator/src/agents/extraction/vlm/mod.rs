@@ -24,9 +24,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::agents::extraction::{
-    run_tool_loop, ExtractionAgent, ExtractionRole, ToolRegistry,
-};
+use crate::agents::extraction::{run_tool_loop, ExtractionAgent, ExtractionRole, ToolRegistry};
 use crate::agents::traits::AgentRunner;
 use crate::agents::types::{AgentSpec, ExtractionContext, ExtractionRun, ToolSpec};
 
@@ -398,7 +396,12 @@ mod tests {
     fn vlm_agent_advertises_correct_tools() {
         let agent = VlmExtractorAgent::new();
         let names: Vec<String> = agent.tools().iter().map(|t| t.name.clone()).collect();
-        for required in ["read_pdf_page", "search_pdf", "extract_page_region", "submit"] {
+        for required in [
+            "read_pdf_page",
+            "search_pdf",
+            "extract_page_region",
+            "submit",
+        ] {
             assert!(
                 names.contains(&required.to_string()),
                 "VLM agent must advertise `{required}`; got {names:?}"
@@ -431,7 +434,9 @@ mod tests {
 
     #[tokio::test]
     async fn vlm_agent_run_via_mock_runner() {
-        let agent = VlmExtractorAgent::new().with_max_iters(5).with_max_cost_usd(1.0);
+        let agent = VlmExtractorAgent::new()
+            .with_max_iters(5)
+            .with_max_cost_usd(1.0);
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_tool("read_pdf_page", json!({ "page": 1 }), "call_read"),
             turn_submit(valid_payload()),
@@ -468,7 +473,9 @@ mod tests {
         // The loop should reject the first (invalid) submit and accept the
         // corrective second submit. This confirms `.schema()` is wired into
         // the loop's validate_submit hook, not just locally on the agent.
-        let agent = VlmExtractorAgent::new().with_max_iters(5).with_max_cost_usd(1.0);
+        let agent = VlmExtractorAgent::new()
+            .with_max_iters(5)
+            .with_max_cost_usd(1.0);
         let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![
             turn_submit(json!({ "abstract": "missing title" })),
             turn_submit(valid_payload()),
@@ -480,9 +487,15 @@ mod tests {
         let ec = ctx(tmp.path(), &pe, registry, "2401.00002v1");
         let s = spec();
 
-        let run = agent.run_loop(runner, &s, ec).await.expect("retry succeeds");
-        let submits: Vec<&ToolCallRecord> =
-            run.tool_calls.iter().filter(|c| c.tool == "submit").collect();
+        let run = agent
+            .run_loop(runner, &s, ec)
+            .await
+            .expect("retry succeeds");
+        let submits: Vec<&ToolCallRecord> = run
+            .tool_calls
+            .iter()
+            .filter(|c| c.tool == "submit")
+            .collect();
         assert_eq!(submits.len(), 2);
         assert!(!submits[0].ok, "first submit should be marked failed");
         assert!(submits[1].ok, "second submit should be marked success");

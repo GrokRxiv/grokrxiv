@@ -62,7 +62,10 @@ impl Tool for ReadFileTool {
             anyhow::bail!("read_file: absolute paths are not allowed");
         }
         let full = ctx.workdir.join(rel);
-        let canon_root = ctx.workdir.canonicalize().unwrap_or_else(|_| ctx.workdir.to_path_buf());
+        let canon_root = ctx
+            .workdir
+            .canonicalize()
+            .unwrap_or_else(|_| ctx.workdir.to_path_buf());
         let canon_full = match full.canonicalize() {
             Ok(p) => p,
             Err(e) => anyhow::bail!("read_file: could not open `{path}`: {e}"),
@@ -71,8 +74,7 @@ impl Tool for ReadFileTool {
             anyhow::bail!("read_file: path escapes workdir");
         }
 
-        let bytes = std::fs::read(&canon_full)
-            .map_err(|e| anyhow::anyhow!("read_file: {e}"))?;
+        let bytes = std::fs::read(&canon_full).map_err(|e| anyhow::anyhow!("read_file: {e}"))?;
         let total = bytes.len();
         let end = byte_end.unwrap_or(total).min(total);
         let start = byte_start.min(end);

@@ -33,46 +33,43 @@ The CLI must be run from a directory that can find `agents/*.yaml` (currently th
 
 ## Two-runner test patterns
 
-### A. API path (paid provider APIs)
+### A. Default CLI path
 
 Each role uses the provider/model from its `agents/*.yaml`:
 - summary → claude-haiku
 - technical_correctness → claude-opus
-- novelty → gemini-2.5-pro
+- novelty → gemini-2.5-flash
 - reproducibility → gpt-5.5
-- citation → gemini-2.5-pro
+- citation → gemini-2.5-flash
 - meta_reviewer → claude-sonnet-4-6
 
 ```sh
-# Single paper, default runner = api
+# Single paper, default review runner + default extractor = cli
 grokrxiv review 2605.00228 --json
 
 # Batch parallel (orchestrator fan-out)
 grokrxiv ingest 2605.00228 2605.00316 2605.00478 --json
 ```
 
-Cost: ~$0.18–0.22 per paper (Tier-2 Anthropic + OpenAI + paid Gemini Pro).
+Cost: review and extraction use the local CLI auth path by default. In
+`--runner cli --extractor cli` runs, GrokRxiv strips provider API key env vars
+from the child `claude` / `codex` / `gemini` processes so the CLIs use their
+logged-in subscription/auth state. Pass `--runner api --extractor api` only
+when you intend to spend against provider API credits.
 
-### B. CLI path (local subscriptions: claude / codex / gemini)
+### B. Explicit runner selection
 
 Spawns `claude -p`, `codex exec`, or `gemini -p` based on each role's YAML `provider:` field. Auth comes from `~/.claude.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json` (+ `~/.config/gcloud/application_default_credentials.json`) on the host.
 
-> **B4 (FP-RPT3b) cost note:** marginal cost is per-provider, not uniformly $0. Claude Max + Pro = $0 against the subscription cap; codex on ChatGPT Plus uses the Plus tier's bundled allowance; gemini routes through your gcloud `quota_project_id` and is billed per token. `CliRunner` logs `event=cli_auth_path` once per provider per run so you can verify. See `feedback_cli_path_is_cost_control.md` in this operator's memory for the full audit.
+> **B4 (FP-RPT3b) cost note:** marginal cost is per-provider, not uniformly $0. Claude Max + Pro = $0 against the subscription cap; codex on ChatGPT Plus uses the Plus tier's bundled allowance; gemini routes through your configured local CLI auth. `CliRunner` logs `event=cli_auth_path` once per provider per run so you can verify. See `feedback_cli_path_is_cost_control.md` in this operator's memory for the full audit.
 
 ```sh
-# Pure CLI (every role goes through the local CLI of its provider)
-grokrxiv review 2605.00001 --runner cli --json
+# Explicit CLI (same as default; every role goes through the local CLI of its provider)
+grokrxiv review 2605.00001 --runner cli --extractor cli --json
 
-# Hybrid: CLI for claude/codex roles, API for gemini roles
-# (gemini CLI doesn't honor strict-schema output reliably — known issue)
-grokrxiv review 2605.00001 \
-  --runner cli \
-  --runner-for novelty=api \
-  --runner-for citation=api \
-  --json
+# API path, explicit because it spends provider API credits
+grokrxiv review 2605.00001 --runner api --extractor api --json
 ```
-
-The hybrid pattern is the practical recommendation today.
 
 ### C. Forcing per-role overrides
 
@@ -141,7 +138,7 @@ Outputs reachability per runner:
 
 ## Known limitations (RPT2 ship)
 
-- **Gemini CLI doesn't honor JSON schemas reliably** — `gemini -p` invents extra fields or emits the schema document. Recommend `--runner-for novelty=api --runner-for citation=api` when using `--runner cli`.
+- **Gemini CLI JSON output** — GrokRxiv invokes Gemini with `-o json` and unwraps the `.response` payload before schema validation. Keep Gemini on the CLI path unless you explicitly choose API billing.
 - **Codex `exec --json` streams JSONL events** — RPT2 G fix extracts the final `agent_message.text`. Should "just work" now.
 - **Claude CLI skill** — invoked via `/grokrxiv-review` prepended to the prompt (not a `--skill` flag; that flag doesn't exist).
 - **CLI default timeout** — 360s/role. Bump via `GROKRXIV_CLI_TIMEOUT_SECS` if a role legitimately needs longer.

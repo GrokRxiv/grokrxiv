@@ -49,10 +49,10 @@ impl Tool for ListEquationsTool {
         LIST_EQUATIONS_SCHEMA.get_or_init(list_equations_schema)
     }
     async fn call(&self, _args: Value, ctx: &ToolCtx<'_>) -> anyhow::Result<Value> {
-        let equations = match ctx.semantic_ast {
-            Some(ast) => list_from_ast(ast),
-            None => list_from_markdown(ctx.workdir),
-        };
+        let mut equations = ctx.semantic_ast.map(list_from_ast).unwrap_or_default();
+        if equations.is_empty() {
+            equations = list_from_markdown(ctx.workdir);
+        }
         Ok(json!({ "equations": equations }))
     }
 }
@@ -68,12 +68,7 @@ pub fn list_from_ast(root: &Value) -> Vec<Value> {
     out
 }
 
-fn collect_ast(
-    v: &Value,
-    current_section: &mut String,
-    counter: &mut usize,
-    out: &mut Vec<Value>,
-) {
+fn collect_ast(v: &Value, current_section: &mut String, counter: &mut usize, out: &mut Vec<Value>) {
     match v {
         Value::Object(map) => {
             // Heading nodes: capture for the "context" field on following math nodes.
@@ -167,84 +162,231 @@ fn extract_tex(map: &serde_json::Map<String, Value>) -> String {
     String::new()
 }
 
-/// Fallback: scan `<workdir>/body.md` for `\(...\)` (inline) and `\[...\]`
-/// (display) math runs. Used when `ctx.semantic_ast` is `None` because the
-/// paper came in as PDF-only.
+/// Fallback: scan `<workdir>/body.md` for common Pandoc/LaTeX math delimiters.
+/// Used when `ctx.semantic_ast` is absent or does not expose math nodes.
 pub fn list_from_markdown(workdir: &std::path::Path) -> Vec<Value> {
     let body_path = workdir.join("body.md");
     let body = match std::fs::read_to_string(&body_path) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
+    list_from_markdown_body(&body)
+}
+
+/// Public for deterministic fallback and unit tests.
+pub fn list_from_markdown_body(body: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    let mut counter = 0usize;
-    let mut current_section = String::new();
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // Track section headings ("# ", "## ", etc.).
-        if (i == 0 || bytes[i - 1] == b'\n') && bytes[i] == b'#' {
-            let mut j = i;
-            while j < bytes.len() && bytes[j] == b'#' {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b' ' {
-                let line_end = bytes[j..]
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .map(|p| j + p)
-                    .unwrap_or(bytes.len());
-                current_section = String::from_utf8_lossy(&bytes[j + 1..line_end])
-                    .trim()
-                    .to_string();
-                i = line_end;
-                continue;
-            }
+    let mut occupied: Vec<(usize, usize)> = Vec::new();
+
+    for env in [
+        "equation",
+        "equation*",
+        "align",
+        "align*",
+        "gather",
+        "gather*",
+        "multline",
+        "multline*",
+        "eqnarray",
+        "eqnarray*",
+    ] {
+        collect_delimited(
+            body,
+            &format!("\\begin{{{env}}}"),
+            &format!("\\end{{{env}}}"),
+            "display",
+            true,
+            &mut occupied,
+            &mut out,
+        );
+    }
+
+    collect_delimited(body, "$$", "$$", "display", false, &mut occupied, &mut out);
+    collect_delimited(
+        body,
+        "\\[",
+        "\\]",
+        "display",
+        false,
+        &mut occupied,
+        &mut out,
+    );
+    collect_delimited(body, "\\(", "\\)", "inline", false, &mut occupied, &mut out);
+    collect_single_dollar_math(body, &mut occupied, &mut out);
+
+    out.sort_by_key(|v| v.get("_start").and_then(Value::as_u64).unwrap_or(u64::MAX));
+    for (idx, v) in out.iter_mut().enumerate() {
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("_start");
+            obj.remove("_end");
+            obj.insert("id".to_string(), Value::String(format!("eq-{}", idx + 1)));
         }
-        // Math openers: `\(` inline, `\[` display.
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            let opener = bytes[i + 1];
-            let (close_pair, kind): (&[u8], &str) = match opener {
-                b'(' => (b"\\)", "inline"),
-                b'[' => (b"\\]", "display"),
-                _ => {
-                    i += 1;
-                    continue;
-                }
-            };
-            let start = i + 2;
-            if let Some(rel_end) = find_subslice(&bytes[start..], close_pair) {
-                let tex_bytes = &bytes[start..start + rel_end];
-                let tex = String::from_utf8_lossy(tex_bytes).trim().to_string();
-                counter += 1;
-                out.push(json!({
-                    "id": format!("eq-{}", counter),
-                    "tex": tex,
-                    "context": current_section.clone(),
-                    "kind": kind,
-                }));
-                i = start + rel_end + 2;
-                continue;
-            }
-        }
-        i += 1;
     }
     out
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
+fn collect_delimited(
+    body: &str,
+    opener: &str,
+    closer: &str,
+    kind: &str,
+    strip_environment: bool,
+    occupied: &mut Vec<(usize, usize)>,
+    out: &mut Vec<Value>,
+) {
+    let mut search_from = 0usize;
+    while search_from < body.len() {
+        let Some(rel_start) = body[search_from..].find(opener) else {
+            break;
+        };
+        let start = search_from + rel_start;
+        let inner_start = start + opener.len();
+        if opener == "$$" && is_escaped(body, start) {
+            search_from = inner_start;
+            continue;
+        }
+        let Some(rel_end) = body[inner_start..].find(closer) else {
+            break;
+        };
+        let inner_end = inner_start + rel_end;
+        let end = inner_end + closer.len();
+        if !overlaps_any((start, end), occupied) {
+            let mut tex = body[inner_start..inner_end].trim().to_string();
+            if strip_environment {
+                tex = tex.trim().to_string();
+            }
+            push_equation(body, start, end, tex, kind, occupied, out);
+        }
+        search_from = end;
     }
-    'outer: for i in 0..=haystack.len() - needle.len() {
-        for j in 0..needle.len() {
-            if haystack[i + j] != needle[j] {
-                continue 'outer;
+}
+
+fn collect_single_dollar_math(
+    body: &str,
+    occupied: &mut Vec<(usize, usize)>,
+    out: &mut Vec<Value>,
+) {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$'
+            || is_escaped(body, i)
+            || (i + 1 < bytes.len() && bytes[i + 1] == b'$')
+            || overlaps_any((i, i + 1), occupied)
+        {
+            i += 1;
+            continue;
+        }
+        let inner_start = i + 1;
+        let mut j = inner_start;
+        while j < bytes.len() {
+            if bytes[j] == b'$'
+                && !is_escaped(body, j)
+                && !(j + 1 < bytes.len() && bytes[j + 1] == b'$')
+            {
+                let end = j + 1;
+                if !overlaps_any((i, end), occupied) {
+                    let tex = body[inner_start..j].trim().to_string();
+                    push_equation(body, i, end, tex, "inline", occupied, out);
+                }
+                i = end;
+                break;
+            }
+            j += 1;
+        }
+        if j >= bytes.len() {
+            break;
+        }
+    }
+}
+
+fn push_equation(
+    body: &str,
+    start: usize,
+    end: usize,
+    tex: String,
+    kind: &str,
+    occupied: &mut Vec<(usize, usize)>,
+    out: &mut Vec<Value>,
+) {
+    let tex = strip_wrapping_environment(tex.trim());
+    if tex.is_empty() {
+        return;
+    }
+    occupied.push((start, end));
+    out.push(json!({
+        "id": "",
+        "tex": tex,
+        "context": heading_context_at(body, start),
+        "kind": kind,
+        "_start": start,
+        "_end": end,
+    }));
+}
+
+fn strip_wrapping_environment(tex: &str) -> String {
+    let trimmed = tex.trim();
+    for env in [
+        "equation",
+        "equation*",
+        "align",
+        "align*",
+        "gather",
+        "gather*",
+        "multline",
+        "multline*",
+        "eqnarray",
+        "eqnarray*",
+    ] {
+        let opener = format!("\\begin{{{env}}}");
+        let closer = format!("\\end{{{env}}}");
+        if trimmed.starts_with(&opener) && trimmed.ends_with(&closer) {
+            return trimmed[opener.len()..trimmed.len() - closer.len()]
+                .trim()
+                .to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn heading_context_at(body: &str, pos: usize) -> String {
+    let mut context = String::new();
+    let mut byte_cursor = 0usize;
+    for line in body.split_inclusive('\n') {
+        if byte_cursor > pos {
+            break;
+        }
+        let trimmed = line.trim_start();
+        let leading_hashes = trimmed.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&leading_hashes) {
+            let after = &trimmed[leading_hashes..];
+            if after.starts_with(' ') {
+                context = after.trim().trim_end_matches('\n').to_string();
             }
         }
-        return Some(i);
+        byte_cursor += line.len();
     }
-    None
+    context
+}
+
+fn overlaps_any(range: (usize, usize), occupied: &[(usize, usize)]) -> bool {
+    occupied
+        .iter()
+        .any(|existing| range.0 < existing.1 && existing.0 < range.1)
+}
+
+fn is_escaped(body: &str, idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let bytes = body.as_bytes();
+    let mut slash_count = 0usize;
+    let mut cursor = idx;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        slash_count += 1;
+        cursor -= 1;
+    }
+    slash_count % 2 == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -297,9 +439,8 @@ impl Tool for RenderToMathmlTool {
 /// emitted XML for the first `<math>...</math>` block, and returns it.
 pub async fn render_to_mathml(tex: &str) -> Value {
     let bin = std::env::var("GROKRXIV_LATEXML_BIN").unwrap_or_else(|_| "latexml".to_string());
-    let doc = format!(
-        "\\documentclass{{article}}\n\\begin{{document}}\n$ {tex} $\n\\end{{document}}\n"
-    );
+    let doc =
+        format!("\\documentclass{{article}}\n\\begin{{document}}\n$ {tex} $\n\\end{{document}}\n");
     let warnings: Vec<String> = Vec::new();
     match timeout(Duration::from_secs(30), run_latexml(&bin, &doc)).await {
         Ok(Ok(xml)) => {
@@ -446,8 +587,8 @@ fn lowercase_operators(s: &str) -> String {
     // touch macros we don't recognise — `\Vec` and `\vec` may be different.)
     const KNOWN: &[&str] = &[
         "sin", "cos", "tan", "csc", "sec", "cot", "arcsin", "arccos", "arctan", "sinh", "cosh",
-        "tanh", "log", "ln", "exp", "lim", "max", "min", "sup", "inf", "det", "ker", "dim",
-        "deg", "gcd", "lcm",
+        "tanh", "log", "ln", "exp", "lim", "max", "min", "sup", "inf", "det", "ker", "dim", "deg",
+        "gcd", "lcm",
     ];
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -570,15 +711,19 @@ mod tests {
     #[test]
     fn list_equations_fallback_to_markdown() {
         let tmp = tempdir();
-        let body = "# Setup\n\nWe have \\(a+b\\) and then later\n\n\\[\\int_0^1 f\\]\n";
+        let body = "# Setup\n\nWe have \\(a+b\\), $c+d$, and then later\n\n\\[\\int_0^1 f\\]\n\n$$\\begin{equation}\nE=mc^2\n\\end{equation}$$\n";
         std::fs::write(tmp.path().join("body.md"), body).unwrap();
         let eqs = list_from_markdown(tmp.path());
-        assert_eq!(eqs.len(), 2, "got: {eqs:?}");
+        assert_eq!(eqs.len(), 4, "got: {eqs:?}");
         assert_eq!(eqs[0]["tex"], "a+b");
         assert_eq!(eqs[0]["kind"], "inline");
         assert_eq!(eqs[0]["context"], "Setup");
-        assert_eq!(eqs[1]["tex"], "\\int_0^1 f");
-        assert_eq!(eqs[1]["kind"], "display");
+        assert_eq!(eqs[1]["tex"], "c+d");
+        assert_eq!(eqs[1]["kind"], "inline");
+        assert_eq!(eqs[2]["tex"], "\\int_0^1 f");
+        assert_eq!(eqs[2]["kind"], "display");
+        assert_eq!(eqs[3]["tex"], "E=mc^2");
+        assert_eq!(eqs[3]["kind"], "display");
     }
 
     #[tokio::test]

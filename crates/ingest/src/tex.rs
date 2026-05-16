@@ -188,10 +188,7 @@ fn write_bundle(tmp: &TempDir, files: &HashMap<String, String>) -> Result<Bundle
             .with_context(|| format!("write bundle file {target:?}"))?;
     }
     let main_name = pick_main(files);
-    Ok(BundleLayout {
-        tex_dir,
-        main_name,
-    })
+    Ok(BundleLayout { tex_dir, main_name })
 }
 
 /// Prefer a file with BOTH `\documentclass` and `\begin{document}`; then
@@ -403,7 +400,8 @@ async fn run_cmd_capture(cmd: &mut Command, timeout: Duration, label: &str) -> R
 /// Walk the LaTeXML XML output and build a JSON tree. Each node carries its
 /// tag name, attributes, and either child nodes or a text payload.
 fn parse_latexml_xml(path: &Path) -> Result<Value> {
-    let xml = std::fs::read_to_string(path).with_context(|| format!("read latexml xml {path:?}"))?;
+    let xml =
+        std::fs::read_to_string(path).with_context(|| format!("read latexml xml {path:?}"))?;
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(false);
 
@@ -721,8 +719,7 @@ fn parse_bibfile(src: &str) -> Vec<Citation> {
 }
 
 fn extract_bib_field(body: &str, field: &str) -> Option<String> {
-    let pattern =
-        format!(r#"(?i){field}\s*=\s*[{{"]([^}}"]+)[}}"]"#);
+    let pattern = format!(r#"(?i){field}\s*=\s*[{{"]([^}}"]+)[}}"]"#);
     let re = Regex::new(&pattern).ok()?;
     re.captures(body)
         .and_then(|c| c.get(1).map(|m| sanitize_inline(m.as_str())))
@@ -732,7 +729,11 @@ fn sniff_identifiers(text: &str) -> (Option<String>, Option<String>) {
     let doi = Regex::new(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+")
         .unwrap()
         .find(text)
-        .map(|m| m.as_str().trim_end_matches(&[',', '.', ';'][..]).to_string());
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(&[',', '.', ';'][..])
+                .to_string()
+        });
     let arxiv = Regex::new(r"\b(?:arXiv:)?(\d{4}\.\d{4,5})(?:v\d+)?")
         .unwrap()
         .captures(text)
@@ -813,9 +814,16 @@ Some text.
         let extract = parse_bundle(&bundle).await.expect("parse_bundle");
         std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
         assert!(
-            extract.sections.iter().any(|s| s.heading.eq_ignore_ascii_case("Intro")),
+            extract
+                .sections
+                .iter()
+                .any(|s| s.heading.eq_ignore_ascii_case("Intro")),
             "expected Intro section, got: {:?}",
-            extract.sections.iter().map(|s| &s.heading).collect::<Vec<_>>()
+            extract
+                .sections
+                .iter()
+                .map(|s| &s.heading)
+                .collect::<Vec<_>>()
         );
         let body_joined: String = extract
             .sections
@@ -909,9 +917,16 @@ World.
         std::env::remove_var("GROKRXIV_LATEXMLPOST_BIN");
         assert!(extract.semantic_ast.is_none(), "semantic_ast must be None");
         assert!(
-            extract.sections.iter().any(|s| s.heading.eq_ignore_ascii_case("Hello")),
+            extract
+                .sections
+                .iter()
+                .any(|s| s.heading.eq_ignore_ascii_case("Hello")),
             "expected Hello section, got: {:?}",
-            extract.sections.iter().map(|s| &s.heading).collect::<Vec<_>>()
+            extract
+                .sections
+                .iter()
+                .map(|s| &s.heading)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -934,7 +949,10 @@ See~\cite{foo}.
         let bundle = make_targz(&[("main.tex", tex)]);
         let extract = parse_bundle(&bundle).await.expect("parse_bundle");
         std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
-        assert!(!extract.bibliography.is_empty(), "bibliography should not be empty");
+        assert!(
+            !extract.bibliography.is_empty(),
+            "bibliography should not be empty"
+        );
         assert_eq!(extract.bibliography[0].title.as_deref(), Some("foo"));
         assert!(
             extract.bibliography[0].raw.starts_with("foo:")
@@ -996,7 +1014,10 @@ See~\cite{foo}.
             h2_count,
             "expected {h2_count} sections (one per H2), got {}: {:?}",
             sections.len(),
-            sections.iter().map(|s| s.heading.as_str()).collect::<Vec<_>>()
+            sections
+                .iter()
+                .map(|s| s.heading.as_str())
+                .collect::<Vec<_>>()
         );
         assert_eq!(sections[0].heading, "Introduction");
         assert_eq!(sections[8].heading, "Acknowledgement");

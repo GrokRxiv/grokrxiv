@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
-    parse_role_model, parse_role_runner, render as render_runtime_config, RuntimeConfig,
-    RuntimeConfigOverrides,
+    parse_role_model, parse_role_runner, provider_api_allowed, render as render_runtime_config,
+    ExtractorKind, RuntimeConfig, RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV,
 };
 
 type PaperListRow = (
@@ -52,6 +52,9 @@ pub struct Cli {
     /// Default runner backend for all roles.
     #[arg(long, value_enum, global = true)]
     pub runner: Option<AgentRunnerKind>,
+    /// Staged extraction backend used by `ingest` before review.
+    #[arg(long, value_enum, global = true)]
+    pub extractor: Option<ExtractorKind>,
     /// Per-role runner override, e.g. `--runner-for technical_correctness=cli`.
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_runner, value_name = "ROLE=RUNNER")]
@@ -348,6 +351,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     // the registry composition for those tracks to consume.
     let overrides = RuntimeConfigOverrides {
         runner: cli.runner,
+        extractor: cli.extractor,
         sandbox: cli.sandbox,
         mode: Some(cli.mode),
         revision_target: Some(cli.revision_target),
@@ -360,8 +364,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         runner_for: cli.runner_for.clone(),
         model_for: cli.model_for.clone(),
     };
-    let runtime_cfg =
-        RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref()).ok();
+    let runtime_cfg = match RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref())
+    {
+        Ok(cfg) => Some(cfg),
+        Err(e) if e.to_string().contains("GROKRXIV_EXTRACTOR") => return Err(e),
+        Err(e) => {
+            tracing::warn!(err = %e, "could not resolve layered runtime config");
+            None
+        }
+    };
     // RPT2 G follow-up: export the resolved per-role runner choice into env vars
     // the supervisor reads in its agent resolver. This is how `--runner cli` /
     // `--runner-for technical_correctness=cli` actually overrides the YAML's
@@ -390,6 +401,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 std::env::set_var(format!("GROKRXIV_RUNNER_OVERRIDE_{role_slug}"), bare);
             }
         }
+        std::env::set_var("GROKRXIV_EXTRACTOR", rt.extractor.as_str());
+        std::env::set_var(
+            ALLOW_PROVIDER_API_ENV,
+            if provider_api_allowed(rt) { "1" } else { "0" },
+        );
+    } else {
+        std::env::set_var(ALLOW_PROVIDER_API_ENV, "0");
     }
     let json = cli.json;
     let show_secrets = cli.show_secrets;
@@ -412,10 +430,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     // RPT3 Wave-3 Team-F: forward `--no-cache` / `--skip-stages` /
     // `--dry-run-storage` to the staged ingest orchestrator via env vars.
     // (The supervisor reads these in `ingest_options_from_env`.)
-    if cli.no_cache {
+    let no_cache_resolved = runtime_cfg
+        .as_ref()
+        .map(|rt| rt.no_cache)
+        .unwrap_or(cli.no_cache);
+    if no_cache_resolved {
         std::env::set_var("GROKRXIV_INGEST_NO_CACHE", "1");
+        std::env::set_var("GROKRXIV_NO_CACHE", "1");
     } else {
         std::env::remove_var("GROKRXIV_INGEST_NO_CACHE");
+        std::env::remove_var("GROKRXIV_NO_CACHE");
     }
     if let Some(stages) = cli.skip_stages.as_deref() {
         std::env::set_var("GROKRXIV_INGEST_SKIP_STAGES", stages);
@@ -452,7 +476,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => print_config(show_secrets || cmd_show, runtime_cfg.as_ref(), json),
         Command::Migrate => migrate().await,
         Command::Categories => print_categories(),
-        Command::Ingest { arxiv_ids } => ingest_many(&arxiv_ids).await,
+        Command::Ingest { arxiv_ids } => ingest_many(&arxiv_ids, json).await,
         Command::IngestRange {
             from,
             to,
@@ -462,9 +486,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::IngestDaily => ingest_daily().await,
         Command::List { what } => list(what).await,
         Command::Show { review_id, json } => show(review_id, json).await,
-        Command::Review { source, r#type } => {
-            review_source(&source, r#type, json, dry_run).await
-        }
+        Command::Review { source, r#type } => review_source(&source, r#type, json, dry_run).await,
         Command::ReReview { paper_id } => review_paper(paper_id).await,
         Command::Verify { review_id } => verify(review_id).await,
         Command::Render {
@@ -626,7 +648,7 @@ fn print_categories() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ingest_many(arxiv_ids: &[String]) -> anyhow::Result<()> {
+async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
@@ -636,7 +658,17 @@ async fn ingest_many(arxiv_ids: &[String]) -> anyhow::Result<()> {
         for id in arxiv_ids {
             let review_id =
                 super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
-            println!("arxiv_id={id} review_id={review_id}");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "arxiv_id": id,
+                        "review_id": review_id,
+                    }))?
+                );
+            } else {
+                println!("arxiv_id={id} review_id={review_id}");
+            }
         }
         return Ok(());
     }
@@ -652,20 +684,32 @@ async fn ingest_many(arxiv_ids: &[String]) -> anyhow::Result<()> {
         let supervisor = supervisor.clone();
         let state = state.clone();
         futures.push(async move {
-            let result =
-                super::supervisor::run_one_paper_blocking(&supervisor, &state, &id).await;
+            let result = super::supervisor::run_one_paper_blocking(&supervisor, &state, &id).await;
             (id, result)
         });
     }
     let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
+    let mut successes: Vec<serde_json::Value> = Vec::new();
     while let Some((id, result)) = futures.next().await {
         match result {
-            Ok(review_id) => println!("arxiv_id={id} review_id={review_id}"),
+            Ok(review_id) => {
+                if json {
+                    successes.push(serde_json::json!({
+                        "arxiv_id": id,
+                        "review_id": review_id,
+                    }));
+                } else {
+                    println!("arxiv_id={id} review_id={review_id}");
+                }
+            }
             Err(e) => {
                 eprintln!("arxiv_id={id} ERROR: {e:?}");
                 errors.push((id, e));
             }
         }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&successes)?);
     }
     if !errors.is_empty() {
         anyhow::bail!(
@@ -934,10 +978,16 @@ fn parse_arxiv_url(s: &str) -> Option<String> {
 fn parse_legacy_id(s: &str) -> Option<String> {
     // archive[.subj]/7digits
     let (archive, rest) = s.split_once('/')?;
-    if archive.is_empty() || !archive.chars().all(|c| c.is_ascii_alphabetic() || c == '-' || c == '.') {
+    if archive.is_empty()
+        || !archive
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '.')
+    {
         return None;
     }
-    let rest = rest.strip_prefix(|c: char| !c.is_ascii_digit()).unwrap_or(rest);
+    let rest = rest
+        .strip_prefix(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest);
     if rest.len() != 7 || rest.chars().any(|c| !c.is_ascii_digit()) {
         return None;
     }
@@ -945,7 +995,11 @@ fn parse_legacy_id(s: &str) -> Option<String> {
 }
 
 fn guess_local_kind(path: &std::path::Path) -> SourceType {
-    match path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+    {
         Some(ref ext) if ext == "pdf" => SourceType::Pdf,
         Some(ref ext) if ext == "tex" => SourceType::Tex,
         _ => SourceType::Mixed,
@@ -1069,7 +1123,7 @@ async fn review_source(
     if json {
         review_arxiv_ids_json(&arxiv_ids).await
     } else {
-        ingest_many(&arxiv_ids).await
+        ingest_many(&arxiv_ids, false).await
     }
 }
 
@@ -1081,8 +1135,7 @@ async fn review_arxiv_ids_json(arxiv_ids: &[String]) -> anyhow::Result<()> {
 
     let mut results: Vec<serde_json::Value> = Vec::with_capacity(arxiv_ids.len());
     for id in arxiv_ids {
-        let review_id =
-            super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+        let review_id = super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
         // Pull status + per-agent verifier_status for the JSON envelope so the
         // smoke test can `jq -e .agents | length == 6 and all(.verifier_status==pass)`.
         let mut envelope = serde_json::json!({
@@ -1091,12 +1144,11 @@ async fn review_arxiv_ids_json(arxiv_ids: &[String]) -> anyhow::Result<()> {
             "status": "awaiting_moderation",
         });
         if let Some(pool) = state.db.as_ref() {
-            if let Ok((status,)) = sqlx::query_as::<_, (String,)>(
-                "select status from reviews where id = $1",
-            )
-            .bind(review_id)
-            .fetch_one(pool)
-            .await
+            if let Ok((status,)) =
+                sqlx::query_as::<_, (String,)>("select status from reviews where id = $1")
+                    .bind(review_id)
+                    .fetch_one(pool)
+                    .await
             {
                 envelope["status"] = serde_json::Value::String(status);
             }
@@ -1190,11 +1242,7 @@ async fn approve(review_id: Uuid, json: bool) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn approve_impl(
-    state: &super::AppState,
-    review_id: Uuid,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> anyhow::Result<()> {
     use grokrxiv_publisher::{AdminCaller, GithubPublisher, OpenReviewPr};
     use grokrxiv_schemas::ReviewStatus;
 
@@ -1271,7 +1319,7 @@ async fn approve_impl(
     };
 
     let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "reviews".into());
+    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()

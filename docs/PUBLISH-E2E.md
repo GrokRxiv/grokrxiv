@@ -7,9 +7,11 @@ you want to prove the publication loop actually closes.
 
 ## What it proves
 
-1. `grokrxiv ingest <arxiv_id>` produces a real review row at `awaiting_moderation`
-   with six `review_agents` rows, real input/output JSON artifacts, and per-role
-   verifier evidence persisted.
+1. `grokrxiv --runner cli --extractor cli --no-cache --json ingest <arxiv_id>`
+   produces a real review row at `awaiting_moderation` with six
+   `review_agents` rows, real input/output JSON artifacts, and per-role
+   verifier evidence persisted. Set `RUNNER=api EXTRACTOR=api` only when you
+   intend to spend provider API credits.
 2. `grokrxiv approve <review_id>` opens a real pull request against your test
    reviews repo with the rendered HTML/MD/LaTeX/zip artifacts at the canonical
    `reviews/YYYY/MM/<field>/<arxiv_id>/` repo path.
@@ -23,8 +25,8 @@ you want to prove the publication loop actually closes.
 ## One-time setup
 
 ```bash
-# 1. Create a disposable reviews repository.
-gh repo create your-username/grokrxiv-reviews-test --public --description "Disposable test repo for GrokRxiv publish E2E"
+# 1. Use the configured reviews repository, or create a disposable test repo.
+gh repo create GrokRxiv/grokrxiv-reviews --public --description "GrokRxiv reviews"
 
 # 2. Create a fine-grained PAT scoped to that repo with these permissions:
 #      - Contents: Read and write
@@ -43,11 +45,12 @@ From the repo root with the local stack already up (`supabase start && docker co
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
-export GROKRXIV_REVIEWS_OWNER="your-username"
-export GROKRXIV_REVIEWS_REPO="grokrxiv-reviews-test"
+export GROKRXIV_REVIEWS_OWNER="GrokRxiv"
+export GROKRXIV_REVIEWS_REPO="grokrxiv-reviews"
 export GITHUB_WEBHOOK_SECRET="$(grep ^GITHUB_WEBHOOK_SECRET= .env | cut -d= -f2)"
-export ANTHROPIC_API_KEY="sk-ant-..."
 export DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+export RUNNER=cli
+export EXTRACTOR=cli
 
 bash scripts/publish-e2e.sh
 ```

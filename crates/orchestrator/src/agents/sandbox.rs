@@ -26,10 +26,7 @@ use crate::agents::types::{AgentInput, AgentRun, AgentSpec};
 ///
 /// Returns the parsed `AgentRun` from `/workspace/output.json` and a
 /// `sandbox_ref` (container id) for audit.
-pub async fn run_in_container(
-    _spec: &AgentSpec,
-    _input: &AgentInput,
-) -> anyhow::Result<AgentRun> {
+pub async fn run_in_container(_spec: &AgentSpec, _input: &AgentInput) -> anyhow::Result<AgentRun> {
     // TODO(Track D):
     //   - workdir = ./.agent-workdirs/{review_id}/{role}
     //   - write {workdir}/input.json from _input

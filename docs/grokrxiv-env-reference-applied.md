@@ -23,6 +23,7 @@ flags pick the TOML file/profile that ENV then overrides.
 | Env                            | CLI equivalent              | Notes |
 |--------------------------------|-----------------------------|-------|
 | `GROKRXIV_RUNNER`              | `--runner`                  | `api` / `cli` / `cloud` / `local_inference` |
+| `GROKRXIV_EXTRACTOR`           | `--extractor`               | Staged ingest extraction backend: `cli` / `api`; default `cli` |
 | `GROKRXIV_SANDBOX`             | `--sandbox`                 | `none` / `container` |
 | `GROKRXIV_MODE`                | `--mode`                    | `review_only` / `review_and_revise` |
 | `GROKRXIV_CLOUD_PROVIDER`      | `--cloud-provider`          | `vercel_open_agents` / `e2b` / ... |
@@ -31,6 +32,7 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
 | `GROKRXIV_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
+| `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
 | `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Bearer expected by the web API `/api/v1/*` write endpoints |
 | `GROKRXIV_AGENTS_DIR`          | _none_                      | Override `./agents` location |
 | `GROKRXIV_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
@@ -52,6 +54,11 @@ flags pick the TOML file/profile that ENV then overrides.
 | `CODEX_HOME`                 | Where the local `codex` CLI looks for auth (`~/.codex` typical) |
 | `GEMINI_HOME`                | Where the local `gemini` CLI looks for auth |
 | `GROKRXIV_CLI_TIMEOUT_SECS`  | Per-call timeout in the CLI runner |
+| `GROKRXIV_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
+
+When the resolved runtime is `--runner cli --extractor cli`, GrokRxiv removes
+provider API key env vars from child `claude` / `codex` / `gemini` processes so
+those CLIs use their own logged-in local auth instead of inherited API keys.
 
 ## Cloud runner
 
@@ -75,7 +82,7 @@ flags pick the TOML file/profile that ENV then overrides.
 |------------------------------|-------|
 | `GITHUB_TOKEN`               | PAT used by `grokrxiv approve`. Absent → simulated PR |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
-| `GROKRXIV_REVIEWS_REPO`      | Default `reviews` |
+| `GROKRXIV_REVIEWS_REPO`      | Default `grokrxiv-reviews` |
 
 ## Web tier (`apps/web`)
 

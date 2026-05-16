@@ -63,10 +63,7 @@ pub trait LLMProvider: Send + Sync {
     ///
     /// Default impl errors so non-tool providers fail loudly rather than
     /// silently degrading.
-    async fn complete_with_tools(
-        &self,
-        _req: ToolChatRequest,
-    ) -> Result<ToolCompletion, LLMError> {
+    async fn complete_with_tools(&self, _req: ToolChatRequest) -> Result<ToolCompletion, LLMError> {
         Err(LLMError::Provider(format!(
             "provider `{}` does not implement complete_with_tools",
             self.name()
@@ -475,8 +472,7 @@ mod tests {
 
     #[test]
     fn rate_limited_with_retry_after_shows_duration() {
-        let msg =
-            LLMError::RateLimited(Some(std::time::Duration::from_secs(30))).to_string();
+        let msg = LLMError::RateLimited(Some(std::time::Duration::from_secs(30))).to_string();
         assert!(
             msg.contains("HTTP 429"),
             "must still mention HTTP 429 even with Retry-After, got: {msg}"
@@ -494,8 +490,10 @@ mod tests {
         // and ensure their error strings tell the operator something useful.
         let q = LLMError::QuotaExceeded("body=…".to_string()).to_string();
         assert!(q.contains("quota"), "QuotaExceeded must say 'quota': {q}");
-        assert!(!q.contains("rate limited") && !q.contains("HTTP 429"),
-            "QuotaExceeded must NOT be confused with rate-limit: {q}");
+        assert!(
+            !q.contains("rate limited") && !q.contains("HTTP 429"),
+            "QuotaExceeded must NOT be confused with rate-limit: {q}"
+        );
         // QuotaExceeded is NOT retryable. RateLimited IS.
         assert!(LLMError::RateLimited(None).is_retryable());
         assert!(!LLMError::QuotaExceeded("x".into()).is_retryable());

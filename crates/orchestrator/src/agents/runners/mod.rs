@@ -3,8 +3,8 @@
 //! Each runner implements [`super::traits::AgentRunner`] and answers the
 //! question: "how is this role's work actually executed?"
 //!
-//! - [`api::ApiRunner`] — direct LLM provider API (default for all 6 roles)
-//! - [`cli::CliRunner`] — local subprocess for tool-using agents
+//! - [`api::ApiRunner`] — direct LLM provider API
+//! - [`cli::CliRunner`] — local subprocess for review agents by default
 //! - [`cloud::CloudRunner`] — durable cloud workflow (Vercel / E2B)
 //! - [`local_inference::LocalInferenceRunner`] — Ollama / LiteLLM gateway
 //!

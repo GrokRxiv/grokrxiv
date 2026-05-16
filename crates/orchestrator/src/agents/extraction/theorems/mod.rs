@@ -11,11 +11,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agents::extraction::{
-    ExtractionAgent, ExtractionRole, ToolRegistry, ToolSpec,
-};
-use crate::agents::types::{AgentSpec, ExtractionContext, ExtractionRun};
+use crate::agents::extraction::{ExtractionAgent, ExtractionRole, ToolRegistry, ToolSpec};
 use crate::agents::traits::AgentRunner;
+use crate::agents::types::{AgentSpec, ExtractionContext, ExtractionRun};
 
 pub mod tools;
 
@@ -24,8 +22,7 @@ pub const NAME: &str = "theorem_graph_extractor";
 
 /// Bytes of the output schema, embedded so the agent doesn't need to read
 /// from disk at runtime.
-const SCHEMA_JSON: &str =
-    include_str!("../../../../../../schemas/extraction/theorems.schema.json");
+const SCHEMA_JSON: &str = include_str!("../../../../../../schemas/extraction/theorems.schema.json");
 
 /// Concrete agent. Wraps an embedded output schema + a per-agent
 /// [`ToolRegistry`] populated with both the core toolkit and the three
@@ -33,10 +30,6 @@ const SCHEMA_JSON: &str =
 pub struct TheoremGraphExtractorAgent {
     schema: Value,
     tool_specs: Vec<ToolSpec>,
-    /// Per-run loop ceilings. Pulled from the Track-8f plan: 50 iters,
-    /// $0.08 cost ceiling.
-    max_iters: usize,
-    max_cost_usd: f32,
 }
 
 impl Default for TheoremGraphExtractorAgent {
@@ -48,16 +41,11 @@ impl Default for TheoremGraphExtractorAgent {
 impl TheoremGraphExtractorAgent {
     /// Build the agent with its default registry + cost ceilings.
     pub fn new() -> Self {
-        let schema: Value = serde_json::from_str(SCHEMA_JSON)
-            .expect("theorems.schema.json must be valid JSON");
+        let schema: Value =
+            serde_json::from_str(SCHEMA_JSON).expect("theorems.schema.json must be valid JSON");
         let registry = Self::build_registry();
         let tool_specs = registry.specs();
-        Self {
-            schema,
-            tool_specs,
-            max_iters: 50,
-            max_cost_usd: 1.50,
-        }
+        Self { schema, tool_specs }
     }
 
     /// Construct an [`Arc<ToolRegistry>`] suitable for placing inside an
@@ -386,11 +374,7 @@ mod tests {
 
         // Spot-check the audit log: each non-submit call should have come back
         // OK and we should see our three tools in the order issued.
-        let tool_sequence: Vec<&str> = run
-            .tool_calls
-            .iter()
-            .map(|c| c.tool.as_str())
-            .collect();
+        let tool_sequence: Vec<&str> = run.tool_calls.iter().map(|c| c.tool.as_str()).collect();
         assert_eq!(
             tool_sequence,
             vec!["list_sections", "read_section", "resolve_label", "submit"]

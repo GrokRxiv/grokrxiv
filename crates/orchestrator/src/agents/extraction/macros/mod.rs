@@ -46,8 +46,8 @@ impl MacroExpanderAgent {
     /// Build the agent with the embedded JSON schema and a tool registry that
     /// advertises exactly `[list_files, read_file, find_definitions, apply_expansions, submit]`.
     pub fn new() -> Self {
-        let schema: Value = serde_json::from_str(SCHEMA_JSON)
-            .expect("compiled-in macros.schema.json must parse");
+        let schema: Value =
+            serde_json::from_str(SCHEMA_JSON).expect("compiled-in macros.schema.json must parse");
         let mut registry = ToolRegistry::empty();
         registry.register(Arc::new(
             crate::agents::extraction::tools::list_files::ListFilesTool,
@@ -87,9 +87,7 @@ impl MacroExpanderAgent {
 /// The schema is embedded at compile time so the agent is self-contained and
 /// the unit tests don't have to know about the repo layout. The source of
 /// truth is `schemas/extraction/macros.schema.json`.
-const SCHEMA_JSON: &str = include_str!(
-    "../../../../../../schemas/extraction/macros.schema.json"
-);
+const SCHEMA_JSON: &str = include_str!("../../../../../../schemas/extraction/macros.schema.json");
 
 #[async_trait]
 impl ExtractionAgent for MacroExpanderAgent {

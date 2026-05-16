@@ -21,6 +21,7 @@ use crate::agents::traits::AgentRunner;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, ToolCompletion, ToolSpec,
 };
+use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
 
 /// Holds a registry of `LLMProvider` impls keyed by name (`"claude"`,
 /// `"openai"`, `"gemini"`, `"deepseek"`, etc.). The runner dispatches to the
@@ -36,6 +37,27 @@ impl ApiRunner {
     }
 }
 
+fn provider_api_allowed() -> bool {
+    matches!(
+        std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+fn ensure_provider_api_allowed(context: &str, spec: &AgentSpec) -> anyhow::Result<()> {
+    if provider_api_allowed() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{context}: direct provider API disabled for provider={} model={} role={:?}; \
+         use --runner api or --extractor api to allow API billing, or use \
+         --runner cli --extractor cli for local logged-in CLIs",
+        spec.provider,
+        spec.model,
+        spec.role
+    )
+}
+
 #[async_trait]
 impl AgentRunner for ApiRunner {
     fn name(&self) -> &'static str {
@@ -43,6 +65,7 @@ impl AgentRunner for ApiRunner {
     }
 
     async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
+        ensure_provider_api_allowed("ApiRunner.run", spec)?;
         let provider = self.providers.get(&spec.provider).ok_or_else(|| {
             anyhow::anyhow!(
                 "ApiRunner: no provider registered for `{}` (role={:?})",
@@ -195,6 +218,7 @@ impl AgentRunner for ApiRunner {
         tools: &[ToolSpec],
         _ctx: &ToolCtx<'_>,
     ) -> anyhow::Result<ToolCompletion> {
+        ensure_provider_api_allowed("ApiRunner.complete_with_tools", spec)?;
         let provider = self.providers.get(&spec.provider).ok_or_else(|| {
             anyhow::anyhow!(
                 "ApiRunner.complete_with_tools: no provider registered for `{}` (role={:?})",
@@ -215,15 +239,14 @@ impl AgentRunner for ApiRunner {
             max_tokens: max_tokens_for_model(&model_name),
             temperature: 0.2,
         };
-        provider
-            .complete_with_tools(req)
-            .await
-            .map_err(|e| anyhow::anyhow!(
+        provider.complete_with_tools(req).await.map_err(|e| {
+            anyhow::anyhow!(
                 "provider={} model={} role={:?} (tools): {e}",
                 spec.provider,
                 spec.model,
                 spec.role,
-            ))
+            )
+        })
     }
 }
 
@@ -291,6 +314,32 @@ mod tests {
     use wiremock::matchers::{body_json_schema, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    static API_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct ProviderApiEnvGuard {
+        prev: Option<String>,
+    }
+
+    impl ProviderApiEnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let prev = std::env::var(ALLOW_PROVIDER_API_ENV).ok();
+            match value {
+                Some(value) => std::env::set_var(ALLOW_PROVIDER_API_ENV, value),
+                None => std::env::remove_var(ALLOW_PROVIDER_API_ENV),
+            }
+            Self { prev }
+        }
+    }
+
+    impl Drop for ProviderApiEnvGuard {
+        fn drop(&mut self) {
+            match self.prev.as_deref() {
+                Some(value) => std::env::set_var(ALLOW_PROVIDER_API_ENV, value),
+                None => std::env::remove_var(ALLOW_PROVIDER_API_ENV),
+            }
+        }
+    }
+
     fn tool_spec() -> ToolSpec {
         ToolSpec {
             name: "list_files".into(),
@@ -313,7 +362,10 @@ mod tests {
 
     fn tmp_workdir() -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("grokrxiv-api-test-{}", uuid::Uuid::new_v4().simple()));
+        p.push(format!(
+            "grokrxiv-api-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
@@ -336,6 +388,8 @@ mod tests {
     /// tool_use / tool_result blocks intact.
     #[tokio::test]
     async fn translates_tools_to_anthropic_format() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(Some("1"));
         let server = MockServer::start().await;
         // wiremock captures the request body when we mount with `body_json_schema`,
         // but we want to inspect the exact body we sent. Use a regular Mock that
@@ -358,7 +412,9 @@ mod tests {
             anthropic_api_key: Some("test".into()),
             ..ProviderConfig::default()
         };
-        let provider = ClaudeProvider::from_config(&cfg).unwrap().with_base_url(server.uri());
+        let provider = ClaudeProvider::from_config(&cfg)
+            .unwrap()
+            .with_base_url(server.uri());
         let mut providers: HashMap<String, Arc<dyn LLMProvider>> = HashMap::new();
         providers.insert("claude".into(), Arc::new(provider));
         let runner = ApiRunner::new(providers);
@@ -390,6 +446,8 @@ mod tests {
 
     #[tokio::test]
     async fn translates_tools_to_openai_format() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(Some("1"));
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -418,7 +476,9 @@ mod tests {
             openai_api_key: Some("test".into()),
             ..ProviderConfig::default()
         };
-        let provider = OpenAIProvider::from_config(&cfg).unwrap().with_base_url(server.uri());
+        let provider = OpenAIProvider::from_config(&cfg)
+            .unwrap()
+            .with_base_url(server.uri());
         let mut providers: HashMap<String, Arc<dyn LLMProvider>> = HashMap::new();
         providers.insert("openai".into(), Arc::new(provider));
         let runner = ApiRunner::new(providers);
@@ -448,6 +508,8 @@ mod tests {
 
     #[tokio::test]
     async fn translates_tools_to_gemini_format() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(Some("1"));
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -469,7 +531,9 @@ mod tests {
             google_api_key: Some("test".into()),
             ..ProviderConfig::default()
         };
-        let provider = GeminiProvider::from_config(&cfg).unwrap().with_base_url(server.uri());
+        let provider = GeminiProvider::from_config(&cfg)
+            .unwrap()
+            .with_base_url(server.uri());
         let mut providers: HashMap<String, Arc<dyn LLMProvider>> = HashMap::new();
         providers.insert("gemini".into(), Arc::new(provider));
         let runner = ApiRunner::new(providers);
@@ -490,11 +554,42 @@ mod tests {
 
         let reqs = server.received_requests().await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert!(body["tools"][0]["functionDeclarations"].is_array(),
-            "expected tools[0].functionDeclarations[], got {body}");
+        assert!(
+            body["tools"][0]["functionDeclarations"].is_array(),
+            "expected tools[0].functionDeclarations[], got {body}"
+        );
         assert_eq!(
             body["tools"][0]["functionDeclarations"][0]["name"],
             "list_files"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_direct_provider_api_when_not_enabled() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(None);
+        let runner = ApiRunner::new(HashMap::new());
+        let workdir = tmp_workdir();
+        let ctx = make_ctx(&workdir);
+
+        let err = runner
+            .complete_with_tools(
+                &spec("claude", "claude-test"),
+                &kickoff_messages(),
+                &[tool_spec()],
+                &ctx,
+            )
+            .await
+            .expect_err("direct API should be fail-closed by default");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("direct provider API disabled"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("--extractor api"),
+            "error should name the explicit opt-in: {msg}"
         );
     }
 

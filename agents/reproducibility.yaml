@@ -4,7 +4,7 @@ provider: openai
 # OpenAI-family routes use provider `openai` in this repo; there is no separate
 # `codex` provider alias.
 model: gpt-5.5
-runner: api
+runner: cli
 prompt_template: prompts/reproducibility.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/reproducibility_review.schema.json

@@ -4,7 +4,7 @@ provider: claude
 # Cross-reference resolution + long-context reasoning over the full paper body
 # is exactly what Opus is good at. Theorem chains can span many sections.
 model: claude-opus-4-7
-runner: api
+runner: cli
 prompt_template: prompts/extraction/theorems.md
 output_schema: schemas/extraction/theorems.schema.json
 tools:
@@ -15,5 +15,5 @@ tools:
   - resolve_label
   - submit
 max_iters: 50
-max_cost_usd: 0.80
+max_cost_usd: 1.50
 timeout_secs: 240

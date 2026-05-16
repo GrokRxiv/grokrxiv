@@ -95,7 +95,8 @@ pub fn parse_abs_html(arxiv_id: &str, html: &str) -> Result<ArxivMeta> {
     let title = scrape_meta(html, "citation_title").unwrap_or_default();
     let abstract_text = scrape_meta(html, "citation_abstract").unwrap_or_default();
     let pdf_url = scrape_meta(html, "citation_pdf_url");
-    let date_str = scrape_meta(html, "citation_date").or_else(|| scrape_meta(html, "citation_online_date"));
+    let date_str =
+        scrape_meta(html, "citation_date").or_else(|| scrape_meta(html, "citation_online_date"));
     let submitted_date = date_str.as_deref().and_then(|d| {
         // Format is "YYYY/MM/DD".
         NaiveDate::parse_from_str(d, "%Y/%m/%d").ok()
@@ -114,7 +115,9 @@ pub fn parse_abs_html(arxiv_id: &str, html: &str) -> Result<ArxivMeta> {
     let source_url = Some(format!("https://arxiv.org/abs/{arxiv_id}"));
 
     if title.is_empty() {
-        return Err(anyhow!("abs page: no citation_title meta found for {arxiv_id}"));
+        return Err(anyhow!(
+            "abs page: no citation_title meta found for {arxiv_id}"
+        ));
     }
 
     Ok(ArxivMeta {
@@ -152,10 +155,8 @@ fn scrape_meta_all(html: &str, name: &str) -> Vec<String> {
 
 fn scrape_primary_subject(html: &str) -> Option<String> {
     // <span class="primary-subject">Mathematical Physics (math-ph)</span>
-    let re = regex::Regex::new(
-        r#"<span class="primary-subject">[^<]*\(([^)]+)\)\s*</span>"#,
-    )
-    .ok()?;
+    let re =
+        regex::Regex::new(r#"<span class="primary-subject">[^<]*\(([^)]+)\)\s*</span>"#).ok()?;
     re.captures(html)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }

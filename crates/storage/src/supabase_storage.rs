@@ -216,9 +216,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/storage/v1/object/list/extracted-json"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_string(
-                    r#"[{"name":"semantic_ast.json"},{"name":"figures/1.png"}]"#,
-                ),
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"[{"name":"semantic_ast.json"},{"name":"figures/1.png"}]"#),
             )
             .expect(1)
             .mount(&server)

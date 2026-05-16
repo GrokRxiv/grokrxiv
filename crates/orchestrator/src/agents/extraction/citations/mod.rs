@@ -217,11 +217,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "scripted-d5"
         }
-        async fn run(
-            &self,
-            _spec: &AgentSpec,
-            _input: &AgentInput,
-        ) -> anyhow::Result<AgentRun> {
+        async fn run(&self, _spec: &AgentSpec, _input: &AgentInput) -> anyhow::Result<AgentRun> {
             unimplemented!("scripted runner is tool-only")
         }
         async fn complete_with_tools(
@@ -360,7 +356,10 @@ mod tests {
         // We instead skip crossref to keep the test offline: list_citation_sites
         // -> lookup_bibtex -> read_section -> submit. That still proves the
         // tool-call sequence + ExtractionRun shape.
-        std::env::set_var("GROKRXIV_CROSSREF_BASE", "http://127.0.0.1:1/_grokrxiv_block");
+        std::env::set_var(
+            "GROKRXIV_CROSSREF_BASE",
+            "http://127.0.0.1:1/_grokrxiv_block",
+        );
         let payload = json!({
             "citations": [{
                 "key": "foo2024",
@@ -404,11 +403,7 @@ mod tests {
         let run = agent.run(runner, &spec, ctx).await.expect("loop ok");
         assert_eq!(run.output, payload);
         // Verify the tool-call log has the expected sequence (submit is last).
-        let tools_called: Vec<&str> = run
-            .tool_calls
-            .iter()
-            .map(|c| c.tool.as_str())
-            .collect();
+        let tools_called: Vec<&str> = run.tool_calls.iter().map(|c| c.tool.as_str()).collect();
         assert_eq!(
             tools_called,
             vec![
@@ -422,9 +417,21 @@ mod tests {
         // list_citation_sites and lookup_bibtex must have succeeded; the
         // unreachable crossref will be ok=false with a `_error` but the loop
         // accepts that.
-        assert!(run.tool_calls[0].ok, "list_citation_sites: {:?}", run.tool_calls[0]);
-        assert!(run.tool_calls[1].ok, "lookup_bibtex: {:?}", run.tool_calls[1]);
-        assert!(run.tool_calls[3].ok, "read_section: {:?}", run.tool_calls[3]);
+        assert!(
+            run.tool_calls[0].ok,
+            "list_citation_sites: {:?}",
+            run.tool_calls[0]
+        );
+        assert!(
+            run.tool_calls[1].ok,
+            "lookup_bibtex: {:?}",
+            run.tool_calls[1]
+        );
+        assert!(
+            run.tool_calls[3].ok,
+            "read_section: {:?}",
+            run.tool_calls[3]
+        );
         assert!(run.tool_calls[4].ok, "submit ok");
         std::env::remove_var("GROKRXIV_CROSSREF_BASE");
     }

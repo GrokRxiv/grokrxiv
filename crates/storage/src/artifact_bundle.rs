@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::paper_artifacts::{
-    EXTRACTED_JSON_BUCKET, EXTRACTED_MARKDOWN_BUCKET, EMBEDDINGS_BUCKET, RAW_PDFS_BUCKET,
+    EMBEDDINGS_BUCKET, EXTRACTED_JSON_BUCKET, EXTRACTED_MARKDOWN_BUCKET, RAW_PDFS_BUCKET,
     RAW_SOURCE_BUCKET,
 };
 
@@ -136,12 +136,19 @@ mod tests {
         let ri = b.to_review_input(false);
         let value = serde_json::to_value(&ri).unwrap();
         let validator = jsonschema::validator_for(&schema).expect("compile review_input schema");
-        let errs: Vec<String> = validator.iter_errors(&value).map(|e| e.to_string()).collect();
+        let errs: Vec<String> = validator
+            .iter_errors(&value)
+            .map(|e| e.to_string())
+            .collect();
         if !errs.is_empty() {
             panic!("validation failed: {}", errs.join("; "));
         }
         // sanity: per-artifact buckets are baked in
-        assert!(ri.pdf_uri.as_deref().unwrap().starts_with("supabase://raw-pdfs/"));
+        assert!(ri
+            .pdf_uri
+            .as_deref()
+            .unwrap()
+            .starts_with("supabase://raw-pdfs/"));
         assert!(ri
             .semantic_ast_uri
             .as_deref()

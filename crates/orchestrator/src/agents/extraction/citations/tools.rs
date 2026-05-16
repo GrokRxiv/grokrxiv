@@ -59,8 +59,9 @@ impl Tool for ListCitationSitesTool {
     }
 }
 
-/// Pure scanner. Exposed `pub(super)` for unit tests.
-pub(super) fn extract_citation_sites(body: &str) -> Vec<Value> {
+/// Pure scanner. Exposed crate-wide so the ingest pipeline can use the same
+/// deterministic fallback when an LLM citation run returns an empty payload.
+pub(crate) fn extract_citation_sites(body: &str) -> Vec<Value> {
     let sections = section_index(body);
     let bytes = body.as_bytes();
     let mut out: Vec<Value> = Vec::new();
@@ -82,7 +83,9 @@ pub(super) fn extract_citation_sites(body: &str) -> Vec<Value> {
             // Split on ; while respecting optional whitespace.
             for raw_part in trimmed.split(';') {
                 let p = raw_part.trim();
-                let Some(rest) = p.strip_prefix('@') else { continue };
+                let Some(rest) = p.strip_prefix('@') else {
+                    continue;
+                };
                 let key = parse_cite_key(rest);
                 if key.is_empty() {
                     continue;
@@ -430,16 +433,14 @@ impl Tool for SearchCorpusTool {
             return Ok(json!({ "results": [] }));
         };
 
-        let results = run_corpus_search(&db_url, query, k).await.unwrap_or_default();
+        let results = run_corpus_search(&db_url, query, k)
+            .await
+            .unwrap_or_default();
         Ok(json!({ "results": results }))
     }
 }
 
-async fn run_corpus_search(
-    db_url: &str,
-    query: &str,
-    k: usize,
-) -> anyhow::Result<Vec<Value>> {
+async fn run_corpus_search(db_url: &str, query: &str, k: usize) -> anyhow::Result<Vec<Value>> {
     use sqlx::postgres::PgPoolOptions;
 
     let pool = PgPoolOptions::new()
@@ -451,12 +452,7 @@ async fn run_corpus_search(
     // ILIKE fallback — pgvector path can be wired later when an `embedding`
     // column lands on `papers`. Today's schema (papers: id/arxiv_id/title/
     // authors/abstract/field/...) only supports lexical search.
-    let rows = sqlx::query_as::<_, (
-        uuid::Uuid,
-        String,
-        String,
-        Option<String>,
-    )>(
+    let rows = sqlx::query_as::<_, (uuid::Uuid, String, String, Option<String>)>(
         "SELECT id, arxiv_id, title, abstract \
          FROM papers \
          WHERE title ILIKE $1 OR abstract ILIKE $1 \
@@ -546,23 +542,24 @@ pub(super) fn resolve_section(body: &str, id: &str) -> Option<(String, String)> 
     let want_idx: Option<usize> = if let Some(rest) = id.strip_prefix("sec-") {
         rest.parse::<usize>().ok().and_then(|n| n.checked_sub(1))
     } else {
-        sections.iter().position(|(h, _)| slugify(h) == slugify(id) || h == id)
+        sections
+            .iter()
+            .position(|(h, _)| slugify(h) == slugify(id) || h == id)
     };
     let idx = want_idx?;
     if idx >= sections.len() {
         return None;
     }
     let (heading, start) = sections[idx].clone();
-    let end = sections
-        .get(idx + 1)
-        .map(|(_, e)| *e)
-        .unwrap_or(body.len());
+    let end = sections.get(idx + 1).map(|(_, e)| *e).unwrap_or(body.len());
     // Skip the heading line itself.
     let heading_line_end = body[start..]
         .find('\n')
         .map(|n| start + n + 1)
         .unwrap_or(end);
-    let body_md = body[heading_line_end.min(end)..end].trim_matches('\n').to_string();
+    let body_md = body[heading_line_end.min(end)..end]
+        .trim_matches('\n')
+        .to_string();
     Some((heading, body_md))
 }
 
@@ -615,16 +612,14 @@ mod tests {
         let body = "Background work [@foo; @bar; @baz] is large.\n";
         let sites = extract_citation_sites(body);
         assert_eq!(sites.len(), 3);
-        let keys: Vec<&str> = sites
-            .iter()
-            .map(|s| s["key"].as_str().unwrap())
-            .collect();
+        let keys: Vec<&str> = sites.iter().map(|s| s["key"].as_str().unwrap()).collect();
         assert_eq!(keys, vec!["foo", "bar", "baz"]);
     }
 
     #[test]
     fn list_citation_sites_assigns_section() {
-        let body = "# Title\nstuff.\n\n## Intro\n\nWe build on [@foo].\n\n## Methods\n\nMore [@bar].\n";
+        let body =
+            "# Title\nstuff.\n\n## Intro\n\nWe build on [@foo].\n\n## Methods\n\nMore [@bar].\n";
         let sites = extract_citation_sites(body);
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0]["section"], "Intro");

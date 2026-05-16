@@ -1,7 +1,8 @@
 //! `grokrxiv doctor` — preflight checks for env, DB, runners, publisher.
 //!
 //! Returns a structured `DoctorReport` so the CLI can emit JSON or human text.
-//! Critical checks (DB URL + at least one API runner) set the exit code to 1.
+//! Critical checks (DB URL + at least one configured review runner) set the
+//! exit code to 1.
 
 use serde::Serialize;
 use std::process::Command;
@@ -144,7 +145,7 @@ impl DoctorReport {
         }
     }
 
-    /// True if a critical check failed (DB URL or zero API runners).
+    /// True if a critical check failed (DB URL or no configured review runner).
     pub fn has_critical_failure(&self) -> bool {
         let db_fail = matches!(
             self.database_url.as_ref().map(|c| c.status),
@@ -157,7 +158,23 @@ impl DoctorReport {
         ]
         .iter()
         .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
-        db_fail || !any_api_ok
+        let any_cli_ok = [
+            &self.cli_runners.claude,
+            &self.cli_runners.codex,
+            &self.cli_runners.gemini,
+        ]
+        .iter()
+        .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
+        let any_cloud_ok = [
+            &self.cloud_runners.vercel_open_agents,
+            &self.cloud_runners.e2b,
+        ]
+        .iter()
+        .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
+        let any_local_ok = [&self.local_inference.litellm, &self.local_inference.ollama]
+            .iter()
+            .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
+        db_fail || !(any_api_ok || any_cli_ok || any_cloud_ok || any_local_ok)
     }
 
     /// Pretty-print the report to stdout.
@@ -266,8 +283,7 @@ async fn check_database(report: &mut DoctorReport) {
         )));
     }
     // Migration check: best effort, not performed here to keep doctor offline.
-    report.supabase_migrations =
-        Some(CheckResult::skipped("not checked (run `just supabase`)"));
+    report.supabase_migrations = Some(CheckResult::skipped("not checked (run `just supabase`)"));
 }
 
 async fn check_api_runners(report: &mut DoctorReport) {
@@ -370,16 +386,16 @@ async fn check_local_inference(report: &mut DoctorReport) {
         Ok(c) => c,
         Err(_) => return,
     };
-    report.local_inference.litellm = Some(match std::env::var("GROKRXIV_LITELLM_URL")
-        .or_else(|_| std::env::var("LITELLM_URL"))
-    {
-        Ok(url) => match client.get(format!("{url}/health")).send().await {
-            Ok(r) if r.status().is_success() => CheckResult::ok(format!("{url} reachable")),
-            Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
-            Err(e) => CheckResult::fail(format!("{url} unreachable: {e}")),
+    report.local_inference.litellm = Some(
+        match std::env::var("GROKRXIV_LITELLM_URL").or_else(|_| std::env::var("LITELLM_URL")) {
+            Ok(url) => match client.get(format!("{url}/health")).send().await {
+                Ok(r) if r.status().is_success() => CheckResult::ok(format!("{url} reachable")),
+                Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
+                Err(e) => CheckResult::fail(format!("{url} unreachable: {e}")),
+            },
+            Err(_) => CheckResult::skipped("GROKRXIV_LITELLM_URL unset"),
         },
-        Err(_) => CheckResult::skipped("GROKRXIV_LITELLM_URL unset"),
-    });
+    );
     report.local_inference.ollama = Some(match std::env::var("OLLAMA_HOST") {
         Ok(url) => {
             let normalized = if url.starts_with("http") {
@@ -388,7 +404,9 @@ async fn check_local_inference(report: &mut DoctorReport) {
                 format!("http://{url}")
             };
             match client.get(format!("{normalized}/api/tags")).send().await {
-                Ok(r) if r.status().is_success() => CheckResult::ok(format!("{normalized} reachable")),
+                Ok(r) if r.status().is_success() => {
+                    CheckResult::ok(format!("{normalized} reachable"))
+                }
                 Ok(r) => CheckResult::fail(format!("{normalized} returned HTTP {}", r.status())),
                 Err(e) => CheckResult::fail(format!("{normalized} unreachable: {e}")),
             }
@@ -408,14 +426,12 @@ fn check_publisher(report: &mut DoctorReport) {
 /// missing); LaTeXML is optional (Skipped if missing — the TeX pipeline
 /// falls back to pandoc-only).
 fn check_doc_converters(report: &mut DoctorReport) {
-    let pandoc_bin =
-        std::env::var("GROKRXIV_PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
+    let pandoc_bin = std::env::var("GROKRXIV_PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
     report.pandoc = Some(match run_version(&pandoc_bin) {
         Ok(out) => match parse_pandoc_major(&out) {
-            Some(major) if major >= 3 => CheckResult::ok(format!(
-                "pandoc {} (>= 3.0)",
-                first_version_token(&out)
-            )),
+            Some(major) if major >= 3 => {
+                CheckResult::ok(format!("pandoc {} (>= 3.0)", first_version_token(&out)))
+            }
             Some(major) => CheckResult::fail(format!(
                 "pandoc major version {major} < 3.0 (got: {})",
                 first_version_token(&out)
@@ -462,7 +478,12 @@ fn parse_pandoc_major(version_output: &str) -> Option<u32> {
 fn first_version_token(version_output: &str) -> String {
     let first = version_output.lines().next().unwrap_or("");
     for tok in first.split_whitespace() {
-        if tok.split('.').next().and_then(|s| s.parse::<u32>().ok()).is_some() {
+        if tok
+            .split('.')
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_some()
+        {
             return tok.to_string();
         }
     }
@@ -475,8 +496,8 @@ fn first_version_token(version_output: &str) -> String {
 /// at `http://127.0.0.1:54321` and try anyway, since the developer-facing
 /// instruction is `supabase start`.
 async fn check_supabase_storage(report: &mut DoctorReport) {
-    let url = std::env::var("SUPABASE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:54321".to_string());
+    let url =
+        std::env::var("SUPABASE_URL").unwrap_or_else(|_| "http://127.0.0.1:54321".to_string());
     let target = format!("{}/storage/v1/health", url.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -496,9 +517,7 @@ async fn check_supabase_storage(report: &mut DoctorReport) {
             CheckResult::ok(format!("{target} reachable (HTTP {})", r.status()))
         }
         Ok(r) => CheckResult::fail(format!("{target} returned HTTP {}", r.status())),
-        Err(e) => CheckResult::skipped(format!(
-            "{target} unreachable: {e} (try `supabase start`)"
-        )),
+        Err(e) => CheckResult::skipped(format!("{target} unreachable: {e} (try `supabase start`)")),
     });
 }
 

@@ -910,9 +910,7 @@ mod tests {
             eprintln!("skipping: DATABASE_URL not set");
             return;
         };
-        let pool = PgPool::connect(&db_url)
-            .await
-            .expect("connect to test DB");
+        let pool = PgPool::connect(&db_url).await.expect("connect to test DB");
 
         // 1. Insert a fresh paper row to scope the test data.
         let arxiv_id = format!("fp-rpt3b-b6-test-{}", Uuid::new_v4());
@@ -929,50 +927,44 @@ mod tests {
         .expect("insert paper");
 
         // 2. First review: insert + add a pending moderation row.
-        let first =
-            insert_review(&pool, paper_id, serde_json::json!({}), None)
-                .await
-                .expect("first insert_review");
+        let first = insert_review(&pool, paper_id, serde_json::json!({}), None)
+            .await
+            .expect("first insert_review");
         insert_moderation_pending(&pool, first)
             .await
             .expect("insert mq pending");
 
-        let first_state: (String,) = sqlx::query_as(
-            "select state from moderation_queue where review_id = $1",
-        )
-        .bind(first)
-        .fetch_one(&pool)
-        .await
-        .expect("read first mq state");
+        let first_state: (String,) =
+            sqlx::query_as("select state from moderation_queue where review_id = $1")
+                .bind(first)
+                .fetch_one(&pool)
+                .await
+                .expect("read first mq state");
         assert_eq!(first_state.0, "pending");
 
         // 3. Second review for the same paper should auto-supersede the
         //    first AND transition its mq row.
-        let second =
-            insert_review(&pool, paper_id, serde_json::json!({}), None)
-                .await
-                .expect("second insert_review");
+        let second = insert_review(&pool, paper_id, serde_json::json!({}), None)
+            .await
+            .expect("second insert_review");
         assert_ne!(first, second);
 
-        let first_state_after: (String,) = sqlx::query_as(
-            "select state from moderation_queue where review_id = $1",
-        )
-        .bind(first)
-        .fetch_one(&pool)
-        .await
-        .expect("read first mq state after supersede");
+        let first_state_after: (String,) =
+            sqlx::query_as("select state from moderation_queue where review_id = $1")
+                .bind(first)
+                .fetch_one(&pool)
+                .await
+                .expect("read first mq state after supersede");
         assert_eq!(
             first_state_after.0, "superseded",
             "prior moderation_queue row must transition to 'superseded' after supersede"
         );
 
-        let first_status: (String,) = sqlx::query_as(
-            "select status from reviews where id = $1",
-        )
-        .bind(first)
-        .fetch_one(&pool)
-        .await
-        .expect("read first review status");
+        let first_status: (String,) = sqlx::query_as("select status from reviews where id = $1")
+            .bind(first)
+            .fetch_one(&pool)
+            .await
+            .expect("read first review status");
         assert_eq!(first_status.0, "withdrawn");
 
         // 4. Clean up: cascade delete via papers.id (reviews + mq have

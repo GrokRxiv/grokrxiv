@@ -52,9 +52,7 @@ pub struct EnqueuedJob {
 }
 
 /// Stub handler for `POST /internal/v1/review`.
-pub async fn review_post(
-    Json(body): Json<ReviewRequest>,
-) -> (StatusCode, Json<EnqueuedJob>) {
+pub async fn review_post(Json(body): Json<ReviewRequest>) -> (StatusCode, Json<EnqueuedJob>) {
     tracing::info!(source = %body.source, "internal/v1/review: stub enqueue");
     (
         StatusCode::ACCEPTED,

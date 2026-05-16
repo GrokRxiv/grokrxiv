@@ -46,8 +46,7 @@ impl Tool for ArxivLookupTool {
             .and_then(Value::as_str)
             .unwrap_or(ctx.arxiv_id)
             .to_string();
-        let base =
-            std::env::var("GROKRXIV_ARXIV_BASE").unwrap_or_else(|_| ARXIV_BASE.to_string());
+        let base = std::env::var("GROKRXIV_ARXIV_BASE").unwrap_or_else(|_| ARXIV_BASE.to_string());
         let url = format!("{}?id_list={}", base, id);
         let resp = ctx
             .http
@@ -61,7 +60,10 @@ impl Tool for ArxivLookupTool {
                 "http_status": resp.status().as_u16(),
             }));
         }
-        let text = resp.text().await.map_err(|e| anyhow::anyhow!("arxiv body: {e}"))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| anyhow::anyhow!("arxiv body: {e}"))?;
         // Pull the first <entry>...</entry>. Atom is regular enough that we
         // can scrape with substring matches; we avoid pulling in an XML
         // parser for this single-use tool.

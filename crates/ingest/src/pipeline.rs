@@ -86,7 +86,11 @@ pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
     // 3. Build the extract, preferring TeX when present (Stage 2).
     let (extract, semantic_ast) = if let Some(t) = tex_extract {
         info!(arxiv_id, "ingest source=tex");
-        let title = if t.title.is_empty() { meta.title.clone() } else { t.title };
+        let title = if t.title.is_empty() {
+            meta.title.clone()
+        } else {
+            t.title
+        };
         let abstract_text = if t.abstract_text.is_empty() {
             meta.abstract_text.clone()
         } else {

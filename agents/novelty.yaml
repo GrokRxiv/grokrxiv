@@ -10,7 +10,7 @@ provider: gemini
 # Flash has no reasoning overhead and produced verifier_status=pass on every
 # prior smoke run.
 model: gemini-2.5-flash
-runner: api
+runner: cli
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/novelty_review.schema.json

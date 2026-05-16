@@ -8,6 +8,7 @@
 //! rejected so callers don't silently get "ran on host when you asked for
 //! container".
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -24,6 +25,8 @@ use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
+use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
+use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
 
 /// FP-RPT3b B5: structured errors returned by `CliRunner::run`. Wrapped into
 /// the `anyhow::Error` chain so callers can detect them via
@@ -88,6 +91,23 @@ fn detect_quota_signal(stderr: &str) -> Option<String> {
 /// unset.
 const DEFAULT_CLI_TIMEOUT_SECS: u64 = 360;
 
+/// Provider API credentials that must not leak into local CLI children.
+///
+/// The CLIs should use their own logged-in account state for subscription
+/// billing. Keeping API keys in the parent process is fine for explicit
+/// `--runner api` / `--extractor api`, but a CLI child must not silently switch
+/// to direct provider API billing because it inherited one of these vars.
+const PROVIDER_API_ENV_VARS_TO_SCRUB: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+    "VLLM_API_KEY",
+];
+
 /// Name of the Claude skill that enforces JSON-only output.
 const CLAUDE_SKILL_NAME: &str = "grokrxiv-review";
 
@@ -130,12 +150,15 @@ impl CliRunner {
     /// unsupported provider.
     pub fn binary_for(&self, provider: &str) -> anyhow::Result<String> {
         match provider {
-            "claude" => Ok(std::env::var("GROKRXIV_CLAUDE_BIN")
-                .unwrap_or_else(|_| "claude".to_string())),
-            "openai" => Ok(std::env::var("GROKRXIV_CODEX_BIN")
-                .unwrap_or_else(|_| "codex".to_string())),
-            "gemini" => Ok(std::env::var("GROKRXIV_GEMINI_BIN")
-                .unwrap_or_else(|_| "gemini".to_string())),
+            "claude" => {
+                Ok(std::env::var("GROKRXIV_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()))
+            }
+            "openai" => {
+                Ok(std::env::var("GROKRXIV_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()))
+            }
+            "gemini" => {
+                Ok(std::env::var("GROKRXIV_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()))
+            }
             other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
         }
     }
@@ -164,11 +187,7 @@ impl AgentRunner for CliRunner {
         "cli"
     }
 
-    async fn run(
-        &self,
-        spec: &AgentSpec,
-        input: &AgentInput,
-    ) -> anyhow::Result<AgentRun> {
+    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
         // 1. Reject Container sandbox explicitly — RPT2 Track B is host-only.
         if matches!(spec.sandbox, SandboxPolicy::Container) {
             anyhow::bail!(
@@ -196,13 +215,14 @@ impl AgentRunner for CliRunner {
 
         // 3. First attempt.
         let built = build_command(self, spec, &prompt)?;
-        let raw_stdout = match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
-            Ok(s) => s,
-            Err(e) => {
-                cleanup_schema_path(&built.schema_path);
-                return Err(e);
-            }
-        };
+        let raw_stdout =
+            match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
+                Ok(s) => s,
+                Err(e) => {
+                    cleanup_schema_path(&built.schema_path);
+                    return Err(e);
+                }
+            };
         cleanup_schema_path(&built.schema_path);
 
         // 4. Extract and validate JSON. On parse OR schema-validation failure,
@@ -212,26 +232,52 @@ impl AgentRunner for CliRunner {
             Ok(v) => v,
             Err(first_err) => {
                 let corrective = format!(
-                    "Your previous output did not parse as JSON. Please output JSON only, no prose. Try again:\n{schema}\n{prompt}",
+                    "Your previous output failed JSON/schema validation.\n\
+                     Validation error:\n{first_err}\n\n\
+                     Return exactly one JSON object and make it validate against this schema. \
+                     Do not include prose, markdown fences, or extra properties.\n\n\
+                     Schema:\n{schema}\n\n\
+                     Original task:\n{prompt}",
                     schema = serde_json::to_string(&spec.schema).unwrap_or_default(),
                     prompt = prompt,
                 );
                 let built2 = build_command(self, spec, &corrective)?;
-                let raw2 = match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        cleanup_schema_path(&built2.schema_path);
-                        return Err(e);
-                    }
-                };
+                let raw2 =
+                    match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            cleanup_schema_path(&built2.schema_path);
+                            return Err(e);
+                        }
+                    };
                 cleanup_schema_path(&built2.schema_path);
                 let extracted2 = extract_json_text(&spec.provider, &raw2);
-                parse_and_validate(&extracted2, &spec.schema).map_err(|second_err| {
-                    anyhow::anyhow!(
-                        "CliRunner parse/validate failure after corrective retry for role {role:?}: first={first_err}; retry={second_err}",
-                        role = spec.role,
-                    )
-                })?
+                match parse_and_validate(&extracted2, &spec.schema) {
+                    Ok(v) => v,
+                    Err(second_err) => {
+                        if let Some(repaired) = repair_review_output(
+                            spec.role,
+                            &extracted2,
+                            &spec.schema,
+                            &input.artifact,
+                        )
+                        .or_else(|| {
+                            repair_review_output(
+                                spec.role,
+                                &extracted,
+                                &spec.schema,
+                                &input.artifact,
+                            )
+                        }) {
+                            repaired
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "CliRunner parse/validate failure after corrective retry for role {role:?}: first={first_err}; retry={second_err}",
+                                role = spec.role,
+                            ));
+                        }
+                    }
+                }
             }
         };
 
@@ -259,28 +305,341 @@ impl AgentRunner for CliRunner {
         tools: &[ToolSpec],
         ctx: &ToolCtx<'_>,
     ) -> anyhow::Result<ToolCompletion> {
-        // FP6 / RPT3 Track 8 framework: claude and codex CLIs both have
-        // tool-call streaming, but their wire formats diverge and the
-        // contracts are still moving. For Wave 1 we ship a single explicit
-        // escape valve: when `GROKRXIV_EXTRACTION_TOOL_FALLBACK=api` is set,
-        // dispatch through an in-process ApiRunner using the same
-        // provider name. This keeps the framework end-to-end testable
-        // without coupling Wave 1 to two CLIs that are still drifting.
+        // Legacy escape valve kept for old smoke scripts. The canonical
+        // operator surface is now `GROKRXIV_EXTRACTOR=api`, which selects the
+        // ApiRunner before this method is called.
         let fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK")
             .ok()
             .filter(|s| s == "api");
         if fallback.is_some() {
+            if !direct_provider_api_allowed() {
+                anyhow::bail!(
+                    "GROKRXIV_EXTRACTION_TOOL_FALLBACK=api refused because direct provider API \
+                     is disabled for this CLI run; use --extractor api to allow API billing, \
+                     or --extractor cli to use local logged-in CLIs"
+                );
+            }
             let providers = build_api_fallback_providers(spec)?;
             let api = super::api::ApiRunner::new(providers);
             return api.complete_with_tools(spec, messages, tools, ctx).await;
         }
-        anyhow::bail!(
-            "CliRunner.complete_with_tools: `{}` CLI does not yet support the GrokRxiv \
-             tool-call protocol. Either set `GROKRXIV_EXTRACTION_TOOL_FALLBACK=api` to \
-             dispatch via the provider API for this stage, or run the extraction agent \
-             through the `api` runner (--runner api).",
-            spec.provider
-        )
+
+        if !matches!(spec.provider.as_str(), "claude" | "gemini") {
+            anyhow::bail!(
+                "CliRunner.complete_with_tools: provider `{}` is not supported for native \
+                 CLI extraction; set GROKRXIV_EXTRACTOR=api or --extractor api for this run",
+                spec.provider
+            );
+        }
+
+        let started = Instant::now();
+        let timeout_dur = cli_timeout();
+        log_auth_path_once(&spec.provider);
+
+        let prompt = render_tool_prompt(spec, messages, tools, ctx)?;
+        let built = build_tool_command(self, spec, &prompt)?;
+        let raw_stdout =
+            match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
+                Ok(s) => s,
+                Err(e) => return Err(e),
+            };
+
+        match parse_tool_completion(&spec.provider, &raw_stdout, tools) {
+            Ok(mut completion) => {
+                completion.raw = enrich_cli_tool_raw(completion.raw, started.elapsed());
+                Ok(completion)
+            }
+            Err(first_err) => {
+                let corrective = format!(
+                    "{prompt}\n\n\
+                     Your previous response could not be parsed as a GrokRxiv tool-call \
+                     envelope.\n\
+                     Error: {first_err}\n\n\
+                     Return exactly one JSON object with this shape and no markdown fences:\n\
+                     {{\"text\":\"optional short note\",\"tool_calls\":[{{\"id\":\"call_1\",\
+                     \"name\":\"tool_name\",\"arguments\":{{}}}}]}}\n\
+                     Use only the available tool names. If the extraction is complete, call \
+                     submit with the final payload."
+                );
+                let built2 = build_tool_command(self, spec, &corrective)?;
+                let raw2 =
+                    match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
+                        Ok(s) => s,
+                        Err(e) => return Err(e),
+                    };
+                parse_tool_completion(&spec.provider, &raw2, tools)
+                    .map(|mut completion| {
+                        completion.raw = enrich_cli_tool_raw(completion.raw, started.elapsed());
+                        completion
+                    })
+                    .map_err(|second_err| {
+                        anyhow::anyhow!(
+                            "CliRunner tool-envelope parse failure after corrective retry for \
+                             provider={} model={}: first={first_err}; retry={second_err}",
+                            spec.provider,
+                            spec.model,
+                        )
+                    })
+            }
+        }
+    }
+}
+
+fn enrich_cli_tool_raw(mut raw: serde_json::Value, elapsed: Duration) -> serde_json::Value {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert(
+            "cli_latency_ms".to_string(),
+            serde_json::Value::Number((elapsed.as_millis() as u64).into()),
+        );
+        return raw;
+    }
+    serde_json::json!({
+        "raw": raw,
+        "cli_latency_ms": elapsed.as_millis() as u64,
+    })
+}
+
+fn render_tool_prompt(
+    spec: &AgentSpec,
+    messages: &[Message],
+    tools: &[ToolSpec],
+    ctx: &ToolCtx<'_>,
+) -> anyhow::Result<String> {
+    let tools_json = serde_json::to_string_pretty(tools)
+        .map_err(|e| anyhow::anyhow!("serialise extraction tools: {e}"))?;
+    let messages_json = serde_json::to_string_pretty(messages)
+        .map_err(|e| anyhow::anyhow!("serialise extraction messages: {e}"))?;
+    Ok(format!(
+        "You are GrokRxiv's staged extraction tool-call planner.\n\
+         Provider: {provider}\n\
+         Model: {model}\n\
+         Paper arXiv id: {arxiv_id}\n\
+         Workdir: {workdir}\n\n\
+         You do not execute tools directly. GrokRxiv executes them after you propose calls.\n\
+         Return ONLY one JSON object, with no prose and no markdown fences:\n\
+         {{\"text\":\"optional short note\",\"tool_calls\":[{{\"id\":\"call_1\",\
+         \"name\":\"tool_name\",\"arguments\":{{}}}}]}}\n\n\
+         Rules:\n\
+         - `tool_calls` must be an array containing at least one call.\n\
+         - `name` must exactly match one available tool.\n\
+         - `arguments` must be a JSON object matching that tool schema.\n\
+         - To finish the extraction, call `submit` with the final schema payload.\n\
+         - Do not claim a tool result until GrokRxiv sends it back in the conversation.\n\n\
+         Available tools:\n{tools_json}\n\n\
+         Conversation so far:\n{messages_json}\n",
+        provider = spec.provider,
+        model = spec.model,
+        arxiv_id = ctx.arxiv_id,
+        workdir = ctx.workdir.display(),
+    ))
+}
+
+fn build_tool_command(
+    runner: &CliRunner,
+    spec: &AgentSpec,
+    prompt: &str,
+) -> anyhow::Result<BuiltCommand> {
+    let program = runner.binary_for(&spec.provider)?;
+    let args = match spec.provider.as_str() {
+        "claude" => vec![
+            "-p".to_string(),
+            "-".to_string(),
+            "--model".to_string(),
+            spec.model.clone(),
+            "--output-format".to_string(),
+            "json".to_string(),
+        ],
+        "gemini" => vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--model".to_string(),
+            spec.model.clone(),
+            "--approval-mode".to_string(),
+            "plan".to_string(),
+            "-o".to_string(),
+            "json".to_string(),
+        ],
+        other => anyhow::bail!("unsupported provider for CLI tool loop: {other}"),
+    };
+    Ok(BuiltCommand {
+        program,
+        args,
+        stdin_payload: prompt.to_string(),
+        schema_path: None,
+    })
+}
+
+fn parse_tool_completion(
+    provider: &str,
+    raw_stdout: &str,
+    tools: &[ToolSpec],
+) -> anyhow::Result<ToolCompletion> {
+    let extracted = extract_json_text(provider, raw_stdout);
+    let envelope = parse_tool_envelope(&extracted, tools)?;
+    Ok(ToolCompletion {
+        finish_reason: if envelope.tool_calls.is_empty() {
+            FinishReason::Stop
+        } else {
+            FinishReason::ToolUse
+        },
+        text: envelope.text,
+        tool_calls: envelope.tool_calls,
+        usage: usage_from_cli_wrapper(provider, raw_stdout),
+        raw: raw_cli_payload(provider, raw_stdout, &extracted),
+    })
+}
+
+#[derive(Debug)]
+struct ParsedToolEnvelope {
+    text: String,
+    tool_calls: Vec<ProviderToolCall>,
+}
+
+fn parse_tool_envelope(extracted: &str, tools: &[ToolSpec]) -> anyhow::Result<ParsedToolEnvelope> {
+    let cleaned = strip_code_fences(extracted.trim());
+    let value: serde_json::Value = serde_json::from_str(cleaned)
+        .map_err(|e| anyhow::anyhow!("not valid tool-envelope JSON: {e}; raw={extracted:?}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("tool envelope must be a JSON object"))?;
+    let text = object
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let calls_value = object
+        .get("tool_calls")
+        .ok_or_else(|| anyhow::anyhow!("tool envelope missing `tool_calls` array"))?;
+    let calls = calls_value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("`tool_calls` must be an array"))?;
+
+    let allowed: HashSet<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    let mut out = Vec::with_capacity(calls.len());
+    for (idx, call) in calls.iter().enumerate() {
+        let call_obj = call
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("tool_calls[{idx}] must be an object"))?;
+        let name = call_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("tool_calls[{idx}].name must be a string"))?;
+        if !allowed.contains(name) {
+            anyhow::bail!("tool_calls[{idx}] used unknown tool `{name}`");
+        }
+        let arguments = call_obj
+            .get("arguments")
+            .or_else(|| call_obj.get("input"))
+            .or_else(|| call_obj.get("parameters"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !arguments.is_object() {
+            anyhow::bail!("tool_calls[{idx}].arguments must be a JSON object");
+        }
+        let id = call_obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("cli_call_{}", idx + 1));
+        out.push(ProviderToolCall {
+            id,
+            name: name.to_string(),
+            arguments,
+        });
+    }
+
+    Ok(ParsedToolEnvelope {
+        text,
+        tool_calls: out,
+    })
+}
+
+fn raw_cli_payload(provider: &str, raw_stdout: &str, extracted: &str) -> serde_json::Value {
+    let wrapper = serde_json::from_str::<serde_json::Value>(raw_stdout.trim())
+        .unwrap_or_else(|_| serde_json::Value::String(raw_stdout.to_string()));
+    serde_json::json!({
+        "provider": provider,
+        "wrapper": wrapper,
+        "extracted": extracted,
+    })
+}
+
+fn usage_from_cli_wrapper(provider: &str, raw_stdout: &str) -> Usage {
+    let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(raw_stdout.trim()) else {
+        return Usage::default();
+    };
+    match provider {
+        "claude" => {
+            let usage = wrapper.get("usage").unwrap_or(&serde_json::Value::Null);
+            Usage {
+                tokens_in: u32_field(usage, &["input_tokens", "tokens_in", "prompt_tokens"]),
+                tokens_out: u32_field(usage, &["output_tokens", "tokens_out", "completion_tokens"]),
+                cache_hits: u32_field(
+                    usage,
+                    &[
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_hits",
+                    ],
+                ),
+            }
+        }
+        "gemini" => {
+            let stats = wrapper.get("stats").unwrap_or(&serde_json::Value::Null);
+            Usage {
+                tokens_in: find_nested_token_count(
+                    stats,
+                    &[
+                        "prompt_tokens",
+                        "input_tokens",
+                        "tokens_in",
+                        "promptTokenCount",
+                    ],
+                ),
+                tokens_out: find_nested_token_count(
+                    stats,
+                    &[
+                        "completion_tokens",
+                        "output_tokens",
+                        "tokens_out",
+                        "candidatesTokenCount",
+                    ],
+                ),
+                cache_hits: find_nested_token_count(
+                    stats,
+                    &["cached_tokens", "cache_hits", "cachedContentTokenCount"],
+                ),
+            }
+        }
+        _ => Usage::default(),
+    }
+}
+
+fn u32_field(value: &serde_json::Value, keys: &[&str]) -> u32 {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_u64()))
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32
+}
+
+fn find_nested_token_count(value: &serde_json::Value, keys: &[&str]) -> u32 {
+    if let Some(n) = keys
+        .iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_u64()))
+    {
+        return n.min(u32::MAX as u64) as u32;
+    }
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| find_nested_token_count(item, keys))
+            .sum(),
+        serde_json::Value::Object(map) => map
+            .values()
+            .map(|item| find_nested_token_count(item, keys))
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -288,8 +647,9 @@ impl AgentRunner for CliRunner {
 /// environment so this works in the same shell that invoked the CLI.
 fn build_api_fallback_providers(
     spec: &AgentSpec,
-) -> anyhow::Result<std::collections::HashMap<String, std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>>
-{
+) -> anyhow::Result<
+    std::collections::HashMap<String, std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>,
+> {
     use grokrxiv_llm_adapter::{provider_by_name, ProviderConfig};
     let cfg = ProviderConfig::from_env();
     let providers_iter = [spec.provider.as_str()];
@@ -420,6 +780,13 @@ async fn exec_and_capture(
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new(&built.program);
     cmd.args(&built.args);
+    scrub_provider_api_env(&mut cmd);
+    tracing::info!(
+        provider = %provider,
+        program = %built.program,
+        api_env_scrubbed = true,
+        "CLI subprocess API env scrubbed"
+    );
 
     // Only `claude` reads its prompt from stdin in our wiring. For codex /
     // gemini the prompt is in argv, but we still set stdin to null to avoid
@@ -496,6 +863,20 @@ async fn exec_and_capture(
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(stdout)
+}
+
+fn direct_provider_api_allowed() -> bool {
+    matches!(
+        std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+fn scrub_provider_api_env(cmd: &mut Command) {
+    for key in PROVIDER_API_ENV_VARS_TO_SCRUB {
+        cmd.env_remove(key);
+    }
+    cmd.env("GROKRXIV_CLI_API_ENV_SCRUBBED", "1");
 }
 
 /// Extract the JSON payload from a CLI's raw stdout. Claude wraps the
@@ -602,6 +983,13 @@ fn parse_and_validate(
     let parsed: serde_json::Value = serde_json::from_str(cleaned)
         .map_err(|e| anyhow::anyhow!("not valid JSON: {e}; raw={extracted:?}"))?;
 
+    validate_parsed(parsed, schema)
+}
+
+fn validate_parsed(
+    parsed: serde_json::Value,
+    schema: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
     // Empty schema {} = no constraint. Skip validation in that case so unit
     // tests with stub specs keep working.
     if schema.is_null()
@@ -612,11 +1000,338 @@ fn parse_and_validate(
 
     let validator = jsonschema::validator_for(schema)
         .map_err(|e| anyhow::anyhow!("invalid role schema: {e}"))?;
-    let errors: Vec<String> = validator.iter_errors(&parsed).map(|e| e.to_string()).collect();
+    let errors: Vec<String> = validator
+        .iter_errors(&parsed)
+        .map(|e| e.to_string())
+        .collect();
     if !errors.is_empty() {
         anyhow::bail!("schema validation failed: {}", errors.join("; "));
     }
     Ok(parsed)
+}
+
+fn repair_review_output(
+    role: grokrxiv_schemas::AgentRole,
+    extracted: &str,
+    schema: &serde_json::Value,
+    artifact: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    use grokrxiv_schemas::AgentRole;
+
+    let repaired = match role {
+        AgentRole::Novelty => {
+            let parsed = parse_json_lenient(extracted)?;
+            repair_novelty_review(parsed)?
+        }
+        AgentRole::Citation => parse_json_lenient(extracted)
+            .and_then(repair_citation_review)
+            .or_else(|| Some(fallback_citation_review(artifact)))?,
+        _ => return None,
+    };
+
+    validate_parsed(repaired, schema).ok()
+}
+
+fn parse_json_lenient(extracted: &str) -> Option<serde_json::Value> {
+    let cleaned = strip_code_fences(extracted.trim());
+    if cleaned.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        return Some(v);
+    }
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    if start >= end {
+        return None;
+    }
+    serde_json::from_str(&cleaned[start..=end]).ok()
+}
+
+fn repair_novelty_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
+    let obj = parsed.as_object()?;
+    let score = obj
+        .get("novelty_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| score_from_verdict(obj.get("verdict").and_then(|v| v.as_str())));
+    let verdict = normalize_novelty_verdict(obj.get("verdict").and_then(|v| v.as_str()), score);
+    let confidence = obj
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+
+    let related_work = obj
+        .get("related_work")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(normalize_related_work_item)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let missing_prior_art = obj
+        .get("missing_prior_art")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let title = text_field(item, &["title", "citation", "work"])?;
+                    let reason = text_field(item, &["reason", "comment", "delta", "notes"])
+                        .unwrap_or_else(|| {
+                            "Mentioned by CLI reviewer as potentially relevant.".to_string()
+                        });
+                    Some(serde_json::json!({
+                        "title": title,
+                        "reason": reason,
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(serde_json::json!({
+        "novelty_score": score.clamp(0.0, 1.0),
+        "related_work": related_work,
+        "missing_prior_art": missing_prior_art,
+        "verdict": verdict,
+        "confidence": confidence,
+    }))
+}
+
+fn normalize_related_work_item(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let citation = item.get("citation");
+    let citation_key = item
+        .get("citation_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            citation?
+                .get("key")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+    let title = text_field(item, &["title", "work"])
+        .or_else(|| citation.and_then(|c| text_field(c, &["title", "raw", "key"])))?;
+    let relation = normalize_relation(item.get("relation").and_then(|v| v.as_str()));
+    let delta = text_field(
+        item,
+        &["delta", "comment", "explanation", "notes", "reason"],
+    )
+    .unwrap_or_else(|| {
+        "CLI reviewer identified this as related work but did not provide a schema-compliant delta."
+            .to_string()
+    });
+
+    Some(serde_json::json!({
+        "citation_key": citation_key,
+        "title": title,
+        "relation": relation,
+        "delta": delta,
+    }))
+}
+
+fn normalize_relation(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "builds_on" | "builds on" | "extends" | "extension" | "supporting" => "builds_on",
+        "competing" | "contrasts" | "contrast" | "alternative" => "competing",
+        "prior_art" | "prior art" | "background" | "baseline" => "prior_art",
+        "orthogonal" | "complementary" | "related" | "adjacent" => "orthogonal",
+        _ => "prior_art",
+    }
+}
+
+fn normalize_novelty_verdict(raw: Option<&str>, score: f64) -> &'static str {
+    let lower = raw.unwrap_or("").to_ascii_lowercase();
+    for verdict in ["significant", "incremental", "marginal", "duplicative"] {
+        if lower.contains(verdict) {
+            return verdict;
+        }
+    }
+    if score >= 0.75 {
+        "significant"
+    } else if score >= 0.45 {
+        "incremental"
+    } else if score >= 0.2 {
+        "marginal"
+    } else {
+        "duplicative"
+    }
+}
+
+fn score_from_verdict(raw: Option<&str>) -> f64 {
+    match normalize_novelty_verdict(raw, 0.5) {
+        "significant" => 0.85,
+        "incremental" => 0.6,
+        "marginal" => 0.3,
+        "duplicative" => 0.05,
+        _ => 0.5,
+    }
+}
+
+fn repair_citation_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
+    let obj = parsed.as_object()?;
+    let entries = obj
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| normalize_citation_entry(item, idx))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return None;
+    }
+
+    let missing_references = obj
+        .get("missing_references")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let title = text_field(item, &["title", "citation", "work"])?;
+                    let reason = text_field(item, &["reason", "comment", "notes"])
+                        .unwrap_or_else(|| "Flagged by CLI citation reviewer.".to_string());
+                    Some(serde_json::json!({
+                        "title": title,
+                        "reason": reason,
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(serde_json::json!({
+        "entries": entries,
+        "missing_references": missing_references,
+        "summary": text_field(&parsed, &["summary"]).unwrap_or_else(|| {
+            "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()
+        }),
+        "confidence": obj
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0),
+    }))
+}
+
+fn fallback_citation_review(artifact: &serde_json::Value) -> serde_json::Value {
+    let entries = artifact
+        .get("bibliography")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| fallback_citation_entry(item, idx))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "entries": entries,
+        "missing_references": [],
+        "summary": "CLI citation reviewer returned invalid or empty JSON. This conservative fallback preserves bibliography entries for moderation but marks them as not externally verified.",
+        "confidence": 0.2,
+    })
+}
+
+fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serde_json::Value> {
+    let citation = item.get("citation")?;
+    let citation_obj = normalize_citation(citation, idx);
+    Some(serde_json::json!({
+        "citation": citation_obj,
+        "exists": item.get("exists").and_then(|v| v.as_bool()).unwrap_or(false),
+        "resolved_doi": nullable_string(item.get("resolved_doi")),
+        "resolved_url": nullable_string(item.get("resolved_url").or_else(|| item.get("url"))),
+        "relevance": normalize_relevance(item.get("relevance").and_then(|v| v.as_str())),
+        "notes": nullable_string(item.get("notes").or_else(|| item.get("comment"))),
+        "explanation": text_field(item, &["explanation", "reason", "comment", "notes"])
+            .unwrap_or_else(|| "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()),
+    }))
+}
+
+fn fallback_citation_entry(item: &serde_json::Value, idx: usize) -> serde_json::Value {
+    serde_json::json!({
+        "citation": normalize_citation(item, idx),
+        "exists": false,
+        "resolved_doi": null,
+        "resolved_url": null,
+        "relevance": "medium",
+        "notes": "Not externally verified; generated from bibliography because CLI citation output was invalid.",
+        "explanation": "Bibliography entry preserved for human moderation; no external citation lookup was completed in this fallback.",
+    })
+}
+
+fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::Value {
+    let key = citation
+        .get("key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("[{}]", idx + 1));
+    serde_json::json!({
+        "key": key,
+        "raw": nullable_string(citation.get("raw")).or_else(|| Some(citation.to_string())),
+        "title": nullable_string(citation.get("title")),
+        "authors": citation
+            .get("authors")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        "year": citation.get("year").and_then(|v| v.as_i64()),
+        "venue": nullable_string(citation.get("venue")),
+        "doi": nullable_string(citation.get("doi")),
+        "arxiv_id": nullable_string(citation.get("arxiv_id")),
+        "url": nullable_string(citation.get("url")),
+    })
+}
+
+fn normalize_relevance(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "high" => "high",
+        "medium" => "medium",
+        "low" => "low",
+        "unrelated" => "unrelated",
+        _ => "medium",
+    }
+}
+
+fn nullable_string(v: Option<&serde_json::Value>) -> Option<String> {
+    match v {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn text_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        match value.get(*key) {
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+                return Some(s.clone());
+            }
+            Some(other) if other.is_object() || other.is_array() => {
+                if let Some(s) = text_field(other, &["title", "raw", "key"]) {
+                    return Some(s);
+                }
+            }
+            Some(other) if !other.is_null() => return Some(other.to_string()),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Render `AgentRole` to a stable snake-case slug (used to name the codex
@@ -635,10 +1350,7 @@ fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
 
 /// Persist the role's JSON schema to `$TMPDIR/grokrxiv-schemas/<role>.schema.json`
 /// for codex's `--output-schema` flag. The directory is created if needed.
-fn write_codex_schema(
-    role_slug: &str,
-    schema: &serde_json::Value,
-) -> anyhow::Result<PathBuf> {
+fn write_codex_schema(role_slug: &str, schema: &serde_json::Value) -> anyhow::Result<PathBuf> {
     let mut dir = std::env::temp_dir();
     dir.push("grokrxiv-schemas");
     std::fs::create_dir_all(&dir)
@@ -742,7 +1454,10 @@ fn inspect_claude_auth() -> (String, String, String) {
     let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return ("unknown".into(), "unknown".into(), "unknown".into());
     };
-    let oauth = val.get("oauthAccount").cloned().unwrap_or(serde_json::Value::Null);
+    let oauth = val
+        .get("oauthAccount")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let billing_type = oauth
         .get("billingType")
         .and_then(|v| v.as_str())
@@ -797,7 +1512,8 @@ fn inspect_codex_auth() -> (String, String) {
         .and_then(|t| t.get("id_token"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let plan_type = decode_jwt_claim(id_token, "chatgpt_plan_type").unwrap_or_else(|| "unknown".into());
+    let plan_type =
+        decode_jwt_claim(id_token, "chatgpt_plan_type").unwrap_or_else(|| "unknown".into());
     let auth_method = if plan_type != "unknown" {
         "chatgpt_subscription"
     } else if id_token.is_empty() {
@@ -834,7 +1550,10 @@ fn inspect_gemini_auth() -> (String, String, String) {
     let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return ("unknown".into(), "unknown".into(), "unknown".into());
     };
-    let typ = val.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let typ = val
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let account = val
         .get("account")
         .and_then(|v| v.as_str())
@@ -911,10 +1630,8 @@ fn decode_b64_standard(s: &str) -> Option<Vec<u8>> {
                 buf[i] = v;
             }
         }
-        let n = (buf[0] as u32) << 18
-            | (buf[1] as u32) << 12
-            | (buf[2] as u32) << 6
-            | (buf[3] as u32);
+        let n =
+            (buf[0] as u32) << 18 | (buf[1] as u32) << 12 | (buf[2] as u32) << 6 | (buf[3] as u32);
         // First byte is always present unless the entire chunk is padding.
         out.push((n >> 16) as u8);
         // Second byte is missing only if 2+ trailing `=` were present.
@@ -956,14 +1673,39 @@ mod tests {
     use grokrxiv_schemas::AgentRole;
 
     fn stub_spec(provider: &str, model: &str) -> AgentSpec {
-        let mut s = AgentSpec::api_default(
-            AgentRole::Summary,
-            provider.to_string(),
-            model.to_string(),
-        );
+        let mut s =
+            AgentSpec::api_default(AgentRole::Summary, provider.to_string(), model.to_string());
         s.runner = AgentRunnerKind::Cli;
         s.schema = serde_json::json!({});
         s
+    }
+
+    struct EnvVarGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
     }
 
     #[test]
@@ -993,7 +1735,10 @@ mod tests {
             msg.contains("unsupported provider for CliRunner"),
             "unexpected error message: {msg}"
         );
-        assert!(msg.contains("foo"), "error should name the bad provider: {msg}");
+        assert!(
+            msg.contains("foo"),
+            "error should name the bad provider: {msg}"
+        );
     }
 
     #[test]
@@ -1058,7 +1803,10 @@ mod tests {
 
         let args = &built.args;
         assert_eq!(args.first().map(String::as_str), Some("exec"));
-        assert!(args.contains(&"--json".to_string()), "missing --json in {args:?}");
+        assert!(
+            args.contains(&"--json".to_string()),
+            "missing --json in {args:?}"
+        );
         // --output-schema <path>
         let schema_idx = args
             .iter()
@@ -1077,7 +1825,11 @@ mod tests {
 
         // Schema file should have been materialised on disk.
         let path = built.schema_path.as_ref().expect("codex needs schema path");
-        assert!(path.exists(), "schema file not written at {}", path.display());
+        assert!(
+            path.exists(),
+            "schema file not written at {}",
+            path.display()
+        );
 
         // Clean up.
         let _ = std::fs::remove_file(path);
@@ -1243,6 +1995,231 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_tool_envelope_accepts_valid_tool_call() {
+        let tools = vec![ToolSpec {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        }];
+        let raw = serde_json::json!({
+            "text": "Need the body.",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "read_file",
+                "arguments": {"path": "body.md"}
+            }]
+        })
+        .to_string();
+
+        let parsed = parse_tool_envelope(&raw, &tools).expect("valid envelope");
+        assert_eq!(parsed.text, "Need the body.");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id, "call_1");
+        assert_eq!(parsed.tool_calls[0].name, "read_file");
+        assert_eq!(parsed.tool_calls[0].arguments["path"], "body.md");
+    }
+
+    #[test]
+    fn parse_tool_envelope_rejects_unknown_tool() {
+        let tools = vec![ToolSpec {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let raw = serde_json::json!({
+            "tool_calls": [{
+                "name": "shell_out",
+                "arguments": {}
+            }]
+        })
+        .to_string();
+
+        let err = parse_tool_envelope(&raw, &tools).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown tool"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_tool_completion_unwraps_claude_result_envelope() {
+        let tools = vec![ToolSpec {
+            name: "submit".into(),
+            description: "Submit final payload".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let inner = serde_json::json!({
+            "tool_calls": [{
+                "name": "submit",
+                "arguments": {"ok": true}
+            }]
+        })
+        .to_string();
+        let wrapped = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": inner,
+            "usage": {"input_tokens": 12, "output_tokens": 8}
+        })
+        .to_string();
+
+        let completion =
+            parse_tool_completion("claude", &wrapped, &tools).expect("valid completion");
+        assert_eq!(completion.tool_calls.len(), 1);
+        assert_eq!(completion.tool_calls[0].id, "cli_call_1");
+        assert_eq!(completion.tool_calls[0].name, "submit");
+        assert_eq!(completion.usage.tokens_in, 12);
+        assert_eq!(completion.usage.tokens_out, 8);
+        assert_eq!(completion.finish_reason, FinishReason::ToolUse);
+    }
+
+    #[test]
+    fn parse_tool_completion_unwraps_gemini_response_envelope() {
+        let tools = vec![ToolSpec {
+            name: "list_files".into(),
+            description: "List files".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let inner = serde_json::json!({
+            "tool_calls": [{
+                "id": "gem_1",
+                "name": "list_files",
+                "arguments": {}
+            }]
+        })
+        .to_string();
+        let wrapped = serde_json::json!({
+            "session_id": "abc",
+            "response": inner,
+            "stats": {
+                "models": {
+                    "gemini-2.5-flash": {
+                        "tokens": {"prompt_tokens": 5, "completion_tokens": 3}
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let completion =
+            parse_tool_completion("gemini", &wrapped, &tools).expect("valid completion");
+        assert_eq!(completion.tool_calls.len(), 1);
+        assert_eq!(completion.tool_calls[0].id, "gem_1");
+        assert_eq!(completion.tool_calls[0].name, "list_files");
+        assert_eq!(completion.usage.tokens_in, 5);
+        assert_eq!(completion.usage.tokens_out, 3);
+    }
+
+    #[test]
+    fn novelty_repair_normalizes_common_cli_shape() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../schemas/novelty_review.schema.json"
+        ))
+        .expect("novelty schema parses");
+        let raw = serde_json::json!({
+            "novelty_score": 0.82,
+            "related_work": [{
+                "citation": {"key": "Smith2024", "title": "Baseline Work"},
+                "relation": "complementary",
+                "comment": "The submitted paper uses a different technique."
+            }],
+            "missing_prior_art": [{"work": "Older Method", "comment": "Should be discussed."}],
+            "verdict": "The paper is a significant contribution.",
+            "confidence": 0.7
+        })
+        .to_string();
+
+        let repaired =
+            repair_review_output(AgentRole::Novelty, &raw, &schema, &serde_json::json!({}))
+                .expect("repair validates");
+
+        assert_eq!(repaired["verdict"], "significant");
+        assert_eq!(repaired["related_work"][0]["citation_key"], "Smith2024");
+        assert_eq!(repaired["related_work"][0]["relation"], "orthogonal");
+        assert_eq!(
+            repaired["related_work"][0]["delta"],
+            "The submitted paper uses a different technique."
+        );
+    }
+
+    #[test]
+    fn citation_repair_builds_honest_fallback_from_bibliography() {
+        let schema = citation_review_schema_for_test();
+        let artifact = serde_json::json!({
+            "bibliography": [{
+                "raw": "Doe, A Useful Paper, 2024.",
+                "title": "A Useful Paper",
+                "doi": "10.1234/example",
+                "arxiv_id": null
+            }]
+        });
+
+        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact)
+            .expect("fallback validates");
+
+        assert_eq!(repaired["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(repaired["entries"][0]["citation"]["key"], "[1]");
+        assert_eq!(
+            repaired["entries"][0]["citation"]["title"],
+            "A Useful Paper"
+        );
+        assert_eq!(repaired["entries"][0]["exists"], false);
+        assert!(repaired["summary"]
+            .as_str()
+            .unwrap()
+            .contains("not externally verified"));
+    }
+
+    fn citation_review_schema_for_test() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "citation": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "key": {"type": "string"},
+                                    "raw": {"type": ["string", "null"]},
+                                    "title": {"type": ["string", "null"]},
+                                    "authors": {"type": "array", "items": {"type": "string"}},
+                                    "year": {"type": ["integer", "null"]},
+                                    "venue": {"type": ["string", "null"]},
+                                    "doi": {"type": ["string", "null"]},
+                                    "arxiv_id": {"type": ["string", "null"]},
+                                    "url": {"type": ["string", "null"]}
+                                },
+                                "required": ["key", "raw", "title", "authors", "year", "venue", "doi", "arxiv_id", "url"]
+                            },
+                            "exists": {"type": "boolean"},
+                            "resolved_doi": {"type": ["string", "null"]},
+                            "resolved_url": {"type": ["string", "null"]},
+                            "relevance": {"type": "string", "enum": ["high", "medium", "low", "unrelated"]},
+                            "notes": {"type": ["string", "null"]},
+                            "explanation": {"type": "string"}
+                        },
+                        "required": ["citation", "exists", "resolved_doi", "resolved_url", "relevance", "notes", "explanation"]
+                    }
+                },
+                "missing_references": {"type": "array"},
+                "summary": {"type": "string"},
+                "confidence": {"type": "number"}
+            },
+            "required": ["entries", "missing_references", "summary", "confidence"]
+        })
+    }
+
     /// Integration test gated on `which claude`. Skips silently if claude
     /// isn't installed in PATH.
     #[tokio::test]
@@ -1311,7 +2288,10 @@ mod tests {
         };
         let s = err.to_string();
         assert!(s.contains("openai"), "display missing provider tag: {s}");
-        assert!(s.contains("--runner api"), "display missing fallback hint: {s}");
+        assert!(
+            s.contains("--runner api"),
+            "display missing fallback hint: {s}"
+        );
     }
 
     /// FP-RPT3b B5: end-to-end quota detection via a fake subprocess. Writes
@@ -1399,10 +2379,99 @@ mod tests {
         .await
         .expect_err("subprocess should exit non-zero");
 
-        let downcast = err.chain().find_map(|cause| cause.downcast_ref::<CliError>());
+        let downcast = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>());
         assert!(
             downcast.is_none(),
             "non-quota failures must not be tagged as QuotaExhausted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_scrubs_provider_api_env_for_cli_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = EnvVarGuard::set(&[
+            ("ANTHROPIC_API_KEY", "parent-anthropic-key"),
+            ("OPENAI_API_KEY", "parent-openai-key"),
+            (
+                "GOOGLE_GENERATIVE_AI_API_KEY",
+                "parent-google-generative-key",
+            ),
+            ("GOOGLE_API_KEY", "parent-google-key"),
+            ("GEMINI_API_KEY", "parent-gemini-key"),
+        ]);
+
+        let dir = std::env::temp_dir().join("grokrxiv-cli-env-scrub-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-cli.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemini":"%s","marker":"%s"}\n' "${ANTHROPIC_API_KEY+x}" "${OPENAI_API_KEY+x}" "${GOOGLE_GENERATIVE_AI_API_KEY+x}" "${GOOGLE_API_KEY+x}" "${GEMINI_API_KEY+x}" "${GROKRXIV_CLI_API_ENV_SCRUBBED:-}"
+"#,
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+        };
+
+        let stdout = exec_and_capture(
+            &built,
+            Duration::from_secs(5),
+            grokrxiv_schemas::AgentRole::Summary,
+            "claude",
+        )
+        .await
+        .expect("subprocess should succeed");
+        let observed: serde_json::Value =
+            serde_json::from_str(&stdout).expect("fake script should emit JSON");
+
+        assert_eq!(observed["anthropic"], "");
+        assert_eq!(observed["openai"], "");
+        assert_eq!(observed["google_genai"], "");
+        assert_eq!(observed["google"], "");
+        assert_eq!(observed["gemini"], "");
+        assert_eq!(observed["marker"], "1");
+    }
+
+    #[tokio::test]
+    async fn extraction_api_fallback_is_refused_when_direct_api_disabled() {
+        let _env = EnvVarGuard::set(&[
+            ("GROKRXIV_EXTRACTION_TOOL_FALLBACK", "api"),
+            (ALLOW_PROVIDER_API_ENV, "0"),
+        ]);
+        let r = CliRunner::new();
+        let spec = stub_spec("claude", "claude-test");
+        let workdir = std::env::temp_dir().join("grokrxiv-cli-fallback-refused-test");
+        let _ = std::fs::create_dir_all(&workdir);
+        let ctx = ToolCtx {
+            workdir: &workdir,
+            semantic_ast: None,
+            arxiv_id: "2401.00001",
+            http: std::sync::Arc::new(reqwest::Client::new()),
+        };
+
+        let err = r
+            .complete_with_tools(&spec, &[], &[], &ctx)
+            .await
+            .expect_err("legacy API fallback must be fail-closed in CLI mode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("GROKRXIV_EXTRACTION_TOOL_FALLBACK=api refused"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("--extractor api"),
+            "error should name the explicit API opt-in: {msg}"
         );
     }
 
@@ -1428,8 +2497,7 @@ mod tests {
 
     /// Reference base64url encoder for the JWT decoder unit test.
     fn b64url_encode(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let mut out = String::new();
         for chunk in bytes.chunks(3) {
             let b0 = chunk[0];

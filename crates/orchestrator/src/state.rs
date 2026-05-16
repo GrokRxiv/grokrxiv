@@ -33,26 +33,26 @@ pub type VerifierMap = HashMap<grokrxiv_schemas::AgentRole, grokrxiv_verifier::V
 /// Registry of all configured LLM providers, keyed by short name.
 ///
 /// The registry is built from whichever provider API keys are available in
-/// the environment at boot. The Claude provider is the canonical default
-/// (used by `/preview` and as the fallback for role routing when a YAML
-/// declares a provider whose key is missing).
+/// the environment at boot. CLI-only review/extraction runs do not require
+/// this registry; API-backed routes use it to dispatch direct provider calls.
 #[derive(Clone)]
 pub struct ProviderRegistry {
     /// All providers reachable from this process, keyed by short name
     /// (`"claude" | "openai" | "gemini" | "vllm"`).
     pub by_name: Arc<ProviderMap>,
-    /// Default provider used by the `/preview` route and as a fallback when a
-    /// per-role provider isn't configured. Always Claude.
+    /// Default provider used by the `/preview` route and API fallback paths.
+    /// Present only when a Claude API key was available at boot.
     pub default: Arc<dyn LLMProvider>,
 }
 
 impl ProviderRegistry {
     /// Build the registry from environment-provided keys.
     ///
-    /// `ANTHROPIC_API_KEY` is required because the default provider is Claude;
-    /// if it's missing the registry returns `None` and routes that need an LLM
-    /// will respond with a clear error. Additional providers (OpenAI / Gemini
-    /// / vLLM) are registered when their respective env vars are present.
+    /// `ANTHROPIC_API_KEY` is required only to construct the default API
+    /// provider. If it is missing the registry returns `None`, while CLI
+    /// runner paths can still execute through their local subscriptions.
+    /// Additional providers (OpenAI / Gemini / vLLM) are registered when their
+    /// respective env vars are present.
     pub fn from_env() -> Option<Self> {
         let cfg = ProviderConfig::from_env();
         let mut by_name: HashMap<&'static str, Arc<dyn LLMProvider>> = HashMap::new();
@@ -154,14 +154,11 @@ impl AppState {
 
         let fallback_model = config.preview_model.clone();
         let role_yaml = load_role_configs();
-        let role_routing = Arc::new(build_role_routing(
-            &providers,
-            &fallback_model,
-            &role_yaml,
-        ));
+        let role_routing = Arc::new(build_role_routing(&providers, &fallback_model, &role_yaml));
 
-        // Build the runner registry. RPT2 Track A registers only the API
-        // runner; CLI/cloud/local-inference runners come from later tracks.
+        // Build the runner registry. API can be empty in CLI-only setups;
+        // CLI/cloud/local-inference are still registered and fail only when
+        // invoked without their own prerequisites.
         let provider_map_by_string: HashMap<String, Arc<dyn LLMProvider>> = match &providers {
             Some(reg) => reg
                 .by_name
@@ -170,8 +167,7 @@ impl AppState {
                 .collect(),
             None => HashMap::new(),
         };
-        let api_runner: Arc<dyn AgentRunner> =
-            Arc::new(ApiRunner::new(provider_map_by_string));
+        let api_runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(provider_map_by_string));
         let mut runners_map: RunnerRegistry = HashMap::new();
         runners_map.insert(AgentRunnerKind::Api, api_runner);
         // RPT2 G follow-up: register the other 3 runner kinds so the supervisor's
@@ -180,13 +176,11 @@ impl AppState {
         // hit network / spawn subprocesses when actually invoked.
         runners_map.insert(
             AgentRunnerKind::Cli,
-            Arc::new(crate::agents::runners::cli::CliRunner::new())
-                as Arc<dyn AgentRunner>,
+            Arc::new(crate::agents::runners::cli::CliRunner::new()) as Arc<dyn AgentRunner>,
         );
         runners_map.insert(
             AgentRunnerKind::Cloud,
-            Arc::new(crate::agents::runners::cloud::CloudRunner::new())
-                as Arc<dyn AgentRunner>,
+            Arc::new(crate::agents::runners::cloud::CloudRunner::new()) as Arc<dyn AgentRunner>,
         );
         runners_map.insert(
             AgentRunnerKind::LocalInference,
@@ -197,10 +191,8 @@ impl AppState {
 
         // Build the per-role `ReviewAgent` registry from the YAML configs +
         // the in-memory schemas. Only populated when the verifier feature is
-        // on (so schemas exist). When `providers` is `None` the registry is
-        // still built — the supervisor's per-call resolver will detect a
-        // missing runner provider and fall back to a one-shot `ApiRunner`
-        // wired to the passed-in provider.
+        // on (so schemas exist). The registry is independent of direct API
+        // providers so `--runner cli` can execute without provider API keys.
         let agents = {
             #[cfg(feature = "grokrxiv-verifier")]
             {
@@ -262,7 +254,10 @@ const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
         "reproducibility.yaml",
     ),
     (grokrxiv_schemas::AgentRole::Citation, "citation.yaml"),
-    (grokrxiv_schemas::AgentRole::MetaReviewer, "meta_reviewer.yaml"),
+    (
+        grokrxiv_schemas::AgentRole::MetaReviewer,
+        "meta_reviewer.yaml",
+    ),
 ];
 
 /// Read each `agents/<role>.yaml` once. The result is consumed by both
@@ -359,10 +354,7 @@ fn build_role_routing(
 /// on-the-fly agent for those roles. RPT2 ships every role on the `Api`
 /// runner; CLI/cloud/local-inference selection happens in later tracks.
 #[cfg(feature = "grokrxiv-verifier")]
-fn build_agent_registry(
-    role_yaml: &RoleYamlMap,
-    schemas: &Arc<AgentSchemaMap>,
-) -> AgentRegistry {
+fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();
     for (role, _filename) in ROLE_FILES {
         let Some(cfg) = role_yaml.get(role).and_then(|c| c.as_ref()) else {

@@ -19,6 +19,7 @@ just serve            # blocking; runs HTTP API + supervisor + scheduler
 | `--mode <m>`               | `review_only`  | `review_only` or `review_and_revise` |
 | `--revision-target <t>`    | `paper_latex`  | `paper_latex` or `grokrxiv_review_output` |
 | `--runner <r>`             | _from config_  | `api` / `cli` / `cloud` / `local_inference` |
+| `--extractor <r>`          | `cli`          | Staged ingest extraction backend: `cli` / `api` |
 | `--runner-for <role>=<r>`  | _empty_        | Repeatable. e.g. `--runner-for summary=cli` |
 | `--sandbox <s>`            | `none`         | `none` or `container` |
 | `--cloud-provider <name>`  | _from env_     | e.g. `vercel_open_agents`, `e2b` |
@@ -34,6 +35,11 @@ just serve            # blocking; runs HTTP API + supervisor + scheduler
 | `--config <path>`          | `~/.grokrxiv/config.toml` | Override TOML path |
 | `--show-secrets`           | `false`        | Print provider secrets in cleartext (`config` only) |
 
+When the resolved runtime is CLI-only (`--runner cli --extractor cli`),
+`grokrxiv` sets `GROKRXIV_ALLOW_PROVIDER_API=0` internally and removes provider
+API key env vars from local CLI children. Direct provider API calls are enabled
+only by explicit API selection.
+
 ## Subcommands
 
 ### Service
@@ -46,7 +52,7 @@ Runs the orchestrator: HTTP API + supervisor + scheduler. Identical to the
 Runs the preflight checks (env vars, DB URL, API runner reachability, CLI
 binaries on PATH, cloud reachability, local-inference reachability,
 publisher). Exits 1 if any *critical* check fails (DATABASE_URL absent, or
-zero API runners reachable). Add `--json` for a structured report.
+no review runner reachable). Add `--json` for a structured report.
 
 ```sh
 grokrxiv doctor                       # human

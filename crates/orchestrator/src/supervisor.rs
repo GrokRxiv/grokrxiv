@@ -114,7 +114,7 @@ impl Supervisor {
 /// resulting review row id. Used by the `ingest-one` CLI subcommand and the
 /// M1 integration test.
 ///
-/// With `--features full` + a configured `DATABASE_URL` + `ANTHROPIC_API_KEY`,
+/// With `--features full` + a configured `DATABASE_URL` + reachable runner,
 /// this produces:
 ///   - 1 row in `papers`,
 ///   - 1 row in `reviews` at `awaiting_moderation`,
@@ -152,11 +152,6 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
-    let providers = state
-        .providers
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no LLM provider configured"))?;
-
     tracing::info!(arxiv_id, "M1: ingest start");
 
     // RPT3 Wave-3 Team-F: when the storage feature is on, the orchestrator's
@@ -199,15 +194,19 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
     }
     tracing::info!(arxiv_id, %paper_id, "M1: paper persisted");
 
-    run_review_dag(state, pool, providers.default.clone(), paper_id, extract).await
+    run_review_dag_from_state(state, pool, paper_id, extract).await
 }
 
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 fn ingest_options_from_env() -> crate::ingest_pipeline::IngestOptions {
-    let no_cache =
-        matches!(std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(), Ok("1"));
-    let dry_run_storage =
-        matches!(std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(), Ok("1"));
+    let no_cache = matches!(
+        std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
+        Ok("1")
+    );
+    let dry_run_storage = matches!(
+        std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(),
+        Ok("1")
+    );
     let skip_stages: Vec<String> = std::env::var("GROKRXIV_INGEST_SKIP_STAGES")
         .ok()
         .map(|s| {
@@ -254,6 +253,75 @@ pub async fn run_review_dag(
     paper_id: Uuid,
     extract: grokrxiv_schemas::PaperExtract,
 ) -> anyhow::Result<Uuid> {
+    run_review_dag_inner(state, pool, Some(provider), paper_id, extract).await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_dag_from_state(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+) -> anyhow::Result<Uuid> {
+    let provider = state
+        .providers
+        .as_ref()
+        .map(|registry| registry.default.clone());
+    run_review_dag_inner(state, pool, provider, paper_id, extract).await
+}
+
+// RPT2 G follow-up: the CLI's `--runner` / `--runner-for` flags land in these
+// env vars before review dispatch. They override the YAML's `runner:` field
+// per role. Format:
+//   GROKRXIV_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
+//   GROKRXIV_RUNNER_OVERRIDE_<ROLE> = same enum, per role
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_runner_override_for(
+    role: grokrxiv_schemas::AgentRole,
+) -> Option<crate::agents::AgentRunnerKind> {
+    use crate::agents::AgentRunnerKind;
+    use grokrxiv_schemas::AgentRole;
+
+    let role_slug = match role {
+        AgentRole::Summary => "summary",
+        AgentRole::TechnicalCorrectness => "technical_correctness",
+        AgentRole::Novelty => "novelty",
+        AgentRole::Reproducibility => "reproducibility",
+        AgentRole::Citation => "citation",
+        AgentRole::MetaReviewer => "meta_reviewer",
+    };
+    let per_role_var = format!("GROKRXIV_RUNNER_OVERRIDE_{}", role_slug.to_uppercase());
+    std::env::var(&per_role_var)
+        .ok()
+        .or_else(|| std::env::var("GROKRXIV_RUNNER_OVERRIDE").ok())
+        .and_then(|s| match s.as_str() {
+            "api" => Some(AgentRunnerKind::Api),
+            "cli" => Some(AgentRunnerKind::Cli),
+            "cloud" => Some(AgentRunnerKind::Cloud),
+            "local_inference" => Some(AgentRunnerKind::LocalInference),
+            _ => None,
+        })
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_cache_disabled() -> bool {
+    matches!(
+        std::env::var("GROKRXIV_NO_CACHE").as_deref(),
+        Ok("1") | Ok("true")
+    ) || matches!(
+        std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_dag_inner(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    provider: Option<std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+) -> anyhow::Result<Uuid> {
     use crate::agents::runners::api::ApiRunner;
     use crate::agents::{
         build_agent, AgentInput, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent,
@@ -266,16 +334,20 @@ pub async fn run_review_dag(
     let default_model = state.config.preview_model.clone();
 
     // Resolve the `ReviewAgent` + `AgentRunner` pair for a role. Prefers the
-    // boot-time registry built from `agents/*.yaml`; falls back to a freshly
-    // constructed `ApiRunner` wired to the passed-in `provider` when no
-    // provider registry was available at boot (which is how the integration
-    // test in tests/dag.rs runs the DAG against its wiremock-backed Claude).
+    // boot-time registry built from `agents/*.yaml`; falls back to the active
+    // review runner only when a role config is missing. API fallback needs a
+    // provider, but CLI fallback can run through local subscriptions.
     let make_fallback = |role: AgentRole,
                          schema: serde_json::Value|
-     -> (Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String) {
+     -> anyhow::Result<(
+        Arc<dyn ReviewAgent>,
+        Arc<dyn AgentRunner>,
+        String,
+    )> {
+        let runner_kind = review_runner_override_for(role).unwrap_or(AgentRunnerKind::Cli);
         let spec = AgentSpec {
             role,
-            runner: AgentRunnerKind::Api,
+            runner: runner_kind,
             sandbox: SandboxPolicy::None,
             mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
@@ -286,71 +358,55 @@ pub async fn run_review_dag(
             timeout_secs: 180,
         };
         let agent: Arc<dyn ReviewAgent> = Arc::from(build_agent(spec));
-        let mut providers_map: std::collections::HashMap<
-            String,
-            Arc<dyn grokrxiv_llm_adapter::LLMProvider>,
-        > = std::collections::HashMap::new();
-        providers_map.insert("claude".to_string(), provider.clone());
-        let runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(providers_map));
-        (agent, runner, default_model.clone())
-    };
-
-    // RPT2 G follow-up: the CLI's `--runner` / `--runner-for` flags land in
-    // these env vars before this function runs. They override the YAML's
-    // `runner:` field per role. Format:
-    //   GROKRXIV_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
-    //   GROKRXIV_RUNNER_OVERRIDE_<ROLE> = same enum, per role (snake_case role name)
-    // The CLI's `Command::Review` handler exports these from RuntimeConfig
-    // before dispatching to the supervisor.
-    let runner_override_for = |role: AgentRole| -> Option<AgentRunnerKind> {
-        let role_slug = match role {
-            AgentRole::Summary => "summary",
-            AgentRole::TechnicalCorrectness => "technical_correctness",
-            AgentRole::Novelty => "novelty",
-            AgentRole::Reproducibility => "reproducibility",
-            AgentRole::Citation => "citation",
-            AgentRole::MetaReviewer => "meta_reviewer",
+        let runner = if runner_kind == AgentRunnerKind::Api {
+            let Some(provider) = provider.as_ref() else {
+                anyhow::bail!(
+                    "no LLM provider configured for API review fallback; use --runner cli or set provider API keys"
+                );
+            };
+            let mut providers_map: std::collections::HashMap<
+                String,
+                Arc<dyn grokrxiv_llm_adapter::LLMProvider>,
+            > = std::collections::HashMap::new();
+            providers_map.insert("claude".to_string(), provider.clone());
+            Arc::new(ApiRunner::new(providers_map)) as Arc<dyn AgentRunner>
+        } else {
+            state
+                .runners
+                .get(&runner_kind)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?
         };
-        let per_role_var = format!("GROKRXIV_RUNNER_OVERRIDE_{}", role_slug.to_uppercase());
-        std::env::var(&per_role_var)
-            .ok()
-            .or_else(|| std::env::var("GROKRXIV_RUNNER_OVERRIDE").ok())
-            .and_then(|s| match s.as_str() {
-                "api" => Some(AgentRunnerKind::Api),
-                "cli" => Some(AgentRunnerKind::Cli),
-                "cloud" => Some(AgentRunnerKind::Cloud),
-                "local_inference" => Some(AgentRunnerKind::LocalInference),
-                _ => None,
-            })
+        Ok((agent, runner, default_model.clone()))
     };
 
-    let resolve_agent = |role: AgentRole|
-        -> (Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String) {
-        if let Some(agent) = state.agents.get(&role) {
-            let model = agent.spec().model.clone();
-            // Runtime override beats YAML's runner: field for this run.
-            let runner_kind = runner_override_for(role).unwrap_or(agent.spec().runner);
-            if let Some(runner) = state.runners.get(&runner_kind) {
-                return (agent.clone(), runner.clone(), model);
+    let resolve_agent =
+        |role: AgentRole| -> anyhow::Result<(Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String)> {
+            if let Some(agent) = state.agents.get(&role) {
+                let model = agent.spec().model.clone();
+                // Runtime override beats YAML's runner: field for this run.
+                let runner_kind = review_runner_override_for(role).unwrap_or(agent.spec().runner);
+                if let Some(runner) = state.runners.get(&runner_kind) {
+                    return Ok((agent.clone(), runner.clone(), model));
+                }
             }
-        }
-        let schema = state
-            .agent_schemas
-            .get(&role)
-            .cloned()
-            .unwrap_or_else(|| json!({ "type": "object" }));
-        make_fallback(role, schema)
-    };
+            let schema = state
+                .agent_schemas
+                .get(&role)
+                .cloned()
+                .unwrap_or_else(|| json!({ "type": "object" }));
+            make_fallback(role, schema)
+        };
 
     // Pre-create the review row. `models_used` records the per-role model so
     // the moderation UI + the m1-pipeline `distinct model` assertion can show
     // which model each specialist used.
-    let summary_model = resolve_agent(AgentRole::Summary).2;
-    let tech_model = resolve_agent(AgentRole::TechnicalCorrectness).2;
-    let novelty_model = resolve_agent(AgentRole::Novelty).2;
-    let repro_model = resolve_agent(AgentRole::Reproducibility).2;
-    let cite_model = resolve_agent(AgentRole::Citation).2;
-    let meta_model = resolve_agent(AgentRole::MetaReviewer).2;
+    let summary_model = resolve_agent(AgentRole::Summary)?.2;
+    let tech_model = resolve_agent(AgentRole::TechnicalCorrectness)?.2;
+    let novelty_model = resolve_agent(AgentRole::Novelty)?.2;
+    let repro_model = resolve_agent(AgentRole::Reproducibility)?.2;
+    let cite_model = resolve_agent(AgentRole::Citation)?.2;
+    let meta_model = resolve_agent(AgentRole::MetaReviewer)?.2;
     let models_used = json!({
         "summary": summary_model,
         "technical_correctness": tech_model,
@@ -400,6 +456,7 @@ pub async fn run_review_dag(
     // Triggered by the CLI's `--debug-prompt` flag → `GROKRXIV_DEBUG_PROMPT_DIR`
     // env var. Best-effort: any I/O failure is swallowed by `dump_debug_prompt`.
     let debug_root = debug_prompt_root();
+    let skip_review_cache = review_cache_disabled();
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
@@ -408,7 +465,7 @@ pub async fn run_review_dag(
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
         }
         let system = role_system_prompt(role);
-        let (agent, runner, role_model) = resolve_agent(role);
+        let (agent, runner, role_model) = resolve_agent(role)?;
         let sem = sem.clone();
         let pool_cloned = pool.clone();
         let cache_hash = specialist_content_hash.clone();
@@ -419,26 +476,35 @@ pub async fn run_review_dag(
             // FP6 A4: cache lookup before the LLM call. We only honour
             // verifier_status='pass' rows so a previously-warned/failed run
             // re-executes the agent.
-            if let Ok(Some(hit)) =
-                crate::db::lookup_cache(&pool_cloned, paper_id, role, &cache_hash).await
-            {
-                if hit.verifier_status == "pass" {
-                    tracing::info!(
-                        event = "cache",
-                        role = role_slug(role),
-                        hit = true,
-                        "cache hit"
-                    );
-                    return anyhow::Ok((
-                        role,
-                        hit.output,
-                        Some(hit.tokens_in.unwrap_or(0) as i32),
-                        Some(hit.tokens_out.unwrap_or(0) as i32),
-                        0i32,
-                        hit.model,
-                        true,
-                    ));
+            if !skip_review_cache {
+                if let Ok(Some(hit)) =
+                    crate::db::lookup_cache(&pool_cloned, paper_id, role, &cache_hash).await
+                {
+                    if hit.verifier_status == "pass" {
+                        tracing::info!(
+                            event = "cache",
+                            role = role_slug(role),
+                            hit = true,
+                            "cache hit"
+                        );
+                        return anyhow::Ok((
+                            role,
+                            hit.output,
+                            Some(hit.tokens_in.unwrap_or(0) as i32),
+                            Some(hit.tokens_out.unwrap_or(0) as i32),
+                            0i32,
+                            hit.model,
+                            true,
+                        ));
+                    }
                 }
+            } else {
+                tracing::info!(
+                    event = "cache",
+                    role = role_slug(role),
+                    disabled = true,
+                    "cache bypassed"
+                );
             }
             tracing::info!(
                 event = "cache",
@@ -608,7 +674,7 @@ pub async fn run_review_dag(
     }
     let meta_system = role_system_prompt(AgentRole::MetaReviewer);
 
-    let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer);
+    let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer)?;
 
     // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
     // the specialists-bundle JSON it would have reasoned over, so two reviews
@@ -618,9 +684,12 @@ pub async fn run_review_dag(
         sha256_hex(&serde_json::to_vec(&meta_input).unwrap_or_default());
     let mut meta_from_cache = false;
     let (meta_value, meta_tokens_in, meta_tokens_out, meta_latency_ms, meta_model_recorded) =
-        match crate::db::lookup_cache(pool, paper_id, AgentRole::MetaReviewer, &meta_content_hash)
-            .await
-        {
+        match if skip_review_cache {
+            Ok(None)
+        } else {
+            crate::db::lookup_cache(pool, paper_id, AgentRole::MetaReviewer, &meta_content_hash)
+                .await
+        } {
             Ok(Some(hit)) if hit.verifier_status == "pass" => {
                 tracing::info!(
                     event = "cache",
@@ -638,6 +707,14 @@ pub async fn run_review_dag(
                 )
             }
             _ => {
+                if skip_review_cache {
+                    tracing::info!(
+                        event = "cache",
+                        role = "meta_reviewer",
+                        disabled = true,
+                        "cache bypassed"
+                    );
+                }
                 tracing::info!(
                     event = "cache",
                     role = "meta_reviewer",
@@ -808,11 +885,7 @@ pub async fn apply_revisions(
     let mut offset: i32 = 0;
     let accepted_set: std::collections::HashSet<i32> = accepted_indices.iter().copied().collect();
     for row in &rows {
-        let patch_count = row
-            .patches
-            .as_array()
-            .map(|a| a.len() as i32)
-            .unwrap_or(0);
+        let patch_count = row.patches.as_array().map(|a| a.len() as i32).unwrap_or(0);
         let mut row_accepted: Vec<i32> = Vec::new();
         for local in 0..patch_count {
             let global = offset + local;
@@ -1526,11 +1599,6 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
-    let providers = state
-        .providers
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no LLM provider configured"))?;
-
     // Reload the paper row's data; the ingest crate is the canonical source so
     // we round-trip through it for the fields the DAG needs.
     let row: (
@@ -1568,9 +1636,9 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
                         });
                     let ri_path = repo_root.join(git_path).join("review_input.json");
                     if let Ok(bytes) = std::fs::read(&ri_path) {
-                        if let Ok(ri) = serde_json::from_slice::<grokrxiv_storage::ReviewInput>(
-                            &bytes,
-                        ) {
+                        if let Ok(ri) =
+                            serde_json::from_slice::<grokrxiv_storage::ReviewInput>(&bytes)
+                        {
                             match crate::ingest_pipeline::load_paper_extract(&repo_root, &ri) {
                                 Ok(extract) => {
                                     tracing::info!(
@@ -1579,12 +1647,8 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
                                         git_path,
                                         "review: loaded extract from cached review_input.json"
                                     );
-                                    return run_review_dag(
-                                        state,
-                                        pool,
-                                        providers.default.clone(),
-                                        paper_id,
-                                        extract,
+                                    return run_review_dag_from_state(
+                                        state, pool, paper_id, extract,
                                     )
                                     .await;
                                 }
@@ -1621,7 +1685,7 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
         }
     };
 
-    run_review_dag(state, pool, providers.default.clone(), paper_id, extract).await
+    run_review_dag_from_state(state, pool, paper_id, extract).await
 }
 
 /// Background worker: publish a moderation-approved review to GitHub.
@@ -1683,7 +1747,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         tracing::warn!(%review_id, "GITHUB_TOKEN unset; simulating publish");
         let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
         let simulated = format!(
-            "https://github.com/GrokRxiv/reviews/pull/SIMULATED-{}",
+            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
         let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
@@ -1695,7 +1759,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     };
 
     let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "reviews".into());
+    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()
@@ -1837,12 +1901,11 @@ mod tests {
     /// happy-path artifact, and rejects an artifact missing a required field.
     #[test]
     fn revision_artifact_schema_validates() {
-        let schema_str =
-            include_str!("../../../schemas/revision_artifact.schema.json");
+        let schema_str = include_str!("../../../schemas/revision_artifact.schema.json");
         let schema: serde_json::Value =
             serde_json::from_str(schema_str).expect("schema parses as JSON");
-        let validator = jsonschema::validator_for(&schema)
-            .expect("schema compiles as JSON Schema draft-07");
+        let validator =
+            jsonschema::validator_for(&schema).expect("schema compiles as JSON Schema draft-07");
 
         // Happy path: every required field present.
         let good = serde_json::json!({
@@ -1855,7 +1918,10 @@ mod tests {
                 "confidence": 0.8,
             }],
         });
-        assert!(validator.is_valid(&good), "expected valid artifact to validate");
+        assert!(
+            validator.is_valid(&good),
+            "expected valid artifact to validate"
+        );
 
         // Bad: missing `rationale` on the patch.
         let bad = serde_json::json!({
@@ -1867,14 +1933,20 @@ mod tests {
                 "confidence": 0.5,
             }],
         });
-        assert!(!validator.is_valid(&bad), "expected artifact missing rationale to fail");
+        assert!(
+            !validator.is_valid(&bad),
+            "expected artifact missing rationale to fail"
+        );
 
         // Bad: target not in the enum.
         let bad_target = serde_json::json!({
             "target": "something_else",
             "patches": [],
         });
-        assert!(!validator.is_valid(&bad_target), "expected bad target to fail");
+        assert!(
+            !validator.is_valid(&bad_target),
+            "expected bad target to fail"
+        );
     }
 
     /// RPT2 Track F: `apply_revisions` returns a clean error when the
@@ -2025,11 +2097,13 @@ mod tests {
         let big = "x".repeat(15_000);
         let extract = fake_extract(
             (0..8)
-                .map(|i| (
-                    // headings need 'static-ish lifetime → leak intentionally OK in tests
-                    Box::leak(format!("Section {i}").into_boxed_str()) as &str,
-                    big.clone(),
-                ))
+                .map(|i| {
+                    (
+                        // headings need 'static-ish lifetime → leak intentionally OK in tests
+                        Box::leak(format!("Section {i}").into_boxed_str()) as &str,
+                        big.clone(),
+                    )
+                })
                 .collect(),
             vec![],
         );
@@ -2058,9 +2132,7 @@ mod tests {
             .find("Paper body:\n\n")
             .expect("Paper body block present")
             + "Paper body:\n\n".len();
-        let body_end = prompt
-            .find("\nTask:")
-            .unwrap_or(prompt.len());
+        let body_end = prompt.find("\nTask:").unwrap_or(prompt.len());
         let body_region_chars = prompt[body_start..body_end].chars().count();
         // Allow up to 5% slack for the trailing remaining-sections-footer line.
         let allowed = budget + (budget / 20);
@@ -2212,10 +2284,7 @@ mod tests {
     fn quorum_allows_meta_when_all_five_specialists_pass() {
         use grokrxiv_schemas::VerifierStatus;
         let statuses = vec![Some(VerifierStatus::Pass); 5];
-        assert!(
-            quorum_passes(&statuses),
-            "quorum should pass at 5-of-5"
-        );
+        assert!(quorum_passes(&statuses), "quorum should pass at 5-of-5");
     }
 
     #[test]

@@ -45,8 +45,8 @@ impl Tool for CrossrefLookupTool {
         let arxiv = args.get("arxiv_id").and_then(Value::as_str);
 
         // Operator-overridable base URL (used by wiremock tests).
-        let base = std::env::var("GROKRXIV_CROSSREF_BASE")
-            .unwrap_or_else(|_| CROSSREF_BASE.to_string());
+        let base =
+            std::env::var("GROKRXIV_CROSSREF_BASE").unwrap_or_else(|_| CROSSREF_BASE.to_string());
         let url = if let Some(d) = doi {
             format!("{}/{}", base, urlencode(d))
         } else if let Some(a) = arxiv {
@@ -70,7 +70,10 @@ impl Tool for CrossrefLookupTool {
                 "http_status": resp.status().as_u16(),
             }));
         }
-        let body: Value = resp.json().await.map_err(|e| anyhow::anyhow!("crossref json: {e}"))?;
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("crossref json: {e}"))?;
         // CrossRef envelope: `{"message": {...}}`. For DOI it's the work directly;
         // for query it's `{"items": [...]}`.
         let msg = body.get("message").cloned().unwrap_or(Value::Null);

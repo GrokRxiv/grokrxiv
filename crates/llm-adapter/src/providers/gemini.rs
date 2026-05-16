@@ -235,11 +235,9 @@ fn sanitize_schema_for_gemini(schema: Value) -> Value {
             }
             Value::Object(out)
         }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(sanitize_schema_for_gemini)
-                .collect(),
-        ),
+        Value::Array(arr) => {
+            Value::Array(arr.into_iter().map(sanitize_schema_for_gemini).collect())
+        }
         other => other,
     }
 }
@@ -247,11 +245,7 @@ fn sanitize_schema_for_gemini(schema: Value) -> Value {
 impl GeminiProvider {
     /// Build the Gemini `generateContent` body for a tool-using turn.
     pub fn build_tools_body(req: &ToolChatRequest) -> Value {
-        let contents: Vec<Value> = req
-            .messages
-            .iter()
-            .map(tool_message_to_gemini)
-            .collect();
+        let contents: Vec<Value> = req.messages.iter().map(tool_message_to_gemini).collect();
 
         let function_declarations: Vec<Value> = req
             .tools
@@ -451,10 +445,7 @@ impl LLMProvider for GeminiProvider {
         1_000_000
     }
 
-    async fn complete_with_tools(
-        &self,
-        req: ToolChatRequest,
-    ) -> Result<ToolCompletion, LLMError> {
+    async fn complete_with_tools(&self, req: ToolChatRequest) -> Result<ToolCompletion, LLMError> {
         let body = Self::build_tools_body(&req);
         let url = format!(
             "{}/v1beta/models/{}:generateContent?key={}",
@@ -573,7 +564,10 @@ mod tests {
         assert_eq!(g["properties"]["url"]["type"], "string");
         assert_eq!(g["properties"]["url"]["nullable"], true);
         // Non-nullable fields unchanged.
-        assert_eq!(g["properties"]["items"]["items"]["properties"]["key"]["type"], "string");
+        assert_eq!(
+            g["properties"]["items"]["items"]["properties"]["key"]["type"],
+            "string"
+        );
         // required preserved.
         assert_eq!(g["required"], serde_json::json!(["url", "items"]));
     }

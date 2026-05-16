@@ -194,9 +194,7 @@ fn uses_openai_reasoning_controls(model: &str) -> bool {
 /// `prompt_cache_key` to other models is harmless but pointless, so we skip
 /// it for clarity.
 fn supports_prompt_cache(model: &str) -> bool {
-    model.starts_with("gpt-5")
-        || model.starts_with("gpt-4o")
-        || model.starts_with("o1")
+    model.starts_with("gpt-5") || model.starts_with("gpt-4o") || model.starts_with("o1")
 }
 
 /// Build the `prompt_cache_key` routing hint. Hashes the system prompt plus
@@ -311,8 +309,7 @@ impl OpenAIProvider {
                     .get("arguments")
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
-                let arguments: Value =
-                    serde_json::from_str(args_str).unwrap_or(Value::Null);
+                let arguments: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);
                 tool_calls.push(ProviderToolCall {
                     id,
                     name,
@@ -460,10 +457,7 @@ impl LLMProvider for OpenAIProvider {
         128_000
     }
 
-    async fn complete_with_tools(
-        &self,
-        req: ToolChatRequest,
-    ) -> Result<ToolCompletion, LLMError> {
+    async fn complete_with_tools(&self, req: ToolChatRequest) -> Result<ToolCompletion, LLMError> {
         let body = Self::build_tools_body(&req);
         let url = format!("{}/chat/completions", self.base_url);
         let http = self.http.clone();
@@ -598,7 +592,9 @@ mod tests {
             r.model = model.into();
             let body = OpenAIProvider::build_openai_body(&r);
             assert!(
-                body.get("prompt_cache_key").and_then(Value::as_str).is_some(),
+                body.get("prompt_cache_key")
+                    .and_then(Value::as_str)
+                    .is_some(),
                 "{model} should set prompt_cache_key"
             );
         }

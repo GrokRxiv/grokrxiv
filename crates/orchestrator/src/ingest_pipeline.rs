@@ -54,8 +54,10 @@ use crate::agents::extraction::{
     ExtractionAgent, ToolRegistry,
 };
 use crate::agents::traits::AgentRunner;
+use crate::agents::types::AgentRunnerKind;
 use crate::agents::types::{AgentSpec, ExtractionContext, ToolCallRecord};
 use crate::db;
+use crate::runtime_config::{parse_extractor, ExtractorKind};
 use crate::state::AppState;
 
 /// Per-stage outcome captured from one extraction-agent run. The pipeline
@@ -91,7 +93,9 @@ pub struct IngestOptions {
 
 impl IngestOptions {
     fn should_skip(&self, stage: &str) -> bool {
-        self.skip_stages.iter().any(|s| s.eq_ignore_ascii_case(stage))
+        self.skip_stages
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(stage))
     }
 }
 
@@ -161,8 +165,7 @@ pub async fn run_ingest_pipeline(
             Ok(out)
         }
         Err(e) => {
-            let _ = db::mark_paper_extraction_failed(pool, paper_id, &format!("{e:#}"))
-                .await;
+            let _ = db::mark_paper_extraction_failed(pool, paper_id, &format!("{e:#}")).await;
             Err(e)
         }
     }
@@ -181,12 +184,7 @@ async fn run_inner(
     let extract = staged.extract.clone();
     let mut bundle = build_initial_bundle(&staged, &extract);
     let mut stage_reports: Vec<StageReport> = Vec::new();
-    stage_reports.push(StageReport::ok(
-        "acquisition",
-        None,
-        None,
-        Vec::new(),
-    ));
+    stage_reports.push(StageReport::ok("acquisition", None, None, Vec::new()));
 
     // Stage 2 reflection: whether deterministic TeX→AST produced semantic_ast.
     let semantic_ast = staged.semantic_ast;
@@ -284,7 +282,7 @@ async fn run_inner(
 
     // --- Stages 4–7 in parallel ---
     let semantic_ast_ref = semantic_ast.as_ref();
-    let (macros_res, equations_res, theorems_res, citations_res) = tokio::join!(
+    let (macros_res, mut equations_res, mut theorems_res, mut citations_res) = tokio::join!(
         run_agent_when(
             !opts.should_skip("macros"),
             state,
@@ -331,10 +329,32 @@ async fn run_inner(
         ),
     );
 
+    if should_use_deterministic_fallback("equations", equations_res.as_ref(), opts, &semantic_ctx) {
+        equations_res = deterministic_equations_outcome(arxiv_id, semantic_ast_ref, &body_md_str);
+    }
+    if should_use_deterministic_fallback("theorems", theorems_res.as_ref(), opts, &semantic_ctx) {
+        theorems_res = deterministic_theorems_outcome(arxiv_id, &body_md_str);
+    }
+    if should_use_citation_fallback(citations_res.as_ref(), opts, &body_md_str) {
+        citations_res = deterministic_citations_outcome(arxiv_id, &body_md_str);
+    }
+
     push_tool_calls(&mut tool_call_log_entries, "macros", macros_res.as_ref());
-    push_tool_calls(&mut tool_call_log_entries, "equations", equations_res.as_ref());
-    push_tool_calls(&mut tool_call_log_entries, "theorems", theorems_res.as_ref());
-    push_tool_calls(&mut tool_call_log_entries, "citations", citations_res.as_ref());
+    push_tool_calls(
+        &mut tool_call_log_entries,
+        "equations",
+        equations_res.as_ref(),
+    );
+    push_tool_calls(
+        &mut tool_call_log_entries,
+        "theorems",
+        theorems_res.as_ref(),
+    );
+    push_tool_calls(
+        &mut tool_call_log_entries,
+        "citations",
+        citations_res.as_ref(),
+    );
 
     record_agent_outcome(
         &mut stage_reports,
@@ -399,12 +419,7 @@ async fn run_inner(
 
     let paper_artifacts = build_paper_artifacts(opts)?;
     let pointer = paper_artifacts
-        .persist(
-            paper_id.to_string(),
-            bundle.clone(),
-            &stages_run,
-            None,
-        )
+        .persist(paper_id.to_string(), bundle.clone(), &stages_run, None)
         .await
         .context("PaperArtifacts::persist (Stage 8)")?;
     db::persist_paper_extraction(
@@ -442,15 +457,16 @@ fn build_paper_artifacts(opts: &IngestOptions) -> Result<PaperArtifacts> {
     let repo_path: PathBuf = std::env::var("GROKRXIV_DATA_REPO_PATH")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data")
-        });
+        .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"));
     let remote = std::env::var("GROKRXIV_DATA_REPO_REMOTE").ok();
     let git =
         GitArtifactStore::open_or_clone(repo_path, remote).context("open grokrxiv-data repo")?;
 
     let dry_run = opts.dry_run_storage
-        || matches!(std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(), Ok("1"));
+        || matches!(
+            std::env::var("GROKRXIV_DRY_RUN_STORAGE").as_deref(),
+            Ok("1")
+        );
     let storage = if dry_run {
         None
     } else {
@@ -468,10 +484,7 @@ fn build_paper_artifacts(opts: &IngestOptions) -> Result<PaperArtifacts> {
     Ok(PaperArtifacts::new(git, storage))
 }
 
-fn build_initial_bundle(
-    staged: &DeterministicIngest,
-    extract: &PaperExtract,
-) -> ArtifactBundle {
+fn build_initial_bundle(staged: &DeterministicIngest, extract: &PaperExtract) -> ArtifactBundle {
     let arxiv_id = &staged.meta.arxiv_id;
     let metadata = build_metadata_json(staged, extract);
     let sections = build_sections_json(arxiv_id, extract);
@@ -631,14 +644,40 @@ pub async fn write_body_md_to_workdir(workdir: &Path, body_md: &str) -> Result<(
 // Agent runner wrappers
 // ---------------------------------------------------------------------------
 
-fn resolve_runner(state: &AppState) -> Option<Arc<dyn AgentRunner>> {
-    // Extraction agents currently share the "Api" runner with the review DAG.
-    // Cli / cloud / local_inference runners are not yet plumbed for the
-    // extraction tool-call loop, so we deliberately pin to Api here.
+fn resolve_runner(
+    state: &AppState,
+    stage: &str,
+) -> Option<(Arc<dyn AgentRunner>, AgentRunnerKind)> {
+    let extractor = resolve_extractor(stage);
+    let kind = extractor.runner_kind();
     state
         .runners
-        .get(&crate::agents::types::AgentRunnerKind::Api)
+        .get(&kind)
         .cloned()
+        .map(|runner| (runner, kind))
+}
+
+fn resolve_extractor(stage: &str) -> ExtractorKind {
+    if let Ok(v) = std::env::var("GROKRXIV_EXTRACTOR") {
+        if let Some(kind) = parse_extractor(&v) {
+            return kind;
+        }
+        tracing::warn!(
+            stage,
+            value = %v,
+            "invalid GROKRXIV_EXTRACTOR; falling back to CLI extraction"
+        );
+        return ExtractorKind::Cli;
+    }
+    if matches!(
+        std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").as_deref(),
+        Ok("api")
+    ) {
+        return ExtractorKind::Api;
+    }
+    load_extraction_routing(stage)
+        .and_then(|r| r.runner)
+        .unwrap_or_default()
 }
 
 /// Per-stage routing read from `agents/extraction/<role>.yaml`. Captures the
@@ -648,7 +687,7 @@ struct ExtractionRouting {
     provider: String,
     model: String,
     #[serde(default)]
-    runner: Option<crate::agents::types::AgentRunnerKind>,
+    runner: Option<ExtractorKind>,
     #[serde(default)]
     max_cost_usd: Option<f32>,
     #[serde(default)]
@@ -748,9 +787,9 @@ pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     let routing = load_extraction_routing(stage);
     let (cost, iters) = match stage {
         "vlm" => (1.0, 40),
-        "macros" => (0.20, 20),
+        "macros" => (0.40, 20),
         "equations" => (0.50, 60),
-        "theorems" => (0.80, 50),
+        "theorems" => (1.50, 50),
         "citations" => (0.50, 80),
         _ => (0.50, 40),
     };
@@ -766,7 +805,7 @@ pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     }
 }
 
-fn default_extraction_spec(role: &str) -> AgentSpec {
+fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
     use grokrxiv_schemas::AgentRole;
     // The review-side AgentRole enum doesn't have extraction variants — we
     // reuse `Summary` as a stable seed since the role field is only used for
@@ -784,6 +823,7 @@ fn default_extraction_spec(role: &str) -> AgentSpec {
         ),
     };
     let mut spec = AgentSpec::api_default(AgentRole::Summary, provider, model);
+    spec.runner = runner_kind;
     if let Some(r) = routing {
         if let Some(t) = r.timeout_secs {
             spec.timeout_secs = t;
@@ -808,7 +848,7 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     arxiv_id: &str,
     stage_name: &str,
 ) -> Option<StageOutcome> {
-    let Some(runner) = resolve_runner(state) else {
+    let Some((runner, runner_kind)) = resolve_runner(state, stage_name) else {
         warn!(stage_name, "no runner available; skipping extraction stage");
         return None;
     };
@@ -831,11 +871,16 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         max_iters = budget.max_iters,
         "extraction budget resolved from agents/extraction/<stage>.yaml",
     );
-    let spec = default_extraction_spec(stage_name);
+    let spec = default_extraction_spec(stage_name, runner_kind);
     let model = spec.model.clone();
     match agent.run(runner, &spec, ctx).await {
         Ok(run) => {
-            info!(stage_name, arxiv_id, iters = run.iters, "extraction stage ok");
+            info!(
+                stage_name,
+                arxiv_id,
+                iters = run.iters,
+                "extraction stage ok"
+            );
             Some(StageOutcome {
                 output: run.output,
                 tool_calls: run.tool_calls,
@@ -871,7 +916,14 @@ async fn run_agent_when<A: ExtractionAgent + Sized + 'static>(
         return None;
     }
     run_agent_safe(
-        &agent, state, workdir, extract, semantic_ast, paper_id, arxiv_id, stage_name,
+        &agent,
+        state,
+        workdir,
+        extract,
+        semantic_ast,
+        paper_id,
+        arxiv_id,
+        stage_name,
     )
     .await
 }
@@ -1092,6 +1144,207 @@ fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
     // stage outcome bookkeeping.
 }
 
+fn should_use_deterministic_fallback(
+    name: &str,
+    res: Option<&StageOutcome>,
+    opts: &IngestOptions,
+    semantic_ctx: &SemanticSuccessCtx<'_>,
+) -> bool {
+    if opts.should_skip(name) {
+        return false;
+    }
+    match res {
+        None => true,
+        Some(outcome) => semantic_check(name, &outcome.output, semantic_ctx).is_some(),
+    }
+}
+
+fn deterministic_equations_outcome(
+    _arxiv_id: &str,
+    semantic_ast: Option<&Value>,
+    body_md: &str,
+) -> Option<StageOutcome> {
+    let started = std::time::Instant::now();
+    let mut listed = semantic_ast
+        .map(crate::agents::extraction::equations::tools::list_from_ast)
+        .unwrap_or_default();
+    if listed.is_empty() {
+        listed = crate::agents::extraction::equations::tools::list_from_markdown_body(body_md);
+    }
+    let equations: Vec<Value> = listed
+        .into_iter()
+        .filter_map(|e| {
+            let id = e.get("id").and_then(Value::as_str)?.to_string();
+            let tex = e.get("tex").and_then(Value::as_str)?.trim().to_string();
+            if tex.is_empty() {
+                return None;
+            }
+            let hash = crate::agents::extraction::equations::tools::equation_hash(&tex);
+            Some(json!({
+                "id": id,
+                "canonical_tex": tex,
+                "mathml": Value::Null,
+                "semantic_tag": "other",
+                "section_id": Value::Null,
+                "hash": hash,
+            }))
+        })
+        .collect();
+    if equations.is_empty() {
+        return None;
+    }
+    Some(StageOutcome {
+        output: json!({ "equations": equations, "reason": Value::Null }),
+        tool_calls: Vec::new(),
+        cost_usd: 0.0,
+        latency_ms: started.elapsed().as_millis() as i64,
+        iters: 0,
+        model: "deterministic-equation-scan".into(),
+        runner: "local".into(),
+    })
+}
+
+fn deterministic_theorems_outcome(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
+    let started = std::time::Instant::now();
+    let sections = crate::agents::extraction::theorems::tools::sections_from_markdown(body_md);
+    let mut nodes: Vec<Value> = Vec::new();
+    if sections.is_empty() {
+        append_theorem_blocks(&mut nodes, None, body_md);
+    } else {
+        for section in sections {
+            let start = section.char_start.min(body_md.len());
+            let end = section.char_end.min(body_md.len()).max(start);
+            append_theorem_blocks(&mut nodes, Some(section.id.as_str()), &body_md[start..end]);
+        }
+    }
+    if nodes.is_empty() {
+        return None;
+    }
+    Some(StageOutcome {
+        output: json!({ "nodes": nodes, "reason": Value::Null }),
+        tool_calls: Vec::new(),
+        cost_usd: 0.0,
+        latency_ms: started.elapsed().as_millis() as i64,
+        iters: 0,
+        model: "deterministic-theorem-scan".into(),
+        runner: "local".into(),
+    })
+}
+
+fn should_use_citation_fallback(
+    res: Option<&StageOutcome>,
+    opts: &IngestOptions,
+    body_md: &str,
+) -> bool {
+    if opts.should_skip("citations") {
+        return false;
+    }
+    let has_sites =
+        !crate::agents::extraction::citations::tools::extract_citation_sites(body_md).is_empty();
+    if !has_sites {
+        return false;
+    }
+    match res {
+        None => true,
+        Some(outcome) => outcome
+            .output
+            .get("citations")
+            .and_then(Value::as_array)
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+    }
+}
+
+fn deterministic_citations_outcome(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
+    use std::collections::BTreeMap;
+
+    let started = std::time::Instant::now();
+    let sites = crate::agents::extraction::citations::tools::extract_citation_sites(body_md);
+    if sites.is_empty() {
+        return None;
+    }
+
+    let mut by_key: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for site in sites {
+        let Some(key) = site.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        let section = site
+            .get("section")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let sentence = site
+            .get("sentence")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        by_key.entry(key.to_string()).or_default().push(json!({
+            "section": section,
+            "sentence": sentence,
+            "use": "cited_in_passing",
+        }));
+    }
+
+    let citations: Vec<Value> = by_key
+        .into_iter()
+        .map(|(key, contexts)| {
+            json!({
+                "key": key,
+                "raw": "",
+                "resolved_doi": Value::Null,
+                "resolved_arxiv_id": Value::Null,
+                "contexts": contexts,
+            })
+        })
+        .collect();
+    if citations.is_empty() {
+        return None;
+    }
+
+    Some(StageOutcome {
+        output: json!({ "citations": citations, "reason": Value::Null }),
+        tool_calls: Vec::new(),
+        cost_usd: 0.0,
+        latency_ms: started.elapsed().as_millis() as i64,
+        iters: 0,
+        model: "deterministic-citation-scan".into(),
+        runner: "local".into(),
+    })
+}
+
+fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body: &str) {
+    for block in crate::agents::extraction::theorems::tools::scan_theorem_blocks(body) {
+        let node_type = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("theorem")
+            .to_string();
+        let statement = block
+            .get("statement_preview")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if statement.is_empty() {
+            continue;
+        }
+        let id = block
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("thm-{}", nodes.len() + 1));
+        nodes.push(json!({
+            "id": id,
+            "type": node_type,
+            "statement": statement,
+            "section_id": section_id.map(Value::from).unwrap_or(Value::Null),
+            "depends_on": [],
+        }));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // extraction_report.json bookkeeping
 // ---------------------------------------------------------------------------
@@ -1219,11 +1472,7 @@ pub(crate) struct SemanticSuccessCtx<'a> {
 /// by adding the optional top-level `reason: "no_<thing>_in_paper"` field
 /// — when set to a non-null value we accept the empty submission and skip
 /// the warning.
-fn semantic_check(
-    name: &str,
-    output: &Value,
-    ctx: &SemanticSuccessCtx<'_>,
-) -> Option<String> {
+fn semantic_check(name: &str, output: &Value, ctx: &SemanticSuccessCtx<'_>) -> Option<String> {
     // Honour the agent's explicit override.
     let reason = output.get("reason").and_then(Value::as_str);
     if reason.is_some_and(|r| !r.is_empty()) {
@@ -1514,7 +1763,10 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
                         .unwrap_or_default()
                         .to_string(),
                     doi: c.get("doi").and_then(Value::as_str).map(str::to_string),
-                    arxiv_id: c.get("arxiv_id").and_then(Value::as_str).map(str::to_string),
+                    arxiv_id: c
+                        .get("arxiv_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     title: c.get("title").and_then(Value::as_str).map(str::to_string),
                 })
                 .collect()
@@ -1669,23 +1921,22 @@ mod a4_tests {
 
     /// FP-RPT3a A5: `extraction_budget_for` honours the YAML number, not the
     /// hardcoded inline ceiling. `agents/extraction/macros.yaml` says
-    /// `max_cost_usd: 0.20` and `max_iters: 20`, so the resolved budget MUST
+    /// `max_cost_usd: 0.40` and `max_iters: 20`, so the resolved budget MUST
     /// match — regardless of where in the YAML structure the values live
     /// (macros uses `loop:` block; the rest top-level).
     #[test]
     fn macros_budget_resolves_to_yaml_values() {
         // Locate the agents/ dir relative to the workspace root. Tests run
         // with CARGO_MANIFEST_DIR=<crate dir>, so go up two levels.
-        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../agents");
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
         std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
         // Force a re-read by clearing the cache via a fresh stage name.
         let b = extraction_budget_for("macros");
-        // YAML uses `loop: {max_cost_usd: 0.20, max_iters: 20}` — both should
-        // surface through the resolved getter, not the hardcoded $1.00.
+        // YAML uses `loop: {max_cost_usd: 0.40, max_iters: 20}` — both should
+        // surface through the resolved getter, not the hardcoded fallback.
         assert!(
-            (b.max_cost_usd - 0.20).abs() < 1e-6,
-            "macros budget must equal $0.20 (got ${})",
+            (b.max_cost_usd - 0.40).abs() < 1e-6,
+            "macros budget must equal $0.40 (got ${})",
             b.max_cost_usd
         );
         assert_eq!(b.max_iters, 20);
@@ -1694,8 +1945,7 @@ mod a4_tests {
     /// Same idea for citations.yaml (top-level form, not nested under `loop:`).
     #[test]
     fn citations_budget_resolves_to_yaml_values() {
-        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../agents");
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
         std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
         let b = extraction_budget_for("citations");
         assert!(
@@ -1704,6 +1954,39 @@ mod a4_tests {
             b.max_cost_usd
         );
         assert_eq!(b.max_iters, 80);
+    }
+
+    #[test]
+    fn extractor_resolves_to_yaml_cli_by_default() {
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
+        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
+        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
+        let prev_fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
+        std::env::remove_var("GROKRXIV_EXTRACTOR");
+        std::env::remove_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK");
+
+        assert_eq!(resolve_extractor("macros"), ExtractorKind::Cli);
+
+        if let Some(prev) = prev {
+            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+        }
+        if let Some(prev) = prev_fallback {
+            std::env::set_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK", prev);
+        }
+    }
+
+    #[test]
+    fn extractor_env_overrides_yaml() {
+        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
+        std::env::set_var("GROKRXIV_EXTRACTOR", "api");
+
+        assert_eq!(resolve_extractor("macros"), ExtractorKind::Api);
+
+        if let Some(prev) = prev {
+            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+        } else {
+            std::env::remove_var("GROKRXIV_EXTRACTOR");
+        }
     }
 
     #[test]
@@ -1729,7 +2012,9 @@ mod a4_tests {
         let r = &reports[0];
         assert_eq!(r.status, "degraded");
         assert!(
-            r.warnings.iter().any(|w| w.contains("7 bibliography entries")),
+            r.warnings
+                .iter()
+                .any(|w| w.contains("7 bibliography entries")),
             "warnings: {:?}",
             r.warnings
         );
@@ -1737,5 +2022,55 @@ mod a4_tests {
         assert_eq!(r.model.as_deref(), Some("test-model"));
         assert_eq!(r.runner.as_deref(), Some("api"));
         assert_eq!(r.iters, Some(1));
+    }
+
+    #[test]
+    fn deterministic_equation_fallback_extracts_pandoc_math() {
+        let body = "## Spectral setup\n\n\
+            Inline $a+b$ and display $$\\begin{equation}\nE=mc^2\n\\end{equation}$$.\n\n\
+            \\[\\int_0^1 f(x)\\,dx\\]\n";
+        let outcome = deterministic_equations_outcome("2605.00403", None, body)
+            .expect("fallback should produce equations");
+        assert_eq!(outcome.model, "deterministic-equation-scan");
+        let equations = outcome.output["equations"].as_array().unwrap();
+        assert_eq!(equations.len(), 3, "equations={equations:?}");
+        assert_eq!(equations[0]["canonical_tex"], "a+b");
+        assert_eq!(equations[1]["canonical_tex"], "E=mc^2");
+        assert_eq!(equations[2]["canonical_tex"], "\\int_0^1 f(x)\\,dx");
+    }
+
+    #[test]
+    fn deterministic_theorem_fallback_extracts_title_headings() {
+        let body = "## Generalized Fourier Transform\n\n\
+            ### Spectral Decomposition Theorem\n\nEvery self-adjoint operator has a spectral representation.\n\n\
+            **Proposition.** The inverse transform follows from completeness.\n\n\
+            ##### Proof sketch.\n\nApply Fubini and the resolution of identity.\n";
+        let outcome = deterministic_theorems_outcome("2605.00403", body)
+            .expect("fallback should produce theorem nodes");
+        assert_eq!(outcome.model, "deterministic-theorem-scan");
+        let nodes = outcome.output["nodes"].as_array().unwrap();
+        assert!(
+            nodes.len() >= 3,
+            "expected theorem/proposition/proof nodes, got {nodes:?}"
+        );
+        assert!(nodes.iter().any(|n| n["type"] == "theorem"));
+        assert!(nodes.iter().any(|n| n["type"] == "proposition"));
+        assert!(nodes.iter().any(|n| n["type"] == "proof"));
+    }
+
+    #[test]
+    fn deterministic_citation_fallback_groups_contexts() {
+        let body = "## Intro\n\nA grouped citation [@Folland; @Spectral1] motivates this.\n\n\
+            ## Results\n\nWe compare against [@Folland].\n";
+        let outcome = deterministic_citations_outcome("2605.00403", body)
+            .expect("fallback should produce citations");
+        assert_eq!(outcome.model, "deterministic-citation-scan");
+        let citations = outcome.output["citations"].as_array().unwrap();
+        assert_eq!(citations.len(), 2, "citations={citations:?}");
+        let folland = citations
+            .iter()
+            .find(|c| c["key"] == "Folland")
+            .expect("Folland citation");
+        assert_eq!(folland["contexts"].as_array().unwrap().len(), 2);
     }
 }

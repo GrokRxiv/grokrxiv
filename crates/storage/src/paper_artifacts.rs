@@ -89,10 +89,7 @@ impl PaperArtifacts {
             ));
         }
         if let Some(v) = &bundle.source_manifest {
-            git_files.insert(
-                "source_manifest.json".into(),
-                serde_json::to_vec_pretty(v)?,
-            );
+            git_files.insert("source_manifest.json".into(), serde_json::to_vec_pretty(v)?);
             routed.push((
                 "source_manifest.json".into(),
                 TierDecision::Tier1Git("source_manifest.json".into()),
@@ -227,7 +224,12 @@ impl PaperArtifacts {
             if let Some(bytes) = &bundle.semantic_ast {
                 let key = format!("{arxiv_id}/semantic_ast.json");
                 storage
-                    .put_object(EXTRACTED_JSON_BUCKET, &key, bytes.clone(), "application/json")
+                    .put_object(
+                        EXTRACTED_JSON_BUCKET,
+                        &key,
+                        bytes.clone(),
+                        "application/json",
+                    )
                     .await?;
                 routed.push((
                     "semantic_ast.json".into(),
@@ -240,7 +242,12 @@ impl PaperArtifacts {
             if let Some(bytes) = &bundle.vlm_raw {
                 let key = format!("{arxiv_id}/vlm_raw.json");
                 storage
-                    .put_object(EXTRACTED_JSON_BUCKET, &key, bytes.clone(), "application/json")
+                    .put_object(
+                        EXTRACTED_JSON_BUCKET,
+                        &key,
+                        bytes.clone(),
+                        "application/json",
+                    )
                     .await?;
                 routed.push((
                     "vlm_raw.json".into(),

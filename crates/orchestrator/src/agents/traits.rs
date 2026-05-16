@@ -29,11 +29,7 @@ pub trait ReviewAgent: Send + Sync {
     ///
     /// The supervisor decides whether to call this (cache miss) or short-
     /// circuit with a cached `AgentRun`.
-    async fn run(
-        &self,
-        runner: &dyn AgentRunner,
-        input: AgentInput,
-    ) -> anyhow::Result<AgentRun>;
+    async fn run(&self, runner: &dyn AgentRunner, input: AgentInput) -> anyhow::Result<AgentRun>;
 }
 
 /// Execution backend. Receives a fully prepared spec + input and returns the
@@ -59,11 +55,7 @@ pub trait AgentRunner: Send + Sync {
     ///
     /// The runner is NOT responsible for: cache lookup, verifier ladder, DB
     /// persistence — those live in the supervisor.
-    async fn run(
-        &self,
-        spec: &AgentSpec,
-        input: &AgentInput,
-    ) -> anyhow::Result<AgentRun>;
+    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun>;
 
     /// Run one turn of an extraction agent's tool-call loop. The runner
     /// translates `tools` into the provider's native tool format, sends the

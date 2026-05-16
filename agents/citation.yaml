@@ -6,7 +6,7 @@ provider: gemini
 # empty `text` body with finishReason=MAX_TOKENS. Flash has no such reasoning
 # overhead and produced verifier_status=pass on every prior smoke run.
 model: gemini-2.5-flash
-runner: api
+runner: cli
 prompt_template: prompts/citation.md
 input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/citation_review.schema.json

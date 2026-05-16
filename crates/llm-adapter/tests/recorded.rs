@@ -182,7 +182,9 @@ async fn gemini_tool_call_id_uses_function_name() {
         messages: vec![
             ToolMessage {
                 role: Role::User,
-                content: vec![ToolContent::Text { text: "kick off".into() }],
+                content: vec![ToolContent::Text {
+                    text: "kick off".into(),
+                }],
             },
             ToolMessage {
                 role: Role::Assistant,
@@ -304,7 +306,10 @@ async fn gemini_two_turn_tool_loop_via_wiremock() {
     let r1 = provider.complete_with_tools(req1).await.expect("turn 1");
     assert_eq!(r1.tool_calls.len(), 1);
     let call1 = &r1.tool_calls[0];
-    assert_eq!(call1.id, "list_files", "turn-1 id must be the function name");
+    assert_eq!(
+        call1.id, "list_files",
+        "turn-1 id must be the function name"
+    );
 
     // Turn 2: post the tool_result back using the function-name id.
     let req2 = ToolChatRequest {

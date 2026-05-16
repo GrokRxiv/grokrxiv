@@ -195,8 +195,7 @@ fn seed_data_repo(repo_path: &std::path::Path) -> anyhow::Result<()> {
     // missing schema, treating the JSON as unvalidated.
     let schemas_dir = repo_path.join("schemas");
     std::fs::create_dir_all(&schemas_dir)?;
-    let source_dir =
-        PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data/schemas");
+    let source_dir = PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data/schemas");
     if source_dir.is_dir() {
         for entry in std::fs::read_dir(&source_dir)? {
             let entry = entry?;
@@ -230,7 +229,14 @@ async fn pipeline_end_to_end_with_tex_source() -> anyhow::Result<()> {
         .persist(
             "paper-uuid".into(),
             bundle,
-            &["acquisition", "tex_to_ast", "macros", "equations", "theorems", "citations"],
+            &[
+                "acquisition",
+                "tex_to_ast",
+                "macros",
+                "equations",
+                "theorems",
+                "citations",
+            ],
             Some(0.05),
         )
         .await?;
@@ -242,9 +248,13 @@ async fn pipeline_end_to_end_with_tex_source() -> anyhow::Result<()> {
         "body.md must include section bodies; got:\n{body}"
     );
 
-    let equations: Value = serde_json::from_slice(&std::fs::read(paper_dir.join("equations.json"))?)?;
+    let equations: Value =
+        serde_json::from_slice(&std::fs::read(paper_dir.join("equations.json"))?)?;
     assert_eq!(
-        equations.get("equations").and_then(Value::as_array).map(|a| a.len()),
+        equations
+            .get("equations")
+            .and_then(Value::as_array)
+            .map(|a| a.len()),
         Some(3),
         "expected 3 equation entries"
     );
@@ -252,14 +262,19 @@ async fn pipeline_end_to_end_with_tex_source() -> anyhow::Result<()> {
     let theorems: Value =
         serde_json::from_slice(&std::fs::read(paper_dir.join("theorem_graph.json"))?)?;
     assert_eq!(
-        theorems.get("nodes").and_then(Value::as_array).map(|a| a.len()),
+        theorems
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(|a| a.len()),
         Some(1),
         "expected 1 theorem node"
     );
 
     let refs: Value = serde_json::from_slice(&std::fs::read(paper_dir.join("references.json"))?)?;
     assert_eq!(
-        refs.get("citations").and_then(Value::as_array).map(|a| a.len()),
+        refs.get("citations")
+            .and_then(Value::as_array)
+            .map(|a| a.len()),
         Some(2),
         "expected 2 reference entries"
     );
@@ -300,7 +315,10 @@ async fn pipeline_end_to_end_pdf_only() -> anyhow::Result<()> {
 
     let paper_dir = repo_path.join("papers").join(arxiv_id());
     let body = std::fs::read_to_string(paper_dir.join("body.md"))?;
-    assert!(body.contains("Introduction"), "PDF-only path must still produce a body.md");
+    assert!(
+        body.contains("Introduction"),
+        "PDF-only path must still produce a body.md"
+    );
     let ri: ReviewInput =
         serde_json::from_slice(&std::fs::read(paper_dir.join("review_input.json"))?)?;
     // No source bundle → no source_uri / semantic_ast_uri.
@@ -329,15 +347,13 @@ async fn pipeline_repeated_persist_is_idempotent() -> anyhow::Result<()> {
     let p1 = paper_artifacts
         .persist("paper-uuid".into(), bundle1, &["acquisition"], None)
         .await?;
-    let body1 =
-        std::fs::read_to_string(repo_path.join("papers").join(arxiv_id()).join("body.md"))?;
+    let body1 = std::fs::read_to_string(repo_path.join("papers").join(arxiv_id()).join("body.md"))?;
 
     let bundle2 = build_bundle(true);
     let p2 = paper_artifacts
         .persist("paper-uuid".into(), bundle2, &["acquisition"], None)
         .await?;
-    let body2 =
-        std::fs::read_to_string(repo_path.join("papers").join(arxiv_id()).join("body.md"))?;
+    let body2 = std::fs::read_to_string(repo_path.join("papers").join(arxiv_id()).join("body.md"))?;
 
     assert_eq!(p1.git_path, p2.git_path);
     assert_eq!(body1, body2);

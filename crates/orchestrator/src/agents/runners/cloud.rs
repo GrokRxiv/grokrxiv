@@ -109,11 +109,7 @@ impl AgentRunner for CloudRunner {
         "cloud"
     }
 
-    async fn run(
-        &self,
-        spec: &AgentSpec,
-        input: &AgentInput,
-    ) -> anyhow::Result<AgentRun> {
+    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
         let provider = self.provider();
         match provider.as_str() {
             "vercel" => self.dispatch_vercel(spec, input).await,
@@ -151,7 +147,15 @@ impl CloudRunner {
 
         // First attempt: original user prompt.
         let (first_output, first_sandbox) = self
-            .start_and_wait(&http, &cfg, spec, input, &input.user_prompt, started, timeout)
+            .start_and_wait(
+                &http,
+                &cfg,
+                spec,
+                input,
+                &input.user_prompt,
+                started,
+                timeout,
+            )
             .await?;
 
         let (parsed, sandbox_ref) = match parse_strict_json(&first_output) {
@@ -260,9 +264,10 @@ impl CloudRunner {
             if let Some(tok) = &cfg.token {
                 poll_req = poll_req.bearer_auth(tok);
             }
-            let poll_resp = poll_req.send().await.map_err(|e| {
-                anyhow::anyhow!("cloud(vercel) GET /api/run/{run_id} failed: {e}")
-            })?;
+            let poll_resp = poll_req
+                .send()
+                .await
+                .map_err(|e| anyhow::anyhow!("cloud(vercel) GET /api/run/{run_id} failed: {e}"))?;
             if !poll_resp.status().is_success() {
                 anyhow::bail!(
                     "cloud(vercel) GET /api/run/{run_id} returned HTTP {}",
@@ -293,9 +298,8 @@ impl CloudRunner {
                 })?;
                 let as_string = match output {
                     Value::String(s) => s,
-                    other => serde_json::to_string(&other).map_err(|e| {
-                        anyhow::anyhow!("cloud(vercel) serialise output: {e}")
-                    })?,
+                    other => serde_json::to_string(&other)
+                        .map_err(|e| anyhow::anyhow!("cloud(vercel) serialise output: {e}"))?,
                 };
                 Ok(Some((as_string, body.sandbox_ref.clone())))
             }
@@ -486,11 +490,7 @@ mod tests {
             .expect("vercel completed");
 
         assert_eq!(run.runner, AgentRunnerKind::Cloud);
-        let body = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("body was captured");
+        let body = captured.lock().unwrap().clone().expect("body was captured");
         for key in [
             "agent",
             "role",

@@ -155,11 +155,7 @@ fn walk_ast(node: &Value, level: u32, counter: &mut Vec<u32>, out: &mut Vec<Sect
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-                    .or_else(|| {
-                        map.get("xml:id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .or_else(|| map.get("xml:id").and_then(Value::as_str).map(str::to_owned))
                     .unwrap_or_else(|| {
                         let path: Vec<String> = counter[..level as usize]
                             .iter()
@@ -232,10 +228,7 @@ pub fn sections_from_markdown(body: &str) -> Vec<SectionEntry> {
     let mut byte_cursor: usize = 0;
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        let leading_hashes = trimmed
-            .chars()
-            .take_while(|&c| c == '#')
-            .count();
+        let leading_hashes = trimmed.chars().take_while(|&c| c == '#').count();
         let after = if leading_hashes > 0 {
             &trimmed[leading_hashes..]
         } else {
@@ -388,6 +381,7 @@ const PREVIEW_LEN: usize = 200;
 static TEX_ENV_RES: OnceLock<Vec<(String, Regex)>> = OnceLock::new();
 static MD_BOLD_RE: OnceLock<Regex> = OnceLock::new();
 static MD_HEADING_RE: OnceLock<Regex> = OnceLock::new();
+static MD_TITLE_RE: OnceLock<Regex> = OnceLock::new();
 
 const TEX_ENV_KINDS: &[&str] = &[
     "theorem",
@@ -434,6 +428,16 @@ fn md_heading_re() -> &'static Regex {
         // ### Theorem 2.1  ...   (heading line; body follows on subsequent lines until next heading)
         Regex::new(
             r"(?im)^(?P<hashes>\#{1,6})\s+(?P<kind>Theorem|Lemma|Proposition|Corollary|Definition|Proof|Remark|Example)\b(?P<rest>.*)$",
+        )
+        .expect("valid regex")
+    })
+}
+
+fn md_title_re() -> &'static Regex {
+    MD_TITLE_RE.get_or_init(|| {
+        // ### Spectral Decomposition Theorem / ##### Proof sketch.
+        Regex::new(
+            r"(?im)^(?P<hashes>\#{1,6})\s+(?P<title>.*\b(?:Theorem|Lemma|Proposition|Corollary|Definition|Proof)\b.*)$",
         )
         .expect("valid regex")
     })
@@ -495,7 +499,71 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         });
     }
 
+    // 4) Title-containing headings such as "Spectral Decomposition Theorem"
+    // or "Proof sketch." Pandoc often emits those for theorem-like prose even
+    // when the source did not use a theorem environment.
+    for cap in md_title_re().captures_iter(body) {
+        let title = cap.name("title").map(|m| m.as_str()).unwrap_or("").trim();
+        if starts_with_kind_word(title) {
+            continue;
+        }
+        let Some(kind) = kind_from_title(title) else {
+            continue;
+        };
+        let full_match_end = cap.get(0).map(|m| m.end()).unwrap_or(0);
+        let tail = &body[full_match_end..];
+        let next_para = tail
+            .lines()
+            .skip_while(|l| l.trim().is_empty())
+            .take_while(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let statement = if next_para.trim().is_empty() {
+            title
+        } else {
+            next_para.trim()
+        };
+        out.push(TheoremBlock {
+            label: None,
+            kind,
+            statement_preview: preview(statement),
+        });
+    }
+
     out.iter().map(TheoremBlock::to_json).collect()
+}
+
+fn starts_with_kind_word(title: &str) -> bool {
+    let lower = title.trim_start().to_lowercase();
+    [
+        "theorem",
+        "lemma",
+        "proposition",
+        "corollary",
+        "definition",
+        "proof",
+        "remark",
+        "example",
+    ]
+    .iter()
+    .any(|kind| lower.starts_with(kind))
+}
+
+fn kind_from_title(title: &str) -> Option<String> {
+    let lower = title.to_lowercase();
+    for kind in [
+        "theorem",
+        "lemma",
+        "proposition",
+        "corollary",
+        "definition",
+        "proof",
+    ] {
+        if lower.contains(kind) {
+            return Some(kind.to_string());
+        }
+    }
+    None
 }
 
 fn preview(s: &str) -> String {
@@ -610,11 +678,7 @@ fn search_label_in_ast(
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-                    .or_else(|| {
-                        map.get("xml:id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .or_else(|| map.get("xml:id").and_then(Value::as_str).map(str::to_owned))
                     .unwrap_or_else(|| target.to_string());
                 let char_start = map
                     .get("char_start")
@@ -763,7 +827,10 @@ mod tests {
     }
     fn tempdir() -> TempDir {
         let mut p = std::env::temp_dir();
-        p.push(format!("grokrxiv-theorems-{}", uuid::Uuid::new_v4().simple()));
+        p.push(format!(
+            "grokrxiv-theorems-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
     }
@@ -848,7 +915,8 @@ mod tests {
     #[test]
     fn read_section_handles_markdown_theorem() {
         let dir = tempdir();
-        let body = "# Section\n\n**Theorem 2.1.** Let X be Hausdorff and compact.\n\nProof follows.\n";
+        let body =
+            "# Section\n\n**Theorem 2.1.** Let X be Hausdorff and compact.\n\nProof follows.\n";
         std::fs::write(dir.path().join("body.md"), body).unwrap();
         let ctx = ctx_no_ast(dir.path());
         let sec_list = list_sections(&ctx).unwrap();
@@ -859,10 +927,7 @@ mod tests {
             theorems.iter().any(|t| t["type"] == "theorem"),
             "expected a theorem entry, got {theorems:?}"
         );
-        let first = theorems
-            .iter()
-            .find(|t| t["type"] == "theorem")
-            .unwrap();
+        let first = theorems.iter().find(|t| t["type"] == "theorem").unwrap();
         assert!(first["statement_preview"]
             .as_str()
             .unwrap()

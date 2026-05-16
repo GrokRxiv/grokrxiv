@@ -113,9 +113,7 @@ fn extract_content(resp: &serde_json::Value) -> anyhow::Result<String> {
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| {
-            anyhow::anyhow!("response missing choices[0].message.content: {resp}")
-        })
+        .ok_or_else(|| anyhow::anyhow!("response missing choices[0].message.content: {resp}"))
 }
 
 /// Extract `(tokens_in, tokens_out)` from `usage` when present.
@@ -144,11 +142,7 @@ impl AgentRunner for LocalInferenceRunner {
         "local_inference"
     }
 
-    async fn run(
-        &self,
-        spec: &AgentSpec,
-        input: &AgentInput,
-    ) -> anyhow::Result<AgentRun> {
+    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
         let endpoint = resolve_endpoint();
         let timeout = resolve_timeout();
         let client = reqwest::Client::builder()
@@ -303,7 +297,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ok_response("{\"hit\":\"litellm\"}", true)),
+                ResponseTemplate::new(200)
+                    .set_body_json(ok_response("{\"hit\":\"litellm\"}", true)),
             )
             .mount(&litellm)
             .await;
@@ -326,7 +321,10 @@ mod tests {
         let lit_reqs = litellm.received_requests().await.unwrap();
         assert_eq!(lit_reqs.len(), 1);
         let oll_reqs = ollama.received_requests().await.unwrap();
-        assert!(oll_reqs.is_empty(), "ollama should not be hit when litellm set");
+        assert!(
+            oll_reqs.is_empty(),
+            "ollama should not be hit when litellm set"
+        );
     }
 
     #[tokio::test]
@@ -385,7 +383,10 @@ mod tests {
             &serde_json::json!({"type": "json_object"})
         );
         // Sanity-check the rest of the payload while we're here.
-        assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("qwen2.5:7b-instruct"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("qwen2.5:7b-instruct")
+        );
         assert_eq!(
             body.get("messages")
                 .and_then(|m| m.get(0))
@@ -471,7 +472,11 @@ mod tests {
         let run = runner.run(&test_spec(), &test_input()).await.unwrap();
         assert_eq!(run.output, serde_json::json!({"retry": "worked"}));
         let reqs = server.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 2, "expected initial call + one corrective retry");
+        assert_eq!(
+            reqs.len(),
+            2,
+            "expected initial call + one corrective retry"
+        );
         // The corrective retry should mention strict JSON in the user message.
         let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
         let user_content = second

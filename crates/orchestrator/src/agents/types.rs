@@ -102,9 +102,10 @@ pub struct ExtractionRun {
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]
 pub enum AgentRunnerKind {
-    /// Direct provider API call. Default for all 6 review roles.
+    /// Direct provider API call. Use explicitly with `--runner api`.
     Api,
-    /// Local CLI subprocess (`claude` / `codex` / `gemini`). The role's
+    /// Local CLI subprocess (`claude` / `codex` / `gemini`). Default for
+    /// review roles. The role's
     /// `provider:` field in YAML drives which binary is spawned.
     Cli,
     /// Cloud agent backend (Vercel Open Agents primary; E2B alternate).
@@ -118,7 +119,7 @@ pub enum AgentRunnerKind {
 
 impl Default for AgentRunnerKind {
     fn default() -> Self {
-        Self::Api
+        Self::Cli
     }
 }
 

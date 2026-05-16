@@ -92,11 +92,7 @@ impl ReviewAgent for RenderAgent {
         &self.spec
     }
 
-    async fn run(
-        &self,
-        runner: &dyn AgentRunner,
-        input: AgentInput,
-    ) -> anyhow::Result<AgentRun> {
+    async fn run(&self, runner: &dyn AgentRunner, input: AgentInput) -> anyhow::Result<AgentRun> {
         // TODO(Track G integration): wire RenderAgent::run via ApiRunner to invoke
         // crates::render::render_review(...) which already produces {html, md, tex}.
         // Wrap the output as the render_artifact JSON shape.
@@ -131,8 +127,8 @@ mod render_agent_tests {
     //!    The actual `crates/render` invocation will be wired through the
     //!    `ApiRunner` in Track G integration.
     use super::*;
-    use crate::agents::types::{AgentRunnerKind, ToolPolicy};
     use crate::agents::types::{AgentMode, SandboxPolicy};
+    use crate::agents::types::{AgentRunnerKind, ToolPolicy};
     use async_trait::async_trait;
     use grokrxiv_schemas::AgentRole;
     use uuid::Uuid;

@@ -196,9 +196,7 @@ fn parse_mapping(v: &Value) -> anyhow::Result<HashMap<String, MacroLookup>> {
         let body = entry
             .get("body")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                anyhow::anyhow!("apply_expansions: mapping[{k}] missing string `body`")
-            })?
+            .ok_or_else(|| anyhow::anyhow!("apply_expansions: mapping[{k}] missing string `body`"))?
             .to_string();
         let params = entry
             .get("params")
@@ -777,7 +775,11 @@ mod tests {
                    \\newcommand{\\R}{\\mathbb{R}} \
                    Trailing prose with more accents: über naïve résumé.";
         let v = defs(src);
-        assert_eq!(v.len(), 1, "should find the \\newcommand surrounded by non-ASCII");
+        assert_eq!(
+            v.len(),
+            1,
+            "should find the \\newcommand surrounded by non-ASCII"
+        );
         assert_eq!(v[0].name, r"\R");
         assert_eq!(v[0].body, r"\mathbb{R}");
     }

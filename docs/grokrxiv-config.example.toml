@@ -8,7 +8,8 @@
 # Profile: default — what most operators want.
 # -----------------------------------------------------------------------------
 [profiles.default]
-runner          = "api"
+runner          = "cli"
+extractor       = "cli"
 sandbox         = "none"
 mode            = "review_only"
 litellm_url     = "http://localhost:4000"
@@ -29,7 +30,8 @@ max_cost_usd    = 0.50
 # Profile: dev — cheap, fast, no real PRs.
 # -----------------------------------------------------------------------------
 [profiles.dev]
-runner          = "api"
+runner          = "cli"
+extractor       = "cli"
 sandbox         = "none"
 mode            = "review_only"
 max_cost_usd    = 0.05
@@ -48,6 +50,7 @@ meta_reviewer         = "claude-haiku-4-5"
 # -----------------------------------------------------------------------------
 [profiles.local]
 runner          = "local_inference"
+extractor       = "cli"
 sandbox         = "container"
 litellm_url     = "http://localhost:4000"
 ollama_host     = "http://localhost:11434"
@@ -58,6 +61,7 @@ offline         = false
 # -----------------------------------------------------------------------------
 [profiles.cloud]
 runner          = "api"
+extractor       = "api"
 cloud_provider  = "vercel_open_agents"
 
 [profiles.cloud.runner_for]

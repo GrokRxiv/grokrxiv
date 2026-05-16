@@ -97,7 +97,9 @@ impl GitArtifactStore {
         } else if analysis.0.is_up_to_date() {
             debug!("grokrxiv-data already up to date");
         } else {
-            return Err(anyhow!("grokrxiv-data: non-fast-forward, refusing to merge"));
+            return Err(anyhow!(
+                "grokrxiv-data: non-fast-forward, refusing to merge"
+            ));
         }
         Ok(())
     }
@@ -120,12 +122,10 @@ impl GitArtifactStore {
                 fs::create_dir_all(parent)?;
             }
             if rel_path.ends_with(".json") {
-                self.validate_json(rel_path, bytes).with_context(|| {
-                    format!("validating {rel_path} for paper {arxiv_id}")
-                })?;
+                self.validate_json(rel_path, bytes)
+                    .with_context(|| format!("validating {rel_path} for paper {arxiv_id}"))?;
             }
-            fs::write(&full, bytes)
-                .with_context(|| format!("writing {}", full.display()))?;
+            fs::write(&full, bytes).with_context(|| format!("writing {}", full.display()))?;
         }
         Ok(())
     }
@@ -148,9 +148,12 @@ impl GitArtifactStore {
             .with_context(|| format!("parsing schema {}", schema_path.display()))?;
         let validator = jsonschema::validator_for(&schema_value)
             .map_err(|e| anyhow!("compiling schema {}: {e}", schema_path.display()))?;
-        let instance: Value = serde_json::from_slice(bytes)
-            .with_context(|| format!("parsing JSON {rel_path}"))?;
-        let errors: Vec<String> = validator.iter_errors(&instance).map(|e| e.to_string()).collect();
+        let instance: Value =
+            serde_json::from_slice(bytes).with_context(|| format!("parsing JSON {rel_path}"))?;
+        let errors: Vec<String> = validator
+            .iter_errors(&instance)
+            .map(|e| e.to_string())
+            .collect();
         if !errors.is_empty() {
             return Err(anyhow!(
                 "schema validation failed for {rel_path}: {}",
@@ -174,7 +177,9 @@ impl GitArtifactStore {
 
         let parents: Vec<git2::Commit> = match repo.head() {
             Ok(head) => match head.peel(ObjectType::Commit) {
-                Ok(obj) => vec![obj.into_commit().map_err(|_| anyhow!("HEAD not a commit"))?],
+                Ok(obj) => vec![obj
+                    .into_commit()
+                    .map_err(|_| anyhow!("HEAD not a commit"))?],
                 Err(_) => Vec::new(),
             },
             Err(_) => Vec::new(),
@@ -188,14 +193,7 @@ impl GitArtifactStore {
         };
         let message = format!("paper({arxiv_id}): extracted {stages_str}");
 
-        let commit_oid = repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            &message,
-            &tree,
-            &parents_refs,
-        )?;
+        let commit_oid = repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents_refs)?;
         let sha = commit_oid.to_string();
 
         if let Some(url) = self.remote.as_deref() {
@@ -305,7 +303,8 @@ mod tests {
             .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
             .context("seed commit")?;
         let seed_commit = repo.find_commit(commit_oid)?;
-        repo.branch("main", &seed_commit, true).context("seed branch")?;
+        repo.branch("main", &seed_commit, true)
+            .context("seed branch")?;
         repo.set_head("refs/heads/main").context("seed set_head")?;
         let mut origin = repo.remote("origin", &remote_url).context("seed remote")?;
         origin
@@ -357,7 +356,10 @@ mod tests {
             "properties": { "arxiv_id": { "type": "string" } },
             "additionalProperties": false
         });
-        fs::write(path.join("schemas/metadata.schema.json"), serde_json::to_vec(&schema)?)?;
+        fs::write(
+            path.join("schemas/metadata.schema.json"),
+            serde_json::to_vec(&schema)?,
+        )?;
 
         let mut files = HashMap::new();
         files.insert("metadata.json".to_string(), b"{}".to_vec());

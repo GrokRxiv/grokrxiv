@@ -9,9 +9,51 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use grokrxiv_schemas::AgentRole;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
+
+/// Internal guard consumed by `ApiRunner`.
+///
+/// The CLI sets this after resolving `--runner` / `--extractor`. Direct
+/// provider APIs are disabled unless the operator explicitly selected an API
+/// backend for review or extraction.
+pub const ALLOW_PROVIDER_API_ENV: &str = "GROKRXIV_ALLOW_PROVIDER_API";
+
+/// Which backend runs staged extraction agents during ingest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum ExtractorKind {
+    /// Local CLI subprocesses (`claude` / `gemini`) propose tool calls.
+    Cli,
+    /// Direct provider API tool-calling.
+    Api,
+}
+
+impl Default for ExtractorKind {
+    fn default() -> Self {
+        Self::Cli
+    }
+}
+
+impl ExtractorKind {
+    /// Stable lowercase string for env exports and config rendering.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Api => "api",
+        }
+    }
+
+    /// Corresponding runner registry key.
+    pub fn runner_kind(self) -> AgentRunnerKind {
+        match self {
+            Self::Cli => AgentRunnerKind::Cli,
+            Self::Api => AgentRunnerKind::Api,
+        }
+    }
+}
 
 /// Layered runtime configuration consumed by the CLI before it builds the
 /// `AppState` / agent registry. CLI flags override env vars, which override
@@ -20,6 +62,8 @@ use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 pub struct RuntimeConfig {
     /// Default runner backend (API / CLI / cloud / local-inference).
     pub default_runner: AgentRunnerKind,
+    /// Default extraction backend (CLI by default; API when explicitly opted in).
+    pub extractor: ExtractorKind,
     /// Default sandbox policy.
     pub default_sandbox: SandboxPolicy,
     /// Default mode (`review_only` or `review_and_revise`).
@@ -53,7 +97,8 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            default_runner: AgentRunnerKind::Api,
+            default_runner: AgentRunnerKind::Cli,
+            extractor: ExtractorKind::Cli,
             default_sandbox: SandboxPolicy::None,
             default_mode: AgentMode::ReviewOnly,
             revision_target: RevisionTarget::PaperLatex,
@@ -85,6 +130,8 @@ pub struct TomlConfig {
 pub struct TomlProfile {
     /// Default runner backend.
     pub runner: Option<String>,
+    /// Default staged-extraction backend (`cli` / `api`).
+    pub extractor: Option<String>,
     /// Default sandbox policy.
     pub sandbox: Option<String>,
     /// Default mode.
@@ -144,13 +191,25 @@ impl RuntimeConfig {
         }
 
         // ---- 3. Environment ----
-        apply_env(&mut out);
+        apply_env(&mut out)?;
 
         // ---- 4. CLI ----
         apply_cli(&mut out, cli_overrides);
 
         Ok(out)
     }
+}
+
+/// Whether this resolved runtime config intentionally permits direct provider
+/// API calls. CLI runs leave this false so local subscription-backed CLIs are
+/// the only LLM path.
+pub fn provider_api_allowed(cfg: &RuntimeConfig) -> bool {
+    cfg.default_runner == AgentRunnerKind::Api
+        || cfg.extractor == ExtractorKind::Api
+        || cfg
+            .runner_for
+            .values()
+            .any(|runner| *runner == AgentRunnerKind::Api)
 }
 
 /// Subset of the parsed `Cli` whose values get layered onto a `RuntimeConfig`.
@@ -161,6 +220,8 @@ impl RuntimeConfig {
 pub struct RuntimeConfigOverrides {
     /// `--runner`.
     pub runner: Option<AgentRunnerKind>,
+    /// `--extractor`.
+    pub extractor: Option<ExtractorKind>,
     /// `--sandbox`.
     pub sandbox: Option<SandboxPolicy>,
     /// `--mode`.
@@ -195,6 +256,11 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
     if let Some(s) = &p.runner {
         if let Some(r) = parse_runner(s) {
             out.default_runner = r;
+        }
+    }
+    if let Some(s) = &p.extractor {
+        if let Some(r) = parse_extractor(s) {
+            out.extractor = r;
         }
     }
     if let Some(s) = &p.sandbox {
@@ -250,11 +316,21 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
     }
 }
 
-fn apply_env(out: &mut RuntimeConfig) {
+fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
     if let Ok(v) = std::env::var("GROKRXIV_RUNNER") {
         if let Some(r) = parse_runner(&v) {
             out.default_runner = r;
         }
+    }
+    if let Ok(v) = std::env::var("GROKRXIV_EXTRACTOR") {
+        out.extractor = parse_extractor(&v).ok_or_else(|| {
+            anyhow::anyhow!("invalid GROKRXIV_EXTRACTOR={v:?}; expected one of: cli, api")
+        })?;
+    } else if matches!(
+        std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").as_deref(),
+        Ok("api")
+    ) {
+        out.extractor = ExtractorKind::Api;
     }
     if let Ok(v) = std::env::var("GROKRXIV_SANDBOX") {
         if let Some(r) = parse_sandbox(&v) {
@@ -283,17 +359,27 @@ fn apply_env(out: &mut RuntimeConfig) {
             out.max_cost_usd = Some(parsed);
         }
     }
-    if matches!(std::env::var("GROKRXIV_NO_CACHE").as_deref(), Ok("1") | Ok("true")) {
+    if matches!(
+        std::env::var("GROKRXIV_NO_CACHE").as_deref(),
+        Ok("1") | Ok("true")
+    ) {
         out.no_cache = true;
     }
-    if matches!(std::env::var("GROKRXIV_OFFLINE").as_deref(), Ok("1") | Ok("true")) {
+    if matches!(
+        std::env::var("GROKRXIV_OFFLINE").as_deref(),
+        Ok("1") | Ok("true")
+    ) {
         out.offline = true;
     }
+    Ok(())
 }
 
 fn apply_cli(out: &mut RuntimeConfig, cli: &RuntimeConfigOverrides) {
     if let Some(r) = cli.runner {
         out.default_runner = r;
+    }
+    if let Some(r) = cli.extractor {
+        out.extractor = r;
     }
     if let Some(s) = cli.sandbox {
         out.default_sandbox = s;
@@ -340,6 +426,15 @@ fn parse_runner(s: &str) -> Option<AgentRunnerKind> {
     }
 }
 
+/// Parse a staged-extraction backend.
+pub fn parse_extractor(s: &str) -> Option<ExtractorKind> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "api" => Some(ExtractorKind::Api),
+        "cli" => Some(ExtractorKind::Cli),
+        _ => None,
+    }
+}
+
 fn parse_sandbox(s: &str) -> Option<SandboxPolicy> {
     match s.trim().to_ascii_lowercase().as_str() {
         "none" | "" => Some(SandboxPolicy::None),
@@ -375,10 +470,9 @@ pub fn parse_role_runner(s: &str) -> Result<(AgentRole, AgentRunnerKind), String
     let (role_s, runner_s) = s
         .split_once('=')
         .ok_or_else(|| format!("expected <role>=<runner>, got `{s}`"))?;
-    let role =
-        parse_role(role_s).ok_or_else(|| format!("unknown role `{role_s}` in `{s}`"))?;
-    let runner = parse_runner(runner_s)
-        .ok_or_else(|| format!("unknown runner `{runner_s}` in `{s}`"))?;
+    let role = parse_role(role_s).ok_or_else(|| format!("unknown role `{role_s}` in `{s}`"))?;
+    let runner =
+        parse_runner(runner_s).ok_or_else(|| format!("unknown runner `{runner_s}` in `{s}`"))?;
     Ok((role, runner))
 }
 
@@ -387,8 +481,7 @@ pub fn parse_role_model(s: &str) -> Result<(AgentRole, String), String> {
     let (role_s, model_s) = s
         .split_once('=')
         .ok_or_else(|| format!("expected <role>=<model>, got `{s}`"))?;
-    let role =
-        parse_role(role_s).ok_or_else(|| format!("unknown role `{role_s}` in `{s}`"))?;
+    let role = parse_role(role_s).ok_or_else(|| format!("unknown role `{role_s}` in `{s}`"))?;
     if model_s.is_empty() {
         return Err(format!("empty model id in `{s}`"));
     }
@@ -418,6 +511,8 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
 
     let v = serde_json::json!({
         "default_runner": format!("{:?}", cfg.default_runner),
+        "extractor": cfg.extractor.as_str(),
+        "direct_provider_api_allowed": provider_api_allowed(cfg),
         "default_sandbox": format!("{:?}", cfg.default_sandbox),
         "default_mode": format!("{:?}", cfg.default_mode),
         "revision_target": format!("{:?}", cfg.revision_target),
@@ -436,6 +531,11 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
     } else {
         let mut s = String::new();
         s.push_str(&format!("default_runner   = {:?}\n", cfg.default_runner));
+        s.push_str(&format!("extractor        = {}\n", cfg.extractor.as_str()));
+        s.push_str(&format!(
+            "direct_provider_api_allowed = {}\n",
+            provider_api_allowed(cfg)
+        ));
         s.push_str(&format!("default_sandbox  = {:?}\n", cfg.default_sandbox));
         s.push_str(&format!("default_mode     = {:?}\n", cfg.default_mode));
         s.push_str(&format!("revision_target  = {:?}\n", cfg.revision_target));
@@ -482,6 +582,24 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_clean_extractor_env<T>(f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
+        let prev_fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
+        std::env::remove_var("GROKRXIV_EXTRACTOR");
+        std::env::remove_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK");
+        let out = f();
+        if let Some(prev) = prev {
+            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+        }
+        if let Some(prev) = prev_fallback {
+            std::env::set_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK", prev);
+        }
+        out
+    }
 
     #[test]
     fn parse_role_runner_ok() {
@@ -509,37 +627,94 @@ mod tests {
 
     #[test]
     fn resolve_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // No HOME-relative config, no env, no CLI overrides → default.
         // Force no_config by pointing config_path to a path that doesn't exist
         // and clearing relevant env vars within the test scope.
-        let cfg = RuntimeConfig::resolve(
-            &RuntimeConfigOverrides::default(),
-            "nonexistent",
-            Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
-        )
+        let cfg = with_clean_extractor_env(|| {
+            RuntimeConfig::resolve(
+                &RuntimeConfigOverrides::default(),
+                "nonexistent",
+                Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+            )
+        })
         .unwrap();
-        assert_eq!(cfg.default_runner, AgentRunnerKind::Api);
+        assert_eq!(cfg.default_runner, AgentRunnerKind::Cli);
+        assert_eq!(cfg.extractor, ExtractorKind::Cli);
         assert_eq!(cfg.default_sandbox, SandboxPolicy::None);
     }
 
     #[test]
     fn resolve_cli_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut over = RuntimeConfigOverrides::default();
         over.runner = Some(AgentRunnerKind::Cli);
+        over.extractor = Some(ExtractorKind::Api);
         over.no_cache = true;
         over.runner_for
             .push((AgentRole::Summary, AgentRunnerKind::Cloud));
-        let cfg = RuntimeConfig::resolve(
-            &over,
-            "default",
-            Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
-        )
+        let cfg = with_clean_extractor_env(|| {
+            RuntimeConfig::resolve(
+                &over,
+                "default",
+                Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+            )
+        })
         .unwrap();
         assert_eq!(cfg.default_runner, AgentRunnerKind::Cli);
+        assert_eq!(cfg.extractor, ExtractorKind::Api);
         assert!(cfg.no_cache);
         assert_eq!(
             cfg.runner_for.get(&AgentRole::Summary).copied(),
             Some(AgentRunnerKind::Cloud)
+        );
+    }
+
+    #[test]
+    fn provider_api_allowed_only_when_api_backend_selected() {
+        let mut cfg = RuntimeConfig::default();
+        assert!(!provider_api_allowed(&cfg));
+
+        cfg.extractor = ExtractorKind::Api;
+        assert!(provider_api_allowed(&cfg));
+
+        cfg.extractor = ExtractorKind::Cli;
+        cfg.default_runner = AgentRunnerKind::Api;
+        assert!(provider_api_allowed(&cfg));
+
+        cfg.default_runner = AgentRunnerKind::Cli;
+        cfg.runner_for
+            .insert(AgentRole::Summary, AgentRunnerKind::Api);
+        assert!(provider_api_allowed(&cfg));
+    }
+
+    #[test]
+    fn parse_extractor_accepts_only_cli_or_api() {
+        assert_eq!(parse_extractor("cli"), Some(ExtractorKind::Cli));
+        assert_eq!(parse_extractor("api"), Some(ExtractorKind::Api));
+        assert_eq!(parse_extractor("cloud"), None);
+        assert_eq!(parse_extractor("local_inference"), None);
+    }
+
+    #[test]
+    fn invalid_extractor_env_errors_clearly() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
+        std::env::set_var("GROKRXIV_EXTRACTOR", "cloud");
+        let err = RuntimeConfig::resolve(
+            &RuntimeConfigOverrides::default(),
+            "default",
+            Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+        )
+        .unwrap_err();
+        if let Some(prev) = prev {
+            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+        } else {
+            std::env::remove_var("GROKRXIV_EXTRACTOR");
+        }
+        assert!(
+            err.to_string().contains("GROKRXIV_EXTRACTOR"),
+            "unexpected error: {err}"
         );
     }
 }

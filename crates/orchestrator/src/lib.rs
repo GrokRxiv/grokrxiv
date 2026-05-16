@@ -21,6 +21,7 @@ pub mod serve;
 pub mod state;
 pub mod stubs;
 pub mod supervisor;
+pub mod supervisor_runner;
 
 pub use config::Config;
 pub use runtime_config::{RuntimeConfig, RuntimeConfigOverrides};

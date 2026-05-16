@@ -7,7 +7,7 @@ provider: gemini
 # overhead and emits tool calls reliably; equation canonicalisation is mostly
 # deterministic TeX munging that doesn't benefit from extended thinking.
 model: gemini-2.5-flash
-runner: api
+runner: cli
 prompt_template: prompts/extraction/equations.md
 output_schema: schemas/extraction/equations.schema.json
 verifiers:

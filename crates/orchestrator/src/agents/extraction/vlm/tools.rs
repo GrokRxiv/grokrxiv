@@ -91,8 +91,12 @@ impl Tool for ReadPdfPageTool {
             anyhow::bail!("read_pdf_page: page must be >= 1, got {page}");
         }
         let pdf_path = resolve_pdf_path(args.get("path").and_then(Value::as_str), ctx)?;
-        let bytes = std::fs::read(&pdf_path)
-            .map_err(|e| anyhow::anyhow!("read_pdf_page: could not open `{}`: {e}", pdf_path.display()))?;
+        let bytes = std::fs::read(&pdf_path).map_err(|e| {
+            anyhow::anyhow!(
+                "read_pdf_page: could not open `{}`: {e}",
+                pdf_path.display()
+            )
+        })?;
 
         let (text_layer, total_pages) = text_layer_for_page(&bytes, page as u32)?;
         let image_b64 = render_page_b64(&bytes, page as u32, None);
@@ -152,8 +156,9 @@ impl Tool for SearchPdfTool {
             anyhow::bail!("search_pdf: `query` must be non-empty");
         }
         let pdf_path = resolve_pdf_path(args.get("path").and_then(Value::as_str), ctx)?;
-        let bytes = std::fs::read(&pdf_path)
-            .map_err(|e| anyhow::anyhow!("search_pdf: could not open `{}`: {e}", pdf_path.display()))?;
+        let bytes = std::fs::read(&pdf_path).map_err(|e| {
+            anyhow::anyhow!("search_pdf: could not open `{}`: {e}", pdf_path.display())
+        })?;
 
         let doc = lopdf::Document::load_mem(&bytes)
             .map_err(|e| anyhow::anyhow!("search_pdf: lopdf failed to parse PDF: {e}"))?;
@@ -241,17 +246,37 @@ impl Tool for ExtractPageRegionTool {
         let bbox = args
             .get("bbox")
             .ok_or_else(|| anyhow::anyhow!("extract_page_region requires `bbox`"))?;
-        let x = bbox.get("x").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1.0);
-        let y = bbox.get("y").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1.0);
-        let w = bbox.get("w").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0);
-        let h = bbox.get("h").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0);
+        let x = bbox
+            .get("x")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let y = bbox
+            .get("y")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let w = bbox
+            .get("w")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0);
+        let h = bbox
+            .get("h")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0);
         if w <= 0.0 || h <= 0.0 {
             anyhow::bail!("extract_page_region: bbox must have positive width and height");
         }
 
         let pdf_path = resolve_pdf_path(args.get("path").and_then(Value::as_str), ctx)?;
-        let bytes = std::fs::read(&pdf_path)
-            .map_err(|e| anyhow::anyhow!("extract_page_region: could not open `{}`: {e}", pdf_path.display()))?;
+        let bytes = std::fs::read(&pdf_path).map_err(|e| {
+            anyhow::anyhow!(
+                "extract_page_region: could not open `{}`: {e}",
+                pdf_path.display()
+            )
+        })?;
 
         let image_b64 = render_page_b64(&bytes, page as u32, Some((x, y, w, h)))
             .ok_or_else(|| anyhow::anyhow!("extract_page_region: PDFium rendering unavailable"))?;
@@ -343,8 +368,12 @@ fn apply_crop(img: DynamicImage, crop: Option<(f64, f64, f64, f64)>) -> DynamicI
     let (iw, ih) = img.dimensions();
     let cx = (x * iw as f64).floor() as u32;
     let cy = (y * ih as f64).floor() as u32;
-    let cw = ((w * iw as f64).round() as u32).max(1).min(iw.saturating_sub(cx));
-    let ch = ((h * ih as f64).round() as u32).max(1).min(ih.saturating_sub(cy));
+    let cw = ((w * iw as f64).round() as u32)
+        .max(1)
+        .min(iw.saturating_sub(cx));
+    let ch = ((h * ih as f64).round() as u32)
+        .max(1)
+        .min(ih.saturating_sub(cy));
     img.crop_imm(cx, cy, cw, ch)
 }
 
@@ -540,8 +569,7 @@ mod tests {
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("PDFium rendering unavailable")
-                        || msg.contains("could not open"),
+                    msg.contains("PDFium rendering unavailable") || msg.contains("could not open"),
                     "unexpected error: {msg}"
                 );
                 eprintln!("PDFium not available in this environment — render test skipped");

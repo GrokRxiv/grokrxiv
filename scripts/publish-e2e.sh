@@ -8,20 +8,26 @@
 #
 # Required env:
 #   GITHUB_TOKEN                 — fine-grained PAT with content+pr write
-#   GROKRXIV_REVIEWS_OWNER       — e.g. your-username
-#   GROKRXIV_REVIEWS_REPO        — a TEST repo (e.g. grokrxiv-reviews-test)
+#   GROKRXIV_REVIEWS_OWNER       — default GrokRxiv
+#   GROKRXIV_REVIEWS_REPO        — default grokrxiv-reviews
 #   GITHUB_WEBHOOK_SECRET        — must match the orchestrator's secret
-#   ANTHROPIC_API_KEY            — for the M1 ingest step
 #   DATABASE_URL                 — supabase Postgres
 #
 # Optional:
 #   ARXIV_ID                     — default 2605.12484
+#   RUNNER                       — default cli
+#   EXTRACTOR                    — default cli
+#   GROKRXIV_BIN                 — default: cargo run --quiet --release -p grokrxiv-orchestrator --
 #
 # Exits non-zero on any failed assertion.
 
 set -euo pipefail
 
 ARXIV_ID="${ARXIV_ID:-2605.12484}"
+RUNNER="${RUNNER:-cli}"
+EXTRACTOR="${EXTRACTOR:-cli}"
+GROKRXIV_REVIEWS_OWNER="${GROKRXIV_REVIEWS_OWNER:-GrokRxiv}"
+GROKRXIV_REVIEWS_REPO="${GROKRXIV_REVIEWS_REPO:-grokrxiv-reviews}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/.." && pwd)"
 cd "${REPO}"
@@ -31,15 +37,45 @@ ok()   { printf "  \033[32m✓\033[0m %s\n" "$*"; }
 fail() { printf "  \033[31m✗\033[0m %s\n" "$*"; exit 1; }
 
 : "${GITHUB_TOKEN:?GITHUB_TOKEN required for publish E2E}"
-: "${GROKRXIV_REVIEWS_OWNER:?GROKRXIV_REVIEWS_OWNER required (e.g. your-github-username)}"
-: "${GROKRXIV_REVIEWS_REPO:?GROKRXIV_REVIEWS_REPO required (a disposable TEST repo)}"
 : "${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET required (must match orchestrator env)}"
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}"
 : "${DATABASE_URL:?DATABASE_URL required (e.g. postgres://postgres:postgres@127.0.0.1:54322/postgres)}"
+
+if [[ "${RUNNER}" == "api" || "${EXTRACTOR}" == "api" ]]; then
+  export GROKRXIV_ALLOW_PROVIDER_API=1
+  if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]]; then
+    fail "RUNNER=${RUNNER} EXTRACTOR=${EXTRACTOR} requires at least one provider API key"
+  fi
+else
+  export GROKRXIV_ALLOW_PROVIDER_API=0
+  unset ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_GENERATIVE_AI_API_KEY GOOGLE_API_KEY GEMINI_API_KEY
+  unset GROKRXIV_EXTRACTION_TOOL_FALLBACK
+fi
 
 command -v gh   >/dev/null || fail "gh CLI not on PATH"
 command -v jq   >/dev/null || fail "jq not on PATH"
 command -v curl >/dev/null || fail "curl not on PATH"
+if [[ "${RUNNER}" == "cli" || "${EXTRACTOR}" == "cli" ]]; then
+  command -v claude >/dev/null || fail "claude CLI not on PATH"
+  command -v codex  >/dev/null || fail "codex CLI not on PATH"
+  command -v gemini >/dev/null || fail "gemini CLI not on PATH"
+fi
+
+if [[ -n "${GROKRXIV_BIN:-}" ]]; then
+  grokrxiv_cmd=("${GROKRXIV_BIN}")
+else
+  grokrxiv_cmd=(cargo run --quiet --release -p grokrxiv-orchestrator --)
+fi
+
+extract_json_field() {
+  local file="$1"
+  local filter="$2"
+  local json_line
+  json_line="$(awk '/^[[:space:]]*[{[]/ { line=$0 } END { print line }' "${file}")"
+  if [[ -n "${json_line}" ]]; then
+    jq -er "${filter}" <<<"${json_line}" 2>/dev/null && return 0
+  fi
+  return 1
+}
 
 run_psql() {
   if command -v psql >/dev/null 2>&1; then
@@ -52,21 +88,19 @@ run_psql() {
   fi
 }
 
-step "1. M1 ingest ${ARXIV_ID}"
-review_id="$(
-  cargo run --quiet --release -p grokrxiv-orchestrator -- ingest "${ARXIV_ID}" 2>&1 \
-    | tee /tmp/grokrxiv-publish-ingest.log \
-    | awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' | tr -d '\r'
-)"
+step "1. ingest ${ARXIV_ID} via runner=${RUNNER} extractor=${EXTRACTOR}"
+"${grokrxiv_cmd[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --no-cache --json ingest "${ARXIV_ID}" 2>&1 \
+  | tee /tmp/grokrxiv-publish-ingest.log
+review_id="$(extract_json_field /tmp/grokrxiv-publish-ingest.log 'if type == "array" then .[0].review_id else .review_id end' \
+  || awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-publish-ingest.log | tail -1 | tr -d '\r')"
 [[ -n "${review_id}" ]] || fail "no review_id from ingest"
 ok "review_id=${review_id}"
 
 step "2. approve → real PR on ${GROKRXIV_REVIEWS_OWNER}/${GROKRXIV_REVIEWS_REPO}"
-pr_url="$(
-  cargo run --quiet --release -p grokrxiv-orchestrator -- approve "${review_id}" 2>&1 \
-    | tee /tmp/grokrxiv-publish-approve.log \
-    | awk '/pr_url=/{ for(i=1;i<=NF;i++){ if($i ~ /^pr_url=/){ split($i,a,"="); print a[2] } } }' | tr -d '\r'
-)"
+"${grokrxiv_cmd[@]}" --json approve "${review_id}" 2>&1 \
+  | tee /tmp/grokrxiv-publish-approve.log
+pr_url="$(extract_json_field /tmp/grokrxiv-publish-approve.log '.pr_url' \
+  || awk '/pr_url=/{ for(i=1;i<=NF;i++){ if($i ~ /^pr_url=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-publish-approve.log | tail -1 | tr -d '\r')"
 [[ "${pr_url}" =~ ^https://github.com/.+/pull/[0-9]+$ ]] \
   || fail "expected real PR URL, got '${pr_url}'"
 ok "PR opened: ${pr_url}"

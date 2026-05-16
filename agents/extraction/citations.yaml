@@ -5,7 +5,7 @@ provider: gemini
 # emitted no tool calls (stopped without submit) under our 4K tool-loop budget.
 # Flash works reliably for the lookup-heavy citation enrichment loop.
 model: gemini-2.5-flash
-runner: api
+runner: cli
 output_schema: schemas/extraction/citations.schema.json
 tools:
   - list_citation_sites

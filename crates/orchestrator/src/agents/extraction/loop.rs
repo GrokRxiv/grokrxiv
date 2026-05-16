@@ -57,6 +57,7 @@ pub async fn run_tool_loop(
     let mut iters: u32 = 0;
     let mut cost_accum: f32 = 0.0;
     let mut retried_submit = false;
+    let mut retried_empty_tool_calls = false;
 
     while (iters as usize) < max_iters {
         let resp = runner
@@ -73,6 +74,29 @@ pub async fn run_tool_loop(
         }
 
         if resp.tool_calls.is_empty() {
+            if !retried_empty_tool_calls {
+                retried_empty_tool_calls = true;
+                if !resp.text.trim().is_empty() {
+                    messages.push(Message {
+                        role: LlmRole::Assistant,
+                        content: vec![ToolContent::Text {
+                            text: resp.text.clone(),
+                        }],
+                    });
+                }
+                messages.push(Message {
+                    role: LlmRole::User,
+                    content: vec![ToolContent::Text {
+                        text: "You returned no tool calls. Continue by returning exactly one \
+                               GrokRxiv tool-call envelope whose tool_calls array contains at \
+                               least one call. If extraction is complete, call submit(...)."
+                            .to_string(),
+                    }],
+                });
+                prior_messages = with_system(agent.system_prompt(), messages.clone());
+                iters += 1;
+                continue;
+            }
             anyhow::bail!(
                 "extraction agent {} stopped without submit() on iter {}",
                 agent.name(),
@@ -83,7 +107,9 @@ pub async fn run_tool_loop(
         // Append the assistant turn that issued the tool calls.
         let mut assistant_content: Vec<ToolContent> = Vec::new();
         if !resp.text.is_empty() {
-            assistant_content.push(ToolContent::Text { text: resp.text.clone() });
+            assistant_content.push(ToolContent::Text {
+                text: resp.text.clone(),
+            });
         }
         for call in &resp.tool_calls {
             assistant_content.push(ToolContent::ToolUse {
@@ -102,18 +128,19 @@ pub async fn run_tool_loop(
         for call in &resp.tool_calls {
             let call_started = Instant::now();
             if call.name == "submit" {
-                match validate_submit(&call.arguments, agent.schema()) {
+                let normalized_submit = normalize_submit_payload(agent.name(), &call.arguments);
+                match validate_submit(&normalized_submit, agent.schema()) {
                     Ok(()) => {
                         tool_call_log.push(ToolCallRecord {
                             iter: iters,
                             tool: "submit".to_string(),
-                            arguments: call.arguments.clone(),
-                            result: call.arguments.clone(),
+                            arguments: normalized_submit.clone(),
+                            result: normalized_submit.clone(),
                             ok: true,
                             latency_ms: call_started.elapsed().as_millis() as i64,
                         });
                         return Ok(ExtractionRun {
-                            output: call.arguments.clone(),
+                            output: normalized_submit,
                             tool_calls: tool_call_log,
                             cost_usd: cost_accum,
                             latency_ms: started.elapsed().as_millis() as i64,
@@ -132,7 +159,7 @@ pub async fn run_tool_loop(
                         tool_call_log.push(ToolCallRecord {
                             iter: iters,
                             tool: "submit".to_string(),
-                            arguments: call.arguments.clone(),
+                            arguments: normalized_submit,
                             result: json!({ "_error": err_msg.clone() }),
                             ok: false,
                             latency_ms: call_started.elapsed().as_millis() as i64,
@@ -243,14 +270,75 @@ async fn invoke_tool(
     tool.call(call.arguments.clone(), tool_ctx).await
 }
 
-fn validate_submit(
-    payload: &Value,
-    schema: &Value,
-) -> anyhow::Result<()> {
+fn normalize_submit_payload(agent_name: &str, payload: &Value) -> Value {
+    let mut out = payload.clone();
+    let Some(obj) = out.as_object_mut() else {
+        return out;
+    };
+
+    match agent_name {
+        "macro_expander" => {
+            obj.entry("reason".to_string()).or_insert(Value::Null);
+            if let Some(Value::Array(items)) = obj.get_mut("expansions_applied") {
+                for item in items.iter_mut() {
+                    if let Some(s) = item.as_str() {
+                        *item = normalize_macro_expansion_string(s);
+                    }
+                }
+            }
+        }
+        "theorem_graph_extractor" => {
+            normalize_reason_to_null_when_nonempty(obj, "theorem_graph");
+        }
+        "equation_canonicalizer" => {
+            normalize_reason_to_null_when_nonempty(obj, "equations");
+            if let Some(Value::Array(items)) = obj.get_mut("equations") {
+                for item in items.iter_mut() {
+                    if let Some(eq) = item.as_object_mut() {
+                        if !eq.contains_key("mathml") || eq.get("mathml") == Some(&Value::Null) {
+                            eq.insert("mathml".to_string(), Value::String(String::new()));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    out
+}
+
+fn normalize_reason_to_null_when_nonempty(
+    obj: &mut serde_json::Map<String, Value>,
+    collection_key: &str,
+) {
+    let has_items = obj
+        .get(collection_key)
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    if has_items {
+        obj.insert("reason".to_string(), Value::Null);
+    }
+}
+
+fn normalize_macro_expansion_string(s: &str) -> Value {
+    let (name, body) = s
+        .split_once("→")
+        .or_else(|| s.split_once("->"))
+        .map(|(name, body)| (name.trim(), body.trim()))
+        .unwrap_or_else(|| (s.trim(), ""));
+    json!({
+        "name": name,
+        "body": body,
+        "occurrences": 1,
+    })
+}
+
+fn validate_submit(payload: &Value, schema: &Value) -> anyhow::Result<()> {
     // Empty / null schema = no constraint (used by unit tests with stub agents).
     if schema.is_null()
-        || (schema.is_object()
-            && schema.as_object().map(|m| m.is_empty()).unwrap_or(false))
+        || (schema.is_object() && schema.as_object().map(|m| m.is_empty()).unwrap_or(false))
     {
         return Ok(());
     }
@@ -456,7 +544,9 @@ mod tests {
         let registry = Arc::new(ToolRegistry::with_core_tools());
         let ec = ctx(tmp.path(), &pe, registry.clone());
         let spec = fake_spec();
-        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0)
+            .await
+            .unwrap();
         assert_eq!(run.output, json!({"ok": 1}));
         assert_eq!(run.iters, 1);
         assert_eq!(run.tool_calls.len(), 1);
@@ -477,11 +567,15 @@ mod tests {
         let registry = Arc::new(ToolRegistry::with_core_tools());
         let ec = ctx(tmp.path(), &pe, registry.clone());
         let spec = fake_spec();
-        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0)
+            .await
+            .unwrap();
         assert_eq!(run.output, json!({"done": true}));
         assert_eq!(run.iters, 2);
         assert!(
-            run.tool_calls.iter().any(|c| c.tool == "list_files" && c.ok),
+            run.tool_calls
+                .iter()
+                .any(|c| c.tool == "list_files" && c.ok),
             "expected a successful list_files entry, got {:?}",
             run.tool_calls
         );
@@ -532,11 +626,16 @@ mod tests {
         let registry = Arc::new(ToolRegistry::with_core_tools());
         let ec = ctx(tmp.path(), &pe, registry.clone());
         let spec = fake_spec();
-        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap();
+        let run = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0)
+            .await
+            .unwrap();
         assert_eq!(run.output, json!({"id": 7}));
         // First submit recorded as failure, second as success.
-        let submits: Vec<&ToolCallRecord> =
-            run.tool_calls.iter().filter(|c| c.tool == "submit").collect();
+        let submits: Vec<&ToolCallRecord> = run
+            .tool_calls
+            .iter()
+            .filter(|c| c.tool == "submit")
+            .collect();
         assert_eq!(submits.len(), 2);
         assert!(!submits[0].ok);
         assert!(submits[1].ok);
@@ -545,13 +644,16 @@ mod tests {
     #[tokio::test]
     async fn no_tool_call_aborts() {
         let agent = FakeAgent::new(None);
-        let runner: Arc<dyn AgentRunner> = Arc::new(ScriptedRunner::new(vec![turn_empty()]));
+        let runner: Arc<dyn AgentRunner> =
+            Arc::new(ScriptedRunner::new(vec![turn_empty(), turn_empty()]));
         let tmp = tempdir();
         let pe = paper_extract();
         let registry = Arc::new(ToolRegistry::with_core_tools());
         let ec = ctx(tmp.path(), &pe, registry.clone());
         let spec = fake_spec();
-        let err = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0).await.unwrap_err();
+        let err = run_tool_loop(&agent, runner, &spec, ec, 5, 1.0)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("stopped without submit"),
             "expected stopped-without-submit error, got {err}"

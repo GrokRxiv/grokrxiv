@@ -82,10 +82,7 @@ pub async fn rate_limited_get(url: &str) -> Result<Bytes> {
         {
             Ok(resp) => match resp.error_for_status() {
                 Ok(ok) => {
-                    let bytes = ok
-                        .bytes()
-                        .await
-                        .with_context(|| format!("body {url}"))?;
+                    let bytes = ok.bytes().await.with_context(|| format!("body {url}"))?;
                     return Ok(bytes);
                 }
                 Err(e) => {
