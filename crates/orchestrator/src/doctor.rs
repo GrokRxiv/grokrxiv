@@ -72,6 +72,12 @@ pub struct DoctorReport {
     pub pandoc: Option<CheckResult>,
     /// LaTeXML binary check (optional; falls back to pandoc-only).
     pub latexml: Option<CheckResult>,
+    /// Local Supabase Storage REST endpoint reachability (Tier-2 writes).
+    pub supabase_storage: Option<CheckResult>,
+    /// `grokrxiv-data` Tier-1 Git repo presence + initialisation.
+    pub data_repo: Option<CheckResult>,
+    /// Per-extraction-agent YAML config parseability.
+    pub extraction_agents: ExtractionAgentsStatus,
 }
 
 /// Per-provider API key + reachability.
@@ -112,6 +118,21 @@ pub struct LocalInferenceStatus {
     pub litellm: Option<CheckResult>,
     /// Ollama.
     pub ollama: Option<CheckResult>,
+}
+
+/// Per-extraction-agent YAML config parse outcome.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ExtractionAgentsStatus {
+    /// `agents/extraction/vlm.yaml` parseability.
+    pub vlm: Option<CheckResult>,
+    /// `agents/extraction/macros.yaml` parseability.
+    pub macros: Option<CheckResult>,
+    /// `agents/extraction/equations.yaml` parseability.
+    pub equations: Option<CheckResult>,
+    /// `agents/extraction/theorems.yaml` parseability.
+    pub theorems: Option<CheckResult>,
+    /// `agents/extraction/citations.yaml` parseability.
+    pub citations: Option<CheckResult>,
 }
 
 impl DoctorReport {
@@ -176,6 +197,16 @@ impl DoctorReport {
         print_line("latexml", self.latexml.as_ref());
 
         println!();
+        println!("RPT3 storage pipeline:");
+        print_line("supabase_storage", self.supabase_storage.as_ref());
+        print_line("data_repo", self.data_repo.as_ref());
+        print_line("extr/vlm", self.extraction_agents.vlm.as_ref());
+        print_line("extr/macros", self.extraction_agents.macros.as_ref());
+        print_line("extr/equations", self.extraction_agents.equations.as_ref());
+        print_line("extr/theorems", self.extraction_agents.theorems.as_ref());
+        print_line("extr/citations", self.extraction_agents.citations.as_ref());
+
+        println!();
         if self.has_critical_failure() {
             println!("RESULT: FAIL (one or more critical checks failed)");
         } else {
@@ -209,6 +240,9 @@ pub async fn doctor(profile: &str, json: bool) -> anyhow::Result<i32> {
     check_local_inference(&mut report).await;
     check_publisher(&mut report);
     check_doc_converters(&mut report);
+    check_supabase_storage(&mut report).await;
+    check_data_repo(&mut report);
+    check_extraction_agent_yaml(&mut report);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -433,4 +467,107 @@ fn first_version_token(version_output: &str) -> String {
         }
     }
     first.to_string()
+}
+
+/// Local Supabase Storage REST endpoint reachability — pings
+/// `<SUPABASE_URL>/storage/v1/health` (returns 200 when the local stack is
+/// up). When `SUPABASE_URL` is unset we default to the standard local stack
+/// at `http://127.0.0.1:54321` and try anyway, since the developer-facing
+/// instruction is `supabase start`.
+async fn check_supabase_storage(report: &mut DoctorReport) {
+    let url = std::env::var("SUPABASE_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:54321".to_string());
+    let target = format!("{}/storage/v1/health", url.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            report.supabase_storage = Some(CheckResult::skipped("could not build http client"));
+            return;
+        }
+    };
+    report.supabase_storage = Some(match client.get(&target).send().await {
+        // Any HTTP response (including 4xx) proves the storage process is up
+        // and answering on the REST port; we only fail on 5xx or a transport
+        // error.
+        Ok(r) if r.status().as_u16() < 500 => {
+            CheckResult::ok(format!("{target} reachable (HTTP {})", r.status()))
+        }
+        Ok(r) => CheckResult::fail(format!("{target} returned HTTP {}", r.status())),
+        Err(e) => CheckResult::skipped(format!(
+            "{target} unreachable: {e} (try `supabase start`)"
+        )),
+    });
+}
+
+/// `grokrxiv-data` Tier-1 Git repo presence + initialisation. The repo path
+/// is picked from `GROKRXIV_DATA_REPO_PATH` with the operator's canonical
+/// `~/Documents/Development/grokrxiv-data` as the default.
+fn check_data_repo(report: &mut DoctorReport) {
+    let path = std::env::var("GROKRXIV_DATA_REPO_PATH")
+        .unwrap_or_else(|_| "/Users/mlong/Documents/Development/grokrxiv-data".to_string());
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        report.data_repo = Some(CheckResult::fail(format!(
+            "{path} does not exist (clone GrokRxiv/grokrxiv-data here, or set GROKRXIV_DATA_REPO_PATH)"
+        )));
+        return;
+    }
+    let git_dir = p.join(".git");
+    if !git_dir.exists() {
+        report.data_repo = Some(CheckResult::fail(format!(
+            "{path} exists but is not a Git repository (.git missing)"
+        )));
+        return;
+    }
+    let schemas_dir = p.join("schemas");
+    let schema_note = if schemas_dir.is_dir() {
+        " (schemas/ present)"
+    } else {
+        " (schemas/ missing — JSON validation will be a no-op)"
+    };
+    report.data_repo = Some(CheckResult::ok(format!("{path} ready{schema_note}")));
+}
+
+/// Per-extraction-agent YAML config parseability. Reads
+/// `agents/extraction/<role>.yaml` from the working directory and reports
+/// whether each is a syntactically valid YAML document. Per-role missing
+/// files map to `skipped` (Wave 2 may not have shipped one for every role
+/// at audit time).
+fn check_extraction_agent_yaml(report: &mut DoctorReport) {
+    use std::path::PathBuf;
+    let roots: Vec<PathBuf> = [
+        std::env::current_dir().ok(),
+        Some(PathBuf::from("agents")),
+        Some(PathBuf::from("crates/orchestrator/agents")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    fn check_one(roots: &[PathBuf], role: &str) -> CheckResult {
+        let rel = format!("agents/extraction/{role}.yaml");
+        for root in roots {
+            let candidate = root.join(&rel);
+            if !candidate.exists() {
+                continue;
+            }
+            return match std::fs::read_to_string(&candidate) {
+                Ok(text) => match serde_yaml::from_str::<serde_yaml::Value>(&text) {
+                    Ok(_) => CheckResult::ok(format!("{} parses", candidate.display())),
+                    Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
+                },
+                Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
+            };
+        }
+        CheckResult::skipped(format!("{rel} not found on any search root"))
+    }
+
+    report.extraction_agents.vlm = Some(check_one(&roots, "vlm"));
+    report.extraction_agents.macros = Some(check_one(&roots, "macros"));
+    report.extraction_agents.equations = Some(check_one(&roots, "equations"));
+    report.extraction_agents.theorems = Some(check_one(&roots, "theorems"));
+    report.extraction_agents.citations = Some(check_one(&roots, "citations"));
 }

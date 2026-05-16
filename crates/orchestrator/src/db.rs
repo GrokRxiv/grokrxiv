@@ -656,3 +656,166 @@ pub async fn show_review(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Option<
     .await?;
     Ok(row)
 }
+
+// ---------------------------------------------------------------------------
+// RPT3 Wave-3 Team-F: paper_assets extraction pipeline pointers
+// ---------------------------------------------------------------------------
+
+/// Current state of a paper's extraction pipeline. Mirrors the
+/// `paper_assets.extraction_status` check constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractionStatus {
+    /// No extraction has run yet (the default for a fresh `paper_assets` row).
+    Pending,
+    /// An ingest run is currently in flight against this paper.
+    Running,
+    /// The pipeline finished successfully and `git_path` + `storage_prefix`
+    /// are populated.
+    Ready,
+    /// The last run failed; the orchestrator may retry.
+    Failed,
+}
+
+impl ExtractionStatus {
+    /// Parse the string value stored in `paper_assets.extraction_status`.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "ready" => Self::Ready,
+            "failed" => Self::Failed,
+            _ => Self::Pending,
+        }
+    }
+    /// Stringified form that round-trips through the DB.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// One row in the `paper_assets` table after a successful extraction.
+#[derive(Debug, Clone)]
+pub struct PaperAssetsRow {
+    /// Owning paper's UUID.
+    pub paper_id: Uuid,
+    /// Tier-1 path under `grokrxiv-data` (e.g. `papers/2605.00403`). None
+    /// until the first successful extraction.
+    pub git_path: Option<String>,
+    /// Commit SHA the Tier-1 artifacts were committed under. None when the
+    /// data repo is operating in dry-run / no-commit mode.
+    pub git_commit_sha: Option<String>,
+    /// Tier-2 key prefix (typically just `<arxiv_id>`). None until the first
+    /// successful extraction.
+    pub storage_prefix: Option<String>,
+    /// Pipeline state. Always present (defaults to `'pending'`).
+    pub extraction_status: ExtractionStatus,
+    /// Best-effort sum of per-stage USD cost.
+    pub extraction_cost_usd: Option<f64>,
+}
+
+/// Read the current `paper_assets` pointer row for a paper. Returns `None`
+/// when no row exists yet (the paper was inserted but the pipeline never
+/// ran).
+pub async fn read_paper_assets(
+    pool: &PgPool,
+    paper_id: Uuid,
+) -> sqlx::Result<Option<PaperAssetsRow>> {
+    // NUMERIC values are cast to FLOAT8 in SQL so we can fetch them as f64
+    // without pulling in the `sqlx::types::bigdecimal` feature flag.
+    let row: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<f64>,
+    )> = sqlx::query_as(
+        "select git_path, git_commit_sha, storage_prefix, extraction_status, \
+                extraction_cost_usd::float8 \
+         from paper_assets where paper_id = $1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(git_path, git_commit_sha, storage_prefix, extraction_status, cost)| PaperAssetsRow {
+            paper_id,
+            git_path,
+            git_commit_sha,
+            storage_prefix,
+            extraction_status: ExtractionStatus::from_db_str(&extraction_status),
+            extraction_cost_usd: cost,
+        },
+    ))
+}
+
+/// Insert (or upsert) a `paper_assets` row in the `running` state. The
+/// orchestrator calls this at the start of Stage 8 so concurrent ingests can
+/// see "another run is in flight" via [`read_paper_assets`].
+pub async fn mark_paper_extracting(pool: &PgPool, paper_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "insert into paper_assets (paper_id, extraction_status) values ($1, 'running') \
+         on conflict (paper_id) do update set extraction_status = 'running', updated_at = now()",
+    )
+    .bind(paper_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Finalise a `paper_assets` row after a successful extraction. Writes the
+/// Tier-1 path + commit SHA, Tier-2 prefix, cost, and flips status to
+/// `'ready'`. Idempotent on `paper_id`.
+pub async fn persist_paper_extraction(
+    pool: &PgPool,
+    paper_id: Uuid,
+    git_path: &str,
+    git_commit_sha: Option<&str>,
+    storage_prefix: &str,
+    cost_usd: Option<f64>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "insert into paper_assets \
+           (paper_id, git_path, git_commit_sha, storage_prefix, extraction_status, extraction_cost_usd) \
+         values ($1, $2, $3, $4, 'ready', $5::float8::numeric) \
+         on conflict (paper_id) do update set \
+           git_path = excluded.git_path, \
+           git_commit_sha = excluded.git_commit_sha, \
+           storage_prefix = excluded.storage_prefix, \
+           extraction_status = 'ready', \
+           extraction_cost_usd = excluded.extraction_cost_usd, \
+           updated_at = now()",
+    )
+    .bind(paper_id)
+    .bind(git_path)
+    .bind(git_commit_sha)
+    .bind(storage_prefix)
+    .bind(cost_usd)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Flip `paper_assets.extraction_status` to `'failed'` when a Stage 8 (or
+/// earlier) step blew up. The next run will see `Failed` and retry. The
+/// supplied `reason` is logged but not currently persisted — the
+/// `extraction_report.json` carries the structured warnings, and adding a
+/// `last_error` text column is out of scope for RPT3.
+pub async fn mark_paper_extraction_failed(
+    pool: &PgPool,
+    paper_id: Uuid,
+    reason: &str,
+) -> sqlx::Result<()> {
+    tracing::warn!(%paper_id, %reason, "extraction pipeline failed");
+    sqlx::query(
+        "insert into paper_assets (paper_id, extraction_status) values ($1, 'failed') \
+         on conflict (paper_id) do update set extraction_status = 'failed', updated_at = now()",
+    )
+    .bind(paper_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

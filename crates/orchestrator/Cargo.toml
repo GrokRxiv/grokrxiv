@@ -56,6 +56,9 @@ image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { path = "../schemas" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }
+tempfile = "3"
+tar = "0.4"
+flate2 = "1.0"
 
 # Sibling pipeline crates are optional so this binary can compile and run a
 # stubbed end-to-end demo before they ship. The orchestrator flips to
@@ -64,6 +67,7 @@ grokrxiv-ingest    = { path = "../ingest",    optional = true }
 grokrxiv-render    = { path = "../render",    optional = true }
 grokrxiv-verifier  = { path = "../verifier",  optional = true }
 grokrxiv-publisher = { path = "../publisher", optional = true }
+grokrxiv-storage   = { path = "../storage",   optional = true }
 
 [features]
 # `full` is on by default — preview, ingest, render, verifier and publisher
@@ -75,6 +79,7 @@ full = [
     "grokrxiv-render",
     "grokrxiv-verifier",
     "grokrxiv-publisher",
+    "grokrxiv-storage",
 ]
 stub-ingest = []
 stub-render = []

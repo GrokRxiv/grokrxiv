@@ -12,6 +12,8 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod doctor;
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+pub mod ingest_pipeline;
 pub mod routes;
 pub mod runtime_config;
 pub mod scheduler;
