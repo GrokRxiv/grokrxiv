@@ -184,8 +184,17 @@ pub struct Usage {
 /// Provider error kinds.
 #[derive(Error, Debug)]
 pub enum LLMError {
-    /// HTTP 429 (or provider-specific equivalent). `retry_after` may be set.
-    #[error("rate limited (retry after {0:?})")]
+    /// HTTP 429 (or provider-specific equivalent). `retry_after` may be set
+    /// when the provider returned a `Retry-After` header; `None` means the
+    /// header was absent, which on practical providers (OpenAI Tier-2+,
+    /// Anthropic, Gemini) usually indicates a TRANSIENT concurrent-request
+    /// reject, NOT an actual quota exhaustion. Don't blame "rate limit"
+    /// without checking the body for `error.code = "insufficient_quota"` —
+    /// which the providers DO emit as `LLMError::QuotaExceeded` instead.
+    #[error("HTTP 429 from provider{}", match .0 {
+        Some(d) => format!(" (retry after {d:?})"),
+        None => " (no Retry-After header; usually transient concurrent-request reject, not a quota)".to_string(),
+    })]
     RateLimited(Option<std::time::Duration>),
     /// Provider account has no usable API spend available.
     #[error("quota exceeded: {0}")]
@@ -315,5 +324,65 @@ mod tests {
         assert!(LLMError::RateLimited(None).is_retryable());
         assert!(LLMError::Timeout.is_retryable());
         assert!(!LLMError::Schema("x".into()).is_retryable());
+    }
+
+    // ---------------------------------------------------------------
+    // Regression guards (RPT2 G): the "rate limited (retry after None)"
+    // error string was misleading — it doesn't say which provider, and
+    // sub-second concurrent-request rejects look indistinguishable from
+    // real per-minute quota exhaustion. These tests pin the new message
+    // so a future refactor can't silently regress.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rate_limited_without_retry_after_explains_likely_cause() {
+        // No Retry-After header → should explicitly call out that this is
+        // probably a transient concurrent-request reject, not a quota.
+        let msg = LLMError::RateLimited(None).to_string();
+        assert!(
+            msg.contains("HTTP 429"),
+            "should label the underlying signal as HTTP 429, got: {msg}"
+        );
+        assert!(
+            msg.contains("no Retry-After")
+                || msg.contains("transient")
+                || msg.contains("concurrent"),
+            "no-Retry-After case must hint at concurrent-request burst, not a quota; got: {msg}"
+        );
+        // The old wording was the literal `"retry after None"` debug print.
+        // That was the source of the bias-toward-OpenAI bug. Never bring
+        // that back.
+        assert!(
+            !msg.contains("retry after None"),
+            "must not surface raw Debug of Option<Duration>; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rate_limited_with_retry_after_shows_duration() {
+        let msg =
+            LLMError::RateLimited(Some(std::time::Duration::from_secs(30))).to_string();
+        assert!(
+            msg.contains("HTTP 429"),
+            "must still mention HTTP 429 even with Retry-After, got: {msg}"
+        );
+        assert!(
+            msg.contains("retry after") && msg.contains("30"),
+            "should expose the retry-after seconds, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn quota_exceeded_is_distinct_from_rate_limited() {
+        // We MUST distinguish "billing/quota empty" from "burst rejected".
+        // The OpenAI provider already does this — keep the variants distinct
+        // and ensure their error strings tell the operator something useful.
+        let q = LLMError::QuotaExceeded("body=…".to_string()).to_string();
+        assert!(q.contains("quota"), "QuotaExceeded must say 'quota': {q}");
+        assert!(!q.contains("rate limited") && !q.contains("HTTP 429"),
+            "QuotaExceeded must NOT be confused with rate-limit: {q}");
+        // QuotaExceeded is NOT retryable. RateLimited IS.
+        assert!(LLMError::RateLimited(None).is_retryable());
+        assert!(!LLMError::QuotaExceeded("x".into()).is_retryable());
     }
 }

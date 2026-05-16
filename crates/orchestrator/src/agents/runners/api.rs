@@ -68,7 +68,19 @@ impl AgentRunner for ApiRunner {
         let resp = provider
             .complete(make_req(prompt.clone(), schema.clone()))
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(|e| {
+                // Always include the provider name + model + role so the
+                // operator never has to guess which backend produced a 429.
+                // Pre-RPT2 G we lost this context and mis-attributed a
+                // transient burst-reject to "OpenAI rate limit"; that's
+                // why the wrapping exists.
+                anyhow::anyhow!(
+                    "provider={} model={} role={:?}: {e}",
+                    spec.provider,
+                    spec.model,
+                    spec.role
+                )
+            })?;
 
         let (output, usage) = match parse_strict_json(&resp.text) {
             Ok(v) => (v, resp.usage),
@@ -85,7 +97,14 @@ impl AgentRunner for ApiRunner {
                 let retry = provider
                     .complete(make_req(corrective, schema.clone()))
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "provider={} model={} role={:?} (corrective retry): {e}",
+                            spec.provider,
+                            spec.model,
+                            spec.role
+                        )
+                    })?;
                 match parse_strict_json(&retry.text) {
                     Ok(v) => (v, retry.usage),
                     Err(e) => {

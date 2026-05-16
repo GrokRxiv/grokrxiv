@@ -199,6 +199,10 @@ fn build_command(
     let (args, schema_path) = match spec.provider.as_str() {
         "claude" => {
             // Pass the prompt via stdin (`-p -`) to avoid argv-length limits.
+            // NOTE: claude CLI does NOT have a `--skill` flag — skills are
+            // invoked via `/skill-name` at the start of the prompt itself
+            // (the help text says "Skills still resolve via /skill-name").
+            // The prompt prefix is prepended in `build_prompt_for_claude`.
             let args = vec![
                 "-p".to_string(),
                 "-".to_string(),
@@ -206,8 +210,6 @@ fn build_command(
                 spec.model.clone(),
                 "--output-format".to_string(),
                 "json".to_string(),
-                "--skill".to_string(),
-                CLAUDE_SKILL_NAME.to_string(),
             ];
             (args, None)
         }
@@ -242,10 +244,19 @@ fn build_command(
         other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
     };
 
+    // For claude, prepend the `/grokrxiv-review` skill invocation to the
+    // prompt so claude resolves the skill (the help text confirms skills
+    // are invoked via `/skill-name`, not a CLI flag).
+    let stdin_payload = if spec.provider == "claude" {
+        format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    };
+
     Ok(BuiltCommand {
         program,
         args,
-        stdin_payload: prompt.to_string(),
+        stdin_payload,
         schema_path,
     })
 }
