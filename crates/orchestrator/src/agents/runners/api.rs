@@ -63,11 +63,13 @@ impl AgentRunner for ApiRunner {
                 content: vec![ContentPart::Text(user_prompt)],
             }],
             model: model.clone(),
-            // The citation reviewer emits one entry per bibliography reference
-            // (~50-100 entries per paper), each with title/authors/explanation.
-            // 6K tokens is not enough; we've seen truncated JSON on 89-ref
-            // papers. 16K is a safe ceiling for every role's schema.
-            max_tokens: 16_000,
+            // Output cap that fits a 33-reference citation review (~16K
+            // tokens) without truncation, but stays under each provider's
+            // per-model hard cap. claude-haiku-4-5 caps at 8192, opus at 32K,
+            // gemini-2.5-flash at 65K, gpt-5 at 128K. We pick per-model so
+            // citation (which uses flash) gets the headroom it needs while
+            // smaller-output roles (summary on haiku) don't 400 on overshoot.
+            max_tokens: max_tokens_for_model(&model),
             temperature: 0.2,
             response_format: ResponseFormat::JsonSchema(schema),
             cache_system: true,
@@ -200,16 +202,17 @@ impl AgentRunner for ApiRunner {
                 spec.role
             )
         })?;
+        let model_name = spec.model.clone();
         let req = ToolChatRequest {
             system: None,
             messages: messages.to_vec(),
             tools: tools.to_vec(),
-            model: spec.model.clone(),
-            // Tool-loop turns are usually short (one or a few tool calls)
-            // but gemini-2.5-pro burns ~6K on hidden chain-of-thought before
-            // any visible output. Give enough headroom that flash + pro both
-            // have room to actually emit a tool call.
-            max_tokens: 16_000,
+            model: model_name.clone(),
+            // Tool-loop turns are usually short (one or a few tool calls), but
+            // gemini's hidden-thinking step used to starve the response. With
+            // thinkingBudget=0 the cap above is honoured; still per-model so
+            // we don't overshoot a haiku request.
+            max_tokens: max_tokens_for_model(&model_name),
             temperature: 0.2,
         };
         provider
@@ -222,6 +225,33 @@ impl AgentRunner for ApiRunner {
                 spec.role,
             ))
     }
+}
+
+/// Per-model output-token cap. Each provider rejects requests whose
+/// `max_tokens` exceeds the model's published output limit (e.g. Anthropic
+/// 400s "max_tokens > 8192" on haiku). Pick the largest legal value so any
+/// schema fits.
+fn max_tokens_for_model(model: &str) -> u32 {
+    // Anthropic: haiku-4-5 caps at 8192, sonnet at 64000, opus at 32000.
+    if model.contains("haiku") {
+        return 8_000;
+    }
+    if model.contains("sonnet") {
+        return 32_000;
+    }
+    if model.contains("opus") {
+        return 32_000;
+    }
+    // Gemini 2.5 (flash + pro): 65536 output tokens.
+    if model.contains("gemini") {
+        return 32_000;
+    }
+    // gpt-5 and friends: 128000 output tokens.
+    if model.contains("gpt") {
+        return 32_000;
+    }
+    // Safe default that every modern provider accepts.
+    16_000
 }
 
 /// Try strict JSON parse; on failure, strip ```json fences and retry; on
