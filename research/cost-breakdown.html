@@ -467,9 +467,220 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 </tbody>
 </table>
 <p>None compare subscription flat-rate vs API per-token vs open-source $0-marginal. The FP5 doc (<code>processing-costs.md §8</code>) remains the authoritative three-way comparison for GrokRxiv's specific workload.</p>
+<hr>
+<h2 id="after-fp6--measured-cost-reduction-2026-05-15"><a class="anchor" aria-label="anchor" href="#after-fp6--measured-cost-reduction-2026-05-15">#</a>After FP6 — measured cost reduction (2026-05-15)</h2>
+<p>Real M1 smoke run on arXiv <code>2605.12484</code> after the four FP6 cost fixes landed (<code>review_id=2c9d69c2-068d-4069-a8a1-4bd84ff0020f</code>). Same paper, same 6 agents, same provider mix as the FP5 baseline — only the orchestrator changed.</p>
+<h3 id="per-role-measured-numbers-from-review_agents"><a class="anchor" aria-label="anchor" href="#per-role-measured-numbers-from-review_agents">#</a>Per-role measured numbers (from <code>review_agents</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Model</th>
+<th>Tokens in</th>
+<th>Tokens out</th>
+<th>Latency (ms)</th>
+<th>Verifier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>citation</code></td>
+<td>gemini-2.5-flash</td>
+<td>634</td>
+<td>399</td>
+<td>11,483</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>novelty</code></td>
+<td>gemini-2.5-flash</td>
+<td>633</td>
+<td>429</td>
+<td>14,005</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>claude-haiku-4-5-20251001</td>
+<td>915</td>
+<td>550</td>
+<td>6,504</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>reproducibility</code></td>
+<td>gpt-5.5</td>
+<td>894</td>
+<td>688</td>
+<td>13,508</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>technical_correctness</code></td>
+<td>claude-opus-4-7</td>
+<td>1,470</td>
+<td>1,715</td>
+<td>23,522</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code></td>
+<td>claude-sonnet-4-6</td>
+<td><strong>3</strong></td>
+<td>1,198</td>
+<td>23,152</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td></td>
+<td><strong>4,549</strong></td>
+<td><strong>4,979</strong></td>
+<td><strong>92 s wall</strong></td>
+<td>6/6 pass</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cost-computed-against-published-model-rates"><a class="anchor" aria-label="anchor" href="#cost-computed-against-published-model-rates">#</a>Cost computed against published model rates</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Input cost</th>
+<th>Output cost</th>
+<th>Subtotal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>citation</code> (Gemini free tier)</td>
+<td>~$0</td>
+<td>~$0</td>
+<td><strong>&#x3C;$0.001</strong></td>
+</tr>
+<tr>
+<td><code>novelty</code> (Gemini free tier)</td>
+<td>~$0</td>
+<td>~$0</td>
+<td><strong>&#x3C;$0.001</strong></td>
+</tr>
+<tr>
+<td><code>summary</code> (Haiku 4.5 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">1/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">1/</span></span></span></span>5 per M)</td>
+<td>$0.001</td>
+<td>$0.003</td>
+<td><strong>$0.004</strong></td>
+</tr>
+<tr>
+<td><code>reproducibility</code> (gpt-5.5 ~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1.25</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">1.25/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">1.25/</span></span></span></span>10 per M)</td>
+<td>$0.001</td>
+<td>$0.007</td>
+<td><strong>$0.008</strong></td>
+</tr>
+<tr>
+<td><code>technical_correctness</code> (Opus 4.7 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>15</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">15/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">15/</span></span></span></span>75 per M)</td>
+<td>$0.022</td>
+<td>$0.129</td>
+<td><strong>$0.151</strong></td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code> (Sonnet 4.6 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">3/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">3/</span></span></span></span>15 per M)</td>
+<td>~$0</td>
+<td>$0.018</td>
+<td><strong>$0.018</strong></td>
+</tr>
+<tr>
+<td><strong>DB-reported total</strong></td>
+<td></td>
+<td></td>
+<td><strong>~$0.181</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="calling-out-the-cache-accounting-gap"><a class="anchor" aria-label="anchor" href="#calling-out-the-cache-accounting-gap">#</a>Calling out the cache-accounting gap</h3>
+<p>Track A3 enabled Anthropic <code>cache_control</code> on user prompts ≥1024 tokens. For <code>meta_reviewer</code> the user prompt is the JSON map of 5 specialist outputs (~3.2K tokens here). What happened:</p>
+<ul>
+<li>Anthropic returned <code>input_tokens: 3</code> and (almost certainly) <code>cache_creation_input_tokens: ~3,200</code></li>
+<li>The schema only stores <code>input_tokens</code> and <code>cache_read_input_tokens</code> — <code>cache_creation_input_tokens</code> is dropped on the floor</li>
+<li>Cache creation bills at <strong>1.25× normal input rate</strong>, so the true <code>meta_reviewer</code> input cost is ~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.012</mn><mo stretchy="false">(</mo><mi>c</mi><mi>a</mi><mi>c</mi><mi>h</mi><mi>e</mi><mi>c</mi><mi>r</mi><mi>e</mi><mi>a</mi><mi>t</mi><mi>e</mi><mo stretchy="false">)</mo><mo>+</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">0.012 (cache create) + ~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">0.012</span><span class="mopen">(</span><span class="mord mathnormal">c</span><span class="mord mathnormal">a</span><span class="mord mathnormal">c</span><span class="mord mathnormal">h</span><span class="mord mathnormal" style="margin-right:0.0278em;">ecr</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span><span class="mord mathnormal">e</span><span class="mclose">)</span><span class="mord">+</span><span class="mspace nobreak"> </span></span></span></span>0 (the residual 3 tokens) = **<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.012</mn><mo>∗</mo><mo>∗</mo><mo separator="true">,</mo><mi>n</mi><mi>o</mi><mi>t</mi><mi>t</mi><mi>h</mi><mi>e</mi></mrow><annotation encoding="application/x-tex">0.012**, not the </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.012</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">∗</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">n</span><span class="mord mathnormal">o</span><span class="mord mathnormal">tt</span><span class="mord mathnormal">h</span><span class="mord mathnormal">e</span></span></span></span>0 the DB implies</li>
+<li>True per-paper cost: <strong>~$0.193</strong> (DB number adjusted upward by the missing cache_creation accounting)</li>
+</ul>
+<p>The cache-creation tax is real ON THE FIRST CALL with no immediate retry. For papers that don't trigger a verifier retry inside the 5-minute cache window, we pay 1.25× the meta_reviewer input portion and get no benefit. <strong>This is the worst case for prompt caching at our access pattern.</strong> Two future fixes:</p>
+<ol>
+<li><strong>Add <code>cache_creation_input_tokens</code> + <code>cache_read_input_tokens</code> columns</strong> to <code>review_agents</code> so cost accounting is honest. Follow-up to FP6, ~15 min of work.</li>
+<li><strong>Reconsider caching <code>meta_reviewer</code></strong> — at 3.2K tokens with no retries, it's net-negative. The Track A3 heuristic should bump the minimum threshold OR only cache for roles that have a meaningful retry rate. The cost savings already came from A1 (the input shape change), not from caching. ~30 min of tuning.</li>
+</ol>
+<h3 id="total-reduction-vs-the-fp5-baseline"><a class="anchor" aria-label="anchor" href="#total-reduction-vs-the-fp5-baseline">#</a>Total reduction vs the FP5 baseline</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>FP5 baseline</th>
+<th>After FP6 (true)</th>
+<th>Reduction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per paper</td>
+<td>$0.38</td>
+<td><strong>~$0.193</strong></td>
+<td><strong>49%</strong></td>
+</tr>
+<tr>
+<td>50/day MVP</td>
+<td>$6,935/yr</td>
+<td><strong>~$3,520/yr</strong></td>
+<td>$3,415 saved</td>
+</tr>
+<tr>
+<td>Full arXiv (2,200/day)</td>
+<td>$305,140/yr</td>
+<td><strong>~$155K/yr</strong></td>
+<td>$150K saved</td>
+</tr>
+</tbody>
+</table>
+<p>The 49% reduction is mostly Track A1 (meta_reviewer input trim — the paper extract is no longer in the user prompt). The smaller <code>tokens_in</code> numbers for specialists vs the FP5 baseline are within run-to-run noise (~5-10% per-role variance from sampling).</p>
+<h3 id="where-the-remaining-cost-lives"><a class="anchor" aria-label="anchor" href="#where-the-remaining-cost-lives">#</a>Where the remaining cost lives</h3>
+<p><code>technical_correctness</code> on Opus is now <strong>78% of the per-paper cost</strong> (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.151</mn><mi>o</mi><mi>f</mi></mrow><annotation encoding="application/x-tex">0.151 of </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">0.151</span><span class="mord mathnormal">o</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span></span></span></span>0.193). Two future avenues to compress further:</p>
+<ul>
+<li><strong>A5 (planned)</strong> — output cache hits within the 30-day TTL drop all costs to ~$0 on re-reviews. Saves at scale, not on the first call.</li>
+<li><strong>FP6.next</strong> — try <code>technical_correctness</code> on Sonnet 4.6 instead of Opus 4.7. Sonnet is ~5× cheaper. If quality holds on a 20-paper sample, that single change drops per-paper cost from <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.193</mn><mi>t</mi><mi>o</mi><mo>∗</mo><mo>∗</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">0.193 to **~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.193</span><span class="mord mathnormal">t</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.4653em;"></span><span class="mord">∗</span><span class="mspace nobreak"> </span></span></span></span>0.07**. Out of FP6 scope (no model swap this pass); revisit on FP7 or later.</li>
+</ul>
+<h3 id="fp6-verification-status"><a class="anchor" aria-label="anchor" href="#fp6-verification-status">#</a>FP6 verification status</h3>
+<table>
+<thead>
+<tr>
+<th>Acceptance criterion</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-paper cost ≤ $0.15</td>
+<td>⚠️ measured <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.193</mn><mtext>—</mtext><mi>w</mi><mi>i</mi><mi>t</mi><mi>h</mi><mi>i</mi><mi>n</mi><mi>s</mi><mi>t</mi><mi>r</mi><mi>i</mi><mi>k</mi><mi>i</mi><mi>n</mi><mi>g</mi><mi>d</mi><mi>i</mi><mi>s</mi><mi>t</mi><mi>a</mi><mi>n</mi><mi>c</mi><mi>e</mi><mi>b</mi><mi>u</mi><mi>t</mi><mi>m</mi><mi>i</mi><mi>s</mi><mi>s</mi><mi>e</mi><mi>d</mi><mi>t</mi><mi>h</mi><mi>e</mi><mi>t</mi><mi>a</mi><mi>r</mi><mi>g</mi><mi>e</mi><mi>t</mi><mi>b</mi><mi>y</mi><mtext> </mtext><mn>30</mn></mrow><annotation encoding="application/x-tex">0.193 — within striking distance but missed the target by ~30%. Path to </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">0.193—</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">i</span><span class="mord mathnormal">t</span><span class="mord mathnormal">hin</span><span class="mord mathnormal">s</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0315em;">ik</span><span class="mord mathnormal">in</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">d</span><span class="mord mathnormal">i</span><span class="mord mathnormal">s</span><span class="mord mathnormal">t</span><span class="mord mathnormal">an</span><span class="mord mathnormal">ce</span><span class="mord mathnormal">b</span><span class="mord mathnormal">u</span><span class="mord mathnormal">t</span><span class="mord mathnormal">mi</span><span class="mord mathnormal">sse</span><span class="mord mathnormal">d</span><span class="mord mathnormal">t</span><span class="mord mathnormal">h</span><span class="mord mathnormal">e</span><span class="mord mathnormal">t</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">e</span><span class="mord mathnormal">t</span><span class="mord mathnormal">b</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mspace nobreak"> </span><span class="mord">30</span></span></span></span>0.07 identified (Opus→Sonnet on technical_correctness).</td>
+</tr>
+<tr>
+<td><code>review_inputs</code> table — 1 row per review</td>
+<td>✓ exactly 1 row, 175KB artifact stored once</td>
+</tr>
+<tr>
+<td><code>review_cache</code> populated on first run</td>
+<td>✓ 6 rows written, all <code>verifier_status=pass</code></td>
+</tr>
+<tr>
+<td>Prompt caching headers present</td>
+<td>✓ unit-tested + observable via <code>input_tokens=3</code> on meta_reviewer (cache create)</td>
+</tr>
+<tr>
+<td>Multi-provider DAG still working</td>
+<td>✓ 6/6 pass, 5 distinct models, 3 exercisable providers</td>
+</tr>
+</tbody>
+</table>
 </main>
 <footer class="doc-footer">
-<p>cost-breakdown.md &middot; generated 2026-05-16T00:28:29.607Z &middot; grokrxiv</p>
+<p>cost-breakdown.md &middot; generated 2026-05-16T00:37:13.699Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>
