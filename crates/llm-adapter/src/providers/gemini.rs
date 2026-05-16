@@ -3,6 +3,16 @@
 //! Talks to the v1beta REST endpoint:
 //! `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent?key=<API_KEY>`.
 //! Supports vision via `inline_data` parts.
+//!
+//! ### Prompt caching
+//!
+//! Gemini 2.5 models apply **implicit** caching for prompts of >= 32K tokens
+//! with no client-side configuration; the cache_hits count surfaces via
+//! `usageMetadata.cachedContentTokenCount`, which `parse_response` already
+//! reads into [`Usage::cache_hits`]. We deliberately do not wire up the
+//! heavier-weight explicit `CachedContent` API (separate resource lifecycle,
+//! TTLs, and a roundtrip per cache write) because our typical role prompts
+//! sit well under 32K and would gain no benefit.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -4,6 +4,13 @@
 //! `anthropic-version: 2023-06-01`. When `ChatRequest::cache_system` is true a
 //! `cache_control: { type: "ephemeral" }` block is attached to the system
 //! message to enable prompt caching.
+//!
+//! In addition, large user prompts (>= ~4096 characters, the conservative char
+//! equivalent of Anthropic's 1024-token cache minimum) automatically receive a
+//! `cache_control: { type: "ephemeral" }` hint on their final text block, so
+//! repeated calls with the same long prompt prefix can read from cache at 0.1x
+//! input price. Cache writes cost +25% and reads cost -90% versus normal input
+//! tokens; cache entries live for ~5 minutes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +58,53 @@ impl ClaudeProvider {
 
     /// Build the request JSON body Anthropic expects.
     pub fn build_body(req: &ChatRequest) -> Value {
-        let messages: Vec<Value> = req.messages.iter().map(message_to_json).collect();
+        let mut messages: Vec<Value> = req.messages.iter().map(message_to_json).collect();
+
+        // Cache long user prompts. Anthropic requires >= 1024 tokens for the
+        // smallest cache slot; ~4 chars/token gives us a conservative
+        // >= 4096-char threshold. We attach `cache_control` to the LAST text
+        // block of the LAST user message, which is the standard idiom from
+        // Anthropic's prompt-caching docs (everything up to and including the
+        // marked block becomes the cacheable prefix).
+        if let Some(last_user_idx) = messages
+            .iter()
+            .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        {
+            let text_total: usize = messages[last_user_idx]
+                .get("content")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            if p.get("type").and_then(Value::as_str) == Some("text") {
+                                p.get("text").and_then(Value::as_str).map(str::len)
+                            } else {
+                                None
+                            }
+                        })
+                        .sum()
+                })
+                .unwrap_or(0);
+            if text_total / 4 > 1024 {
+                if let Some(arr) = messages[last_user_idx]
+                    .get_mut("content")
+                    .and_then(|c| c.as_array_mut())
+                {
+                    if let Some(last_text) = arr
+                        .iter_mut()
+                        .rev()
+                        .find(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+                    {
+                        if let Some(obj) = last_text.as_object_mut() {
+                            obj.insert(
+                                "cache_control".into(),
+                                json!({ "type": "ephemeral" }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // `temperature` is rejected by some newer Claude models (e.g.
         // `claude-opus-4-7` returns 400 "temperature is deprecated for this
@@ -292,6 +345,49 @@ mod tests {
         let body = ClaudeProvider::build_body(&r);
         let sys = body["system"].as_str().unwrap_or_default();
         assert!(sys.contains("JSON Schema"));
+    }
+
+    #[test]
+    fn claude_request_caches_long_user_prompt() {
+        // >4096-char user prompt — should attach cache_control to its last
+        // text block.
+        let big = "x".repeat(5000);
+        let r = ChatRequest {
+            system: Some("sys".into()),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentPart::Text(big)],
+            }],
+            model: "claude-opus-4-7".into(),
+            max_tokens: 1024,
+            temperature: 0.2,
+            response_format: ResponseFormat::Text,
+            cache_system: false,
+        };
+        let body = ClaudeProvider::build_body(&r);
+        let parts = body["messages"][0]["content"]
+            .as_array()
+            .expect("content array");
+        let last = parts.last().expect("at least one text part");
+        assert_eq!(
+            last["cache_control"]["type"], "ephemeral",
+            "expected ephemeral cache_control on long user prompt: {body}"
+        );
+    }
+
+    #[test]
+    fn claude_request_does_not_cache_short_user_prompt() {
+        // Short prompt (~2 chars) — no cache_control on user message.
+        let body = ClaudeProvider::build_body(&req());
+        let parts = body["messages"][0]["content"]
+            .as_array()
+            .expect("content array");
+        for p in parts {
+            assert!(
+                p.get("cache_control").is_none(),
+                "short prompt unexpectedly got cache_control: {p}"
+            );
+        }
     }
 
     #[test]

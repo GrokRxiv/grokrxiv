@@ -4,10 +4,11 @@
 //! a hand-built `PaperExtract`, and asserts:
 //!
 //!   - exactly 6 rows in `review_agents` for the review
-//!   - every row has a non-null `input_artifact`
+//!   - exactly 1 row in `review_inputs` for the review with the shared
+//!     specialist input artifact (FP6 A2 dedup)
 //!   - every row's `verifier_status = 'pass'` against its role-specific schema
-//!   - the meta-reviewer's `input_artifact` carries a `specialists` object with
-//!     all five role slugs
+//!   - the synthesised meta input (rebuilt from specialist `output` rows)
+//!     carries a `specialists` object with all five role slugs
 //!   - the meta-reviewer's `output` deserializes as `MetaReview`
 //!
 //! Requires a live Postgres at `DATABASE_URL` (matches CI's local Supabase
@@ -194,8 +195,8 @@ async fn typed_dag_persists_six_agents_with_inputs_and_passes_verifier() {
         .expect("DAG ran");
 
     // 5. Read back and assert.
-    let rows: Vec<(String, Value, Value, String)> = sqlx::query_as(
-        "select role, input_artifact, output, verifier_status \
+    let rows: Vec<(String, Value, String)> = sqlx::query_as(
+        "select role, output, verifier_status \
          from review_agents where review_id = $1 order by role",
     )
     .bind(review_id)
@@ -210,27 +211,46 @@ async fn typed_dag_persists_six_agents_with_inputs_and_passes_verifier() {
         rows.len()
     );
 
-    // Every row has non-null input + verifier_status='pass'.
-    for (role_str, input, output, vstatus) in &rows {
-        assert!(!input.is_null(), "row {role_str} has null input_artifact");
+    // Every row has verifier_status='pass'.
+    for (role_str, output, vstatus) in &rows {
         assert_eq!(
             vstatus, "pass",
             "row {role_str} expected verifier_status=pass, got {vstatus}; output={output}"
         );
     }
 
-    // Meta-reviewer row: input_artifact has a `specialists` object with all
-    // five slugs, output deserializes as MetaReview.
+    // FP6 A2: exactly one shared specialist input artifact row per review.
+    let input_rows: Vec<(Value,)> =
+        sqlx::query_as("select artifact from review_inputs where review_id = $1")
+            .bind(review_id)
+            .fetch_all(&pool)
+            .await
+            .expect("fetch review_inputs");
+    assert_eq!(
+        input_rows.len(),
+        1,
+        "expected exactly 1 review_inputs row, got {}",
+        input_rows.len()
+    );
+    assert!(
+        !input_rows[0].0.is_null(),
+        "review_inputs.artifact is null"
+    );
+
+    // Meta-reviewer row: output deserializes as MetaReview. The meta input
+    // is no longer persisted (FP6 A1) — it's synthesised at render time from
+    // the specialist `output` rows.
     let meta_row = rows
         .iter()
-        .find(|(r, _, _, _)| r == "meta_reviewer")
+        .find(|(r, _, _)| r == "meta_reviewer")
         .expect("meta_reviewer row");
-    let specialists = meta_row
-        .1
-        .get("specialists")
-        .expect("meta input_artifact.specialists is present")
-        .as_object()
-        .expect("specialists is an object");
+    let _meta: MetaReview =
+        serde_json::from_value(meta_row.1.clone()).expect("meta output is a valid MetaReview");
+    let synth_specialists: std::collections::HashMap<String, Value> = rows
+        .iter()
+        .filter(|(r, _, _)| r != "meta_reviewer")
+        .map(|(r, output, _)| (r.clone(), output.clone()))
+        .collect();
     for slug in [
         "summary",
         "technical_correctness",
@@ -239,12 +259,10 @@ async fn typed_dag_persists_six_agents_with_inputs_and_passes_verifier() {
         "citation",
     ] {
         assert!(
-            specialists.contains_key(slug),
-            "meta input is missing specialists.{slug}"
+            synth_specialists.contains_key(slug),
+            "synthesised meta input is missing specialists.{slug}"
         );
     }
-    let _meta: MetaReview =
-        serde_json::from_value(meta_row.2.clone()).expect("meta output is a valid MetaReview");
 
     let bundle_path = format!("artifacts/{review_id}/bundle.zip");
     let bundle_bytes = std::fs::read(&bundle_path).expect("bundle.zip was rendered to disk");

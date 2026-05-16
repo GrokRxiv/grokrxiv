@@ -1,6 +1,15 @@
 //! OpenAI (chat-completions) provider.
 //!
 //! Posts to `https://api.openai.com/v1/chat/completions`.
+//!
+//! ### Prompt caching
+//!
+//! OpenAI applies automatic prompt caching to the `gpt-4o`, `gpt-4o-mini`,
+//! `o1`/`o1-mini`, and `gpt-5.x` families for any prefix >= 1024 tokens — no
+//! header opt-in required. To improve cache routing (so similar prompts hash
+//! to the same shard) we set the optional `prompt_cache_key` field to a
+//! sha256 of `system_message + first 512 chars of user prompt`. Older models
+//! that do not benefit from auto-caching skip the field entirely.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,6 +101,10 @@ impl OpenAIProvider {
                 .remove("temperature");
         }
 
+        if supports_prompt_cache(&req.model) {
+            body["prompt_cache_key"] = json!(prompt_cache_key(req));
+        }
+
         body
     }
 
@@ -173,6 +186,49 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn uses_openai_reasoning_controls(model: &str) -> bool {
     model.starts_with("gpt-5") || model.starts_with('o')
+}
+
+/// Whether OpenAI applies automatic prompt caching for this model family. Only
+/// the families documented in OpenAI's prompt-caching guide qualify; passing a
+/// `prompt_cache_key` to other models is harmless but pointless, so we skip
+/// it for clarity.
+fn supports_prompt_cache(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("gpt-4o")
+        || model.starts_with("o1")
+}
+
+/// Build the `prompt_cache_key` routing hint. Hashes the system prompt plus
+/// the first 512 chars of the first user-text segment, hex-encoded. Stable
+/// across runs for the same template even when the long body differs.
+fn prompt_cache_key(req: &ChatRequest) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if let Some(sys) = &req.system {
+        hasher.update(sys.as_bytes());
+    }
+    hasher.update(b":");
+    // First text segment of the first user message — enough to discriminate
+    // task templates, while staying cheap.
+    let user_head = req
+        .messages
+        .iter()
+        .find(|m| matches!(m.role, Role::User))
+        .and_then(|m| {
+            m.content.iter().find_map(|p| match p {
+                ContentPart::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+        })
+        .unwrap_or("");
+    let take = user_head.len().min(512);
+    // Slice on a UTF-8 boundary to avoid panics on multi-byte chars near 512.
+    let mut end = take;
+    while end > 0 && !user_head.is_char_boundary(end) {
+        end -= 1;
+    }
+    hasher.update(user_head[..end].as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn openai_error_code(body_text: &str) -> Option<String> {
@@ -306,6 +362,57 @@ mod tests {
             openai_error_code(&body),
             Some("insufficient_quota".to_string())
         );
+    }
+
+    #[test]
+    fn openai_request_sets_prompt_cache_key_for_gpt5() {
+        let mut r = req();
+        r.model = "gpt-5.5".into();
+        let body = OpenAIProvider::build_openai_body(&r);
+        let key = body["prompt_cache_key"]
+            .as_str()
+            .expect("prompt_cache_key should be set for gpt-5 models");
+        // sha256 hex = 64 lowercase hex chars.
+        assert_eq!(key.len(), 64, "expected 64-char hex sha256, got {key}");
+        assert!(
+            key.chars().all(|c| c.is_ascii_hexdigit()),
+            "key not hex: {key}"
+        );
+    }
+
+    #[test]
+    fn openai_request_sets_prompt_cache_key_for_gpt4o_and_o1() {
+        for model in ["gpt-4o", "gpt-4o-mini", "o1-mini"] {
+            let mut r = req();
+            r.model = model.into();
+            let body = OpenAIProvider::build_openai_body(&r);
+            assert!(
+                body.get("prompt_cache_key").and_then(Value::as_str).is_some(),
+                "{model} should set prompt_cache_key"
+            );
+        }
+    }
+
+    #[test]
+    fn openai_request_skips_prompt_cache_key_for_old_model() {
+        let mut r = req();
+        r.model = "gpt-3.5-turbo".into();
+        let body = OpenAIProvider::build_openai_body(&r);
+        assert!(
+            body.get("prompt_cache_key").is_none(),
+            "gpt-3.5-turbo should NOT set prompt_cache_key, got {body}"
+        );
+    }
+
+    #[test]
+    fn openai_prompt_cache_key_is_stable_for_identical_prompts() {
+        let mut r1 = req();
+        r1.model = "gpt-5.5".into();
+        let mut r2 = req();
+        r2.model = "gpt-5.5".into();
+        let b1 = OpenAIProvider::build_openai_body(&r1);
+        let b2 = OpenAIProvider::build_openai_body(&r2);
+        assert_eq!(b1["prompt_cache_key"], b2["prompt_cache_key"]);
     }
 
     #[test]

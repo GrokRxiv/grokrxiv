@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GrokRxiv — FIX PASS 4 (real typed DAG + responsive + residue cleanup)</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="grokrxiv--fix-pass-4-real-typed-dag--responsive--residue-cleanup"><a class="anchor" aria-label="anchor" href="#grokrxiv--fix-pass-4-real-typed-dag--responsive--residue-cleanup">#</a>GrokRxiv — FIX PASS 4 (real typed DAG + responsive + residue cleanup)</h1>
+<blockquote>
+<p>Fresh plan; <strong>not</strong> an addendum to FP3. This pass closes the gaps codex flagged after FP3 shipped: the "review DAG" is actually a sequential six-call loop with loose-prompted JSON, the verifier ladder uses a permissive <code>{"type":"object"}</code> schema for every role, scheduler workers are stubs, <code>render_to_disk</code> writes a synthetic meta-review (not the real DAG outputs), multi-provider is adapter-complete but orchestration-incomplete, moderation queue is unpopulated, and there's residual disclaimer / nav / api-docs copy that contradicts the legal-only policy. Plus the frontend is not responsive on mobile.</p>
+</blockquote>
+<h2 id="context"><a class="anchor" aria-label="anchor" href="#context">#</a>Context</h2>
+<p>The user-supplied codex audit + screenshot say plainly:</p>
+<ul>
+<li>The architecture pitch (<code>sources/context.txt:597</code>) is a <strong>typed publication pipeline</strong> — parallel multi-agent review DAG with schema-constrained inputs/outputs, a meta-reviewer that <em>synthesizes</em> the five specialist outputs, a real verifier ladder per role, scheduler-driven ingestion, populated moderation queue, real artifacts, and a proven publish loop. The repo today only ships the first quarter of that.</li>
+<li>Mobile rendering is broken (see iPhone-width screenshot of <code>/about</code>).</li>
+<li>Stray disclaimer references remain in code/copy after FP2/FP3 supposedly removed them.</li>
+</ul>
+<p>This pass converts the FP3 baseline into the architecture that the original <code>sources/context.txt</code> actually describes, with parallel agents owning chunks of the work.</p>
+<h2 id="user-directives-locked"><a class="anchor" aria-label="anchor" href="#user-directives-locked">#</a>User directives (locked)</h2>
+<ol>
+<li><strong>Disclaimer lives ONLY on <code>/legal</code>.</strong> Nothing in render artifacts, the upload UI, the API docs page, or any constant outside the <code>/legal</code> page may mention "Not official peer review" or "Not endorsed by arXiv." <code>crates/render/src/lib.rs:28</code>'s non-empty <code>PUBLIC_DISCLAIMER</code> is regression bait — set to <code>""</code>. <code>apps/web/app/api-docs/page.tsx:90</code> "clearly watermarked" copy is wrong — remove. Final grep across the repo must show the disclaimer string only inside <code>crates/render/tests/render.rs</code> (as a needle to <em>forbid</em>) and <code>apps/web/app/legal/page.tsx</code> (as content).</li>
+<li><strong>Frontend must be responsive on every page.</strong> 375×667 (iPhone SE), 768×1024 (iPad), 1280×800 (desktop). No horizontal scroll, no overflowing headings, no off-screen iframes. Locked in by Playwright at all three viewports.</li>
+<li><strong>Use an agent team.</strong> Five parallel-friendly tracks (A–E below), with Track C blocking D + E because the typed-DAG shape determines what those build on.</li>
+</ol>
+<h2 id="codex-audit--gaps-this-pass-closes"><a class="anchor" aria-label="anchor" href="#codex-audit--gaps-this-pass-closes">#</a>Codex audit — gaps this pass closes</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Where</th>
+<th>Fix track</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Sequential <code>for</code> loop over 6 roles; not parallel</td>
+<td><code>crates/orchestrator/src/supervisor.rs:179,202</code></td>
+<td>C</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Meta-reviewer doesn't see the prior 5 outputs — 6th independent call, not a synthesis node</td>
+<td><code>crates/orchestrator/src/supervisor.rs:166,203</code></td>
+<td>C</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Per-agent JSON-schema not enforced (uses <code>ResponseFormat::Text</code>, JSON-in-prose, <code>{"raw": ...}</code> fallback)</td>
+<td><code>crates/orchestrator/src/supervisor.rs:211,232</code></td>
+<td>C</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Verifier uses permissive <code>{"type":"object"}</code> for every role; ignores role-specific schemas</td>
+<td><code>crates/orchestrator/src/state.rs:76</code>, <code>crates/verifier/src/lib.rs:57</code></td>
+<td>C</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Inputs not persisted as typed JSON artifacts</td>
+<td><code>migrations/20250513000001_init.sql:65</code> (no input_artifact col); <code>db::insert_review_agent</code></td>
+<td>C</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Scheduler <code>run_ingest</code>/<code>run_review</code>/<code>run_publish</code> are stubs</td>
+<td><code>crates/orchestrator/src/supervisor.rs:337</code>, <code>scheduler.rs:172</code></td>
+<td>D</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>render_to_disk</code> builds a synthetic <code>MetaReview</code> + empty agents</td>
+<td><code>crates/orchestrator/src/supervisor.rs:282</code></td>
+<td>D</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Multi-provider is adapter-complete, orchestration-incomplete (same model for all 6 roles)</td>
+<td><code>crates/orchestrator/src/state.rs:25</code>, <code>supervisor.rs:164</code></td>
+<td>E</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Moderation queue not populated; reject/request-changes/withdraw/correct CLI are stubs</td>
+<td><code>crates/orchestrator/src/cli.rs:486</code></td>
+<td>D</td>
+</tr>
+<tr>
+<td>10</td>
+<td>GitHub publish not proven end-to-end</td>
+<td><code>crates/orchestrator/src/cli.rs:412</code> + webhook handler</td>
+<td>E</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Header → <code>/#papers</code> has no matching anchor</td>
+<td><code>apps/web/components/header.tsx:19</code></td>
+<td>A</td>
+</tr>
+<tr>
+<td>12</td>
+<td>API docs "clearly watermarked" copy</td>
+<td><code>apps/web/app/api-docs/page.tsx:90</code></td>
+<td>B</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>crates/render/src/lib.rs:28</code> <code>PUBLIC_DISCLAIMER</code> still non-empty (stale relative to schemas)</td>
+<td>render crate</td>
+<td>B</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Frontend not responsive on mobile</td>
+<td><code>apps/web/app/{page,about,api-docs,legal,reviews/[id],papers/[arxiv]}.tsx</code></td>
+<td>A</td>
+</tr>
+</tbody>
+</table>
+<h2 id="scope--five-parallel-friendly-tracks"><a class="anchor" aria-label="anchor" href="#scope--five-parallel-friendly-tracks">#</a>Scope — five parallel-friendly tracks</h2>
+<h3 id="track-a--frontend-responsive--nav-correctness--parallel-owns-appsweb"><a class="anchor" aria-label="anchor" href="#track-a--frontend-responsive--nav-correctness--parallel-owns-appsweb">#</a>Track A — Frontend responsive + nav correctness  <em>(parallel; owns <code>apps/web/</code>)</em></h3>
+<p>Owner: <code>vercel:ai-architect</code> subagent.</p>
+<ol>
+<li>Audit every page at 375×667 (iPhone SE), 768×1024 (iPad), 1280×800. Fix in this order:
+<ul>
+<li><code>app/page.tsx</code> — hero gradient <code>&#x3C;h1></code> text-wrapping at 375 px; the upload dropzone width on narrow screens; <code>How it works</code> 3-column grid → single column on mobile.</li>
+<li><code>app/about/page.tsx</code> — pipeline-stage cards (currently a hard-coded grid that overflows on mobile per the screenshot).</li>
+<li><code>app/api-docs/page.tsx</code> — <code>&#x3C;pre></code> code blocks must scroll horizontally, not push the layout. (See also gap #12.)</li>
+<li><code>app/legal/page.tsx</code>, <code>app/reviews/[id]/page.tsx</code>, <code>app/papers/[arxiv]/page.tsx</code> — long inline links / DOI strings break-all + min-w-0 on grid children.</li>
+<li><code>components/header.tsx</code> — at 375 px the 5-link nav doesn't fit; add a <code>&#x3C;details></code>-based hamburger or a horizontal-scroll nav for narrow screens.</li>
+<li><code>components/footer.tsx</code> — already flex-wrap, just verify.</li>
+<li><code>components/upload-dropzone.tsx</code> — iframe <code>h-[480px]</code> is too tall on mobile; use <code>aspect-[4/5]</code> + <code>min-h-[320px]</code>.</li>
+</ul>
+</li>
+<li>Fix the <code>/#papers</code> dead-link at <code>components/header.tsx:19</code>: either rename to "Latest" pointing at <code>#reviews</code> (already a valid anchor), or add <code>&#x3C;section id="papers"></code> to the homepage. <strong>Decision: rename to "Latest", drop the unused anchor.</strong></li>
+<li>New Playwright spec <code>tests/e2e-web/responsive.spec.ts</code>:
+<ul>
+<li>For each route in <code>["/", "/about", "/api-docs", "/legal", "/reviews/22222222-2222-2222-2222-222222222222", "/papers/2401.12345"]</code>:
+<ul>
+<li>For each viewport in <code>[{375,667}, {768,1024}, {1280,800}]</code>:
+<ul>
+<li>Goto + waitForLoadState</li>
+<li>Assert <code>document.body.scrollWidth &#x3C;= window.innerWidth + 1</code> (no horizontal overflow)</li>
+<li>Screenshot to <code>tests/screenshots/responsive-&#x3C;route>-&#x3C;width>.png</code></li>
+<li>Listen for hydration warnings, hard fail on any</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>(Optional, time-permitting) Lighthouse mobile run via the chrome-devtools-mcp <code>lighthouse_audit</code> tool; record scores for <code>/</code>, <code>/about</code>, <code>/reviews/&#x3C;seed></code>. Don't gate the pass on score thresholds — just record.</li>
+</ol>
+<h3 id="track-b--disclaimer--copy-residue-cleanup--parallel-fast-owns-5-files"><a class="anchor" aria-label="anchor" href="#track-b--disclaimer--copy-residue-cleanup--parallel-fast-owns-5-files">#</a>Track B — Disclaimer + copy residue cleanup  <em>(parallel, fast; owns ~5 files)</em></h3>
+<p>Owner: small general-purpose agent.</p>
+<ol>
+<li><code>crates/render/src/lib.rs:28</code> — change <code>PUBLIC_DISCLAIMER</code> to <code>""</code> with the same comment style as <code>crates/schemas/src/lib.rs</code> ("reserved for /legal; intentionally empty").</li>
+<li><code>crates/render/src/lib.rs:25-26</code> — drop the TODO comment about importing from schemas.</li>
+<li><code>apps/web/app/api-docs/page.tsx:90</code> — change body to "Multipart upload. Returns a sample, single-pass review preview — never indexed as a real GrokRxiv review."</li>
+<li>Final grep gate: <code>rg "Not official peer review|Not endorsed by arXiv" --type-add 'web:*.{ts,tsx,jinja,html,md,sql,yaml,toml}' -t web -t rust</code> must return <strong>exactly</strong> these matches:
+<ul>
+<li><code>apps/web/app/legal/page.tsx</code> (3 hits — paragraph copy)</li>
+<li><code>crates/render/tests/render.rs</code> (a few hits — the negative-assertion needle constant + sibling positive test)</li>
+<li><code>crates/schemas/src/lib.rs</code> (comment line in the const docstring is fine)
+Anywhere else is a fail and must be cleaned.</li>
+</ul>
+</li>
+</ol>
+<h3 id="track-c--real-typed-dag--sequential-dependency-for-d--e"><a class="anchor" aria-label="anchor" href="#track-c--real-typed-dag--sequential-dependency-for-d--e">#</a>Track C — Real typed DAG  <em>(sequential dependency for D + E)</em></h3>
+<p>Owner: <code>general-purpose</code> agent, Rust focus.</p>
+<ol>
+<li>
+<p><strong>Per-role output schemas.</strong> Load the existing JSON Schemas under <code>schemas/</code> at boot. The files exist from FP1:</p>
+<ul>
+<li><code>schemas/summary_review.schema.json</code></li>
+<li><code>schemas/technical_review.schema.json</code></li>
+<li><code>schemas/novelty_review.schema.json</code></li>
+<li><code>schemas/reproducibility_review.schema.json</code></li>
+<li><code>schemas/citation_review.schema.json</code></li>
+<li><code>schemas/meta_review.schema.json</code></li>
+</ul>
+<p>New <code>AppState</code> field <code>agent_schemas: Arc&#x3C;HashMap&#x3C;AgentRole, serde_json::Value>></code> populated in <code>from_config</code>. Reuse the existing <code>include_str!</code>-style pattern; or read from <code>$GROKRXIV_SCHEMAS_DIR ?? "schemas"</code> once at boot.</p>
+</li>
+<li>
+<p><strong>Per-role verifier ladders.</strong> Replace the single <code>state.verifier: Arc&#x3C;VerifierLadder></code> with <code>state.verifiers: Arc&#x3C;HashMap&#x3C;AgentRole, VerifierLadder>></code>, each ladder built via <code>VerifierLadder::standard(Some(schema_json))</code> against that role's output schema. Removes the "permissive object" workaround.</p>
+</li>
+<li>
+<p><strong>JSON-schema-enforced LLM calls.</strong> The Claude provider already supports <code>ResponseFormat::JsonSchema(...)</code> (used by <code>/preview</code>). Switch the M1 supervisor's per-agent <code>ChatRequest</code> from <code>ResponseFormat::Text</code> to <code>ResponseFormat::JsonSchema(schema_for_role)</code>. Tighten retry: on parse failure, one corrective retry with <code>"Your previous output did not validate against the schema; return strict JSON."</code> Drop the <code>{ "raw": resp.text }</code> fallback — make a parse failure a hard error rounded to <code>verifier_status='fail'</code> with the raw output preserved in <code>verifier_notes.parse_error</code>.</p>
+</li>
+<li>
+<p><strong>Parallel fan-out of the five specialists.</strong> Replace <code>for (role, role_prompt) in roles.iter()</code> with <code>tokio::join!</code> (or <code>futures::future::join_all</code>) over the five non-meta-reviewer roles. Cap concurrency with a <code>tokio::sync::Semaphore::new(5)</code> so we don't blow past Anthropic's per-key rate limit. Then run the meta-reviewer (step 5) once the join completes.</p>
+</li>
+<li>
+<p><strong>Meta-reviewer = real synthesis node.</strong> Build a separate prompt that bundles the five specialists' JSON outputs as input artifact, asks the meta-reviewer to <em>synthesize</em> them into a <code>MetaReview</code>. Persist the bundle as the meta-reviewer's <code>input_artifact</code> (new column, see step 6). The current "6th independent call with the same paper prompt" path is removed.</p>
+</li>
+<li>
+<p><strong>Persist input artifacts.</strong> New migration <code>migrations/20250513000006_review_agent_inputs.sql</code>: <code>alter table review_agents add column input_artifact jsonb</code>. Update <code>db::insert_review_agent</code> signature to take an <code>input: serde_json::Value</code> and persist it. The specialist agents' input is the <code>PaperExtract</code>-shaped object; the meta-reviewer's input is the 5-tuple of specialist outputs.</p>
+</li>
+<li>
+<p><strong>Acceptance unit test.</strong> <code>crates/orchestrator/tests/dag.rs</code> (new) — with wiremock-stubbed Anthropic returning valid schema-compliant JSON for each role, runs <code>run_one_paper_blocking</code> against a fixture paper, asserts: 6 rows, all 6 have <code>input_artifact</code> set, all 6 have <code>verifier_status='pass'</code> against the role schema, the meta-reviewer row's <code>input_artifact</code> contains the five specialist outputs by role key.</p>
+</li>
+</ol>
+<h3 id="track-d--real-artifacts--scheduler--moderation-lifecycle--depends-on-c"><a class="anchor" aria-label="anchor" href="#track-d--real-artifacts--scheduler--moderation-lifecycle--depends-on-c">#</a>Track D — Real artifacts + scheduler + moderation lifecycle  <em>(depends on C)</em></h3>
+<p>Owner: <code>general-purpose</code> agent.</p>
+<ol>
+<li>
+<p><strong><code>render_to_disk</code> reads real DB rows.</strong> Currently builds a synthetic <code>MetaReview</code> and <code>vec![] as agents</code> (<code>supervisor.rs:282-310</code>). Replace with: <code>SELECT meta_review FROM reviews WHERE id=$1</code> → deserialize to <code>MetaReview</code>; <code>SELECT role, model, output, verifier_status, verifier_notes FROM review_agents WHERE review_id=$1 ORDER BY role</code> → map to <code>Vec&#x3C;AgentRecord></code>. Render against those. The render template already supports the full agent list via the <code>agents</code> context variable.</p>
+</li>
+<li>
+<p><strong>Real scheduler workers.</strong> <code>crates/orchestrator/src/supervisor.rs</code>:</p>
+<ul>
+<li><code>run_ingest</code>: pull a paper from arXiv via the existing <code>grokrxiv_ingest::pipeline::ingest</code>; persist <code>papers</code> row; enqueue a Review job for it if <code>submitted_date >= AUTO_REVIEW_FROM</code>.</li>
+<li><code>run_review</code>: run the M1 DAG (now real per Track C); leave at <code>awaiting_moderation</code>.</li>
+<li><code>run_publish</code>: invoked only by admin <code>approve</code>; calls <code>publisher::open_review_pr</code> and persists the PR URL.</li>
+<li>All three handle retries via the existing <code>MAX_RETRIES</code> + <code>exp_backoff</code> already wired in <code>run_item</code>.</li>
+</ul>
+</li>
+<li>
+<p><strong>Moderation queue is populated.</strong> When <code>insert_review</code> lands a row at <code>awaiting_moderation</code>, also <code>insert into moderation_queue (review_id, state) values ($1, 'pending')</code>. CLI <code>approve</code>/<code>reject</code>/<code>request_changes</code> update the matching moderation row in addition to the review row. CLI <code>withdraw</code>/<code>correct</code> persist <code>corrections</code> rows + flip the review status.</p>
+</li>
+<li>
+<p><strong>CLI commands work for real.</strong> Replace the stub <code>eprintln!("...: DB update wiring — task #11.")</code> lines in <code>crates/orchestrator/src/cli.rs:486+</code>:</p>
+<ul>
+<li><code>reject &#x3C;REVIEW_ID> --reason TEXT</code> — updates moderation_queue.state, leaves review status at awaiting_moderation, prints <code>rejected=&#x3C;id></code>.</li>
+<li><code>request-changes &#x3C;REVIEW_ID> --notes TEXT</code> — updates moderation_queue.state + notes.</li>
+<li><code>withdraw &#x3C;REVIEW_ID> --reason TEXT</code> — inserts a <code>corrections</code> row of kind <code>withdrawal</code>, flips <code>reviews.status = 'withdrawn'</code>, fires revalidate.</li>
+<li><code>correct &#x3C;REVIEW_ID> --rationale-md PATH</code> — reads the markdown, inserts a <code>corrections</code> row of kind <code>correction</code>, flips <code>reviews.status = 'corrected'</code>, fires revalidate.</li>
+<li><code>list reviews [--status STATUS]</code> and <code>show &#x3C;REVIEW_ID></code> — print real rows (already wired plumbing-wise; just stop emitting placeholders).</li>
+</ul>
+</li>
+<li>
+<p><strong>m1-pipeline.sh extension</strong>: assert <code>moderation_queue</code> has a <code>pending</code> row after ingest, and after <code>reject</code> the row is <code>rejected</code>.</p>
+</li>
+</ol>
+<h3 id="track-e--multi-provider-routing--github-publish-e2e--depends-on-c"><a class="anchor" aria-label="anchor" href="#track-e--multi-provider-routing--github-publish-e2e--depends-on-c">#</a>Track E — Multi-provider routing + GitHub publish E2E  <em>(depends on C)</em></h3>
+<p>Owner: <code>general-purpose</code> agent.</p>
+<ol>
+<li>
+<p><strong>AppState registers every configured provider.</strong> <code>state.rs::ProviderRegistry::from_env</code> currently builds only <code>claude</code>. Replace with a <code>HashMap&#x3C;&#x26;'static str, Arc&#x3C;dyn LLMProvider>></code> populated based on which env keys are present (<code>ANTHROPIC_API_KEY</code> → claude, <code>OPENAI_API_KEY</code> → openai, <code>GOOGLE_GENERATIVE_AI_API_KEY</code> → gemini, <code>VLLM_BASE_URL</code> → vllm). <code>ProviderRegistry::default</code> still points at Claude for the <code>/preview</code> path.</p>
+</li>
+<li>
+<p><strong>Per-role provider selection from <code>agents/*.yaml</code>.</strong> The YAML already declares <code>provider:</code> per role (see <code>agents/novelty.yaml: provider: gemini</code>). Load all 7 YAMLs at boot (already happens — confirm), build a <code>HashMap&#x3C;AgentRole, (Arc&#x3C;dyn LLMProvider>, String /* model */)></code>. The M1 supervisor uses that map per role instead of the hardcoded <code>state.config.preview_model</code>.</p>
+</li>
+<li>
+<p><strong>Fallback policy.</strong> If a YAML declares <code>provider: gemini</code> but no <code>GOOGLE_GENERATIVE_AI_API_KEY</code> is present, log a warning and fall back to Claude for that role. <code>m1-pipeline.sh</code> assertion: <code>select distinct model from review_agents where review_id=&#x3C;r></code> returns at least 2 distinct values when keys for multiple providers are configured.</p>
+</li>
+<li>
+<p><strong>GitHub publish E2E against a real test repo.</strong> Use the existing <code>scripts/publish-e2e.sh</code> (FP3 shipped this opt-in). Document setup in a new <code>docs/PUBLISH-E2E.md</code> (NEW): create a throwaway repo <code>&#x3C;user>/grokrxiv-reviews-test</code>, generate a fine-grained PAT scoped to that repo with content+pr write, set <code>GITHUB_TOKEN</code> + <code>GROKRXIV_REVIEWS_OWNER</code> + <code>GROKRXIV_REVIEWS_REPO</code> + <code>GITHUB_WEBHOOK_SECRET</code>, run the script. Acceptance: the script exits 0 and the seed-driven row turns <code>published</code>.</p>
+</li>
+</ol>
+<h3 id="track-f--acceptance--index-housekeeping--final-after-ae-land"><a class="anchor" aria-label="anchor" href="#track-f--acceptance--index-housekeeping--final-after-ae-land">#</a>Track F — Acceptance + index housekeeping  <em>(final, after A–E land)</em></h3>
+<p>Owner: me (no subagent).</p>
+<ol>
+<li>Run <code>just smoke</code> end-to-end; capture screenshots.</li>
+<li>Take responsive screenshots at all three viewports for the routes in Track A's spec.</li>
+<li>Run <code>scripts/publish-e2e.sh</code> once if the user provides test-repo creds (otherwise document the gap honestly).</li>
+<li>On exit from plan mode, <strong>copy this plan's content into <code>~/.claude/plans/fp4-real-dag-and-responsive.md</code></strong> as a permanent file, and <strong>restore <code>piped-bubbling-brook.md</code> to the slim index</strong> with a new FP4 row added.</li>
+</ol>
+<h2 id="files-to-change"><a class="anchor" aria-label="anchor" href="#files-to-change">#</a>Files to change</h2>
+<p><strong>Track A — apps/web/</strong>:</p>
+<ul>
+<li><code>app/page.tsx</code>, <code>app/about/page.tsx</code>, <code>app/api-docs/page.tsx</code>, <code>app/legal/page.tsx</code>, <code>app/reviews/[id]/page.tsx</code>, <code>app/papers/[arxiv]/page.tsx</code></li>
+<li><code>components/header.tsx</code>, <code>components/upload-dropzone.tsx</code></li>
+<li><code>tests/e2e-web/responsive.spec.ts</code> (NEW)</li>
+</ul>
+<p><strong>Track B — residue cleanup</strong>:</p>
+<ul>
+<li><code>crates/render/src/lib.rs</code> (lib const + TODO comment)</li>
+<li><code>apps/web/app/api-docs/page.tsx</code> (one body line)</li>
+</ul>
+<p><strong>Track C — typed DAG</strong>:</p>
+<ul>
+<li><code>crates/orchestrator/src/state.rs</code> (per-role schemas + per-role verifier ladders + per-role provider map)</li>
+<li><code>crates/orchestrator/src/supervisor.rs</code> (parallel fan-out, schema-enforced calls, meta-synthesis node, input persistence)</li>
+<li><code>crates/orchestrator/src/db.rs</code> (<code>insert_review_agent</code> gains <code>input_artifact</code>)</li>
+<li><code>migrations/20250513000006_review_agent_inputs.sql</code> (NEW)</li>
+<li><code>crates/orchestrator/tests/dag.rs</code> (NEW)</li>
+</ul>
+<p><strong>Track D — artifacts + scheduler + moderation</strong>:</p>
+<ul>
+<li><code>crates/orchestrator/src/supervisor.rs</code> (<code>render_to_disk</code> from DB, real <code>run_ingest</code>/<code>run_review</code>/<code>run_publish</code>)</li>
+<li><code>crates/orchestrator/src/cli.rs</code> (real reject/request-changes/withdraw/correct/list/show)</li>
+<li><code>crates/orchestrator/src/db.rs</code> (<code>insert_moderation_row</code>, <code>insert_correction</code>, list/show helpers)</li>
+<li><code>tests/m1-pipeline.sh</code> (moderation_queue assertion)</li>
+</ul>
+<p><strong>Track E — multi-provider + publish E2E</strong>:</p>
+<ul>
+<li><code>crates/orchestrator/src/state.rs</code> (multi-provider registry)</li>
+<li><code>crates/orchestrator/src/supervisor.rs</code> (per-role provider lookup, fallback)</li>
+<li><code>crates/llm-adapter/src/lib.rs</code> (already exposes the trait — no change expected)</li>
+<li><code>docs/PUBLISH-E2E.md</code> (NEW)</li>
+</ul>
+<h2 id="verification"><a class="anchor" aria-label="anchor" href="#verification">#</a>Verification</h2>
+<p><code>just smoke</code> runs in this order and ends with PASS:</p>
+<ol>
+<li><code>bash scripts/preflight.sh</code> → docker + supabase + postgres + ANTHROPIC_API_KEY all green.</li>
+<li><code>cargo test --workspace</code> → green, including the new <code>crates/orchestrator/tests/dag.rs</code>. Specifically:
+<ul>
+<li>per-agent rows have <code>input_artifact</code> populated</li>
+<li>per-agent <code>verifier_status='pass'</code> against the <em>role-specific</em> schema (not the permissive object)</li>
+<li>meta-reviewer's <code>input_artifact</code> contains exactly the five specialist outputs keyed by role</li>
+</ul>
+</li>
+<li><code>pnpm --filter @grokrxiv/web typecheck &#x26;&#x26; lint &#x26;&#x26; build</code> → green.</li>
+<li><code>pnpm --filter @grokrxiv/e2e-web test</code> → ≥11 specs pass (existing 8 + 3 responsive viewports × 6 routes batched into one spec file). Console-error gate stays green on every viewport.</li>
+<li><code>docker compose up -d --build</code> → orchestrator + web healthy.</li>
+<li><code>SKIP_APPROVE=1 tests/m1-pipeline.sh 2605.12484</code> →
+<ul>
+<li>1 paper, 1 review at <code>awaiting_moderation</code>, 6 review_agents</li>
+<li>every agent's <code>verifier_notes</code> JSON has <code>citation</code>, <code>tone</code>, <code>json_schema</code>, <code>render</code> rung keys (not <code>{"verifier":"json-shape-only"}</code> and not just a permissive-object pass)</li>
+<li><code>select distinct model from review_agents</code> returns ≥2 values when multi-provider keys are set</li>
+<li><code>select state from moderation_queue where review_id=&#x3C;r></code> returns <code>pending</code></li>
+<li><code>select input_artifact->'role' from review_agents where role='meta_reviewer'</code> is non-null and contains references to the five specialist roles</li>
+</ul>
+</li>
+<li><code>rg "Not official peer review|Not endorsed by arXiv"</code> returns only the whitelisted matches (<code>/legal</code> page, <code>render</code> test needle, <code>schemas</code> const comment).</li>
+<li>(Opt-in) <code>bash scripts/publish-e2e.sh</code> against a test repo → review transitions to <code>published</code>; <code>/api/v1/reviews/&#x3C;id></code> returns 200 with <code>status:"published"</code>.</li>
+</ol>
+<h2 id="goal-slash-command-for-the-next-stop-hook"><a class="anchor" aria-label="anchor" href="#goal-slash-command-for-the-next-stop-hook">#</a>Goal slash-command (for the next Stop hook)</h2>
+<pre><code>/goal fp4 shipped: review DAG is a real parallel typed graph (per-role JSON-schema-enforced calls, role-specific verifier ladders, meta-reviewer synthesizes the 5 specialists' outputs, input_artifact persisted), render_to_disk reads real DB rows, scheduler run_ingest/run_review/run_publish are real, moderation_queue populated, reject/request-changes/withdraw/correct CLI commands actually update DB, multi-provider per agent role via agents/*.yaml, frontend responsive at 375/768/1280, /#papers nav dead-link gone, api-docs "watermarked" copy gone, render PUBLIC_DISCLAIMER constant emptied, no disclaimer text anywhere outside /legal page + render test needle + schemas const comment.
+</code></pre>
+<h2 id="plan-file-housekeeping-do-this-on-exitplanmode"><a class="anchor" aria-label="anchor" href="#plan-file-housekeeping-do-this-on-exitplanmode">#</a>Plan-file housekeeping (do this on ExitPlanMode)</h2>
+<ol>
+<li>Copy this file's content to <code>/Users/mlong/.claude/plans/fp4-real-dag-and-responsive.md</code>.</li>
+<li>Replace <code>/Users/mlong/.claude/plans/piped-bubbling-brook.md</code> with the slim index again, adding a new FP4 row:
+<pre><code>| FP4 | Real typed DAG (per-role schemas, parallel specialists, meta-reviewer synthesis, input_artifact persistence), real scheduler workers, populated moderation queue, working reject/correct/withdraw CLI, multi-provider per-role, responsive frontend at 375/768/1280, residual disclaimer cleanup | In progress | [`fp4-real-dag-and-responsive.md`](./fp4-real-dag-and-responsive.md) |
+</code></pre>
+</li>
+<li>Future passes follow the same rule: new file per pass, index updated, never overwrite a prior <code>fpN-*.md</code>.</li>
+</ol>
+</main>
+<footer class="doc-footer">
+<p>fp4-real-dag-and-responsive.md &middot; generated 2026-05-14T02:05:40.084Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

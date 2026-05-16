@@ -192,7 +192,7 @@ pub async fn run_review_dag(
     extract: grokrxiv_schemas::PaperExtract,
 ) -> anyhow::Result<Uuid> {
     use grokrxiv_llm_adapter::Usage;
-    use grokrxiv_schemas::{AgentRole, MetaReview};
+    use grokrxiv_schemas::{AgentRole, MetaReview, VerifierStatus};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -249,6 +249,17 @@ pub async fn run_review_dag(
     let specialist_input: serde_json::Value =
         serde_json::to_value(extract_arc.as_ref()).unwrap_or_else(|_| json!({}));
 
+    // FP6 A2: persist the shared specialist input artifact exactly once per
+    // review. Specialists no longer each carry a duplicate copy of the paper
+    // extract on their `review_agents` row.
+    crate::db::insert_review_input(pool, review_id, paper_id, &specialist_input).await?;
+
+    // FP6 A4: hash the specialist input so cache lookups key on the exact
+    // bytes each specialist would have reasoned over. All five specialists
+    // share the same input artifact in this DAG, so a single hash is enough.
+    let specialist_content_hash =
+        sha256_hex(&serde_json::to_vec(&specialist_input).unwrap_or_default());
+
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
         let schema = state
@@ -260,24 +271,54 @@ pub async fn run_review_dag(
         let system = role_system_prompt(role);
         let (role_provider, role_model) = resolve(role);
         let sem = sem.clone();
-        let input = specialist_input.clone();
+        let pool_cloned = pool.clone();
+        let cache_hash = specialist_content_hash.clone();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
+
+            // FP6 A4: cache lookup before the LLM call. We only honour
+            // verifier_status='pass' rows so a previously-warned/failed run
+            // re-executes the agent.
+            if let Ok(Some(hit)) =
+                crate::db::lookup_cache(&pool_cloned, paper_id, role, &cache_hash).await
+            {
+                if hit.verifier_status == "pass" {
+                    tracing::info!(
+                        event = "cache",
+                        role = role_slug(role),
+                        hit = true,
+                        "cache hit"
+                    );
+                    let usage = Usage {
+                        tokens_in: hit.tokens_in.unwrap_or(0) as u32,
+                        tokens_out: hit.tokens_out.unwrap_or(0) as u32,
+                        ..Default::default()
+                    };
+                    return anyhow::Ok((role, hit.output, usage, 0i32, hit.model, true));
+                }
+            }
+            tracing::info!(
+                event = "cache",
+                role = role_slug(role),
+                hit = false,
+                "cache miss"
+            );
+
             let started = std::time::Instant::now();
             let (parsed, usage) =
                 call_with_schema(&*role_provider, &role_model, &system, &prompt, schema).await?;
             let latency_ms = started.elapsed().as_millis() as i32;
-            anyhow::Ok((role, input, parsed, usage, latency_ms, role_model))
+            anyhow::Ok((role, parsed, usage, latency_ms, role_model, false))
         }));
     }
 
     let mut specialist_results: Vec<(
         AgentRole,
         serde_json::Value,
-        serde_json::Value,
         Usage,
         i32,
         String, // model actually used
+        bool,   // cache hit
     )> = Vec::with_capacity(specialist_roles.len());
     for h in handles {
         let r = h
@@ -289,7 +330,7 @@ pub async fn run_review_dag(
     // Persist + verify each specialist's output against its role-specific
     // verifier ladder. The ladder uses the role-specific JSON schema as its
     // first rung (replacing the previous permissive-object workaround).
-    for (role, input, output, usage, latency_ms, used_model) in &specialist_results {
+    for (role, output, usage, latency_ms, used_model, cache_hit) in &specialist_results {
         let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
         crate::db::insert_review_agent(
             pool,
@@ -297,28 +338,45 @@ pub async fn run_review_dag(
                 review_id,
                 role: *role,
                 model: used_model,
-                input_artifact: input.clone(),
                 output: output.clone(),
                 verifier_status: v_status,
-                verifier_notes: v_notes,
+                verifier_notes: v_notes.clone(),
                 tokens_in: Some(usage.tokens_in as i32),
                 tokens_out: Some(usage.tokens_out as i32),
                 latency_ms: Some(*latency_ms),
             },
         )
         .await?;
-        tracing::info!(role = ?role, latency_ms, model = %used_model, "M1: specialist persisted");
+
+        // FP6 A4: write fresh successful outputs back into the cache. Skip
+        // cache hits (they're already cached) and skip warn/fail rows.
+        if !*cache_hit && v_status == Some(VerifierStatus::Pass) {
+            let _ = crate::db::insert_cache(
+                pool,
+                paper_id,
+                *role,
+                &specialist_content_hash,
+                output,
+                "pass",
+                used_model,
+                Some(usage.tokens_in as i32),
+                Some(usage.tokens_out as i32),
+            )
+            .await;
+        }
+        tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
     }
 
-    // Meta-reviewer: real synthesis node. Hand it the bundle of specialist
-    // outputs keyed by role slug and a copy of the paper extract, then ask it
-    // for a `MetaReview`.
+    // Meta-reviewer: real synthesis node. FP6 A1: feed it ONLY the five
+    // specialist outputs keyed by role slug. The paper extract is omitted —
+    // specialists already incorporated the paper into their reasoning, and
+    // the meta-reviewer's schema never required a `paper_extract` field. This
+    // drops meta input from ~62K tokens to ~10K.
     let mut specialists_map = serde_json::Map::new();
-    for (role, _input, output, _usage, _lat, _model) in &specialist_results {
+    for (role, output, _usage, _lat, _model, _cache_hit) in &specialist_results {
         specialists_map.insert(role_slug(*role).to_string(), output.clone());
     }
     let meta_input = json!({
-        "paper": &*extract_arc,
         "specialists": serde_json::Value::Object(specialists_map),
     });
     let meta_schema = state
@@ -330,16 +388,53 @@ pub async fn run_review_dag(
     let meta_system = role_system_prompt(AgentRole::MetaReviewer);
 
     let (meta_provider, meta_model_used) = resolve(AgentRole::MetaReviewer);
-    let meta_started = std::time::Instant::now();
-    let (meta_value, meta_usage) = call_with_schema(
-        &*meta_provider,
-        &meta_model_used,
-        &meta_system,
-        &meta_prompt,
-        meta_schema,
-    )
-    .await?;
-    let meta_latency_ms = meta_started.elapsed().as_millis() as i32;
+
+    // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
+    // the specialists-bundle JSON it would have reasoned over, so two reviews
+    // of the same paper whose specialists produced identical outputs (e.g. a
+    // re-run with cache hits) share a cached meta-review.
+    let meta_content_hash =
+        sha256_hex(&serde_json::to_vec(&meta_input).unwrap_or_default());
+    let mut meta_from_cache = false;
+    let (meta_value, meta_usage, meta_latency_ms, meta_model_recorded) =
+        match crate::db::lookup_cache(pool, paper_id, AgentRole::MetaReviewer, &meta_content_hash)
+            .await
+        {
+            Ok(Some(hit)) if hit.verifier_status == "pass" => {
+                tracing::info!(
+                    event = "cache",
+                    role = "meta_reviewer",
+                    hit = true,
+                    "cache hit"
+                );
+                meta_from_cache = true;
+                let usage = Usage {
+                    tokens_in: hit.tokens_in.unwrap_or(0) as u32,
+                    tokens_out: hit.tokens_out.unwrap_or(0) as u32,
+                    ..Default::default()
+                };
+                (hit.output, usage, 0i32, hit.model)
+            }
+            _ => {
+                tracing::info!(
+                    event = "cache",
+                    role = "meta_reviewer",
+                    hit = false,
+                    "cache miss"
+                );
+                let meta_started = std::time::Instant::now();
+                let (value, usage) = call_with_schema(
+                    &*meta_provider,
+                    &meta_model_used,
+                    &meta_system,
+                    &meta_prompt,
+                    meta_schema,
+                )
+                .await?;
+                let latency = meta_started.elapsed().as_millis() as i32;
+                (value, usage, latency, meta_model_used.clone())
+            }
+        };
 
     let (meta_v_status, meta_v_notes) =
         verify_artifact(state, &extract_arc, AgentRole::MetaReviewer, &meta_value).await;
@@ -348,18 +443,33 @@ pub async fn run_review_dag(
         crate::db::ReviewAgentInsert {
             review_id,
             role: AgentRole::MetaReviewer,
-            model: &meta_model_used,
-            input_artifact: meta_input.clone(),
+            model: &meta_model_recorded,
             output: meta_value.clone(),
             verifier_status: meta_v_status,
-            verifier_notes: meta_v_notes,
+            verifier_notes: meta_v_notes.clone(),
             tokens_in: Some(meta_usage.tokens_in as i32),
             tokens_out: Some(meta_usage.tokens_out as i32),
             latency_ms: Some(meta_latency_ms),
         },
     )
     .await?;
-    tracing::info!(meta_latency_ms, model = %meta_model_used, "M1: meta-reviewer persisted");
+
+    // FP6 A4: only cache fresh successful meta-reviews.
+    if !meta_from_cache && meta_v_status == Some(VerifierStatus::Pass) {
+        let _ = crate::db::insert_cache(
+            pool,
+            paper_id,
+            AgentRole::MetaReviewer,
+            &meta_content_hash,
+            &meta_value,
+            "pass",
+            &meta_model_recorded,
+            Some(meta_usage.tokens_in as i32),
+            Some(meta_usage.tokens_out as i32),
+        )
+        .await;
+    }
+    tracing::info!(meta_latency_ms, model = %meta_model_recorded, cache_hit = meta_from_cache, "M1: meta-reviewer persisted");
 
     // Stash the synthesized meta_review JSON on the reviews row. If parsing
     // into the typed `MetaReview` fails we still persist the raw JSON so the
@@ -641,7 +751,6 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     struct AgentRenderRow {
         role: String,
         model: String,
-        input_artifact: serde_json::Value,
         output: serde_json::Value,
         verifier_status: Option<String>,
         verifier_notes: Option<serde_json::Value>,
@@ -649,13 +758,31 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
 
     // 2. Load every agent row in role-sorted order.
     let agent_rows: Vec<AgentRenderRow> = sqlx::query_as(
-        "select role, model, input_artifact, output, verifier_status, verifier_notes \
+        "select role, model, output, verifier_status, verifier_notes \
          from review_agents where review_id = $1 order by role",
     )
     .bind(review_id)
     .fetch_all(pool)
     .await
     .map_err(|e| anyhow::anyhow!("load review_agents: {e}"))?;
+
+    // FP6 A2: the shared specialist input artifact now lives on `review_inputs`.
+    // Specialists all reasoned over the same paper extract; the meta-reviewer
+    // reasoned over the bundle of specialist outputs (reconstructable from the
+    // `output` columns above), which we synthesise per-row for the bundle.
+    let specialist_input = crate::db::load_review_input(pool, review_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("load review_inputs: {e}"))?
+        .unwrap_or(serde_json::Value::Null);
+    let meta_input_for_render = {
+        let mut specialists_map = serde_json::Map::new();
+        for row in &agent_rows {
+            if row.role != "meta_reviewer" {
+                specialists_map.insert(row.role.clone(), row.output.clone());
+            }
+        }
+        serde_json::json!({ "specialists": serde_json::Value::Object(specialists_map) })
+    };
 
     let mut agents: Vec<AgentRecord> = Vec::with_capacity(agent_rows.len());
     let mut agent_jsons: Vec<(String, Vec<u8>)> = Vec::with_capacity(agent_rows.len());
@@ -672,10 +799,15 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
                 status,
                 notes: notes.clone(),
             };
+            let input_artifact = if role_slug == "meta_reviewer" {
+                meta_input_for_render.clone()
+            } else {
+                specialist_input.clone()
+            };
             let artifact = serde_json::json!({
                 "role": role_slug,
                 "model": row.model.clone(),
-                "input_artifact": row.input_artifact.clone(),
+                "input_artifact": input_artifact,
                 "output": row.output.clone(),
                 "verifier": {
                     "status": status,
@@ -770,6 +902,16 @@ fn parse_role_slug(s: &str) -> Option<grokrxiv_schemas::AgentRole> {
 #[cfg(not(feature = "grokrxiv-render"))]
 pub async fn render_to_disk(_state: &AppState, _review_id: Uuid) -> anyhow::Result<()> {
     Ok(())
+}
+
+/// Hex-encoded SHA-256 of the input bytes. Used by FP6 A4 to key the
+/// per-paper output cache on the exact bytes of the specialist input
+/// artifact (and, for the meta-reviewer, the bundle of specialist outputs).
+#[cfg(feature = "grokrxiv-ingest")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    hex::encode(digest)
 }
 
 fn strip_fences(s: &str) -> &str {

@@ -165,8 +165,12 @@ pub async fn insert_review(
     Ok(id)
 }
 
-/// Persist a single specialist agent's output (and the input artifact it
-/// reasoned over) against a review.
+/// Persist a single specialist agent's output against a review.
+///
+/// The shared specialist input artifact is recorded ONCE per review in the
+/// `review_inputs` table — see [`insert_review_input`]. The meta-reviewer's
+/// input is just `{role -> output}` over the five specialists, which is
+/// reconstructable from the persisted `review_agents.output` rows.
 #[derive(Debug, Clone)]
 pub struct ReviewAgentInsert<'a> {
     /// Review id owning this agent row.
@@ -175,8 +179,6 @@ pub struct ReviewAgentInsert<'a> {
     pub role: AgentRole,
     /// Model id used for the call.
     pub model: &'a str,
-    /// Typed input artifact the agent received.
-    pub input_artifact: Value,
     /// Typed output artifact produced by the agent.
     pub output: Value,
     /// Aggregate verifier status.
@@ -191,28 +193,25 @@ pub struct ReviewAgentInsert<'a> {
     pub latency_ms: Option<i32>,
 }
 
-/// Persist a single specialist agent's output (and the input artifact it
-/// reasoned over) against a review.
+/// Persist a single specialist agent's output against a review.
 ///
-/// The `input_artifact` parameter is required by callers since FP4: the
-/// supervisor now records the typed input each agent saw so the meta-reviewer's
-/// synthesis input (the five specialist outputs) and the specialists' inputs
-/// (the `PaperExtract`) are both auditable from the DB.
+/// FP6 A2: the `input_artifact` column was dropped from `review_agents` in
+/// migration `20260515000001_review_inputs.sql`; the per-review shared input
+/// now lives on `review_inputs` and is written exactly once per review.
 pub async fn insert_review_agent(pool: &PgPool, row: ReviewAgentInsert<'_>) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
     let role_str = serde_plain(&row.role);
     let vstatus = row.verifier_status.as_ref().map(serde_plain);
     sqlx::query(
         "insert into review_agents \
-           (id, review_id, role, model, input_artifact, output, verifier_status, \
+           (id, review_id, role, model, output, verifier_status, \
             verifier_notes, tokens_in, tokens_out, latency_ms) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(id)
     .bind(row.review_id)
     .bind(role_str)
     .bind(row.model)
-    .bind(row.input_artifact)
     .bind(row.output)
     .bind(vstatus)
     .bind(row.verifier_notes)
@@ -222,6 +221,130 @@ pub async fn insert_review_agent(pool: &PgPool, row: ReviewAgentInsert<'_>) -> s
     .execute(pool)
     .await?;
     Ok(id)
+}
+
+/// Insert the shared specialist input artifact for a review. Called exactly
+/// once per review at the start of the DAG, replacing the previous behaviour
+/// of stamping the same JSONB onto every `review_agents` row.
+pub async fn insert_review_input(
+    pool: &PgPool,
+    review_id: Uuid,
+    paper_id: Uuid,
+    artifact: &Value,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "insert into review_inputs (review_id, paper_id, artifact) \
+         values ($1, $2, $3) \
+         on conflict (review_id) do update set artifact = excluded.artifact",
+    )
+    .bind(review_id)
+    .bind(paper_id)
+    .bind(artifact)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Read the shared specialist input artifact for a review, if any.
+pub async fn load_review_input(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Option<Value>> {
+    let row: Option<(Value,)> =
+        sqlx::query_as("select artifact from review_inputs where review_id = $1")
+            .bind(review_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+// ---------------------------------------------------------------------------
+// FP6 A4: per-paper output cache
+// ---------------------------------------------------------------------------
+
+/// A cached agent output for a `(paper_id, role, content_hash)` triple.
+#[derive(Debug, Clone)]
+pub struct CachedOutput {
+    /// The cached output JSON the agent originally produced.
+    pub output: Value,
+    /// Verifier verdict at cache time. Only `pass` rows are cached.
+    pub verifier_status: String,
+    /// Model id that produced the cached output.
+    pub model: String,
+    /// Prompt tokens the original call consumed.
+    pub tokens_in: Option<i32>,
+    /// Completion tokens the original call produced.
+    pub tokens_out: Option<i32>,
+}
+
+/// Look up a non-expired cache row for `(paper_id, role, content_hash)`. The
+/// uniqueness index guarantees at most one matching row.
+pub async fn lookup_cache(
+    pool: &PgPool,
+    paper_id: Uuid,
+    role: AgentRole,
+    content_hash: &str,
+) -> sqlx::Result<Option<CachedOutput>> {
+    let role_str = serde_plain(&role);
+    let row: Option<(Value, String, String, Option<i32>, Option<i32>)> = sqlx::query_as(
+        "select output, verifier_status, model, tokens_in, tokens_out \
+         from review_cache \
+         where paper_id = $1 and role = $2 and content_hash = $3 \
+           and expires_at > now() \
+         limit 1",
+    )
+    .bind(paper_id)
+    .bind(role_str)
+    .bind(content_hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(output, verifier_status, model, tokens_in, tokens_out)| CachedOutput {
+            output,
+            verifier_status,
+            model,
+            tokens_in,
+            tokens_out,
+        },
+    ))
+}
+
+/// Insert (or refresh) a cache row for a successful agent call. The unique
+/// `(paper_id, role, content_hash)` index makes this an idempotent upsert.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_cache(
+    pool: &PgPool,
+    paper_id: Uuid,
+    role: AgentRole,
+    content_hash: &str,
+    output: &Value,
+    verifier_status: &str,
+    model: &str,
+    tokens_in: Option<i32>,
+    tokens_out: Option<i32>,
+) -> sqlx::Result<()> {
+    let role_str = serde_plain(&role);
+    sqlx::query(
+        "insert into review_cache \
+           (paper_id, role, content_hash, output, verifier_status, model, tokens_in, tokens_out) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8) \
+         on conflict (paper_id, role, content_hash) do update set \
+           output = excluded.output, \
+           verifier_status = excluded.verifier_status, \
+           model = excluded.model, \
+           tokens_in = excluded.tokens_in, \
+           tokens_out = excluded.tokens_out, \
+           created_at = now(), \
+           expires_at = now() + interval '30 days'",
+    )
+    .bind(paper_id)
+    .bind(role_str)
+    .bind(content_hash)
+    .bind(output)
+    .bind(verifier_status)
+    .bind(model)
+    .bind(tokens_in)
+    .bind(tokens_out)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Stash render output paths on the review row once render completes.
