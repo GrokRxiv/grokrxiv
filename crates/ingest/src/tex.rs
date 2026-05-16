@@ -972,6 +972,52 @@ See~\cite{foo}.
         );
     }
 
+    /// Regression: a paper with N H2 headings must yield N section entries.
+    /// We've seen Pandoc-rendered bodies where 9 H2 headings collapsed to 2
+    /// section entries because the splitter swallowed lines or stopped at
+    /// the first heading match. Use a synthetic body that mirrors what
+    /// Pandoc emits (heading lines `## Heading`, body paragraphs, blanks).
+    #[test]
+    fn extract_md_sections_one_per_h2_heading() {
+        let md = "## Introduction\nIntro body.\n\n\
+                  ## Generalized Fourier Transform on Riemannian Manifold\nbody2.\n\n\
+                  ## Spectral Degeneracy and Operator Freedom\nbody3.\n\n\
+                  ## Geometric Operators and Symmetry-Adapted Bases\nbody4.\n\n\
+                  ## Gauge and Coordinate Freedom in GFT\nbody5.\n\n\
+                  ## GFT Classifications\nbody6.\n\n\
+                  ## Subtleties and Examples\nbody7.\n\n\
+                  ## Discussions and Summary\nbody8.\n\n\
+                  ## Acknowledgement\nbody9.\n";
+        let sections = super::extract_md_sections(md);
+        let h2_count = md.lines().filter(|l| l.starts_with("## ")).count();
+        assert_eq!(h2_count, 9, "fixture should have 9 H2 lines");
+        assert_eq!(
+            sections.len(),
+            h2_count,
+            "expected {h2_count} sections (one per H2), got {}: {:?}",
+            sections.len(),
+            sections.iter().map(|s| s.heading.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(sections[0].heading, "Introduction");
+        assert_eq!(sections[8].heading, "Acknowledgement");
+        assert!(sections[0].body_markdown.contains("Intro body"));
+    }
+
+    /// Regression: filtered headings (abstract, references, bibliography) are
+    /// excluded but they must not eat the *next* heading's content.
+    #[test]
+    fn extract_md_sections_skips_filtered_without_swallowing_next() {
+        let md = "## Abstract\nabstract body.\n\n\
+                  ## Introduction\nintro body.\n\n\
+                  ## References\nreferences body.\n\n\
+                  ## Conclusion\nconclusion body.\n";
+        let sections = super::extract_md_sections(md);
+        let headings: Vec<&str> = sections.iter().map(|s| s.heading.as_str()).collect();
+        assert_eq!(headings, vec!["Introduction", "Conclusion"]);
+        assert!(sections[0].body_markdown.contains("intro body"));
+        assert!(sections[1].body_markdown.contains("conclusion body"));
+    }
+
     #[test]
     fn bibfile_parses_basic_entry() {
         let bib = "@article{key1,\n  title = {A Paper},\n  author = {J. Doe},\n  doi = {10.1000/xyz},\n}\n";
