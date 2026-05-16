@@ -8,6 +8,7 @@ members = [
     "crates/verifier",
     "crates/publisher",
     "crates/schemas",
+    "crates/storage",
 ]
 
 [workspace.package]
