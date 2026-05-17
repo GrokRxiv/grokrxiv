@@ -56,7 +56,9 @@ export async function listPublishedReviews(opts: {
       { count: "exact" },
     )
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
-    .order("published_at", { ascending: false, nullsFirst: false })
+    // Sort by created_at so pr_open rows (NULL published_at) surface
+    // alongside published rows by recency, instead of being shoved to the end.
+    .order("created_at", { ascending: false })
     .range(from, to);
 
   if (opts.field) {
