@@ -317,18 +317,12 @@ fn specialist_review_concurrency_limit(roles: &[grokrxiv_schemas::AgentRole]) ->
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
-fn review_concurrency_limit_from(raw: Option<&str>, has_cli_role: bool, max: usize) -> usize {
-    if let Some(parsed) = raw
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-    {
-        return parsed.min(max.max(1));
+fn review_concurrency_limit_from(raw: Option<&str>, _has_cli_role: bool, max: usize) -> usize {
+    let max = max.max(1);
+    if let Some(parsed) = raw.and_then(|s| s.trim().parse::<usize>().ok()) {
+        return parsed.clamp(1, max);
     }
-    if has_cli_role {
-        1
-    } else {
-        max.max(1)
-    }
+    max
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -2406,8 +2400,8 @@ mod tests {
     }
 
     #[test]
-    fn review_concurrency_defaults_to_one_for_cli_roles() {
-        assert_eq!(review_concurrency_limit_from(None, true, 5), 1);
+    fn review_concurrency_defaults_to_full_parallel_for_cli_roles() {
+        assert_eq!(review_concurrency_limit_from(None, true, 5), 5);
     }
 
     #[test]

@@ -42,6 +42,10 @@ When the resolved runtime is CLI-only (`--runner cli --extractor cli`),
 API key env vars from local CLI children. Direct provider API calls are enabled
 only by explicit API selection.
 
+Review specialists run in parallel by default. Set
+`GROKRXIV_REVIEW_CONCURRENCY=1` for serial debugging, or set another positive
+integer to cap concurrent specialist CLI/API children.
+
 ## Subcommands
 
 ### Service
