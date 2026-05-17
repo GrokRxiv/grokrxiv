@@ -1,15 +1,9 @@
 id: novelty
 role: "Assess novelty against related work; figure-aware (multimodal)."
 provider: gemini
-# Two reasons we stay on flash here, even on a paid Google Cloud project:
-#   1. gemini-2.5-pro spends ~6K of max_tokens on hidden chain-of-thought,
-#      leaving zero tokens for output and yielding an empty `text` body with
-#      finishReason=MAX_TOKENS (see crates/orchestrator/src/agents/runners/
-#      api.rs for the instrumentation that surfaced this).
-#   2. Free-tier AI Studio keys still have 0/v1beta quota on pro.
-# Flash has no reasoning overhead and produced verifier_status=pass on every
-# prior smoke run.
-model: gemini-2.5-flash
+# Default can be overridden with GROKRXIV_NOVELTY_MODEL or
+# `--model-for novelty=<model>`.
+model: gemini-3-flash-preview
 runner: cli
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json

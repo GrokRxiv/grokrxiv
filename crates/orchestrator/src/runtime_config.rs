@@ -20,6 +20,20 @@ use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 /// backend for review or extraction.
 pub const ALLOW_PROVIDER_API_ENV: &str = "GROKRXIV_ALLOW_PROVIDER_API";
 
+/// Prefix for internal, already-resolved model overrides exported by the CLI
+/// before `AppState` builds the per-role agent registry.
+pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "GROKRXIV_MODEL_OVERRIDE_";
+
+/// Review roles that can receive per-agent runtime model overrides.
+pub const REVIEW_AGENT_ROLES: [AgentRole; 6] = [
+    AgentRole::Summary,
+    AgentRole::TechnicalCorrectness,
+    AgentRole::Novelty,
+    AgentRole::Reproducibility,
+    AgentRole::Citation,
+    AgentRole::MetaReviewer,
+];
+
 /// Which backend runs staged extraction agents during ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -371,6 +385,11 @@ fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
     ) {
         out.offline = true;
     }
+    for role in REVIEW_AGENT_ROLES {
+        if let Some(model) = model_from_env_var(&role_model_env_var(role)) {
+            out.model_for.insert(role, model);
+        }
+    }
     Ok(())
 }
 
@@ -463,6 +482,43 @@ fn parse_role(s: &str) -> Option<AgentRole> {
         "meta_reviewer" | "meta-reviewer" | "meta" => Some(AgentRole::MetaReviewer),
         _ => None,
     }
+}
+
+/// Upper-snake role suffix used in public env vars.
+pub fn role_env_suffix(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Summary => "SUMMARY",
+        AgentRole::TechnicalCorrectness => "TECHNICAL_CORRECTNESS",
+        AgentRole::Novelty => "NOVELTY",
+        AgentRole::Reproducibility => "REPRODUCIBILITY",
+        AgentRole::Citation => "CITATION",
+        AgentRole::MetaReviewer => "META_REVIEWER",
+    }
+}
+
+/// Public per-agent model env var, e.g. `GROKRXIV_CITATION_MODEL`.
+pub fn role_model_env_var(role: AgentRole) -> String {
+    format!("GROKRXIV_{}_MODEL", role_env_suffix(role))
+}
+
+/// Internal resolved model env var, e.g. `GROKRXIV_MODEL_OVERRIDE_CITATION`.
+pub fn role_model_override_env_var(role: AgentRole) -> String {
+    format!("{}{}", MODEL_OVERRIDE_ENV_PREFIX, role_env_suffix(role))
+}
+
+/// Read a model override for a role. The CLI exports the resolved value to the
+/// internal override var; non-CLI boot paths can still consume the public env
+/// var directly.
+pub fn model_override_for_role(role: AgentRole) -> Option<String> {
+    model_from_env_var(&role_model_override_env_var(role))
+        .or_else(|| model_from_env_var(&role_model_env_var(role)))
+}
+
+fn model_from_env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// Parse `<role>=<runner>` (used by `--runner-for`).
@@ -601,6 +657,33 @@ mod tests {
         out
     }
 
+    fn with_clean_model_env<T>(f: impl FnOnce() -> T) -> T {
+        let names: Vec<String> = REVIEW_AGENT_ROLES
+            .iter()
+            .flat_map(|role| {
+                [
+                    role_model_env_var(*role),
+                    role_model_override_env_var(*role),
+                ]
+            })
+            .collect();
+        let saved: Vec<(String, Option<String>)> = names
+            .iter()
+            .map(|name| (name.clone(), std::env::var(name).ok()))
+            .collect();
+        for name in &names {
+            std::env::remove_var(name);
+        }
+        let out = f();
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        out
+    }
+
     #[test]
     fn parse_role_runner_ok() {
         let (role, runner) = parse_role_runner("summary=cli").unwrap();
@@ -623,6 +706,56 @@ mod tests {
         let (role, model) = parse_role_model("technical_correctness=claude-opus-4-7").unwrap();
         assert_eq!(role, AgentRole::TechnicalCorrectness);
         assert_eq!(model, "claude-opus-4-7");
+    }
+
+    #[test]
+    fn resolves_per_agent_model_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = with_clean_extractor_env(|| {
+            with_clean_model_env(|| {
+                std::env::set_var("GROKRXIV_NOVELTY_MODEL", "gemini-3-flash-preview");
+                std::env::set_var("GROKRXIV_CITATION_MODEL", "gemini-3-flash-preview");
+                RuntimeConfig::resolve(
+                    &RuntimeConfigOverrides::default(),
+                    "nonexistent",
+                    Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+                )
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            cfg.model_for.get(&AgentRole::Novelty).map(String::as_str),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(
+            cfg.model_for.get(&AgentRole::Citation).map(String::as_str),
+            Some("gemini-3-flash-preview")
+        );
+    }
+
+    #[test]
+    fn cli_model_for_beats_per_agent_model_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = with_clean_extractor_env(|| {
+            with_clean_model_env(|| {
+                std::env::set_var("GROKRXIV_CITATION_MODEL", "gemini-3-flash-preview");
+                let mut over = RuntimeConfigOverrides::default();
+                over.model_for
+                    .push((AgentRole::Citation, "gemini-3-pro-preview".to_string()));
+                RuntimeConfig::resolve(
+                    &over,
+                    "nonexistent",
+                    Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+                )
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            cfg.model_for.get(&AgentRole::Citation).map(String::as_str),
+            Some("gemini-3-pro-preview")
+        );
     }
 
     #[test]

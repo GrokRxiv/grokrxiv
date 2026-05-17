@@ -38,9 +38,9 @@ The CLI must be run from a directory that can find `agents/*.yaml` (currently th
 Each role uses the provider/model from its `agents/*.yaml`:
 - summary → claude-haiku
 - technical_correctness → claude-opus
-- novelty → gemini-2.5-flash
+- novelty → gemini-3-flash-preview
 - reproducibility → gpt-5.5
-- citation → gemini-2.5-flash
+- citation → gemini-3-flash-preview
 - meta_reviewer → claude-sonnet-4-6
 
 ```sh
@@ -142,7 +142,7 @@ Outputs reachability per runner:
 - **Codex `exec --json` streams JSONL events** — RPT2 G fix extracts the final `agent_message.text`. Should "just work" now.
 - **Claude CLI skill** — invoked via `/grokrxiv-review` prepended to the prompt (not a `--skill` flag; that flag doesn't exist).
 - **CLI default timeout** — 360s/role. Bump via `GROKRXIV_CLI_TIMEOUT_SECS` if a role legitimately needs longer.
-- **Large bibliographies via gpt-5.5** — citation role can truncate at `max_tokens: 6000` for math papers with 30+ refs. Workaround: route citation to `--runner-for citation=cli` (codex handles long output better) or bump max_tokens in `agents/citation.yaml`.
+- **Large bibliographies** — citation review is LLM-backed by default. If a paper legitimately needs a different model, use `GROKRXIV_CITATION_MODEL=...` or `--model-for citation=...`.
 
 ## Real E2E to verify
 

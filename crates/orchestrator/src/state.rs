@@ -14,7 +14,7 @@ use crate::agents::{
 };
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
-use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
+use crate::runtime_config::{model_override_for_role, ALLOW_PROVIDER_API_ENV};
 
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
@@ -329,7 +329,8 @@ fn build_role_routing(
         let declared_provider = routing.provider.as_str();
         match registry.by_name.get(declared_provider) {
             Some(p) => {
-                out.insert(*role, (p.clone(), routing.model.clone()));
+                let model = model_override_for_role(*role).unwrap_or_else(|| routing.model.clone());
+                out.insert(*role, (p.clone(), model));
             }
             None => {
                 tracing::warn!(
@@ -370,7 +371,7 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
             sandbox: SandboxPolicy::None,
             mode: AgentMode::ReviewOnly,
             provider: cfg.provider.clone(),
-            model: cfg.model.clone(),
+            model: model_override_for_role(*role).unwrap_or_else(|| cfg.model.clone()),
             schema,
             tool_policy: ToolPolicy::default(),
             max_retries: cfg.max_retries.unwrap_or(2),
@@ -464,5 +465,58 @@ fn inline_citation_ref(
                 .collect(),
         ),
         other => other,
+    }
+}
+
+#[cfg(all(test, feature = "grokrxiv-verifier"))]
+mod tests {
+    use super::*;
+    use grokrxiv_schemas::AgentRole;
+
+    struct EnvVarGuard {
+        key: String,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: String, value: &str) -> Self {
+            let prev = std::env::var(&key).ok();
+            std::env::set_var(&key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var(&self.key, value),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn build_agent_registry_applies_resolved_model_override() {
+        let _guard = EnvVarGuard::set(
+            crate::runtime_config::role_model_override_env_var(AgentRole::Summary),
+            "claude-sonnet-test",
+        );
+        let mut role_yaml = RoleYamlMap::new();
+        role_yaml.insert(
+            AgentRole::Summary,
+            Some(AgentRouting {
+                provider: "claude".to_string(),
+                model: "claude-haiku-4-5-20251001".to_string(),
+                runner: Some(AgentRunnerKind::Cli),
+                max_retries: Some(2),
+                timeout_secs: Some(90),
+            }),
+        );
+        let mut schemas = AgentSchemaMap::new();
+        schemas.insert(AgentRole::Summary, serde_json::json!({ "type": "object" }));
+        let registry = build_agent_registry(&role_yaml, &Arc::new(schemas));
+        let agent = registry.get(&AgentRole::Summary).expect("summary agent");
+
+        assert_eq!(agent.spec().model, "claude-sonnet-test");
     }
 }

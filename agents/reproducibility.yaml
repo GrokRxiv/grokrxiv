@@ -1,10 +1,9 @@
 id: reproducibility
 role: "Assess code/data availability and reproducibility of empirical claims."
-provider: gemini
-# Keep the default CLI-only review path on the locally installed Gemini CLI.
-# Codex remains supported via explicit config/overrides, but the subscription
-# quota can block live E2E runs before moderation.
-model: gemini-2.5-flash
+provider: openai
+# Default can be overridden with GROKRXIV_REPRODUCIBILITY_MODEL or
+# `--model-for reproducibility=<model>`.
+model: gpt-5.5
 runner: cli
 prompt_template: prompts/reproducibility.md
 input_schema: schemas/paper_extract.schema.json

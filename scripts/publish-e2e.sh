@@ -15,8 +15,8 @@
 #
 # Optional:
 #   ARXIV_ID                     — default 2605.12484
-#   RUNNER                       — default cli
-#   EXTRACTOR                    — default cli
+#   GROKRXIV_RUNNER              — default cli
+#   GROKRXIV_EXTRACTOR           — default cli
 #   GROKRXIV_BIN                 — default: cargo run --quiet --release -p grokrxiv-orchestrator --
 #   GROKRXIV_E2E_ALLOW_MERGE     — default 0; set 1 to merge the PR and publish
 #
@@ -25,8 +25,8 @@
 set -euo pipefail
 
 ARXIV_ID="${ARXIV_ID:-2605.12484}"
-RUNNER="${RUNNER:-cli}"
-EXTRACTOR="${EXTRACTOR:-cli}"
+GROKRXIV_RUNNER="${GROKRXIV_RUNNER:-cli}"
+GROKRXIV_EXTRACTOR="${GROKRXIV_EXTRACTOR:-cli}"
 GROKRXIV_E2E_ALLOW_MERGE="${GROKRXIV_E2E_ALLOW_MERGE:-0}"
 GROKRXIV_REVIEWS_OWNER="${GROKRXIV_REVIEWS_OWNER:-GrokRxiv}"
 GROKRXIV_REVIEWS_REPO="${GROKRXIV_REVIEWS_REPO:-grokrxiv-reviews}"
@@ -42,10 +42,10 @@ fail() { printf "  \033[31m✗\033[0m %s\n" "$*"; exit 1; }
 : "${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET required (must match orchestrator env)}"
 : "${DATABASE_URL:?DATABASE_URL required (e.g. postgres://postgres:postgres@127.0.0.1:54322/postgres)}"
 
-if [[ "${RUNNER}" == "api" || "${EXTRACTOR}" == "api" ]]; then
+if [[ "${GROKRXIV_RUNNER}" == "api" || "${GROKRXIV_EXTRACTOR}" == "api" ]]; then
   export GROKRXIV_ALLOW_PROVIDER_API=1
   if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]]; then
-    fail "RUNNER=${RUNNER} EXTRACTOR=${EXTRACTOR} requires at least one provider API key"
+    fail "GROKRXIV_RUNNER=${GROKRXIV_RUNNER} GROKRXIV_EXTRACTOR=${GROKRXIV_EXTRACTOR} requires at least one provider API key"
   fi
 else
   export GROKRXIV_ALLOW_PROVIDER_API=0
@@ -56,7 +56,7 @@ fi
 command -v gh   >/dev/null || fail "gh CLI not on PATH"
 command -v jq   >/dev/null || fail "jq not on PATH"
 command -v curl >/dev/null || fail "curl not on PATH"
-if [[ "${RUNNER}" == "cli" || "${EXTRACTOR}" == "cli" ]]; then
+if [[ "${GROKRXIV_RUNNER}" == "cli" || "${GROKRXIV_EXTRACTOR}" == "cli" ]]; then
   command -v claude >/dev/null || fail "claude CLI not on PATH"
   command -v codex  >/dev/null || fail "codex CLI not on PATH"
   command -v gemini >/dev/null || fail "gemini CLI not on PATH"
@@ -90,8 +90,8 @@ run_psql() {
   fi
 }
 
-step "1. ingest ${ARXIV_ID} via runner=${RUNNER} extractor=${EXTRACTOR}"
-"${grokrxiv_cmd[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --status --no-cache --json ingest "${ARXIV_ID}" 2>&1 \
+step "1. ingest ${ARXIV_ID} via runner=${GROKRXIV_RUNNER} extractor=${GROKRXIV_EXTRACTOR}"
+"${grokrxiv_cmd[@]}" --runner "${GROKRXIV_RUNNER}" --extractor "${GROKRXIV_EXTRACTOR}" --status --no-cache --json ingest "${ARXIV_ID}" 2>&1 \
   | tee /tmp/grokrxiv-publish-ingest.log
 review_id="$(extract_json_field /tmp/grokrxiv-publish-ingest.log 'if type == "array" then .[0].review_id else .review_id end' \
   || awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-publish-ingest.log | tail -1 | tr -d '\r')"

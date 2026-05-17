@@ -755,8 +755,8 @@ fn cli_timeout() -> Duration {
 }
 
 fn deterministic_citation_review() -> bool {
-    !matches!(
-        std::env::var("GROKRXIV_CITATION_REVIEW_LLM")
+    matches!(
+        std::env::var("GROKRXIV_CITATION_REVIEW_DETERMINISTIC")
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str(),
@@ -2085,6 +2085,17 @@ mod tests {
             }
             Self { saved }
         }
+
+        fn clear(vars: &[&'static str]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            for key in vars {
+                std::env::remove_var(key);
+            }
+            Self { saved }
+        }
     }
 
     impl Drop for EnvVarGuard {
@@ -2129,6 +2140,20 @@ mod tests {
             msg.contains("foo"),
             "error should name the bad provider: {msg}"
         );
+    }
+
+    #[test]
+    fn citation_review_uses_cli_llm_by_default() {
+        let _guard = EnvVarGuard::clear(&["GROKRXIV_CITATION_REVIEW_DETERMINISTIC"]);
+
+        assert!(!deterministic_citation_review());
+    }
+
+    #[test]
+    fn citation_review_can_be_forced_deterministic() {
+        let _guard = EnvVarGuard::set(&[("GROKRXIV_CITATION_REVIEW_DETERMINISTIC", "1")]);
+
+        assert!(deterministic_citation_review());
     }
 
     #[test]
@@ -2928,7 +2953,6 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
     async fn extraction_api_fallback_is_refused_when_direct_api_disabled() {
         let _env = EnvVarGuard::set(&[
             ("GROKRXIV_EXTRACTION_TOOL_FALLBACK", "api"),
-            (ALLOW_PROVIDER_API_ENV, "0"),
             ("GROKRXIV_EXTRACTOR", "cli"),
         ]);
         let r = CliRunner::new();

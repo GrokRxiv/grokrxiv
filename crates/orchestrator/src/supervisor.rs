@@ -356,13 +356,15 @@ async fn run_review_dag_inner(
         String,
     )> {
         let runner_kind = review_runner_override_for(role).unwrap_or(AgentRunnerKind::Cli);
+        let model = crate::runtime_config::model_override_for_role(role)
+            .unwrap_or_else(|| default_model.clone());
         let spec = AgentSpec {
             role,
             runner: runner_kind,
             sandbox: SandboxPolicy::None,
             mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
-            model: default_model.clone(),
+            model: model.clone(),
             schema,
             tool_policy: ToolPolicy::default(),
             max_retries: 2,
@@ -388,7 +390,7 @@ async fn run_review_dag_inner(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?
         };
-        Ok((agent, runner, default_model.clone()))
+        Ok((agent, runner, model))
     };
 
     let resolve_agent =

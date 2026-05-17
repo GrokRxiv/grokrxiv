@@ -16,7 +16,8 @@ use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
     parse_role_model, parse_role_runner, provider_api_allowed, render as render_runtime_config,
-    ExtractorKind, RuntimeConfig, RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV,
+    role_env_suffix, role_model_override_env_var, ExtractorKind, RuntimeConfig,
+    RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV, REVIEW_AGENT_ROLES,
 };
 
 type PaperListRow = (
@@ -419,11 +420,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             None
         }
     };
-    // RPT2 G follow-up: export the resolved per-role runner choice into env vars
-    // the supervisor reads in its agent resolver. This is how `--runner cli` /
-    // `--runner-for technical_correctness=cli` actually overrides the YAML's
-    // `runner:` field at runtime (the supervisor's `resolve_agent` checks
-    // `GROKRXIV_RUNNER_OVERRIDE` / `GROKRXIV_RUNNER_OVERRIDE_<ROLE>` env vars).
+    // RPT2 G follow-up: export the resolved per-role runner/model choices into
+    // env vars the supervisor/state read while composing the agent registry.
+    // This is how `--runner cli`, `--runner-for ...`, and `--model-for ...`
+    // actually override the YAML fields at runtime.
     if let Some(rt) = runtime_cfg.as_ref() {
         // Always export `default_runner` so the supervisor can pick up the
         // CLI's `--runner` flag (the resolved RuntimeConfig already merges
@@ -433,19 +433,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let bare = s.trim_matches('"');
             std::env::set_var("GROKRXIV_RUNNER_OVERRIDE", bare);
         }
+        for role in REVIEW_AGENT_ROLES {
+            std::env::remove_var(role_model_override_env_var(role));
+        }
         for (role, kind) in &rt.runner_for {
-            let role_slug = match role {
-                grokrxiv_schemas::AgentRole::Summary => "SUMMARY",
-                grokrxiv_schemas::AgentRole::TechnicalCorrectness => "TECHNICAL_CORRECTNESS",
-                grokrxiv_schemas::AgentRole::Novelty => "NOVELTY",
-                grokrxiv_schemas::AgentRole::Reproducibility => "REPRODUCIBILITY",
-                grokrxiv_schemas::AgentRole::Citation => "CITATION",
-                grokrxiv_schemas::AgentRole::MetaReviewer => "META_REVIEWER",
-            };
+            let role_slug = role_env_suffix(*role);
             if let Ok(s) = serde_json::to_string(kind) {
                 let bare = s.trim_matches('"');
                 std::env::set_var(format!("GROKRXIV_RUNNER_OVERRIDE_{role_slug}"), bare);
             }
+        }
+        for (role, model) in &rt.model_for {
+            std::env::set_var(role_model_override_env_var(*role), model);
         }
         std::env::set_var("GROKRXIV_EXTRACTOR", rt.extractor.as_str());
         std::env::set_var(

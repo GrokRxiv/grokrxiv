@@ -23,8 +23,12 @@ max_cost_usd    = 0.50
 # technical_correctness = "cli"
 
 [profiles.default.model_for]
-# summary               = "claude-haiku-4-5"
+# summary               = "claude-haiku-4-5-20251001"
 # technical_correctness = "claude-opus-4-7"
+# novelty               = "gemini-3-flash-preview"
+# reproducibility       = "gpt-5.5"
+# citation              = "gemini-3-flash-preview"
+# meta_reviewer         = "claude-sonnet-4-6"
 
 # -----------------------------------------------------------------------------
 # Profile: dev — cheap, fast, no real PRs.

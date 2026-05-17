@@ -11,8 +11,8 @@ merge → webhook → published leg.
 1. `grokrxiv --runner cli --extractor cli --status --no-cache --json ingest <arxiv_id>`
    produces a real review row at `awaiting_moderation` with six
    `review_agents` rows, real input/output JSON artifacts, and per-role
-   verifier evidence persisted. Set `RUNNER=api EXTRACTOR=api` only when you
-   intend to spend provider API credits.
+   verifier evidence persisted. Set `GROKRXIV_RUNNER=api`
+   `GROKRXIV_EXTRACTOR=api` only when you intend to spend provider API credits.
 2. `grokrxiv approve <review_id>` opens a real pull request against your test
    reviews repo with the rendered HTML/MD/LaTeX/zip artifacts at the canonical
    `reviews/YYYY/MM/<field>/<arxiv_id>/` repo path.
@@ -71,8 +71,8 @@ export GROKRXIV_REVIEWS_OWNER="GrokRxiv"
 export GROKRXIV_REVIEWS_REPO="grokrxiv-reviews"
 export GITHUB_WEBHOOK_SECRET="$(grep ^GITHUB_WEBHOOK_SECRET= .env | cut -d= -f2)"
 export DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
-export RUNNER=cli
-export EXTRACTOR=cli
+export GROKRXIV_RUNNER=cli
+export GROKRXIV_EXTRACTOR=cli
 
 bash scripts/publish-e2e.sh
 ```

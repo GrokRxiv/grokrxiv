@@ -35,6 +35,12 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
 | `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Bearer expected by the web API `/api/v1/*` write endpoints |
 | `GROKRXIV_AGENTS_DIR`          | _none_                      | Override `./agents` location |
+| `GROKRXIV_SUMMARY_MODEL`       | `claude-haiku-4-5-20251001` | Plain-language summary model; same role as `--model-for summary=...` |
+| `GROKRXIV_TECHNICAL_CORRECTNESS_MODEL` | `claude-opus-4-7`      | Technical correctness model; same role as `--model-for technical_correctness=...` |
+| `GROKRXIV_NOVELTY_MODEL`       | `gemini-3-flash-preview`    | Novelty model; same role as `--model-for novelty=...` |
+| `GROKRXIV_REPRODUCIBILITY_MODEL` | `gpt-5.5`                  | Reproducibility model; same role as `--model-for reproducibility=...` |
+| `GROKRXIV_CITATION_MODEL`      | `gemini-3-flash-preview`    | Citation model; same role as `--model-for citation=...` |
+| `GROKRXIV_META_REVIEWER_MODEL` | `claude-sonnet-4-6`         | Meta-review synthesis model; same role as `--model-for meta_reviewer=...` |
 | `GROKRXIV_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_TEX_ENABLE_LATEXML`  | _none_                      | Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter |
 | `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
@@ -57,6 +63,7 @@ flags pick the TOML file/profile that ENV then overrides.
 | `CODEX_HOME`                 | Where the local `codex` CLI looks for auth (`~/.codex` typical) |
 | `GEMINI_HOME`                | Where the local `gemini` CLI looks for auth |
 | `GROKRXIV_CLI_TIMEOUT_SECS`  | Per-call timeout in the CLI runner |
+| `GROKRXIV_CITATION_REVIEW_DETERMINISTIC` | Set `1` only to force the old deterministic no-LLM citation review fallback |
 | `GROKRXIV_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
 
 When the resolved runtime is `--runner cli --extractor cli`, GrokRxiv removes

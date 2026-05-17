@@ -1,11 +1,9 @@
 id: citation
 role: "Verify each bibliography entry exists and is relevantly cited."
 provider: gemini
-# gemini-2.5-pro spends ~6K of its max_tokens budget on hidden chain-of-thought
-# ("thoughtsTokenCount"), leaving zero tokens for actual output and yielding an
-# empty `text` body with finishReason=MAX_TOKENS. Flash has no such reasoning
-# overhead and produced verifier_status=pass on every prior smoke run.
-model: gemini-2.5-flash
+# Default can be overridden with GROKRXIV_CITATION_MODEL or
+# `--model-for citation=<model>`.
+model: gemini-3-flash-preview
 runner: cli
 prompt_template: prompts/citation.md
 input_schema: schemas/paper_extract.schema.json
