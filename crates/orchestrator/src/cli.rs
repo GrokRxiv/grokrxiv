@@ -236,6 +236,9 @@ pub enum Command {
     },
     /// Run the review DAG for a paper that was already extracted.
     ReviewExtracted {
+        /// Supersede any active review for this paper.
+        #[arg(long)]
+        force: bool,
         /// arXiv id, arXiv URL, or paper UUID from `grokrxiv list extracted`.
         source: String,
     },
@@ -532,7 +535,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Show { review_id, json } => show(review_id, json).await,
         Command::Review { source, r#type } => review_source(&source, r#type, json, dry_run).await,
         Command::ReReview { paper_id } => review_paper(paper_id).await,
-        Command::ReviewExtracted { source } => review_extracted(&source).await,
+        Command::ReviewExtracted { source, force } => review_extracted(&source, force).await,
         Command::Verify { review_id } => verify(review_id).await,
         Command::Render {
             review_id,
@@ -1395,7 +1398,7 @@ async fn review_paper(paper_id: Uuid) -> anyhow::Result<()> {
     }
 }
 
-async fn review_extracted(source: &str) -> anyhow::Result<()> {
+async fn review_extracted(source: &str, force: bool) -> anyhow::Result<()> {
     #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
     {
         let config = super::Config::from_env();
@@ -1404,6 +1407,20 @@ async fn review_extracted(source: &str) -> anyhow::Result<()> {
             anyhow::bail!("review-extracted: DATABASE_URL not configured");
         };
         let (paper_id, arxiv_id, title) = resolve_extracted_paper(pool, source).await?;
+        if !force {
+            if let Some((review_id, status, pr_url)) =
+                active_review_for_paper(pool, paper_id).await?
+            {
+                let mut msg = format!(
+                    "review-extracted: paper {arxiv_id} already has active review {review_id} (status={status}); use `grokrxiv show {review_id}`"
+                );
+                if let Some(pr_url) = pr_url {
+                    msg.push_str(&format!(" or review PR {pr_url}"));
+                }
+                msg.push_str("; pass `--force` to supersede it");
+                anyhow::bail!(msg);
+            }
+        }
         crate::cli_status::emit(format!(
             "paper {arxiv_id}: reviewing cached extraction for `{}`",
             truncate(&title, 80)
@@ -1414,11 +1431,30 @@ async fn review_extracted(source: &str) -> anyhow::Result<()> {
     }
     #[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
     {
-        let _ = source;
+        let _ = (source, force);
         anyhow::bail!(
             "review-extracted requires --features full (grokrxiv-ingest + grokrxiv-storage)"
         )
     }
+}
+
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+async fn active_review_for_paper(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+) -> anyhow::Result<Option<(Uuid, String, Option<String>)>> {
+    let row = sqlx::query_as(
+        "select id, status, github_pr_url \
+         from reviews \
+         where paper_id = $1 \
+           and status in ('draft','in_review','awaiting_moderation','pr_open','published','corrected') \
+         order by created_at desc \
+         limit 1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
@@ -2188,8 +2224,21 @@ mod tests {
         assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Some(Command::ReviewExtracted { source }) => assert_eq!(source, "2605.00561"),
+            Some(Command::ReviewExtracted { source, force }) => {
+                assert_eq!(source, "2605.00561");
+                assert!(!force);
+            }
             other => panic!("expected review-extracted command, got {other:?}"),
+        }
+
+        let forced =
+            Cli::try_parse_from(["grokrxiv", "review-extracted", "--force", "2605.00561"]).unwrap();
+        match forced.command {
+            Some(Command::ReviewExtracted { source, force }) => {
+                assert_eq!(source, "2605.00561");
+                assert!(force);
+            }
+            other => panic!("expected forced review-extracted command, got {other:?}"),
         }
     }
 

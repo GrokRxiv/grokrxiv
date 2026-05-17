@@ -126,13 +126,18 @@ The default TeX conversion is Pandoc. LaTeXML semantic AST enrichment runs only
 when `GROKRXIV_TEX_ENABLE_LATEXML=1`; extraction LLM tool loops run only when
 `GROKRXIV_FORCE_AGENT_EXTRACTION=1`.
 
-#### `grokrxiv review-extracted <arxiv_id|paper_id|url>`
+#### `grokrxiv review-extracted [--force] <arxiv_id|paper_id|url>`
 Run only the review DAG for a paper whose extraction artifacts are already
 persisted. This reuses `review_input.json` and avoids re-running extraction:
 
 ```sh
 grokrxiv --runner cli --extractor cli --status --no-cache review-extracted 2605.00561
 ```
+
+If the paper already has an active review (`awaiting_moderation`, `pr_open`,
+`published`, etc.), the command refuses by default. Use `--force` only when you
+intend to supersede the existing review after new review input, comments, or
+paper/extraction changes.
 
 #### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
 Bulk OAI-PMH backfill across a date range.
