@@ -504,6 +504,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Review { .. }
             | Command::Ingest { .. }
             | Command::ReReview { .. }
+            | Command::ReviewExtracted { .. }
             | Command::IngestRange { .. }
             | Command::IngestDaily
     );
@@ -535,7 +536,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Show { review_id, json } => show(review_id, json).await,
         Command::Review { source, r#type } => review_source(&source, r#type, json, dry_run).await,
         Command::ReReview { paper_id } => review_paper(paper_id).await,
-        Command::ReviewExtracted { source, force } => review_extracted(&source, force).await,
+        Command::ReviewExtracted { source, force } => review_extracted(&source, force, json).await,
         Command::Verify { review_id } => verify(review_id).await,
         Command::Render {
             review_id,
@@ -1398,7 +1399,7 @@ async fn review_paper(paper_id: Uuid) -> anyhow::Result<()> {
     }
 }
 
-async fn review_extracted(source: &str, force: bool) -> anyhow::Result<()> {
+async fn review_extracted(source: &str, force: bool, json: bool) -> anyhow::Result<()> {
     #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
     {
         let config = super::Config::from_env();
@@ -1411,14 +1412,33 @@ async fn review_extracted(source: &str, force: bool) -> anyhow::Result<()> {
             if let Some((review_id, status, pr_url)) =
                 active_review_for_paper(pool, paper_id).await?
             {
-                let mut msg = format!(
-                    "review-extracted: paper {arxiv_id} already has active review {review_id} (status={status}); use `grokrxiv show {review_id}`"
-                );
-                if let Some(pr_url) = pr_url {
-                    msg.push_str(&format!(" or review PR {pr_url}"));
+                crate::cli_status::emit(format!(
+                    "paper {arxiv_id}: already reviewed; existing status={status}"
+                ));
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&existing_review_json(
+                            paper_id,
+                            &arxiv_id,
+                            review_id,
+                            &status,
+                            pr_url.as_deref(),
+                        ))?
+                    );
+                } else {
+                    print!(
+                        "{}",
+                        existing_review_text(
+                            paper_id,
+                            &arxiv_id,
+                            review_id,
+                            &status,
+                            pr_url.as_deref(),
+                        )
+                    );
                 }
-                msg.push_str("; pass `--force` to supersede it");
-                anyhow::bail!(msg);
+                return Ok(());
             }
         }
         crate::cli_status::emit(format!(
@@ -1431,11 +1451,50 @@ async fn review_extracted(source: &str, force: bool) -> anyhow::Result<()> {
     }
     #[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
     {
-        let _ = (source, force);
+        let _ = (source, force, json);
         anyhow::bail!(
             "review-extracted requires --features full (grokrxiv-ingest + grokrxiv-storage)"
         )
     }
+}
+
+fn existing_review_json(
+    paper_id: Uuid,
+    arxiv_id: &str,
+    review_id: Uuid,
+    review_status: &str,
+    pr_url: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "already_reviewed",
+        "arxiv_id": arxiv_id,
+        "paper_id": paper_id,
+        "review_id": review_id,
+        "review_status": review_status,
+        "pr_url": pr_url,
+        "show_command": format!("grokrxiv show {review_id}"),
+        "force_command": format!("grokrxiv review-extracted --force {arxiv_id}"),
+    })
+}
+
+fn existing_review_text(
+    paper_id: Uuid,
+    arxiv_id: &str,
+    review_id: Uuid,
+    review_status: &str,
+    pr_url: Option<&str>,
+) -> String {
+    let mut out = format!(
+        "already_reviewed=true\narxiv_id={arxiv_id}\npaper_id={paper_id}\nreview_id={review_id}\nreview_status={review_status}\n"
+    );
+    if let Some(pr_url) = pr_url {
+        out.push_str(&format!("pr_url={pr_url}\n"));
+    }
+    out.push_str(&format!("show_command=grokrxiv show {review_id}\n"));
+    out.push_str(&format!(
+        "force_command=grokrxiv review-extracted --force {arxiv_id}\n"
+    ));
+    out
 }
 
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
@@ -2240,6 +2299,25 @@ mod tests {
             }
             other => panic!("expected forced review-extracted command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn review_extracted_existing_review_notice_is_operator_friendly() {
+        let paper_id = Uuid::parse_str("7dad48b0-d4db-44dc-97f9-7caf25258b81").unwrap();
+        let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+        let pr_url = "https://github.com/GrokRxiv/grokrxiv-reviews/pull/19";
+
+        let text = existing_review_text(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
+        assert!(text.contains("already_reviewed=true"));
+        assert!(text.contains("review_status=pr_open"));
+        assert!(text.contains("pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/19"));
+        assert!(text.contains("show_command=grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"));
+        assert!(text.contains("force_command=grokrxiv review-extracted --force 2605.00561"));
+
+        let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
+        assert_eq!(json["status"], "already_reviewed");
+        assert_eq!(json["review_status"], "pr_open");
+        assert_eq!(json["pr_url"], pr_url);
     }
 
     #[test]

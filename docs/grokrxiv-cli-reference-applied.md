@@ -135,9 +135,11 @@ grokrxiv --runner cli --extractor cli --status --no-cache review-extracted 2605.
 ```
 
 If the paper already has an active review (`awaiting_moderation`, `pr_open`,
-`published`, etc.), the command refuses by default. Use `--force` only when you
-intend to supersede the existing review after new review input, comments, or
-paper/extraction changes.
+`published`, etc.), the command does not start a new DAG by default. It prints
+`already_reviewed=true`, the existing `review_id`, current status, and PR URL
+when available. With `--json`, it emits `{ "status": "already_reviewed", ... }`.
+Use `--force` only when you intend to supersede the existing review after new
+review input, comments, or paper/extraction changes.
 
 #### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
 Bulk OAI-PMH backfill across a date range.
