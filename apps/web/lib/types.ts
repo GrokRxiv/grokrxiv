@@ -9,8 +9,12 @@ export type ReviewStatus =
   | "corrected"
   | "withdrawn";
 
-// Statuses visible to anonymous public readers / public APIs.
+// Statuses visible to anonymous public readers / public APIs. A `pr_open`
+// review is shown with an "In Review" badge so papers reach the site as
+// soon as a PR opens on the mirror repo; the webhook flips it to
+// `published` (green badge) on merge.
 export const PUBLIC_REVIEW_STATUSES: readonly ReviewStatus[] = [
+  "pr_open",
   "published",
   "corrected",
 ] as const;
