@@ -240,35 +240,36 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_REPO</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"grokrxiv-reviews"</span></span></code></pre></figure>
 <p>The CLI must be run from a directory that can find <code>agents/*.yaml</code> (currently the repo root). Future polish will resolve them by absolute path.</p>
 <h2 id="two-runner-test-patterns"><a class="anchor" aria-label="anchor" href="#two-runner-test-patterns">#</a>Two-runner test patterns</h2>
-<h3 id="a-api-path-paid-provider-apis"><a class="anchor" aria-label="anchor" href="#a-api-path-paid-provider-apis">#</a>A. API path (paid provider APIs)</h3>
+<h3 id="a-default-cli-path"><a class="anchor" aria-label="anchor" href="#a-default-cli-path">#</a>A. Default CLI path</h3>
 <p>Each role uses the provider/model from its <code>agents/*.yaml</code>:</p>
 <ul>
 <li>summary → claude-haiku</li>
 <li>technical_correctness → claude-opus</li>
-<li>novelty → gemini-2.5-pro</li>
+<li>novelty → gemini-3-flash-preview</li>
 <li>reproducibility → gpt-5.5</li>
-<li>citation → gemini-2.5-pro</li>
+<li>citation → gemini-3-flash-preview</li>
 <li>meta_reviewer → claude-sonnet-4-6</li>
 </ul>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Single paper, default runner = api</span></span>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Single paper, default review runner + default extractor = cli</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> --json</span></span>
 <span data-line=""> </span>
 <span data-line=""><span style="color:#6A737D"># Batch parallel (orchestrator fan-out)</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> ingest</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> 2605.00316</span><span style="color:#79B8FF"> 2605.00478</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
-<p>Cost: ~$0.18–0.22 per paper (Tier-2 Anthropic + OpenAI + paid Gemini Pro).</p>
-<h3 id="b-cli-path-local-subscriptions-claude--codex--gemini"><a class="anchor" aria-label="anchor" href="#b-cli-path-local-subscriptions-claude--codex--gemini">#</a>B. CLI path (local subscriptions: claude / codex / gemini)</h3>
-<p>Spawns <code>claude -p</code>, <code>codex exec</code>, or <code>gemini -p</code> based on each role's YAML <code>provider:</code> field. Auth comes from <code>~/.claude</code>, <code>~/.codex</code>, <code>~/.config/gemini</code> on the host. Zero API spend; uses your existing subscriptions.</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Pure CLI (every role goes through the local CLI of its provider)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --json</span></span>
+<p>Cost: review and extraction use the local CLI auth path by default. In
+<code>--runner cli --extractor cli</code> runs, GrokRxiv strips provider API key env vars
+from the child <code>claude</code> / <code>codex</code> / <code>gemini</code> processes so the CLIs use their
+logged-in subscription/auth state. Pass <code>--runner api --extractor api</code> only
+when you intend to spend against provider API credits.</p>
+<h3 id="b-explicit-runner-selection"><a class="anchor" aria-label="anchor" href="#b-explicit-runner-selection">#</a>B. Explicit runner selection</h3>
+<p>Spawns <code>claude -p</code>, <code>codex exec</code>, or <code>gemini -p</code> based on each role's YAML <code>provider:</code> field. Auth comes from <code>~/.claude.json</code>, <code>~/.codex/auth.json</code>, <code>~/.gemini/oauth_creds.json</code> (+ <code>~/.config/gcloud/application_default_credentials.json</code>) on the host.</p>
+<blockquote>
+<p><strong>B4 (FP-RPT3b) cost note:</strong> marginal cost is per-provider, not uniformly <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.</mn><mi>C</mi><mi>l</mi><mi>a</mi><mi>u</mi><mi>d</mi><mi>e</mi><mi>M</mi><mi>a</mi><mi>x</mi><mo>+</mo><mi>P</mi><mi>r</mi><mi>o</mi><mo>=</mo></mrow><annotation encoding="application/x-tex">0. Claude Max + Pro = </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7778em;vertical-align:-0.0833em;"></span><span class="mord">0.</span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal">u</span><span class="mord mathnormal">d</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mord mathnormal">a</span><span class="mord mathnormal">x</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span></span></span></span>0 against the subscription cap; codex on ChatGPT Plus uses the Plus tier's bundled allowance; gemini routes through your configured local CLI auth. <code>CliRunner</code> logs <code>event=cli_auth_path</code> once per provider per run so you can verify. See <code>feedback_cli_path_is_cost_control.md</code> in this operator's memory for the full audit.</p>
+</blockquote>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Explicit CLI (same as default; every role goes through the local CLI of its provider)</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --json</span></span>
 <span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Hybrid: CLI for claude/codex roles, API for gemini roles</span></span>
-<span data-line=""><span style="color:#6A737D"># (gemini CLI doesn't honor strict-schema output reliably — known issue)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> novelty=api</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> citation=api</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --json</span></span></code></pre></figure>
-<p>The hybrid pattern is the practical recommendation today.</p>
+<span data-line=""><span style="color:#6A737D"># API path, explicit because it spends provider API credits</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
 <h3 id="c-forcing-per-role-overrides"><a class="anchor" aria-label="anchor" href="#c-forcing-per-role-overrides">#</a>C. Forcing per-role overrides</h3>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Run everything via API but route the expensive technical_correctness</span></span>
 <span data-line=""><span style="color:#6A737D"># through your Claude Code subscription instead</span></span>
@@ -350,11 +351,11 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 </ul>
 <h2 id="known-limitations-rpt2-ship"><a class="anchor" aria-label="anchor" href="#known-limitations-rpt2-ship">#</a>Known limitations (RPT2 ship)</h2>
 <ul>
-<li><strong>Gemini CLI doesn't honor JSON schemas reliably</strong> — <code>gemini -p</code> invents extra fields or emits the schema document. Recommend <code>--runner-for novelty=api --runner-for citation=api</code> when using <code>--runner cli</code>.</li>
+<li><strong>Gemini CLI JSON output</strong> — GrokRxiv invokes Gemini with <code>-o json</code> and unwraps the <code>.response</code> payload before schema validation. Keep Gemini on the CLI path unless you explicitly choose API billing.</li>
 <li><strong>Codex <code>exec --json</code> streams JSONL events</strong> — RPT2 G fix extracts the final <code>agent_message.text</code>. Should "just work" now.</li>
 <li><strong>Claude CLI skill</strong> — invoked via <code>/grokrxiv-review</code> prepended to the prompt (not a <code>--skill</code> flag; that flag doesn't exist).</li>
 <li><strong>CLI default timeout</strong> — 360s/role. Bump via <code>GROKRXIV_CLI_TIMEOUT_SECS</code> if a role legitimately needs longer.</li>
-<li><strong>Large bibliographies via gpt-5.5</strong> — citation role can truncate at <code>max_tokens: 6000</code> for math papers with 30+ refs. Workaround: route citation to <code>--runner-for citation=cli</code> (codex handles long output better) or bump max_tokens in <code>agents/citation.yaml</code>.</li>
+<li><strong>Large bibliographies</strong> — citation review is LLM-backed by default. If a paper legitimately needs a different model, use <code>GROKRXIV_CITATION_MODEL=...</code> or <code>--model-for citation=...</code>.</li>
 </ul>
 <h2 id="real-e2e-to-verify"><a class="anchor" aria-label="anchor" href="#real-e2e-to-verify">#</a>Real E2E to verify</h2>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.api_runners.anthropic.status == "ok"'</span></span>
@@ -364,7 +365,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$rid</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.pr_url | test("^https://github.com/")'</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-16T05:52:36.209Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-17T16:10:15.525Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

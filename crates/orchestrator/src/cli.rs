@@ -266,6 +266,12 @@ pub enum Command {
         /// UUID of the review to approve for PR handoff. This does not merge or publish.
         review_id: Uuid,
     },
+    /// Merge the open publication PR (squash). The GitHub webhook then flips
+    /// `reviews.status` to `published` and revalidates the public site.
+    Merge {
+        /// UUID of the review whose PR should be merged.
+        review_id: Uuid,
+    },
     /// Mark a review rejected; status stays `awaiting_moderation`.
     Reject {
         /// UUID of the review to reject.
@@ -543,6 +549,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             out,
         } => render(review_id, format, out).await,
         Command::Approve { review_id } => approve(review_id, json).await,
+        Command::Merge { review_id } => merge_pr_cmd(review_id, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
         Command::Withdraw { review_id, reason } => withdraw(review_id, &reason).await,
@@ -2082,6 +2089,83 @@ async fn approve_impl(
 ) -> anyhow::Result<()> {
     anyhow::bail!(
         "approve <{review_id}> requires --features full (grokrxiv-publisher) at build time."
+    )
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn merge_pr_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+    crate::cli_status::emit(format!(
+        "review {review_id}: merging publication PR; webhook will flip status to published"
+    ));
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+
+    let pr_url: Option<String> =
+        sqlx::query_scalar("select github_pr_url from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
+    let pr_url = pr_url.ok_or_else(|| {
+        anyhow::anyhow!(
+            "review {review_id} has no github_pr_url; run `grokrxiv approve {review_id}` first"
+        )
+    })?;
+    let pr_number = grokrxiv_publisher::parse_pr_number(&pr_url).ok_or_else(|| {
+        anyhow::anyhow!(
+            "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
+             Re-run `grokrxiv approve` with GITHUB_TOKEN set."
+        )
+    })?;
+
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to merge"))?;
+    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
+    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let resp = client
+        .pulls(&owner, &repo)
+        .merge(pr_number)
+        .method(octocrab::params::pulls::MergeMethod::Squash)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("merge PR #{pr_number}: {e}"))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "review_id": review_id,
+                "pr_number": pr_number,
+                "merged": resp.merged,
+                "sha": resp.sha,
+                "message": resp.message,
+            })
+        );
+    } else {
+        println!(
+            "pr_number={pr_number} merged={} sha={}",
+            resp.merged,
+            resp.sha.as_deref().unwrap_or("<none>")
+        );
+    }
+    crate::cli_status::emit(format!(
+        "review {review_id}: merged PR #{pr_number}; webhook will flip status to published"
+    ));
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-publisher"))]
+async fn merge_pr_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "merge <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
 }
 

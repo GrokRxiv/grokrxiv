@@ -79,17 +79,30 @@ ensure_orchestrator() {
   die "orchestrator did not come up on $ORCH_HEALTHZ"
 }
 
-restart_orchestrator_if_secret_changed() {
-  # If the secret in .env doesn't match what's loaded in the running container,
-  # restart. Read env from container; compare with what's in .env.
-  local env_secret runtime_secret
+restart_orchestrator_if_env_changed() {
+  # If GITHUB_WEBHOOK_SECRET or GITHUB_TOKEN in .env don't match the values
+  # loaded into the running container, restart so the new env takes effect.
+  local env_secret env_token runtime_secret runtime_token
   env_secret=$(webhook_secret)
+  env_token=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
   runtime_secret=$(docker inspect grokrxiv-orchestrator \
     --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | awk -F= '/^GITHUB_WEBHOOK_SECRET=/{print substr($0, index($0, "=")+1)}' \
     | head -1 || true)
+  runtime_token=$(docker inspect grokrxiv-orchestrator \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | awk -F= '/^GITHUB_TOKEN=/{print substr($0, index($0, "=")+1)}' \
+    | head -1 || true)
+  local need_restart=0
   if [[ -n "$runtime_secret" && "$runtime_secret" != "$env_secret" ]]; then
-    log "secret in container ($runtime_secret) differs from .env; restarting orchestrator"
+    log "GITHUB_WEBHOOK_SECRET differs between container and .env; restarting"
+    need_restart=1
+  fi
+  if [[ -n "$env_token" && "$env_token" != "$runtime_token" ]]; then
+    log "GITHUB_TOKEN differs between container and .env; restarting"
+    need_restart=1
+  fi
+  if (( need_restart )); then
     (cd "$ROOT" && docker compose up -d --force-recreate orchestrator >/dev/null)
     for _ in $(seq 1 30); do
       curl -fsS --max-time 3 "$ORCH_HEALTHZ" >/dev/null 2>&1 && break
@@ -149,8 +162,9 @@ upsert_hook() {
   hook_id=$(current_hook_id || true)
   if [[ -n "$hook_id" ]]; then
     log "patching existing hook $hook_id → $desired_url"
+    # -F = parsed (boolean for active); -f = string (config fields)
     gh api -X PATCH "repos/$REPO/hooks/$hook_id" \
-      -f active=true \
+      -F active=true \
       -f 'events[]=pull_request' \
       -f "config[url]=$desired_url" \
       -f 'config[content_type]=json' \
@@ -181,7 +195,7 @@ ping_hook() {
 cmd_up() {
   ensure_secret
   ensure_orchestrator
-  restart_orchestrator_if_secret_changed
+  restart_orchestrator_if_env_changed
   ensure_cloudflared
   upsert_hook
   ping_hook

@@ -291,6 +291,11 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>api</code> / <code>cli</code> / <code>cloud</code> / <code>local_inference</code></td>
 </tr>
 <tr>
+<td><code>GROKRXIV_EXTRACTOR</code></td>
+<td><code>--extractor</code></td>
+<td>Staged ingest extraction backend: <code>cli</code> / <code>api</code>; default <code>cli</code></td>
+</tr>
+<tr>
 <td><code>GROKRXIV_SANDBOX</code></td>
 <td><code>--sandbox</code></td>
 <td><code>none</code> / <code>container</code></td>
@@ -331,6 +336,11 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>1</code>/<code>true</code> to enable</td>
 </tr>
 <tr>
+<td><code>GROKRXIV_ALLOW_PROVIDER_API</code></td>
+<td><em>internal</em></td>
+<td>Set by <code>grokrxiv</code>: <code>1</code> only when <code>--runner api</code>, <code>--extractor api</code>, or a per-role API override is selected</td>
+</tr>
+<tr>
 <td><code>GROKRXIV_SERVICE_TOKEN</code></td>
 <td><em>none</em></td>
 <td>Bearer expected by the web API <code>/api/v1/*</code> write endpoints</td>
@@ -341,9 +351,54 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td>Override <code>./agents</code> location</td>
 </tr>
 <tr>
+<td><code>GROKRXIV_SUMMARY_MODEL</code></td>
+<td><code>claude-haiku-4-5-20251001</code></td>
+<td>Plain-language summary model; same role as <code>--model-for summary=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_TECHNICAL_CORRECTNESS_MODEL</code></td>
+<td><code>claude-opus-4-7</code></td>
+<td>Technical correctness model; same role as <code>--model-for technical_correctness=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_NOVELTY_MODEL</code></td>
+<td><code>gemini-3-flash-preview</code></td>
+<td>Novelty model; same role as <code>--model-for novelty=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_REPRODUCIBILITY_MODEL</code></td>
+<td><code>gpt-5.5</code></td>
+<td>Reproducibility model; same role as <code>--model-for reproducibility=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_CITATION_MODEL</code></td>
+<td><code>gemini-3-flash-preview</code></td>
+<td>Citation model; same role as <code>--model-for citation=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_META_REVIEWER_MODEL</code></td>
+<td><code>claude-sonnet-4-6</code></td>
+<td>Meta-review synthesis model; same role as <code>--model-for meta_reviewer=...</code></td>
+</tr>
+<tr>
 <td><code>GROKRXIV_MODERATOR</code></td>
 <td><em>none</em></td>
 <td>Moderator handle persisted on <code>moderation_queue</code> rows</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_TEX_ENABLE_LATEXML</code></td>
+<td><em>none</em></td>
+<td>Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_TEX_DISABLE_LATEXML</code></td>
+<td><em>none</em></td>
+<td>Force LaTeXML enrichment off even if <code>GROKRXIV_TEX_ENABLE_LATEXML=1</code> is present</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_FORCE_AGENT_EXTRACTION</code></td>
+<td><em>none</em></td>
+<td>Run extraction LLM tool loops instead of the deterministic local extractor</td>
 </tr>
 </tbody>
 </table>
@@ -404,8 +459,19 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>GROKRXIV_CLI_TIMEOUT_SECS</code></td>
 <td>Per-call timeout in the CLI runner</td>
 </tr>
+<tr>
+<td><code>GROKRXIV_CITATION_REVIEW_DETERMINISTIC</code></td>
+<td>Set <code>1</code> only to force the old deterministic no-LLM citation review fallback</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_EXTRACTION_TOOL_FALLBACK</code></td>
+<td>Legacy <code>api</code> escape hatch for old scripts; refused unless direct provider API is explicitly allowed</td>
+</tr>
 </tbody>
 </table>
+<p>When the resolved runtime is <code>--runner cli --extractor cli</code>, GrokRxiv removes
+provider API key env vars from child <code>claude</code> / <code>codex</code> / <code>gemini</code> processes so
+those CLIs use their own logged-in local auth instead of inherited API keys.</p>
 <h2 id="cloud-runner"><a class="anchor" aria-label="anchor" href="#cloud-runner">#</a>Cloud runner</h2>
 <table>
 <thead>
@@ -471,7 +537,7 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 </tr>
 <tr>
 <td><code>GROKRXIV_REVIEWS_REPO</code></td>
-<td>Default <code>reviews</code></td>
+<td>Default <code>grokrxiv-reviews</code></td>
 </tr>
 </tbody>
 </table>
@@ -516,7 +582,7 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 </table>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-16T04:34:47.443Z &middot; grokrxiv</p>
+<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-17T16:09:09.824Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>
