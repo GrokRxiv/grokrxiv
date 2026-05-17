@@ -122,6 +122,14 @@ The default TeX conversion is Pandoc. LaTeXML semantic AST enrichment runs only
 when `GROKRXIV_TEX_ENABLE_LATEXML=1`; extraction LLM tool loops run only when
 `GROKRXIV_FORCE_AGENT_EXTRACTION=1`.
 
+#### `grokrxiv review-extracted <arxiv_id|paper_id|url>`
+Run only the review DAG for a paper whose extraction artifacts are already
+persisted. This reuses `review_input.json` and avoids re-running extraction:
+
+```sh
+grokrxiv --runner cli --extractor cli --status --no-cache review-extracted 2605.00561
+```
+
 #### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
 Bulk OAI-PMH backfill across a date range.
 
@@ -130,8 +138,9 @@ Equivalent of the daily scheduler tick (yesterday → today).
 
 ### Review lifecycle
 
-#### `grokrxiv list reviews [--status S] [--field F] [--limit N] [--json]`
-#### `grokrxiv list papers [--field F] [--has-review] [--limit N] [--json]`
+#### `grokrxiv list reviews [--review-status S] [--field F] [--limit N] [--json]`
+#### `grokrxiv list papers [--field F] [--has-review] [--extracted] [--limit N] [--json]`
+#### `grokrxiv list extracted [--field F] [--limit N] [--json]`
 
 #### `grokrxiv show <REVIEW_ID> [--json]`
 Pretty-print a review (paper, agents, verifier status, optional PR URL).

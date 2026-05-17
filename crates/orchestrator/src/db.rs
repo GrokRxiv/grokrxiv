@@ -146,9 +146,7 @@ pub async fn upsert_paper(
 ///
 /// Any pre-existing review for the same paper in a non-terminal status is
 /// transitioned to `withdrawn` first, so re-reviewing a paper SUPERSEDES the
-/// old review rather than creating a parallel one. The previous reviews'
-/// row ids (and `pr_url` from `moderation_queue`, if any) are returned so the
-/// caller can close the old PR on the GitHub mirror.
+/// old review rather than creating a parallel one.
 pub async fn insert_review(
     pool: &PgPool,
     paper_id: Uuid,
@@ -219,12 +217,12 @@ pub async fn fetch_superseded_pr_url(
     paper_id: Uuid,
 ) -> sqlx::Result<Option<String>> {
     let row: Option<(Option<String>,)> = sqlx::query_as(
-        "select mq.pr_url \
+        "select r.github_pr_url \
          from reviews r \
-         left join moderation_queue mq on mq.review_id = r.id \
          where r.paper_id = $1 \
            and r.status = 'withdrawn' \
            and r.superseded_at is not null \
+           and r.github_pr_url is not null \
          order by r.superseded_at desc \
          limit 1",
     )
@@ -933,6 +931,12 @@ mod tests {
         insert_moderation_pending(&pool, first)
             .await
             .expect("insert mq pending");
+        sqlx::query("update reviews set github_pr_url = $2 where id = $1")
+            .bind(first)
+            .bind("https://github.com/GrokRxiv/grokrxiv-reviews/pull/12345")
+            .execute(&pool)
+            .await
+            .expect("set first github_pr_url");
 
         let first_state: (String,) =
             sqlx::query_as("select state from moderation_queue where review_id = $1")
@@ -966,6 +970,14 @@ mod tests {
             .await
             .expect("read first review status");
         assert_eq!(first_status.0, "withdrawn");
+
+        let superseded_pr = fetch_superseded_pr_url(&pool, paper_id)
+            .await
+            .expect("fetch superseded pr url");
+        assert_eq!(
+            superseded_pr.as_deref(),
+            Some("https://github.com/GrokRxiv/grokrxiv-reviews/pull/12345")
+        );
 
         // 4. Clean up: cascade delete via papers.id (reviews + mq have
         //    on-delete-cascade FKs).

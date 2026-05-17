@@ -14,6 +14,7 @@ use crate::agents::{
 };
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
+use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
 
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
@@ -107,11 +108,9 @@ pub struct AppState {
     /// schema. Replaces the previous single permissive-object ladder.
     #[cfg(feature = "grokrxiv-verifier")]
     pub verifiers: Arc<VerifierMap>,
-    /// Per-role `(provider, model)` routing loaded from `agents/*.yaml`. When a
-    /// role's YAML declares a provider whose API key isn't set, the routing
-    /// entry falls back to the default Claude provider and the configured
-    /// preview model so an unavailable provider cannot route a non-Claude model
-    /// string into Claude.
+    /// Legacy per-role `(provider, model)` routing for direct API paths.
+    /// CLI review/extraction runs use `agents` + `runners` instead and do not
+    /// need provider API keys.
     pub role_routing: Arc<RoleRouting>,
     /// Per-role `ReviewAgent` instances built from `agents/*.yaml`. Populated
     /// alongside `role_routing` so the supervisor can delegate to
@@ -301,18 +300,19 @@ fn load_role_configs() -> RoleYamlMap {
     out
 }
 
-/// Build the per-role `(provider, model)` map. If a YAML declares a provider
-/// whose API key isn't set in this process, the routing entry falls back to
-/// Claude with the orchestrator's `PREVIEW_MODEL` (a Claude-compatible id) so
-/// the single-provider M1 path still produces real calls. A warning is
-/// logged recording which provider was declared in YAML so operators see the
-/// routing drift.
+/// Build the per-role `(provider, model)` map for legacy direct API routing.
+/// CLI-only runs intentionally leave this empty so missing provider API keys
+/// do not look like fallback-to-Claude API traffic.
 fn build_role_routing(
     providers: &Option<ProviderRegistry>,
     fallback_model: &str,
     role_yaml: &RoleYamlMap,
 ) -> RoleRouting {
     let mut out: RoleRouting = HashMap::new();
+    if std::env::var(ALLOW_PROVIDER_API_ENV).ok().as_deref() == Some("0") {
+        return out;
+    }
+
     // No providers at all means /preview will error anyway; routing is empty.
     let Some(registry) = providers else {
         return out;
@@ -350,9 +350,9 @@ fn build_role_routing(
 
 /// Build the per-role `ReviewAgent` registry from the YAML configs and the
 /// in-memory per-role JSON schemas. Roles whose YAML is missing or malformed
-/// are skipped — the supervisor will detect the gap and fall back to an
-/// on-the-fly agent for those roles. RPT2 ships every role on the `Api`
-/// runner; CLI/cloud/local-inference selection happens in later tracks.
+/// are skipped; the supervisor will detect the gap and fall back to an
+/// on-the-fly agent for those roles. Runtime flags/env select the actual
+/// runner, so CLI/cloud/local-inference paths do not depend on provider APIs.
 #[cfg(feature = "grokrxiv-verifier")]
 fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();

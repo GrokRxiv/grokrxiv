@@ -1065,7 +1065,7 @@ fn body_budget_chars(role: grokrxiv_schemas::AgentRole) -> usize {
         AgentRole::TechnicalCorrectness => 240_000,
         AgentRole::Novelty => 120_000,
         AgentRole::Reproducibility => 80_000,
-        AgentRole::Citation => 120_000,
+        AgentRole::Citation => 0,
         AgentRole::MetaReviewer => 0,
     }
 }
@@ -1160,9 +1160,77 @@ fn render_bibliography(bibliography: &[grokrxiv_schemas::Citation]) -> String {
     for (i, c) in bibliography.iter().enumerate() {
         let key = i + 1;
         let raw = c.raw.replace('\n', " ").trim().to_string();
-        out.push_str(&format!("[{key}] {raw}\n"));
+        let mut parts = Vec::new();
+        if !raw.is_empty() {
+            parts.push(raw.clone());
+        }
+        if let Some(title) = c.title.as_deref().filter(|s| !s.trim().is_empty()) {
+            if !raw.contains(title) {
+                parts.push(format!("title: {}", title.trim()));
+            }
+        }
+        if let Some(doi) = c.doi.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(format!("doi: {}", doi.trim()));
+        }
+        if let Some(arxiv_id) = c.arxiv_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(format!("arxiv: {}", arxiv_id.trim()));
+        }
+        if parts.is_empty() {
+            parts.push("unresolved bibliography entry".to_string());
+        }
+        out.push_str(&format!("[{key}] {}\n", parts.join(" | ")));
     }
     out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_citation_contexts(sections: &[grokrxiv_schemas::Section], budget: usize) -> String {
+    if budget == 0 || sections.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for section in sections {
+        for sentence in citation_sentences(&section.body_markdown) {
+            let line = format!("- {}: {}\n", section.heading, sentence);
+            let next_len = out.chars().count() + line.chars().count();
+            if next_len > budget {
+                if out.is_empty() {
+                    let truncated = truncate_60_40(&line, budget);
+                    out.push_str(&truncated);
+                }
+                return out;
+            }
+            out.push_str(&line);
+        }
+    }
+    out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn citation_sentences(body: &str) -> Vec<String> {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    for ch in normalized.chars() {
+        current.push(ch);
+        if matches!(ch, '.' | '?' | '!') {
+            push_citation_sentence(&mut sentences, &current);
+            current.clear();
+        }
+    }
+    push_citation_sentence(&mut sentences, &current);
+    sentences
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn push_citation_sentence(sentences: &mut Vec<String>, sentence: &str) {
+    let trimmed = sentence.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.contains("[@") || trimmed.contains("@") || trimmed.contains("\\cite") {
+        sentences.push(truncate_60_40(trimmed, 1_200));
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -1188,6 +1256,11 @@ fn build_specialist_prompt(
         .join("\n");
     let body_block = render_section_block(&extract.sections, budget);
     let bib_block = render_bibliography(&extract.bibliography);
+    let citation_contexts = if matches!(role, AgentRole::Citation) {
+        render_citation_contexts(&extract.sections, 24_000)
+    } else {
+        String::new()
+    };
 
     let task = match role {
         AgentRole::Summary => {
@@ -1211,9 +1284,11 @@ fn build_specialist_prompt(
              `environment`, `concerns`."
         }
         AgentRole::Citation => {
-            "Audit the bibliography. For each citation populate the `entries` array \
-             (each with `citation`, `exists`, `relevance`, and optional resolved_doi/url, \
-             notes). Provide `summary` and `confidence`."
+            "Audit the bibliography using the citation contexts. Return exactly one \
+             `entries` item per bibliography item, in bibliography order. If no external \
+             lookup is possible, preserve the citation, mark `exists=false`, assign the \
+             best relevance from context, and explain the uncertainty. Provide `summary` \
+             and `confidence`."
         }
         AgentRole::MetaReviewer => unreachable!("MetaReviewer handled above"),
     };
@@ -1226,6 +1301,14 @@ fn build_specialist_prompt(
     if !body_block.is_empty() {
         out.push_str("Paper body:\n\n");
         out.push_str(&body_block);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !citation_contexts.is_empty() {
+        out.push_str("Citation contexts:\n\n");
+        out.push_str(&citation_contexts);
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -2100,8 +2183,9 @@ mod tests {
     }
 
     /// Track 8a-1: the first section's body_markdown lands in every
-    /// specialist prompt (sanity-check that the previous heading-only
-    /// behavior is gone).
+    /// body-review specialist prompt (sanity-check that the previous
+    /// heading-only behavior is gone). Citation uses a compact context prompt
+    /// instead of the full body.
     #[cfg(feature = "grokrxiv-ingest")]
     #[test]
     fn specialist_prompt_includes_section_body() {
@@ -2121,7 +2205,6 @@ mod tests {
             AgentRole::TechnicalCorrectness,
             AgentRole::Novelty,
             AgentRole::Reproducibility,
-            AgentRole::Citation,
         ] {
             let prompt = build_specialist_prompt(role, &extract);
             assert!(
@@ -2204,13 +2287,14 @@ mod tests {
     #[test]
     fn specialist_prompt_renders_bibliography() {
         use grokrxiv_schemas::AgentRole;
-        let extract = fake_extract(
-            vec![("1. Introduction", "Body.".to_string())],
-            vec![
-                "Alice et al., A foundational paper, 2020.",
-                "Bob, A follow-up paper, 2021.",
-            ],
+        let mut extract = fake_extract(
+            vec![(
+                "1. Introduction",
+                "The result builds on prior work [@alice2020].".to_string(),
+            )],
+            vec!["alice2020", "Bob, A follow-up paper, 2021."],
         );
+        extract.bibliography[0].title = Some("A foundational paper".to_string());
 
         let prompt = build_specialist_prompt(AgentRole::Citation, &extract);
         assert!(
@@ -2218,12 +2302,24 @@ mod tests {
             "expected bibliography header in prompt"
         );
         assert!(
-            prompt.contains("[1] Alice et al., A foundational paper, 2020."),
-            "expected first bib entry with key [1]"
+            prompt.contains("[1] alice2020 | title: A foundational paper"),
+            "expected first bib entry with key and title"
         );
         assert!(
             prompt.contains("[2] Bob, A follow-up paper, 2021."),
             "expected second bib entry with key [2]"
+        );
+        assert!(
+            prompt.contains("Citation contexts:"),
+            "expected citation contexts block"
+        );
+        assert!(
+            prompt.contains("The result builds on prior work [@alice2020]."),
+            "expected cited sentence in compact citation prompt"
+        );
+        assert!(
+            !prompt.contains("Paper body:"),
+            "citation prompt should not include the full body block"
         );
     }
 

@@ -1,9 +1,10 @@
 id: reproducibility
 role: "Assess code/data availability and reproducibility of empirical claims."
-provider: openai
-# OpenAI-family routes use provider `openai` in this repo; there is no separate
-# `codex` provider alias.
-model: gpt-5.5
+provider: gemini
+# Keep the default CLI-only review path on the locally installed Gemini CLI.
+# Codex remains supported via explicit config/overrides, but the subscription
+# quota can block live E2E runs before moderation.
+model: gemini-2.5-flash
 runner: cli
 prompt_template: prompts/reproducibility.md
 input_schema: schemas/paper_extract.schema.json

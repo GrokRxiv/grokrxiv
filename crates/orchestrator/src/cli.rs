@@ -25,6 +25,9 @@ type PaperListRow = (
     String,
     Option<String>,
     chrono::DateTime<chrono::Utc>,
+    Option<String>,
+    Option<String>,
+    Option<chrono::DateTime<chrono::Utc>>,
 );
 
 /// GrokRxiv — agentic peer-review pipeline for arXiv.
@@ -231,6 +234,11 @@ pub enum Command {
         /// UUID of the paper to re-review.
         paper_id: Uuid,
     },
+    /// Run the review DAG for a paper that was already extracted.
+    ReviewExtracted {
+        /// arXiv id, arXiv URL, or paper UUID from `grokrxiv list extracted`.
+        source: String,
+    },
     /// Re-run the verifier ladder against a review.
     Verify {
         /// UUID of the review to re-verify.
@@ -309,9 +317,9 @@ pub enum Command {
 pub enum ListKind {
     /// List reviews.
     Reviews {
-        /// Optional status filter (e.g. `awaiting_moderation`).
-        #[arg(long)]
-        status: Option<String>,
+        /// Optional review status filter (e.g. `awaiting_moderation`).
+        #[arg(long = "review-status", visible_alias = "state")]
+        review_status: Option<String>,
         /// Optional field filter (e.g. `cs.AI`).
         #[arg(long)]
         field: Option<String>,
@@ -330,6 +338,21 @@ pub enum ListKind {
         /// Only show papers that already have at least one review.
         #[arg(long)]
         has_review: bool,
+        /// Only show papers with successful extracted artifacts.
+        #[arg(long)]
+        extracted: bool,
+        /// Maximum rows to return.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List papers with successful extracted artifacts.
+    Extracted {
+        /// Optional field filter (e.g. `cs.AI`).
+        #[arg(long)]
+        field: Option<String>,
         /// Maximum rows to return.
         #[arg(long, default_value_t = 20)]
         limit: u32,
@@ -509,6 +532,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Show { review_id, json } => show(review_id, json).await,
         Command::Review { source, r#type } => review_source(&source, r#type, json, dry_run).await,
         Command::ReReview { paper_id } => review_paper(paper_id).await,
+        Command::ReviewExtracted { source } => review_extracted(&source).await,
         Command::Verify { review_id } => verify(review_id).await,
         Command::Render {
             review_id,
@@ -1209,12 +1233,13 @@ async fn list(what: ListKind) -> anyhow::Result<()> {
     };
     match what {
         ListKind::Reviews {
-            status,
+            review_status,
             limit,
             json,
             ..
         } => {
-            let rows = crate::db::list_reviews(pool, status.as_deref(), limit as i64).await?;
+            let rows =
+                crate::db::list_reviews(pool, review_status.as_deref(), limit as i64).await?;
             if json {
                 println!("{}", serde_json::to_string(&rows)?);
             } else if rows.is_empty() {
@@ -1227,42 +1252,83 @@ async fn list(what: ListKind) -> anyhow::Result<()> {
                 }
             }
         }
-        ListKind::Papers { json, limit, .. } => {
-            let lim = limit as i64;
-            let rows: Vec<PaperListRow> = sqlx::query_as(
-                "select id, arxiv_id, title, field, ingested_at \
-                 from papers order by ingested_at desc limit $1",
-            )
-            .bind(lim)
-            .fetch_all(pool)
-            .await?;
-            if json {
-                let v: Vec<_> = rows
-                    .iter()
-                    .map(|(id, arxiv, title, field, ts)| {
-                        serde_json::json!({
-                            "id": id,
-                            "arxiv_id": arxiv,
-                            "title": title,
-                            "field": field,
-                            "ingested_at": ts,
-                        })
+        ListKind::Papers {
+            json,
+            limit,
+            field,
+            has_review,
+            extracted,
+        } => {
+            list_papers(pool, field.as_deref(), has_review, extracted, limit, json).await?;
+        }
+        ListKind::Extracted { json, limit, field } => {
+            list_papers(pool, field.as_deref(), false, true, limit, json).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn list_papers(
+    pool: &sqlx::PgPool,
+    field: Option<&str>,
+    has_review: bool,
+    extracted: bool,
+    limit: u32,
+    json: bool,
+) -> anyhow::Result<()> {
+    let rows: Vec<PaperListRow> = sqlx::query_as(
+        "select p.id, p.arxiv_id, p.title, p.field, p.ingested_at, \
+                pa.extraction_status, pa.git_path, pa.updated_at \
+         from papers p \
+         left join paper_assets pa on pa.paper_id = p.id \
+         where ($1::text is null or p.field = $1) \
+           and ($2::bool = false or exists (select 1 from reviews r where r.paper_id = p.id)) \
+           and ($3::bool = false or pa.extraction_status = 'ready') \
+         order by coalesce(pa.updated_at, p.ingested_at) desc \
+         limit $4",
+    )
+    .bind(field)
+    .bind(has_review)
+    .bind(extracted)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await?;
+    if json {
+        let v: Vec<_> = rows
+            .iter()
+            .map(
+                |(id, arxiv, title, field, ts, extraction_status, git_path, extracted_at)| {
+                    serde_json::json!({
+                        "id": id,
+                        "arxiv_id": arxiv,
+                        "title": title,
+                        "field": field,
+                        "ingested_at": ts,
+                        "extraction_status": extraction_status,
+                        "git_path": git_path,
+                        "extracted_at": extracted_at,
                     })
-                    .collect();
-                println!("{}", serde_json::to_string(&v)?);
-            } else if rows.is_empty() {
-                println!("(no papers)");
-            } else {
-                for (id, arxiv, title, field, _) in rows {
-                    println!(
-                        "{}  {:12}  {:8}  {}",
-                        id,
-                        arxiv,
-                        field.as_deref().unwrap_or(""),
-                        truncate(&title, 70)
-                    );
-                }
-            }
+                },
+            )
+            .collect();
+        println!("{}", serde_json::to_string(&v)?);
+    } else if rows.is_empty() {
+        println!("(no papers)");
+    } else {
+        println!(
+            "{:36}  {:12}  {:8}  {:10}  {:24}  title",
+            "id", "arxiv_id", "field", "extract", "git_path"
+        );
+        for (id, arxiv, title, field, _, extraction_status, git_path, _) in rows {
+            println!(
+                "{}  {:12}  {:8}  {:10}  {:24}  {}",
+                id,
+                arxiv,
+                field.as_deref().unwrap_or(""),
+                extraction_status.as_deref().unwrap_or("pending"),
+                truncate(git_path.as_deref().unwrap_or(""), 24),
+                truncate(&title, 70)
+            );
         }
     }
     Ok(())
@@ -1327,6 +1393,76 @@ async fn review_paper(paper_id: Uuid) -> anyhow::Result<()> {
         let _ = paper_id;
         anyhow::bail!("review requires --features full (grokrxiv-ingest)")
     }
+}
+
+async fn review_extracted(source: &str) -> anyhow::Result<()> {
+    #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+    {
+        let config = super::Config::from_env();
+        let state = super::AppState::from_config(config).await?;
+        let Some(pool) = state.db.as_ref() else {
+            anyhow::bail!("review-extracted: DATABASE_URL not configured");
+        };
+        let (paper_id, arxiv_id, title) = resolve_extracted_paper(pool, source).await?;
+        crate::cli_status::emit(format!(
+            "paper {arxiv_id}: reviewing cached extraction for `{}`",
+            truncate(&title, 80)
+        ));
+        let review_id = super::supervisor::run_review_for_paper_blocking(&state, paper_id).await?;
+        println!("arxiv_id={arxiv_id} paper_id={paper_id} review_id={review_id}");
+        Ok(())
+    }
+    #[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
+    {
+        let _ = source;
+        anyhow::bail!(
+            "review-extracted requires --features full (grokrxiv-ingest + grokrxiv-storage)"
+        )
+    }
+}
+
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+async fn resolve_extracted_paper(
+    pool: &sqlx::PgPool,
+    source: &str,
+) -> anyhow::Result<(Uuid, String, String)> {
+    let source = source.trim();
+    let row: Option<(Uuid, String, String, Option<String>, Option<String>)> = if let Ok(id) =
+        Uuid::parse_str(source)
+    {
+        sqlx::query_as(
+            "select p.id, p.arxiv_id, p.title, pa.extraction_status, pa.git_path \
+                 from papers p left join paper_assets pa on pa.paper_id = p.id \
+                 where p.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+    } else if let Some(arxiv_id) = parse_arxiv_source(source) {
+        sqlx::query_as(
+            "select p.id, p.arxiv_id, p.title, pa.extraction_status, pa.git_path \
+                 from papers p left join paper_assets pa on pa.paper_id = p.id \
+                 where p.arxiv_id = $1",
+        )
+        .bind(arxiv_id)
+        .fetch_optional(pool)
+        .await?
+    } else {
+        anyhow::bail!("review-extracted: `{source}` is not a paper UUID, arXiv id, or arXiv URL");
+    };
+
+    let Some((paper_id, arxiv_id, title, status, git_path)) = row else {
+        anyhow::bail!(
+            "review-extracted: no paper row for `{source}`; run `grokrxiv extract {source}` first"
+        );
+    };
+    if status.as_deref() != Some("ready") || git_path.is_none() {
+        anyhow::bail!(
+            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `grokrxiv extract {arxiv_id}` first",
+            status.as_deref().unwrap_or("pending")
+        );
+    }
+    Ok((paper_id, arxiv_id, title))
 }
 
 /// Source resolution for `grokrxiv review <source>`.
@@ -2034,6 +2170,62 @@ mod tests {
         match parsed.command {
             Some(Command::Extract { arxiv_ids }) => assert_eq!(arxiv_ids, vec!["2605.00561"]),
             other => panic!("expected extract command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_review_extracted_command() {
+        let parsed = Cli::try_parse_from([
+            "grokrxiv",
+            "--runner",
+            "cli",
+            "--status",
+            "review-extracted",
+            "2605.00561",
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
+        assert!(parsed.status);
+        match parsed.command {
+            Some(Command::ReviewExtracted { source }) => assert_eq!(source, "2605.00561"),
+            other => panic!("expected review-extracted command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_list_extracted_and_review_status_filter() {
+        let listed =
+            Cli::try_parse_from(["grokrxiv", "list", "extracted", "--limit", "50"]).unwrap();
+        match listed.command {
+            Some(Command::List {
+                what: ListKind::Extracted { limit, .. },
+            }) => assert_eq!(limit, 50),
+            other => panic!("expected list extracted command, got {other:?}"),
+        }
+
+        let reviews = Cli::try_parse_from([
+            "grokrxiv",
+            "list",
+            "reviews",
+            "--review-status",
+            "awaiting_moderation",
+            "--json",
+        ])
+        .unwrap();
+        match reviews.command {
+            Some(Command::List {
+                what:
+                    ListKind::Reviews {
+                        review_status,
+                        json,
+                        ..
+                    },
+            }) => {
+                assert_eq!(review_status.as_deref(), Some("awaiting_moderation"));
+                assert!(json);
+            }
+            other => panic!("expected list reviews command, got {other:?}"),
         }
     }
 

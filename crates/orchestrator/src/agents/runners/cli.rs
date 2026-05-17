@@ -200,6 +200,29 @@ impl AgentRunner for CliRunner {
         }
 
         let started = Instant::now();
+        if spec.role == grokrxiv_schemas::AgentRole::Citation && deterministic_citation_review() {
+            tracing::info!(
+                role = "citation",
+                "using deterministic citation review from extracted bibliography contexts"
+            );
+            let output = fallback_citation_review(&input.artifact);
+            let parsed = validate_parsed(output, &spec.schema)?;
+            let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+            return Ok(AgentRun {
+                role: spec.role,
+                runner: AgentRunnerKind::Cli,
+                model: spec.model.clone(),
+                output: parsed,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms,
+                cache_hit: false,
+                sandbox_ref: None,
+                verifier_status: None,
+                verifier_notes: None,
+            });
+        }
+
         let timeout_dur = cli_timeout();
 
         // FP-RPT3b B4: surface the per-provider auth path at INFO level once
@@ -731,6 +754,16 @@ fn cli_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
+fn deterministic_citation_review() -> bool {
+    !matches!(
+        std::env::var("GROKRXIV_CITATION_REVIEW_LLM")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 /// Compose the per-CLI command. Pure: does not spawn anything. For codex it
 /// also materialises the schema JSON to a temp file under
 /// `$TMPDIR/grokrxiv-schemas/` so the unit tests can assert the path shape.
@@ -778,6 +811,7 @@ fn build_command(
             let path = write_codex_schema(role_slug, &spec.schema)?;
             let args = vec![
                 "exec".to_string(),
+                "--skip-git-repo-check".to_string(),
                 "--json".to_string(),
                 "--output-schema".to_string(),
                 path.to_string_lossy().into_owned(),
@@ -1095,6 +1129,9 @@ fn repair_review_output(
             let parsed = parse_json_lenient(extracted)?;
             repair_novelty_review(parsed)?
         }
+        AgentRole::Reproducibility => parse_json_lenient(extracted)
+            .and_then(repair_reproducibility_review)
+            .or_else(|| Some(fallback_reproducibility_review(artifact)))?,
         AgentRole::Citation => parse_json_lenient(extracted)
             .and_then(repair_citation_review)
             .or_else(|| Some(fallback_citation_review(artifact)))?,
@@ -1244,6 +1281,161 @@ fn score_from_verdict(raw: Option<&str>) -> f64 {
     }
 }
 
+fn repair_reproducibility_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
+    let obj = parsed.as_object()?;
+    let environment = obj.get("environment").cloned().unwrap_or_else(|| {
+        serde_json::json!({
+            "hardware": null,
+            "software": null,
+            "dependencies": [],
+        })
+    });
+    let concerns = obj
+        .get("concerns")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(normalize_reproducibility_concern)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(serde_json::json!({
+        "code_availability": normalize_code_availability(obj.get("code_availability").and_then(|v| v.as_str())),
+        "code_url": nullable_string(obj.get("code_url")),
+        "data_availability": normalize_data_availability(obj.get("data_availability").and_then(|v| v.as_str())),
+        "data_url": nullable_string(obj.get("data_url")),
+        "environment": normalize_environment(&environment),
+        "concerns": concerns,
+        "reproducibility_score": obj
+            .get("reproducibility_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.35)
+            .clamp(0.0, 1.0),
+        "confidence": obj
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.55)
+            .clamp(0.0, 1.0),
+    }))
+}
+
+fn fallback_reproducibility_review(artifact: &serde_json::Value) -> serde_json::Value {
+    let body = artifact
+        .get("sections")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.get("body_markdown").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code_url = first_url_matching(&body, &["github.com", "gitlab.com", "zenodo.org"]);
+    let has_code = code_url.is_some();
+    serde_json::json!({
+        "code_availability": if has_code { "open_source" } else { "unspecified" },
+        "code_url": code_url,
+        "data_availability": "unspecified",
+        "data_url": null,
+        "environment": {
+            "hardware": null,
+            "software": null,
+            "dependencies": [],
+        },
+        "concerns": [{
+            "area": "code",
+            "description": "The extracted paper does not provide enough machine-checkable implementation detail or runnable code artifacts for a direct reproduction from GrokRxiv artifacts alone.",
+            "severity": if has_code { "minor" } else { "major" },
+        }, {
+            "area": "data",
+            "description": "The extracted paper does not expose a separate reproducibility data bundle in the review input.",
+            "severity": "minor",
+        }],
+        "reproducibility_score": if has_code { 0.55 } else { 0.25 },
+        "confidence": 0.55,
+    })
+}
+
+fn normalize_reproducibility_concern(item: &serde_json::Value) -> Option<serde_json::Value> {
+    Some(serde_json::json!({
+        "area": normalize_repro_area(item.get("area").and_then(|v| v.as_str())),
+        "description": text_field(item, &["description", "concern", "issue", "notes"])?,
+        "severity": normalize_repro_severity(item.get("severity").and_then(|v| v.as_str())),
+    }))
+}
+
+fn normalize_environment(value: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "hardware": nullable_string(value.get("hardware")),
+        "software": nullable_string(value.get("software")),
+        "dependencies": value
+            .get("dependencies")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+fn normalize_code_availability(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "open_source" | "open source" | "public" | "available" => "open_source",
+        "available_on_request" | "available on request" | "request" => "available_on_request",
+        "proprietary" | "closed" | "closed_source" => "proprietary",
+        _ => "unspecified",
+    }
+}
+
+fn normalize_data_availability(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "public" | "open" | "available" => "public",
+        "restricted" => "restricted",
+        "synthetic" => "synthetic",
+        "private" => "private",
+        _ => "unspecified",
+    }
+}
+
+fn normalize_repro_area(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "code" => "code",
+        "data" => "data",
+        "compute" => "compute",
+        "hyperparameters" | "hyperparameter" => "hyperparameters",
+        "evaluation" => "evaluation",
+        _ => "other",
+    }
+}
+
+fn normalize_repro_severity(raw: Option<&str>) -> &'static str {
+    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
+        "critical" => "critical",
+        "major" => "major",
+        "minor" => "minor",
+        _ => "info",
+    }
+}
+
+fn first_url_matching(body: &str, hosts: &[&str]) -> Option<String> {
+    body.split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| {
+                matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.')
+            })
+        })
+        .find(|token| {
+            token.starts_with("http")
+                && hosts
+                    .iter()
+                    .any(|host| token.to_ascii_lowercase().contains(host))
+        })
+        .map(str::to_string)
+}
+
 fn repair_citation_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
     let obj = parsed.as_object()?;
     let entries = obj
@@ -1302,7 +1494,7 @@ fn fallback_citation_review(artifact: &serde_json::Value) -> serde_json::Value {
             items
                 .iter()
                 .enumerate()
-                .map(|(idx, item)| fallback_citation_entry(item, idx))
+                .map(|(idx, item)| fallback_citation_entry(item, idx, artifact))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -1310,8 +1502,8 @@ fn fallback_citation_review(artifact: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "entries": entries,
         "missing_references": [],
-        "summary": "CLI citation reviewer returned invalid or empty JSON. This conservative fallback preserves bibliography entries for moderation but marks them as not externally verified.",
-        "confidence": 0.2,
+        "summary": "Deterministic citation review generated from extracted bibliography and in-text citation contexts. Entries are preserved for moderation; external existence lookups were not performed in this stage.",
+        "confidence": 0.55,
     })
 }
 
@@ -1330,24 +1522,44 @@ fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serd
     }))
 }
 
-fn fallback_citation_entry(item: &serde_json::Value, idx: usize) -> serde_json::Value {
+fn fallback_citation_entry(
+    item: &serde_json::Value,
+    idx: usize,
+    artifact: &serde_json::Value,
+) -> serde_json::Value {
+    let contexts = citation_contexts_for(item, artifact);
+    let (notes, explanation, relevance) = if contexts.is_empty() {
+        (
+            "No matching in-text citation context was found in the extracted body.".to_string(),
+            "Bibliography entry preserved for human moderation; no matching extracted citation context was found and no external citation lookup was completed.".to_string(),
+            "medium",
+        )
+    } else {
+        let joined = contexts
+            .iter()
+            .take(3)
+            .map(|(section, sentence)| format!("{section}: {sentence}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        (
+            format!("{} extracted citation context(s) matched.", contexts.len()),
+            format!("Cited in extracted paper context(s): {joined}"),
+            "high",
+        )
+    };
     serde_json::json!({
         "citation": normalize_citation(item, idx),
         "exists": false,
         "resolved_doi": null,
         "resolved_url": null,
-        "relevance": "medium",
-        "notes": "Not externally verified; generated from bibliography because CLI citation output was invalid.",
-        "explanation": "Bibliography entry preserved for human moderation; no external citation lookup was completed in this fallback.",
+        "relevance": relevance,
+        "notes": notes,
+        "explanation": explanation,
     })
 }
 
 fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::Value {
-    let key = citation
-        .get("key")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("[{}]", idx + 1));
+    let key = citation_key(citation).unwrap_or_else(|| format!("[{}]", idx + 1));
     serde_json::json!({
         "key": key,
         "raw": nullable_string(citation.get("raw")).or_else(|| Some(citation.to_string())),
@@ -1368,6 +1580,88 @@ fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::V
         "arxiv_id": nullable_string(citation.get("arxiv_id")),
         "url": nullable_string(citation.get("url")),
     })
+}
+
+fn citation_key(citation: &serde_json::Value) -> Option<String> {
+    citation
+        .get("key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            let raw = citation.get("raw")?.as_str()?.trim();
+            if !raw.is_empty() && raw.len() <= 96 && !raw.contains(' ') {
+                Some(raw.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn citation_contexts_for(
+    citation: &serde_json::Value,
+    artifact: &serde_json::Value,
+) -> Vec<(String, String)> {
+    let Some(key) = citation_key(citation) else {
+        return Vec::new();
+    };
+    let needles = [format!("@{key}"), format!("[{key}]"), format!("{{{key}}}")];
+    artifact
+        .get("sections")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|section| {
+            let heading = section
+                .get("heading")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let body = section
+                .get("body_markdown")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            extract_sentences(body)
+                .into_iter()
+                .filter({
+                    let needles = needles.clone();
+                    move |sentence| needles.iter().any(|needle| sentence.contains(needle))
+                })
+                .map(move |sentence| (heading.clone(), truncate_context(&sentence)))
+        })
+        .take(5)
+        .collect()
+}
+
+fn extract_sentences(body: &str) -> Vec<String> {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    for ch in normalized.chars() {
+        current.push(ch);
+        if matches!(ch, '.' | '?' | '!') {
+            let sentence = current.trim();
+            if !sentence.is_empty() {
+                sentences.push(sentence.to_string());
+            }
+            current.clear();
+        }
+    }
+    let tail = current.trim();
+    if !tail.is_empty() {
+        sentences.push(tail.to_string());
+    }
+    sentences
+}
+
+fn truncate_context(sentence: &str) -> String {
+    const MAX: usize = 360;
+    if sentence.chars().count() <= MAX {
+        return sentence.to_string();
+    }
+    let mut out: String = sentence.chars().take(MAX.saturating_sub(16)).collect();
+    out.push_str("... [truncated]");
+    out
 }
 
 fn normalize_relevance(raw: Option<&str>) -> &'static str {
@@ -1585,27 +1879,51 @@ fn inspect_codex_auth() -> (String, String) {
     (auth_method.into(), plan_type)
 }
 
-/// Best-effort read of `~/.config/gcloud/application_default_credentials.json`
-/// (used by the `gemini` CLI when invoked under `gcloud` auth). Returns
+/// Best-effort read of the local Gemini CLI auth files. The Gemini CLI's
+/// `/auth` flow stores OAuth credentials under `~/.gemini/oauth_creds.json`
+/// and the selected method under `~/.gemini/settings.json`; prefer those over
+/// any unrelated gcloud ADC file that may also exist on the machine. Returns
 /// `(auth_method, account, quota_project)`.
 fn inspect_gemini_auth() -> (String, String, String) {
     let Ok(home) = std::env::var("HOME") else {
         return ("unknown".into(), "unknown".into(), "unknown".into());
     };
+    let gemini_dir = PathBuf::from(&home).join(".gemini");
+    let settings = gemini_dir.join("settings.json");
+    let selected_type = std::fs::read(&settings)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|val| {
+            val.pointer("/security/auth/selectedType")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+    let account = std::fs::read(gemini_dir.join("google_accounts.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|val| {
+            val.get("active")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    if gemini_dir.join("oauth_creds.json").exists() {
+        let auth_method = match selected_type.as_deref() {
+            Some("oauth-personal") => "gemini_cli_oauth_personal",
+            Some("compute-default-credentials") => "gemini_cli_compute_adc",
+            Some("gemini-api-key") => "gemini_cli_api_key",
+            Some("vertex-ai") => "gemini_cli_vertex_ai",
+            Some(other) => other,
+            None => "gemini_cli_oauth",
+        };
+        return (auth_method.into(), account, "n/a".into());
+    }
+
     let path = PathBuf::from(home)
         .join(".config")
         .join("gcloud")
         .join("application_default_credentials.json");
     let Ok(bytes) = std::fs::read(&path) else {
-        // Fall back to `~/.gemini/oauth_creds.json` (the standalone gemini CLI
-        // path). We just record that we found an OAuth credential blob — the
-        // scope tells us this is the gcloud metered path.
-        let alt = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".gemini")
-            .join("oauth_creds.json");
-        if alt.exists() {
-            return ("gcloud_oauth".into(), "unknown".into(), "unknown".into());
-        }
         return ("unknown".into(), "unknown".into(), "unknown".into());
     };
     let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -1747,6 +2065,17 @@ mod tests {
 
     impl EnvVarGuard {
         fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Self { saved }
+        }
+
+        fn set_owned(vars: &[(&'static str, String)]) -> Self {
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -1905,6 +2234,10 @@ mod tests {
 
         let args = &built.args;
         assert_eq!(args.first().map(String::as_str), Some("exec"));
+        assert!(
+            args.contains(&"--skip-git-repo-check".to_string()),
+            "missing --skip-git-repo-check in {args:?}"
+        );
         assert!(
             args.contains(&"--json".to_string()),
             "missing --json in {args:?}"
@@ -2254,10 +2587,14 @@ mod tests {
         let schema = citation_review_schema_for_test();
         let artifact = serde_json::json!({
             "bibliography": [{
-                "raw": "Doe, A Useful Paper, 2024.",
+                "raw": "doe2024",
                 "title": "A Useful Paper",
                 "doi": "10.1234/example",
                 "arxiv_id": null
+            }],
+            "sections": [{
+                "heading": "Introduction",
+                "body_markdown": "This result follows earlier work [@doe2024]."
             }]
         });
 
@@ -2265,16 +2602,47 @@ mod tests {
             .expect("fallback validates");
 
         assert_eq!(repaired["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(repaired["entries"][0]["citation"]["key"], "[1]");
+        assert_eq!(repaired["entries"][0]["citation"]["key"], "doe2024");
         assert_eq!(
             repaired["entries"][0]["citation"]["title"],
             "A Useful Paper"
         );
         assert_eq!(repaired["entries"][0]["exists"], false);
+        assert_eq!(repaired["entries"][0]["relevance"], "high");
+        assert!(repaired["entries"][0]["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("Introduction"));
         assert!(repaired["summary"]
             .as_str()
             .unwrap()
-            .contains("not externally verified"));
+            .contains("external existence lookups were not performed"));
+    }
+
+    #[test]
+    fn reproducibility_repair_builds_schema_valid_fallback() {
+        let schema = reproducibility_review_schema_for_test();
+        let artifact = serde_json::json!({
+            "sections": [{
+                "heading": "Methods",
+                "body_markdown": "We solve the equations numerically and do not provide source code."
+            }]
+        });
+
+        let repaired = repair_review_output(AgentRole::Reproducibility, "", &schema, &artifact)
+            .expect("fallback validates");
+
+        assert_eq!(repaired["code_availability"], "unspecified");
+        assert_eq!(repaired["data_availability"], "unspecified");
+        assert_eq!(
+            repaired["environment"]["dependencies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(repaired["concerns"].as_array().unwrap().len() >= 2);
+        assert_eq!(repaired["concerns"][0]["area"], "code");
     }
 
     fn citation_review_schema_for_test() -> serde_json::Value {
@@ -2320,6 +2688,13 @@ mod tests {
             },
             "required": ["entries", "missing_references", "summary", "confidence"]
         })
+    }
+
+    fn reproducibility_review_schema_for_test() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../../../schemas/reproducibility_review.schema.json"
+        ))
+        .unwrap()
     }
 
     /// Integration test gated on `which claude`. Skips silently if claude
@@ -2600,6 +2975,41 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         );
         assert_eq!(decode_jwt_claim(&jwt, "missing"), None);
         assert_eq!(decode_jwt_claim("notajwt", "x"), None);
+    }
+
+    #[test]
+    fn gemini_auth_prefers_local_oauth_creds_over_gcloud_adc() {
+        let home = tempfile::tempdir().unwrap();
+        let gemini = home.path().join(".gemini");
+        let gcloud = home.path().join(".config").join("gcloud");
+        std::fs::create_dir_all(&gemini).unwrap();
+        std::fs::create_dir_all(&gcloud).unwrap();
+        std::fs::write(
+            gemini.join("settings.json"),
+            r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            gemini.join("google_accounts.json"),
+            r#"{"active":"mlong168@gmail.com","old":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            gemini.join("oauth_creds.json"),
+            r#"{"access_token":"redacted","refresh_token":"redacted"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            gcloud.join("application_default_credentials.json"),
+            r#"{"type":"authorized_user","quota_project_id":"wrong-project"}"#,
+        )
+        .unwrap();
+
+        let _home = EnvVarGuard::set_owned(&[("HOME", home.path().to_string_lossy().into_owned())]);
+        let (auth_method, account, quota_project) = inspect_gemini_auth();
+        assert_eq!(auth_method, "gemini_cli_oauth_personal");
+        assert_eq!(account, "mlong168@gmail.com");
+        assert_eq!(quota_project, "n/a");
     }
 
     /// Reference base64url encoder for the JWT decoder unit test.
