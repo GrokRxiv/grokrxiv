@@ -26,7 +26,7 @@ const COMMON_FIELDS = [
 const PAGE_SIZE = 20;
 const TITLE = "GrokRxiv Reviews";
 const DESCRIPTION =
-  "Browse every published GrokRxiv AI peer review. Filter by arXiv field, search by title or abstract, paginate by date.";
+  "Browse every GrokRxiv AI peer review. Filter by arXiv field, search by title or abstract, paginate by date.";
 
 export const metadata: Metadata = {
   title: TITLE,

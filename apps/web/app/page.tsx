@@ -56,7 +56,7 @@ export default function HomePage() {
       {/* Latest reviews */}
       <section id="reviews" className="flex flex-col gap-4">
         <h2 className="text-2xl font-semibold tracking-tight">
-          Latest published reviews
+          Latest reviews
         </h2>
         <Suspense fallback={<ReviewsGridSkeleton />}>
           <ReviewsGrid />
@@ -78,7 +78,7 @@ async function ReviewsGrid() {
   if (data.length === 0) {
     return (
       <p className="text-sm text-[color:var(--color-muted-foreground)]">
-        No published reviews yet. Be the first to drop a PDF above.
+        No reviews yet. Be the first to drop a PDF above.
       </p>
     );
   }
