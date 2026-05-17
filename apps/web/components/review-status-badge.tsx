@@ -20,7 +20,7 @@ const STATUS_LABEL: Record<ReviewStatus, string> = {
   draft: "Draft",
   awaiting_moderation: "Awaiting moderation",
   in_review: "In review",
-  pr_open: "PR open",
+  pr_open: "In Review",
   published: "Published",
   corrected: "Corrected",
   withdrawn: "Withdrawn",
