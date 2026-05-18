@@ -488,6 +488,7 @@ async fn run_review_dag_inner(
         crate::agents::specialist_facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref()),
         crate::agents::specialist_facts::gather_novelty_facts(&state.http, extract_arc.as_ref()),
     );
+    let tc_facts = crate::agents::specialist_facts::gather_tc_facts(extract_arc.as_ref());
     tracing::info!(
         %paper_id,
         %review_id,
@@ -496,7 +497,10 @@ async fn run_review_dag_inner(
         github_repos = reproducibility_facts.github_repos.len(),
         related_papers = novelty_facts.related_papers.len(),
         novelty_retrieval_error = %novelty_facts.retrieval_error,
-        "review: gathered reproducibility + novelty facts"
+        tc_tables = tc_facts.tables.len(),
+        tc_equation_labels = tc_facts.equation_labels.len(),
+        tc_complexity_mentions = tc_facts.complexity_mentions.len(),
+        "review: gathered reproducibility + novelty + TC facts"
     );
     if let Some(notes) = moderator_notes.as_deref() {
         tracing::info!(
@@ -525,12 +529,18 @@ async fn run_review_dag_inner(
         } else {
             None
         };
+        let tc_for_role = if matches!(role, AgentRole::TechnicalCorrectness) {
+            Some(&tc_facts)
+        } else {
+            None
+        };
         let prompt = build_specialist_prompt(
             role,
             extract_arc.as_ref(),
             moderator_notes.as_deref(),
             repro_for_role,
             novelty_for_role,
+            tc_for_role,
         );
         if let Some(root) = debug_root.as_deref() {
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
@@ -1153,7 +1163,17 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
                      specialists, or (b) the paper explicitly justifies the absence (e.g. \
                      existence proof in a field where Coq tooling does not yet cover the \
                      theory). When applying this gate, cite the specific specialist findings \
-                     in `summary` and add the missing artifacts to `weaknesses`.",
+                     in `summary` and add the missing artifacts to `weaknesses`.\n\n\
+                     VERIFIED-FACT WEIGHTING. Specialist outputs now carry merged ground \
+                     truth from deterministic verifiers: `citation_review.entries[*].exists / \
+                     resolved_doi / resolved_url` come from real Crossref + arXiv lookups; \
+                     `reproducibility_review.concerns[]` entries describing 'Verifier could \
+                     not reach …' or 'GitHub repository … is marked archived' came from \
+                     HTTP HEAD + GitHub API calls; `novelty_review.related_work[]` entries \
+                     tagged `relation: candidate_neighbor` came from Semantic Scholar. Treat \
+                     these fields as authoritative — do not contradict them. The specialists' \
+                     `relevance` / `confidence` / `recommendation` fields remain LLM \
+                     judgments; weight them against the verified facts when they conflict.",
                 );
             }
             _ => {}
@@ -1522,6 +1542,7 @@ fn build_specialist_prompt(
     moderator_notes: Option<&str>,
     reproducibility_facts: Option<&crate::agents::specialist_facts::ReproducibilityFacts>,
     novelty_facts: Option<&crate::agents::specialist_facts::NoveltyFacts>,
+    tc_facts: Option<&crate::agents::specialist_facts::TechnicalCorrectnessFacts>,
 ) -> String {
     use grokrxiv_schemas::AgentRole;
 
@@ -1734,6 +1755,50 @@ fn build_specialist_prompt(
                 "Prior-art retrieval failed ({}); fall back to memory but flag the gap in confidence.\n\n",
                 facts.retrieval_error,
             ));
+        }
+    }
+    if let Some(facts) = tc_facts {
+        if !facts.tables.is_empty()
+            || !facts.equation_labels.is_empty()
+            || !facts.complexity_mentions.is_empty()
+        {
+            out.push_str(
+                "Verified structural facts about the paper (use these to cross-check claims \
+                 against actual tables and equations; do NOT reason from memory of the body):\n\n",
+            );
+            if !facts.tables.is_empty() {
+                out.push_str("Tables found:\n");
+                for t in facts.tables.iter().take(20) {
+                    out.push_str(&format!(
+                        "- [{section}] {rows} rows; header: {header}\n",
+                        section = t.section,
+                        rows = t.row_count,
+                        header = t.header_row.chars().take(160).collect::<String>(),
+                    ));
+                }
+                out.push('\n');
+            }
+            if !facts.equation_labels.is_empty() {
+                out.push_str("Equation labels found:\n");
+                for e in facts.equation_labels.iter().take(20) {
+                    out.push_str(&format!("- [{}] {}\n", e.section, e.label));
+                }
+                out.push('\n');
+            }
+            if !facts.complexity_mentions.is_empty() {
+                out.push_str("Complexity notations found:\n");
+                for c in facts.complexity_mentions.iter().take(20) {
+                    out.push_str(&format!("- [{}] {}\n", c.section, c.notation));
+                }
+                out.push('\n');
+            }
+            out.push_str(
+                "Rules:\n\
+                 - When a claim references a number that should appear in a table above, cite \
+                   the table by header and verify the number against the source body block.\n\
+                 - When the paper claims a complexity bound not listed above, flag it as \
+                   `unsupported` unless the body explicitly derives it.\n\n",
+            );
         }
     }
     out.push_str(&format!("Task: {task}"));
@@ -2624,7 +2689,7 @@ mod tests {
             AgentRole::Novelty,
             AgentRole::Reproducibility,
         ] {
-            let prompt = build_specialist_prompt(role, &extract, None, None, None);
+            let prompt = build_specialist_prompt(role, &extract, None, None, None, None);
             assert!(
                 prompt.contains("## 1. Introduction"),
                 "role {role:?}: prompt missing heading: {}",
@@ -2666,7 +2731,7 @@ mod tests {
         );
 
         let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
 
         // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
         let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
@@ -2714,7 +2779,7 @@ mod tests {
         );
         extract.bibliography[0].title = Some("A foundational paper".to_string());
 
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None, None);
         assert!(
             prompt.contains("Bibliography (2 entries):"),
             "expected bibliography header in prompt"
@@ -2755,7 +2820,7 @@ mod tests {
             )],
             vec!["Some citation, 2020."],
         );
-        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None);
+        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None, None);
         assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
         assert!(!prompt.contains("introductory body markdown"));
         assert!(!prompt.contains("Bibliography"));
@@ -2771,7 +2836,7 @@ mod tests {
         // Summary budget = 48_000. Build a single 100_000-char section.
         let huge = "abcdefghij".repeat(10_000); // 100_000 chars
         let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
-        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None, None, None);
         assert!(
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
@@ -2965,6 +3030,7 @@ mod tests {
             Some("Please tighten the proof of Theorem 3."),
             None,
             None,
+            None,
         );
         assert!(
             prompt.contains("Moderator notes from a prior `request-changes` round"),
@@ -2984,9 +3050,9 @@ mod tests {
             vec![("1. Intro", "Some content.".to_string())],
             vec!["[Foo23] Foo et al."],
         );
-        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None);
+        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
         assert!(!p_none.contains("Moderator notes"), "None should not emit the section");
-        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None, None);
+        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None, None, None);
         assert!(!p_blank.contains("Moderator notes"), "whitespace-only should not emit the section");
     }
 

@@ -425,6 +425,179 @@ fn semantic_scholar_url_encode(raw: &str) -> String {
     out
 }
 
+/// Phase C facts: structural elements (tables, equation labels, complexity
+/// mentions) extracted by deterministic parsing of the paper body. Surfaces
+/// to the Technical Correctness specialist so it cross-checks numerical
+/// claims against actual reported numbers instead of trusting prose memory.
+/// No HTTP, no LLM — pure regex over already-extracted section bodies.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct TechnicalCorrectnessFacts {
+    pub tables: Vec<TableFact>,
+    pub equation_labels: Vec<EquationLabelFact>,
+    pub complexity_mentions: Vec<ComplexityMention>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TableFact {
+    pub section: String,
+    /// First non-empty row, usually the column headers.
+    pub header_row: String,
+    pub row_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EquationLabelFact {
+    pub section: String,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ComplexityMention {
+    pub section: String,
+    /// The exact substring, e.g. "O(n log n)" or "Θ(n^2)".
+    pub notation: String,
+}
+
+/// Scan the extracted paper body for tables, equation labels, and complexity
+/// notations. Caps per-category to keep the prompt section bounded on papers
+/// with hundreds of equations.
+pub fn gather_tc_facts(extract: &PaperExtract) -> TechnicalCorrectnessFacts {
+    const MAX_PER_CATEGORY: usize = 25;
+    let mut tables: Vec<TableFact> = Vec::new();
+    let mut equations: Vec<EquationLabelFact> = Vec::new();
+    let mut complexities: Vec<ComplexityMention> = Vec::new();
+    for section in &extract.sections {
+        if tables.len() < MAX_PER_CATEGORY {
+            tables.extend(
+                extract_tables(&section.heading, &section.body_markdown)
+                    .into_iter()
+                    .take(MAX_PER_CATEGORY - tables.len()),
+            );
+        }
+        if equations.len() < MAX_PER_CATEGORY {
+            equations.extend(
+                extract_equation_labels(&section.heading, &section.body_markdown)
+                    .into_iter()
+                    .take(MAX_PER_CATEGORY - equations.len()),
+            );
+        }
+        if complexities.len() < MAX_PER_CATEGORY {
+            complexities.extend(
+                extract_complexity_mentions(&section.heading, &section.body_markdown)
+                    .into_iter()
+                    .take(MAX_PER_CATEGORY - complexities.len()),
+            );
+        }
+    }
+    TechnicalCorrectnessFacts {
+        tables,
+        equation_labels: equations,
+        complexity_mentions: complexities,
+    }
+}
+
+/// A markdown table is a block of consecutive `|`-pipe rows. We require at
+/// least one row that's just dashes (the header separator) to qualify, so
+/// we don't catch single-cell `|` literals in prose.
+fn extract_tables(section: &str, body: &str) -> Vec<TableFact> {
+    let mut out: Vec<TableFact> = Vec::new();
+    let lines: Vec<&str> = body.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.starts_with('|') && line.ends_with('|') && line.len() > 2 {
+            // Look for a separator row in the next 2 lines.
+            let header = line;
+            let mut block_end = i + 1;
+            let mut has_separator = false;
+            while block_end < lines.len()
+                && lines[block_end].trim().starts_with('|')
+                && lines[block_end].trim().ends_with('|')
+            {
+                let inner = lines[block_end].trim().trim_matches('|');
+                if inner.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ' | '\t')) {
+                    has_separator = true;
+                }
+                block_end += 1;
+            }
+            if has_separator && block_end > i + 2 {
+                out.push(TableFact {
+                    section: section.to_string(),
+                    header_row: header.to_string(),
+                    // block_end - i counts header + separator + data rows.
+                    // Subtract 2 to get just the data rows.
+                    row_count: (block_end - i).saturating_sub(2),
+                });
+            }
+            i = block_end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// LaTeX-style `\label{eq:foo}` or `\label{eqn:foo}` markers. Also picks up
+/// numbered equations like `(1)`, `(2.3)` that appear at the start of a line
+/// — those are inline references to display equations.
+fn extract_equation_labels(section: &str, body: &str) -> Vec<EquationLabelFact> {
+    let mut out: Vec<EquationLabelFact> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    // \label{...} with eq: prefix or similar.
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("\\label{") {
+        let start = i + rel + 7;
+        if let Some(end_rel) = body[start..].find('}') {
+            let label = body[start..start + end_rel].trim();
+            if label.starts_with("eq")
+                || label.starts_with("equation")
+                || label.starts_with("Eq")
+            {
+                let key = label.to_string();
+                if seen.insert(key.clone()) {
+                    out.push(EquationLabelFact {
+                        section: section.to_string(),
+                        label: key,
+                    });
+                }
+            }
+            i = start + end_rel + 1;
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// Big-O / Theta / Omega complexity mentions.
+fn extract_complexity_mentions(section: &str, body: &str) -> Vec<ComplexityMention> {
+    let mut out: Vec<ComplexityMention> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for prefix in ["O(", "Θ(", "Ω(", "Theta(", "Omega("] {
+        let mut i = 0;
+        while let Some(rel) = body[i..].find(prefix) {
+            let start = i + rel;
+            // Find the matching close paren up to 40 chars away.
+            let tail = &body[start..];
+            let limit = tail.len().min(40);
+            if let Some(close) = tail[..limit].find(')') {
+                let notation = &tail[..=close];
+                let key = notation.to_string();
+                if seen.insert(key.clone()) {
+                    out.push(ComplexityMention {
+                        section: section.to_string(),
+                        notation: key,
+                    });
+                }
+                i = start + close + 1;
+            } else {
+                i = start + prefix.len();
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +667,35 @@ mod tests {
         });
         let urls = collect_urls(&extract);
         assert_eq!(urls.len(), 2);
+    }
+
+    #[test]
+    fn extract_tables_finds_markdown_tables_and_counts_rows() {
+        let body = "Intro prose.\n\n| col1 | col2 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\nNext para.";
+        let tables = extract_tables("3. Results", body);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].section, "3. Results");
+        assert_eq!(tables[0].header_row, "| col1 | col2 |");
+        assert_eq!(tables[0].row_count, 2);
+    }
+
+    #[test]
+    fn extract_equation_labels_picks_up_label_macros() {
+        let body = "Eq \\label{eq:main}: text. Later \\label{section} not an eq. \\label{eq:bound} too.";
+        let eqs = extract_equation_labels("2. Methods", body);
+        let labels: Vec<&str> = eqs.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"eq:main"));
+        assert!(labels.contains(&"eq:bound"));
+        assert!(!labels.contains(&"section"));
+    }
+
+    #[test]
+    fn extract_complexity_mentions_finds_bigo_and_theta() {
+        let body = "Our method runs in O(n log n) time, beating the previous Θ(n^2) approach.";
+        let cs = extract_complexity_mentions("4. Analysis", body);
+        let n: Vec<&str> = cs.iter().map(|c| c.notation.as_str()).collect();
+        assert!(n.contains(&"O(n log n)"));
+        assert!(n.contains(&"Θ(n^2)"));
     }
 
     #[tokio::test]

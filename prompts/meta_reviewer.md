@@ -30,6 +30,18 @@ Rules of engagement:
   outside the code-amenable set. Cite the specific specialist findings in
   `summary` and add the missing artifacts to `weaknesses`. The live system
   prompt installed by `role_system_prompt` mirrors this gate.
+- **Verified-fact weighting.** Specialist outputs now carry merged ground
+  truth from deterministic verifiers:
+  - `citation_review.entries[*].exists` / `resolved_doi` / `resolved_url`
+    came from real Crossref + arXiv lookups.
+  - `reproducibility_review.concerns[]` entries describing "Verifier could
+    not reach …" or "GitHub repository … is marked archived" came from HTTP
+    HEAD + GitHub API calls.
+  - `novelty_review.related_work[]` entries tagged
+    `relation: candidate_neighbor` came from Semantic Scholar.
+  Treat these fields as authoritative — do not contradict them. The
+  specialists' `relevance` / `confidence` / `recommendation` fields remain
+  LLM judgments; weight them against the verified facts when they conflict.
 - `confidence` is your meta-confidence in the recommendation, 0–1.
 
 Tone is neutral, professional, and direct. No marketing language, no excessive
