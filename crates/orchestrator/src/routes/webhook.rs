@@ -134,39 +134,47 @@ pub async fn github(
             .into_response();
     }
 
-    // Revalidate the Vercel cache. The Next.js handler expects
-    // `{ review_id: uuid, paths?: string[] }` and the handler itself appends
-    // `/reviews/<id>` and `/` to its revalidation set — we send the explicit
-    // `paths` anyway so the contract is self-describing.
-    if let (Some(url), Some(secret)) = (
-        state.config.web_revalidate_url.as_deref(),
-        state.config.revalidate_secret.as_deref(),
-    ) {
-        let client = state.http.clone();
-        let url = url.to_string();
-        let secret = secret.to_string();
-        tokio::spawn(async move {
-            let res = client
-                .post(&url)
-                .header("x-revalidate-secret", secret)
-                .json(&json!({
-                    "review_id": review_id,
-                    "paths": ["/", format!("/reviews/{}", review_id)],
-                }))
-                .send()
-                .await;
-            match res {
-                Ok(r) => tracing::info!(status = %r.status(), %review_id, "revalidate ack"),
-                Err(e) => tracing::warn!(err = %e, %review_id, "revalidate failed"),
-            }
-        });
-    }
+    spawn_revalidate(&state, review_id);
 
     (
         StatusCode::OK,
         Json(json!({ "ok": true, "review_id": review_id, "branch": branch })),
     )
         .into_response()
+}
+
+/// Fire-and-forget POST to `WEB_REVALIDATE_URL` so the Next.js ISR cache flips
+/// the affected `/reviews/<id>` and `/` pages immediately. Used by both the
+/// merge webhook (after `pr_open → published`) and `grokrxiv approve` (after
+/// `awaiting_moderation → pr_open`). Silent no-op when the env isn't
+/// configured — never an error path for the caller.
+pub fn spawn_revalidate(state: &crate::state::AppState, review_id: uuid::Uuid) {
+    let Some(url) = state.config.web_revalidate_url.as_deref() else {
+        tracing::warn!(%review_id, "spawn_revalidate: WEB_REVALIDATE_URL unset; web cache not flushed");
+        return;
+    };
+    let Some(secret) = state.config.revalidate_secret.as_deref() else {
+        tracing::warn!(%review_id, "spawn_revalidate: REVALIDATE_SECRET unset; web cache not flushed");
+        return;
+    };
+    let client = state.http.clone();
+    let url = url.to_string();
+    let secret = secret.to_string();
+    tokio::spawn(async move {
+        let res = client
+            .post(&url)
+            .header("x-revalidate-secret", secret)
+            .json(&json!({
+                "review_id": review_id,
+                "paths": ["/", format!("/reviews/{}", review_id)],
+            }))
+            .send()
+            .await;
+        match res {
+            Ok(r) => tracing::info!(status = %r.status(), %review_id, "revalidate ack"),
+            Err(e) => tracing::warn!(err = %e, %review_id, "revalidate failed"),
+        }
+    });
 }
 
 /// Verify a GitHub `sha256=<hex>` signature against `body` using `secret`.
