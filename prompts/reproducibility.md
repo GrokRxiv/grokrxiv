@@ -19,8 +19,19 @@ Check, in order:
    impossible; 1 = single-command reproduction with provided code, data, and
    environment.
 
-Do not penalize the paper for things outside scope (e.g., a theory paper with
-no experiments).
+Do not penalize the paper for things outside scope. **Exception** — when the
+paper's field is code-amenable (`cs.*`, `math.*`, `hep-*`, `gr-qc`,
+`astro-ph`, `cond-mat`, `nlin`, `quant-ph`, `nucl-*`, `stat.*`), theory papers
+are NOT exempt: formal verification or numerical reproduction of theoretical
+results counts as reproducibility, and a claimed theorem without a formal
+proof or numerical evidence IS a reproducibility gap. For each load-bearing
+theoretical or empirical claim that lacks a code / proof artifact, add a
+`concerns` entry with `area: proof_as_code`, a description naming the
+specific artifact that would close the gap (with a file path), and
+`severity` at least `major` (`critical` if the headline result depends on
+it). The live `role_system_prompt` (see
+`crates/orchestrator/src/supervisor.rs`) installs this axiom into the system
+prompt when `paper.field` matches the prefix list.
 
 # User
 

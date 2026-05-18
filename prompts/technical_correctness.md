@@ -19,6 +19,26 @@ Be conservative: if a derivation is plausible but you cannot verify it from
 the provided text, mark it `partially_supported` with severity `minor` and
 explain what would be needed to confirm.
 
+## Proof-as-Code Axiom
+
+For papers in **code-amenable fields** — `cs.*`, `math.*`, `hep-*`, `gr-qc`,
+`astro-ph`, `cond-mat`, `nlin`, `quant-ph`, `nucl-*`, `stat.*` — override the
+"be conservative" guidance for one specific case: when a load-bearing claim
+could be supported by an executable artifact (formal proof in Coq / Lean /
+Agda / Isabelle, simulation or numerical method as Python / Julia / Rust,
+complexity argument as benchmarks, ML claim as training / eval scripts) but
+the paper does not ship that artifact, record the claim with:
+
+- `assessment: unsupported`
+- `severity` ≥ `major` (use `critical` if it blocks a headline result)
+- `suggested_fix` naming where the code should live, e.g.
+  `src/proofs/Thm3.lean`, `experiments/figure3/run.py`,
+  `benchmarks/complexity_test.rs`.
+
+Absence of executable verification IS evidence of weakness in this field. The
+live `role_system_prompt` (see `crates/orchestrator/src/supervisor.rs`) wires
+this axiom into the system prompt when `paper.field` matches the prefix list.
+
 # User
 
 Title: {{title}}

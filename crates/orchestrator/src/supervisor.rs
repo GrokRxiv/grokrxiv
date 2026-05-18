@@ -484,7 +484,7 @@ async fn run_review_dag_inner(
         if let Some(root) = debug_root.as_deref() {
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
         }
-        let system = role_system_prompt(role);
+        let system = role_system_prompt(role, extract_arc.field.as_deref());
         let (agent, runner, role_model) = resolve_agent(role)?;
         let sem = sem.clone();
         let pool_cloned = pool.clone();
@@ -710,7 +710,7 @@ async fn run_review_dag_inner(
             &meta_prompt,
         );
     }
-    let meta_system = role_system_prompt(AgentRole::MetaReviewer);
+    let meta_system = role_system_prompt(AgentRole::MetaReviewer, extract_arc.field.as_deref());
 
     let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer)?;
     crate::cli_status::emit(format!("review {review_id}: meta_reviewer starting"));
@@ -1023,7 +1023,7 @@ fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
     }
 }
 
-fn role_system_prompt(role: grokrxiv_schemas::AgentRole) -> String {
+fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) -> String {
     use grokrxiv_schemas::AgentRole;
     let task = match role {
         AgentRole::Summary => "summarize papers in plain language for a literate non-expert",
@@ -1037,11 +1037,80 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole) -> String {
             "synthesize five specialist reviews into a single recommendation"
         }
     };
-    format!(
+    let mut s = format!(
         "You are a careful, honest specialist peer reviewer. You {task}. \
          Respond with strict JSON conforming to the supplied schema. No prose, \
          no code fences, no commentary."
-    )
+    );
+    let amenable = field.map(is_code_amenable_field).unwrap_or(false);
+    if amenable {
+        match role {
+            AgentRole::TechnicalCorrectness => {
+                s.push_str(
+                    "\n\nPROOF-AS-CODE AXIOM. The paper is in a code-amenable field \
+                     (cs.*, math.*, hep-*, gr-qc, astro-ph, cond-mat, nlin, quant-ph, nucl-*). \
+                     For every load-bearing claim that COULD be supported by an executable \
+                     artifact — a formal proof in Coq/Lean/Agda/Isabelle, a simulation or \
+                     numerical method as Python/Julia/Rust, a complexity argument as \
+                     benchmarks, an ML claim as training/eval scripts — and the paper does \
+                     NOT ship that artifact: record the claim with assessment 'unsupported' \
+                     and severity at least 'major' (use 'critical' if it blocks a headline \
+                     result), and write a concrete suggested_fix that names where the code \
+                     should live, e.g. `src/proofs/Thm3.lean`, `experiments/figure3/run.py`, \
+                     `benchmarks/complexity_test.rs`. Override the default 'be conservative' \
+                     guidance for these cases — absence of executable verification IS evidence \
+                     of weakness in this field.",
+                );
+            }
+            AgentRole::Reproducibility => {
+                s.push_str(
+                    "\n\nPROOF-AS-CODE AXIOM. The paper is in a code-amenable field. \
+                     Theory papers are NOT exempt from reproducibility analysis: formal \
+                     verification or numerical reproduction of theoretical results counts \
+                     as reproducibility, and a claimed theorem without a formal proof or \
+                     numerical evidence IS a reproducibility gap. For every load-bearing \
+                     theoretical or empirical claim that lacks a code/proof artifact, add a \
+                     `concerns` entry with area='proof_as_code', a description naming the \
+                     specific artifact that would close the gap (path included), and \
+                     severity at least 'major' ('critical' if the headline result depends on it).",
+                );
+            }
+            AgentRole::MetaReviewer => {
+                s.push_str(
+                    "\n\nRECOMMENDATION GATE. When technical_correctness OR reproducibility \
+                     flagged a missing proof-as-code artifact at severity 'major' or 'critical', \
+                     default `recommendation` to `major_revision`. If the missing artifact \
+                     blocks a headline claim, recommend `reject`. Only allow `accept` or \
+                     `minor_revision` when (a) code exists and was acknowledged by the \
+                     specialists, or (b) the paper explicitly justifies the absence (e.g. \
+                     existence proof in a field where Coq tooling does not yet cover the \
+                     theory). When applying this gate, cite the specific specialist findings \
+                     in `summary` and add the missing artifacts to `weaknesses`.",
+                );
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// arXiv category prefixes for fields where executable verification is the
+/// state of the art and its absence is evidence of weakness. Kept hard-coded
+/// because the list is short and stable; broaden as new tooling lands.
+fn is_code_amenable_field(field: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "cs.",
+        "math.",
+        "hep-",
+        "gr-qc",
+        "astro-ph",
+        "cond-mat",
+        "nlin",
+        "quant-ph",
+        "nucl-",
+        "stat.",
+    ];
+    PREFIXES.iter().any(|p| field.starts_with(p))
 }
 
 /// Per-role character budget for the rendered section bodies. Reserved for
@@ -1289,8 +1358,12 @@ fn build_specialist_prompt(
         AgentRole::MetaReviewer => unreachable!("MetaReviewer handled above"),
     };
 
+    let field_line = match extract.field.as_deref() {
+        Some(f) if !f.is_empty() => format!("Paper field: {f}\n\n"),
+        _ => String::new(),
+    };
     let mut out = format!(
-        "Paper title: {title}\n\nAbstract:\n{abstract_}\n\nSection headings:\n{heading_index}\n\n",
+        "{field_line}Paper title: {title}\n\nAbstract:\n{abstract_}\n\nSection headings:\n{heading_index}\n\n",
         title = extract.title,
         abstract_ = extract.abstract_,
     );
@@ -2354,6 +2427,52 @@ mod tests {
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 6: proof-as-code axiom.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn role_system_prompt_adds_proof_as_code_for_code_amenable_field() {
+        use grokrxiv_schemas::AgentRole;
+        let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("math.AG"));
+        assert!(tc.contains("PROOF-AS-CODE AXIOM"), "math.* should trigger axiom for technical_correctness");
+        let rp = role_system_prompt(AgentRole::Reproducibility, Some("cs.LO"));
+        assert!(rp.contains("PROOF-AS-CODE AXIOM"), "cs.* should trigger axiom for reproducibility");
+        let mr = role_system_prompt(AgentRole::MetaReviewer, Some("hep-th"));
+        assert!(mr.contains("RECOMMENDATION GATE"), "hep-* should trigger gate for meta_reviewer");
+    }
+
+    #[test]
+    fn role_system_prompt_skips_axiom_for_non_amenable_field() {
+        use grokrxiv_schemas::AgentRole;
+        let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("q-bio.GN"));
+        assert!(!tc.contains("PROOF-AS-CODE AXIOM"), "q-bio.* should NOT trigger the axiom");
+        let mr = role_system_prompt(AgentRole::MetaReviewer, None);
+        assert!(!mr.contains("RECOMMENDATION GATE"), "missing field should NOT trigger the gate");
+    }
+
+    #[test]
+    fn role_system_prompt_skips_axiom_for_unrelated_roles() {
+        use grokrxiv_schemas::AgentRole;
+        let s = role_system_prompt(AgentRole::Summary, Some("cs.LO"));
+        let n = role_system_prompt(AgentRole::Novelty, Some("math.AG"));
+        let c = role_system_prompt(AgentRole::Citation, Some("hep-th"));
+        for p in [&s, &n, &c] {
+            assert!(!p.contains("PROOF-AS-CODE AXIOM"), "axiom should only fire for TC/Reproducibility");
+            assert!(!p.contains("RECOMMENDATION GATE"), "gate should only fire for MetaReviewer");
+        }
+    }
+
+    #[test]
+    fn is_code_amenable_field_matches_expected_prefixes() {
+        for f in ["cs.LO", "cs.LG", "math.AG", "hep-th", "hep-ph", "gr-qc", "astro-ph.CO", "cond-mat.str-el", "nlin.CD", "quant-ph", "nucl-th", "stat.ML"] {
+            assert!(is_code_amenable_field(f), "expected {f} to be code-amenable");
+        }
+        for f in ["q-bio.GN", "q-fin.RM", "econ.GN", "eess.SP", "physics.med-ph"] {
+            assert!(!is_code_amenable_field(f), "expected {f} to NOT be code-amenable");
+        }
     }
 
     /// FP-RPT3b B1 regression: the meta-synthesis prompt must NOT document a
