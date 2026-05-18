@@ -9,15 +9,106 @@ use regex::Regex;
 
 use crate::types::{Citation, Section};
 
+/// Text plus lightweight cleanup metrics from PDF normalization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedPdfText {
+    pub text: String,
+    pub joined_hyphenated_breaks: usize,
+    pub removed_repeated_lines: usize,
+    pub removed_page_markers: usize,
+}
+
 /// Convert a PDF byte buffer to a UTF-8 text blob.
 pub fn pdf_to_text(pdf: &[u8]) -> Result<String> {
     pdf_extract::extract_text_from_mem(pdf).context("pdf_extract::extract_text_from_mem")
+}
+
+/// Normalize text produced by PDF extractors before downstream heuristics or
+/// sample reviews see it.
+///
+/// PDF text extraction often preserves page headers, footer page numbers,
+/// ligatures, and line-wrapped hyphenation. Those artifacts make the sample
+/// upload path look worse than the full arXiv source path and waste LLM
+/// context. This function stays deterministic and conservative: it removes
+/// only repeated short header/footer lines and obvious page markers, and it
+/// joins only alphabetic hyphenated line breaks.
+pub fn normalize_pdf_text(raw: &str) -> NormalizedPdfText {
+    let mut text = raw
+        .replace('\u{000c}', "\n")
+        .replace('\u{00a0}', " ")
+        .replace('\r', "\n")
+        .replace('\u{fb00}', "ff")
+        .replace('\u{fb01}', "fi")
+        .replace('\u{fb02}', "fl")
+        .replace('\u{fb03}', "ffi")
+        .replace('\u{fb04}', "ffl");
+
+    let joined_hyphenated_breaks = HYPHENATED_LINEBREAK_RE.find_iter(&text).count();
+    text = HYPHENATED_LINEBREAK_RE
+        .replace_all(&text, "$word$next")
+        .into_owned();
+
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| INLINE_SPACE_RE.replace_all(line.trim(), " ").into_owned())
+        .collect();
+
+    let mut repeated_counts = std::collections::HashMap::<String, usize>::new();
+    for line in &lines {
+        if is_repeatable_header_footer(line) {
+            *repeated_counts.entry(line.to_string()).or_default() += 1;
+        }
+    }
+
+    let mut removed_repeated_lines = 0;
+    let mut removed_page_markers = 0;
+    let mut kept = Vec::with_capacity(lines.len());
+    for line in lines {
+        if PAGE_MARKER_RE.is_match(&line) {
+            removed_page_markers += 1;
+            continue;
+        }
+        if repeated_counts.get(&line).copied().unwrap_or(0) >= 3 {
+            removed_repeated_lines += 1;
+            continue;
+        }
+        kept.push(line);
+    }
+
+    let text = BLANK_LINES_RE
+        .replace_all(kept.join("\n").trim(), "\n\n")
+        .into_owned();
+
+    NormalizedPdfText {
+        text,
+        joined_hyphenated_breaks,
+        removed_repeated_lines,
+        removed_page_markers,
+    }
 }
 
 static HEADING_RE: Lazy<Regex> = Lazy::new(|| {
     // `^(\d+(\.\d+)*\s+)?[A-Z][A-Za-z ]{2,}$`
     Regex::new(r"^(?P<num>\d+(?:\.\d+)*)?\s*(?P<title>[A-Z][A-Za-z ]{2,})$").unwrap()
 });
+static HYPHENATED_LINEBREAK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?m)(?P<word>[A-Za-z]{2,})-\s*\n\s*(?P<next>[a-z][A-Za-z]{1,})").unwrap()
+});
+static INLINE_SPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]+").unwrap());
+static BLANK_LINES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
+static PAGE_MARKER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:page\s+)?\d+\s*(?:of\s+\d+)?$").unwrap());
+
+fn is_repeatable_header_footer(line: &str) -> bool {
+    if line.len() < 4 || line.len() > 96 {
+        return false;
+    }
+    if line.ends_with('.') {
+        return false;
+    }
+    let word_count = line.split_whitespace().count();
+    word_count <= 10 && line.chars().any(|c| c.is_ascii_alphabetic())
+}
 
 /// Split a text blob into [`Section`]s using a heading-line heuristic.
 ///
@@ -109,6 +200,32 @@ pub fn extract_bibliography(text: &str) -> Vec<Citation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_pdf_ligatures_headers_pages_and_hyphenation() {
+        let raw = "\
+GrokRxiv Draft
+1
+ABSTRACT
+We study ef\u{fb01}cient con-
+vergence for models.
+GrokRxiv Draft
+2
+INTRODUCTION
+The method is useful.
+GrokRxiv Draft
+3
+REFERENCES
+[1] Doe. Test. doi:10.1234/example.
+";
+        let normalized = normalize_pdf_text(raw);
+        assert!(normalized.text.contains("efficient convergence"));
+        assert!(!normalized.text.contains("GrokRxiv Draft"));
+        assert!(!normalized.text.lines().any(|line| line == "1"));
+        assert_eq!(normalized.joined_hyphenated_breaks, 1);
+        assert_eq!(normalized.removed_repeated_lines, 3);
+        assert_eq!(normalized.removed_page_markers, 3);
+    }
 
     #[test]
     fn heading_split_basic() {

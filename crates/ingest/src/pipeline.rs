@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::arxiv::{fetch_metadata, ArxivMeta};
 use crate::download::{download_pdf, download_source};
-use crate::extract::{extract_bibliography, pdf_to_text, split_sections};
+use crate::extract::{extract_bibliography, normalize_pdf_text, pdf_to_text, split_sections};
 use crate::tex::{parse_bundle, source_url};
 use crate::types::{Citation, PaperExtract, Section};
 
@@ -147,8 +147,9 @@ fn pdf_extract(bytes: Option<&Bytes>) -> (Vec<Section>, Vec<Citation>) {
     };
     match pdf_to_text(bytes) {
         Ok(text) => {
-            let sections = split_sections(&text);
-            let bib = extract_bibliography(&text);
+            let normalized = normalize_pdf_text(&text);
+            let sections = split_sections(&normalized.text);
+            let bib = extract_bibliography(&normalized.text);
             (sections, bib)
         }
         Err(e) => {

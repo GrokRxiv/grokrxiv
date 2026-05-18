@@ -30,6 +30,9 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_LITELLM_URL`         | `--litellm-url`             | LiteLLM gateway base URL |
 | `OLLAMA_HOST`                  | `--ollama-host`             | Ollama direct base URL |
 | `GROKRXIV_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
+| `GROKRXIV_FREE_REVIEW_LIMIT`   | _none_                      | Lifetime free full-review cap per logged-in user; default `3` |
+| `GROKRXIV_DAILY_FULL_REVIEW_LIMIT` | _none_                  | Optional global daily full-review throttle |
+| `GROKRXIV_MONTHLY_FULL_REVIEW_LIMIT` | _none_                | Optional global monthly full-review throttle |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
 | `GROKRXIV_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
 | `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
@@ -96,7 +99,9 @@ those CLIs use their own logged-in local auth instead of inherited API keys.
 |------------------------------|-------|
 | `GITHUB_TOKEN`               | PAT used by `grokrxiv approve`. Absent → simulated PR |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
-| `GROKRXIV_REVIEWS_REPO`      | Default `grokrxiv-reviews` |
+| `GROKRXIV_REVIEWS_REPO`      | Backward-compatible public repo alias; default `grokrxiv-reviews` |
+| `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |
+| `GROKRXIV_PRIVATE_REVIEWS_REPO` | Optional paid-private archive repo, e.g. `GrokRxiv/grokrxiv-private-reviews` |
 
 ## Web tier (`apps/web`)
 

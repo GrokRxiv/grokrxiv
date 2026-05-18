@@ -175,7 +175,10 @@ test.describe("GrokRxiv landing page", () => {
     expect(body).toHaveProperty("data");
     expect(Array.isArray(body.data)).toBeTruthy();
     for (const row of body.data) {
-      expect(["published", "corrected"]).toContain(row.status);
+      expect(["pr_open", "published", "corrected", "rejected"]).toContain(
+        row.status,
+      );
+      expect(row.visibility).toBe("public");
     }
   });
 

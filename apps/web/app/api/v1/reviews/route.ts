@@ -32,9 +32,10 @@ export async function GET(request: Request) {
   let q = supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, github_pr_url, github_review_url, models_used, created_at, published_at, paper:papers!inner(field)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, created_at, published_at, paper:papers!inner(field)",
       { count: "exact" },
     )
+    .eq("visibility", "public")
     .eq("status", status)
     .order("published_at", { ascending: false, nullsFirst: false })
     .range(from, to);

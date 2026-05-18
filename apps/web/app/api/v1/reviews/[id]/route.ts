@@ -18,7 +18,7 @@ export async function GET(
   const supabase = await createSupabaseServerClient();
 
   const select =
-    "id, paper_id, status, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status)";
+    "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status)";
 
   const asUuid = UuidParam.safeParse(id);
   if (asUuid.success) {
@@ -26,6 +26,7 @@ export async function GET(
       .from("reviews")
       .select(select)
       .eq("id", asUuid.data)
+      .eq("visibility", "public")
       .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
       .single();
     if (error || !data) {
@@ -48,6 +49,7 @@ export async function GET(
       .from("reviews")
       .select(select)
       .eq("paper_id", (paper as { id: string }).id)
+      .eq("visibility", "public")
       .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
       .order("published_at", { ascending: false, nullsFirst: false })
       .limit(1)

@@ -1957,8 +1957,8 @@ async fn approve_impl(
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
     // Read the review row + the joined paper for branch + field + arxiv_id.
-    let row: (Uuid, String, String, Option<String>, Uuid) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field, p.id \
+    let row: (Uuid, String, String, Option<String>, Uuid, String) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public') \
          from reviews r join papers p on p.id = r.paper_id \
          where r.id = $1",
     )
@@ -1966,7 +1966,7 @@ async fn approve_impl(
     .fetch_one(pool)
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field, paper_id) = row;
+    let (_, arxiv_id, title, field, paper_id, visibility) = row;
 
     // Phase 2: recommendation gate. Read meta_review.recommendation and bail
     // unless the operator passed --force. Missing recommendation is also a
@@ -2045,8 +2045,9 @@ async fn approve_impl(
             "GITHUB_TOKEN not set — simulating approval (no PR opened)"
         );
         let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
+        let (owner, repo) = review_repo_for_visibility(&visibility);
         let simulated = format!(
-            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-{}",
+            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
         let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
@@ -2054,12 +2055,15 @@ async fn approve_impl(
             .bind(&simulated)
             .execute(pool)
             .await;
-        // Even the simulated approval should flip the badge on the local site.
-        crate::routes::webhook::spawn_revalidate(state, review_id);
+        // Public simulated approvals should flip the badge on the local site;
+        // private approvals stay dashboard/private-repo only.
+        if visibility == "public" {
+            crate::routes::webhook::spawn_revalidate(state, review_id);
+        }
         if json {
             println!(
                 "{}",
-                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open"})
+                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open", "visibility": visibility})
             );
         } else {
             println!("pr_url={simulated}");
@@ -2070,8 +2074,7 @@ async fn approve_impl(
         return Ok(());
     };
 
-    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
+    let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()
@@ -2080,13 +2083,21 @@ async fn approve_impl(
 
     let admin = AdminCaller::from_admin_endpoint();
     let raw_pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
-    let raw_pr_body = format!(
-        "Approved by `grokrxiv approve {review_id}`.\n\n\
-         **Public page:** {public_url}/reviews/{review_id}\n\n\
-         See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
-        public_url = std::env::var("GROKRXIV_PUBLIC_URL")
-            .unwrap_or_else(|_| "https://grokrxiv.org".into()),
-    );
+    let raw_pr_body = if visibility == "private" {
+        format!(
+            "Approved by `grokrxiv approve {review_id}`.\n\n\
+             **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview."
+        )
+    } else {
+        format!(
+            "Approved by `grokrxiv approve {review_id}`.\n\n\
+             **Public page:** {public_url}/reviews/{review_id}\n\n\
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
+            public_url = std::env::var("GROKRXIV_PUBLIC_URL")
+                .unwrap_or_else(|_| "https://grokrxiv.org".into()),
+        )
+    };
 
     // Phase I: codex (gpt-5.5) audits the PR title + body before the PR is
     // opened, scrubbing unexpanded \newcommand macros (e.g. \sysname) and
@@ -2135,13 +2146,16 @@ async fn approve_impl(
     close_superseded_pr_if_any_cli(pool, &publisher, &admin, paper_id, &pr_url).await;
 
     // Phase 1: revalidate the public site so the "In Review" badge lands
-    // immediately, instead of waiting on the merge webhook.
-    crate::routes::webhook::spawn_revalidate(state, review_id);
+    // immediately, instead of waiting on the merge webhook. Private reviews
+    // never revalidate public pages.
+    if visibility == "public" {
+        crate::routes::webhook::spawn_revalidate(state, review_id);
+    }
 
     if json {
         println!(
             "{}",
-            serde_json::json!({"review_id": review_id, "pr_url": pr_url, "status": "pr_open"})
+            serde_json::json!({"review_id": review_id, "pr_url": pr_url, "status": "pr_open", "visibility": visibility})
         );
     } else {
         println!("pr_url={pr_url}");
@@ -2204,6 +2218,53 @@ async fn close_superseded_pr_if_any_cli(
             "supersede: closed prior PR",
         );
     }
+}
+
+fn review_repo_for_visibility(visibility: &str) -> (String, String) {
+    match visibility {
+        "private" => repo_from_combined_env(
+            "GROKRXIV_PRIVATE_REVIEWS_REPO",
+            "GrokRxiv",
+            "grokrxiv-private-reviews",
+        ),
+        _ => {
+            if let Some(repo) = repo_from_combined_env_optional("GROKRXIV_PUBLIC_REVIEWS_REPO") {
+                repo
+            } else {
+                repo_from_legacy_public_env()
+            }
+        }
+    }
+}
+
+fn repo_from_legacy_public_env() -> (String, String) {
+    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
+    let repo_raw =
+        std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
+    split_owner_repo(&repo_raw)
+        .map(|(o, r)| (o, r))
+        .unwrap_or((owner, repo_raw))
+}
+
+fn repo_from_combined_env(var: &str, default_owner: &str, default_repo: &str) -> (String, String) {
+    repo_from_combined_env_optional(var)
+        .unwrap_or_else(|| (default_owner.to_string(), default_repo.to_string()))
+}
+
+fn repo_from_combined_env_optional(var: &str) -> Option<(String, String)> {
+    let raw = std::env::var(var).ok()?;
+    split_owner_repo(&raw)
+}
+
+fn split_owner_repo(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim();
+    let (owner, repo) = trimmed.split_once('/')?;
+    let owner = owner.trim();
+    let repo = repo.trim();
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]

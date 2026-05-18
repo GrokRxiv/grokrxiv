@@ -30,9 +30,10 @@ export async function GET(
   const { data: reviews } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, github_pr_url, github_review_url, models_used, created_at, published_at",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, created_at, published_at",
     )
     .eq("paper_id", (paper as { id: string }).id)
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .order("published_at", { ascending: false, nullsFirst: false });
   return NextResponse.json({ paper, reviews: reviews ?? [] });

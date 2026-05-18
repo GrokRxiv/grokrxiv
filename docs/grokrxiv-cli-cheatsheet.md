@@ -95,17 +95,14 @@ grokrxiv approve <REVIEW_UUID> --json
 # Returns: {"pr_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/N", ...}
 ```
 
-## Make it visible on the web
+## Web visibility
 
-The Supabase RLS gate restricts anon visibility to `status IN ('published','corrected')`. Until the PR-merge webhook is wired, transition manually:
+Public reviews are visible on the web when `visibility='public'` and
+`status IN ('pr_open','published','corrected','rejected')`. `grokrxiv approve`
+opens the PR and transitions the review to `pr_open`; the merge webhook later
+flips it to `published`.
 
 ```sh
-docker exec supabase_db_grokrxiv psql -U postgres -d postgres -c "
-UPDATE reviews SET status='published', published_at=now()
-WHERE id = '<REVIEW_UUID>';
-"
-
-# Verify:
 curl -sf -o /dev/null -w "%{http_code}\n" \
   http://localhost:3000/reviews/<REVIEW_UUID>
 ```

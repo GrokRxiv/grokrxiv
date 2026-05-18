@@ -10,6 +10,8 @@ export type ReviewStatus =
   | "withdrawn"
   | "rejected";
 
+export type ReviewVisibility = "public" | "private";
+
 // Statuses visible to anonymous public readers / public APIs. A `pr_open`
 // review is shown with an "In Review" badge so papers reach the site as
 // soon as a PR opens on the mirror repo; the webhook flips it to
@@ -74,6 +76,7 @@ export interface ReviewSummary {
   id: string;
   paper_id: string;
   status: ReviewStatus;
+  visibility: ReviewVisibility;
   github_pr_url?: string;
   github_review_url?: string;
   models_used: Record<string, string>;

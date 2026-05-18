@@ -4,9 +4,9 @@
 //! a paper author. This route:
 //!
 //! 1. Accepts a `multipart/form-data` upload with a single `file` part.
-//! 2. Extracts text from the PDF via `grokrxiv-ingest::extract::pdf_to_text`.
-//! 3. Heuristic-builds a [`PaperExtract`] from the text (title from the first
-//!    non-empty line; abstract from the next paragraph; sections via
+//! 2. Extracts and normalizes text from the PDF via `grokrxiv-ingest`.
+//! 3. Heuristic-builds a [`PaperExtract`] from the normalized text (title from
+//!    the first non-empty line; abstract from the next paragraph; sections via
 //!    `split_sections`; bibliography via `extract_bibliography`).
 //! 4. Calls the configured Anthropic model (`PREVIEW_MODEL`, default
 //!    `claude-opus-4-7`) with a structured-output request shaped like a
@@ -223,10 +223,19 @@ async fn extract_paper(pdf: &[u8]) -> anyhow::Result<PaperExtract> {
         .map_err(|e| anyhow::anyhow!("join: {e}"))?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let title = first_non_empty_line(&text).unwrap_or_else(|| "Uploaded paper".to_string());
-    let abstract_ = pull_abstract(&text);
-    let sections = grokrxiv_ingest::extract::split_sections(&text);
-    let bibliography = grokrxiv_ingest::extract::extract_bibliography(&text);
+    let normalized = grokrxiv_ingest::extract::normalize_pdf_text(&text);
+    tracing::debug!(
+        joined_hyphenated_breaks = normalized.joined_hyphenated_breaks,
+        removed_repeated_lines = normalized.removed_repeated_lines,
+        removed_page_markers = normalized.removed_page_markers,
+        "normalized preview PDF text"
+    );
+
+    let title =
+        first_non_empty_line(&normalized.text).unwrap_or_else(|| "Uploaded paper".to_string());
+    let abstract_ = pull_abstract(&normalized.text);
+    let sections = grokrxiv_ingest::extract::split_sections(&normalized.text);
+    let bibliography = grokrxiv_ingest::extract::extract_bibliography(&normalized.text);
 
     Ok(PaperExtract {
         arxiv_id: "preview".into(),

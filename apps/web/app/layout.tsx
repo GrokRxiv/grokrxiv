@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
@@ -52,7 +53,7 @@ export default function RootLayout({
         {/* Blocking script that applies the saved/system theme to <html>
             before paint. Without this the page renders light at SSR, then
             the client's useEffect adds .dark, causing a visible flicker. */}
-        <script src="/theme-init.js" />
+        <Script src="/theme-init.js" strategy="beforeInteractive" />
       </head>
       <body className={`${sans.variable} ${mono.variable} font-sans`}>
         <Header />

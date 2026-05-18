@@ -2352,8 +2352,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .ref_id
         .ok_or_else(|| anyhow::anyhow!("run_publish: ref_id (review id) required"))?;
 
-    let row: (Uuid, String, String, Option<String>, Uuid) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field, p.id \
+    let row: (Uuid, String, String, Option<String>, Uuid, String) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public') \
          from reviews r join papers p on p.id = r.paper_id \
          where r.id = $1",
     )
@@ -2361,7 +2361,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     .fetch_one(pool)
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field, paper_id) = row;
+    let (_, arxiv_id, title, field, paper_id, visibility) = row;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
@@ -2393,8 +2393,9 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         // to point at.
         tracing::warn!(%review_id, "GITHUB_TOKEN unset; simulating publish");
         let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
+        let (owner, repo) = review_repo_for_visibility(&visibility);
         let simulated = format!(
-            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-{}",
+            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
         let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
@@ -2405,8 +2406,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
+    let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()
@@ -2414,6 +2414,16 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     let publisher = GithubPublisher::new(client, owner, repo);
     let admin = AdminCaller::from_admin_endpoint();
     let pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
+    let body_md = if visibility == "private" {
+        "Approved by supervisor `run_publish`. \
+             Private review: dashboard-only unless archived in the private reviews repo. \
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview."
+            .to_string()
+    } else {
+        "Approved by supervisor `run_publish`. \
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview."
+            .to_string()
+    };
     let params = OpenReviewPr {
         arxiv_id: arxiv_id.clone(),
         field: field.unwrap_or_else(|| "cs".into()),
@@ -2421,9 +2431,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         files,
         title: pr_title,
         review_id,
-        body_md: "Approved by supervisor `run_publish`. \
-             See linked artifacts in this PR; the rendered review.html is the human-readable preview."
-            .to_string(),
+        body_md,
     };
     let pr_url = publisher
         .open_review_pr(&admin, params)
@@ -2440,6 +2448,56 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     // FP-RPT3c C2 — close any superseded PR for this paper.
     close_superseded_pr_if_any(pool, &publisher, &admin, paper_id, &pr_url).await;
     Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn review_repo_for_visibility(visibility: &str) -> (String, String) {
+    match visibility {
+        "private" => repo_from_combined_env(
+            "GROKRXIV_PRIVATE_REVIEWS_REPO",
+            "GrokRxiv",
+            "grokrxiv-private-reviews",
+        ),
+        _ => {
+            if let Some(repo) = repo_from_combined_env_optional("GROKRXIV_PUBLIC_REVIEWS_REPO") {
+                repo
+            } else {
+                repo_from_legacy_public_env()
+            }
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn repo_from_legacy_public_env() -> (String, String) {
+    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
+    let repo_raw =
+        std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
+    split_owner_repo(&repo_raw).unwrap_or((owner, repo_raw))
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn repo_from_combined_env(var: &str, default_owner: &str, default_repo: &str) -> (String, String) {
+    repo_from_combined_env_optional(var)
+        .unwrap_or_else(|| (default_owner.to_string(), default_repo.to_string()))
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn repo_from_combined_env_optional(var: &str) -> Option<(String, String)> {
+    let raw = std::env::var(var).ok()?;
+    split_owner_repo(&raw)
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn split_owner_repo(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim();
+    let (owner, repo) = trimmed.split_once('/')?;
+    let owner = owner.trim();
+    let repo = repo.trim();
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
 }
 
 /// Look up the most recently superseded review's PR URL for this paper and,

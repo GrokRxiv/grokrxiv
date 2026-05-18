@@ -1,5 +1,10 @@
 # Manual transition `reviews.status` `pr_open → published` for RPT1 (2026-05-15)
 
+> Historical note: this was an RPT1 workaround. Current public visibility is
+> `reviews.visibility = 'public'` plus `status IN ('pr_open','published',
+> 'corrected','rejected')`; `pr_open` rows are visible as human-gated PR
+> handoffs, and the merge webhook flips them to `published`.
+
 ## What
 
 Direct SQL UPDATE flipped 3 review rows from `status='pr_open'` to `status='published'` (with `published_at = now()`):
@@ -17,7 +22,7 @@ WHERE id IN (
 
 ## Why
 
-The Supabase RLS policy `reviews_public_read` gates anon-role visibility on `status IN ('published', 'corrected')`. After `approve`, the supervisor sets status to `'pr_open'` and writes the GitHub PR URL. The web frontend at `localhost:3000` does NOT show the review in this state.
+At the time, the Supabase RLS policy `reviews_public_read` gated anon-role visibility on `status IN ('published', 'corrected')`. After `approve`, the supervisor set status to `'pr_open'` and wrote the GitHub PR URL, but the web frontend at `localhost:3000` did not show the review in this state.
 
 The intended next-step transition `pr_open → published` is supposed to be driven by a GitHub webhook fired when the PR is merged. That webhook is FP7+ scope and not yet wired. Without it the review is invisible to the public web frontend.
 

@@ -5,6 +5,7 @@ const NAV_LINKS = [
   { href: "/reviews", label: "Reviews" },
   { href: "/about", label: "About" },
   { href: "/api-docs", label: "API" },
+  { href: "/dashboard", label: "Dashboard" },
 ];
 
 export function Header() {

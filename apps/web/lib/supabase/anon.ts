@@ -42,9 +42,10 @@ export async function listPublishedReviewsAnon(opts: {
   let qb = supabase
     .from("reviews")
     .select(
-      `id, paper_id, status, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, ${paperSelect}`,
+      `id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, ${paperSelect}`,
       { count: "exact" },
     )
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     // Sort by created_at so pr_open rows (NULL published_at) surface
     // alongside published rows by recency, instead of being shoved to the end.
@@ -75,9 +76,10 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status)",
     )
     .eq("id", id)
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .single();
   if (error || !data) return null;
@@ -102,8 +104,9 @@ export async function getRejectionByReviewIdAnon(
   return data as { rationale_md: string; created_at: string };
 }
 
-// Paper rows are only exposed once at least one public (published/corrected)
-// review references them. Otherwise anon could enumerate the ingestion queue.
+// Paper rows are only exposed once at least one public-visibility review in a
+// public status references them. Otherwise anon could enumerate the ingestion
+// queue or private review corpus.
 async function paperHasPublicReviewAnon(
   supabase: ReturnType<typeof client>,
   paperId: string,
@@ -112,6 +115,7 @@ async function paperHasPublicReviewAnon(
     .from("reviews")
     .select("id", { count: "exact", head: true })
     .eq("paper_id", paperId)
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[]);
   return (count ?? 0) > 0;
 }
@@ -144,9 +148,10 @@ export async function getPaperByArxivIdAnon(arxivId: string): Promise<{
   const { data: reviews } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, github_pr_url, github_review_url, models_used, created_at, published_at",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, created_at, published_at",
     )
     .eq("paper_id", (paper as Paper).id)
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .order("created_at", { ascending: false });
   // Withhold the paper itself if no public review exists.
@@ -165,6 +170,7 @@ export async function listAllPublishedReviewIdsAnon(): Promise<
   const { data } = await supabase
     .from("reviews")
     .select("id, published_at")
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[]);
   return (data ?? []) as { id: string; published_at: string | null }[];
 }
@@ -180,6 +186,7 @@ export async function listAllPaperArxivIdsAnon(): Promise<
   const { data } = await supabase
     .from("reviews")
     .select("paper:papers(arxiv_id, ingested_at)")
+    .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[]);
   if (!data) return [];
   const seen = new Set<string>();
