@@ -2079,21 +2079,44 @@ async fn approve_impl(
     let publisher = GithubPublisher::new(client, owner, repo);
 
     let admin = AdminCaller::from_admin_endpoint();
-    let pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
+    let raw_pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
+    let raw_pr_body = format!(
+        "Approved by `grokrxiv approve {review_id}`.\n\n\
+         **Public page:** {public_url}/reviews/{review_id}\n\n\
+         See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
+        public_url = std::env::var("GROKRXIV_PUBLIC_URL")
+            .unwrap_or_else(|_| "https://grokrxiv.org".into()),
+    );
+
+    // Phase I: codex (gpt-5.5) audits the PR title + body before the PR is
+    // opened, scrubbing unexpanded \newcommand macros (e.g. \sysname) and
+    // residual LaTeX layout commands so the PR list on grokrxiv-reviews
+    // doesn't carry literal latex. Non-fatal — falls back to the raw
+    // strings if codex is unavailable.
+    let cleaned = if std::env::var("GROKRXIV_HTML_QUALITY_DISABLE")
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+    {
+        crate::html_review::CleanedPrText {
+            title: raw_pr_title.clone(),
+            body: raw_pr_body.clone(),
+            fixes: serde_json::Value::Array(vec![]),
+            summary: String::new(),
+            confidence: 0.0,
+        }
+    } else {
+        crate::html_review::clean_pr_text(state, review_id, &raw_pr_title, &raw_pr_body).await
+    };
+
     let params = OpenReviewPr {
         arxiv_id: arxiv_id.clone(),
         field: field.unwrap_or_else(|| "cs".into()),
         date: chrono::Utc::now().date_naive(),
         files,
-        title: pr_title,
+        title: cleaned.title,
         review_id,
-        body_md: format!(
-            "Approved by `grokrxiv approve {review_id}`.\n\n\
-             **Public page:** {public_url}/reviews/{review_id}\n\n\
-             See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
-            public_url = std::env::var("GROKRXIV_PUBLIC_URL")
-                .unwrap_or_else(|_| "https://grokrxiv.org".into()),
-        ),
+        body_md: cleaned.body,
     };
     let pr_url = publisher
         .open_review_pr(&admin, params)
