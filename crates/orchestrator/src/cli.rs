@@ -287,6 +287,19 @@ pub enum Command {
         /// UUID of the review whose PR should be merged.
         review_id: Uuid,
     },
+    /// Re-run the post-render html_quality harness on an already-rendered
+    /// review. Reads `artifacts/<review_id>/review.html`, runs codex (gpt-5.5)
+    /// to fix formatting issues, writes the corrected HTML back, and persists
+    /// `formatting_fixes.json` sidecar.
+    HtmlReview {
+        /// UUID of the review whose review.html should be audited + fixed.
+        /// Required unless `--all` is set.
+        review_id: Option<Uuid>,
+        /// Run the harness on every review with status in {pr_open, published,
+        /// corrected}. Skips reviews whose artifact directory is missing.
+        #[arg(long)]
+        all: bool,
+    },
     /// Mark a review rejected; status stays `awaiting_moderation`.
     Reject {
         /// UUID of the review to reject.
@@ -568,6 +581,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => render(review_id, format, out).await,
         Command::Approve { review_id, force } => approve(review_id, force, json).await,
         Command::Merge { review_id } => merge_pr_cmd(review_id, json).await,
+        Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
         Command::Withdraw { review_id, reason } => withdraw(review_id, &reason).await,
@@ -2256,6 +2270,76 @@ async fn merge_pr_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
     anyhow::bail!(
         "merge <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
+}
+
+/// `grokrxiv html-review [<id>|--all]`. Re-runs the post-render html_quality
+/// harness on already-rendered reviews. Used to backfill existing reviews
+/// after the harness lands, or to re-run after prompt iteration.
+async fn html_review_cmd(
+    review_id: Option<Uuid>,
+    all: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("html-review: DATABASE_URL not configured"))?;
+
+    let ids: Vec<Uuid> = if all {
+        if review_id.is_some() {
+            anyhow::bail!("html-review: pass either <review_id> OR --all, not both");
+        }
+        sqlx::query_scalar::<_, Uuid>(
+            "select id from reviews where status in ('pr_open','published','corrected') order by created_at",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("html-review: load review ids: {e}"))?
+    } else {
+        let id = review_id
+            .ok_or_else(|| anyhow::anyhow!("html-review: REVIEW_ID required unless --all is set"))?;
+        vec![id]
+    };
+
+    let mut summaries: Vec<serde_json::Value> = Vec::new();
+    for id in &ids {
+        let dir = std::path::PathBuf::from(format!("artifacts/{id}"));
+        if !dir.exists() {
+            tracing::warn!(review_id = %id, "html-review: artifact dir missing, skipping");
+            summaries.push(serde_json::json!({
+                "review_id": id,
+                "ok": false,
+                "reason": "artifacts directory missing"
+            }));
+            continue;
+        }
+        match crate::html_review::review_and_fix_html(&state, *id, &dir).await {
+            Ok(ran) => {
+                summaries.push(serde_json::json!({"review_id": id, "ok": true, "ran": ran}));
+                if !json {
+                    println!("review_id={id} ok ran={ran}");
+                }
+            }
+            Err(e) => {
+                summaries.push(serde_json::json!({
+                    "review_id": id,
+                    "ok": false,
+                    "reason": format!("{e:#}")
+                }));
+                if !json {
+                    eprintln!("review_id={id} ERROR: {e:#}");
+                }
+            }
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&summaries)?);
+    } else {
+        println!("processed {} review(s)", ids.len());
+    }
+    Ok(())
 }
 
 /// `grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
