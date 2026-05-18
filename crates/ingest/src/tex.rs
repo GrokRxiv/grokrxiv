@@ -1,4 +1,5 @@
-//! LaTeX source bundle extraction (Pandoc + LaTeXML subprocess pipeline).
+//! LaTeX source bundle extraction (Pandoc subprocess pipeline with optional
+//! LaTeXML semantic enrichment).
 //!
 //! Pipeline:
 //! 1. Unpack the arXiv source bundle (tar.gz / tar / gzip / raw .tex) to a
@@ -761,6 +762,19 @@ fn sanitize_inline(s: &str) -> String {
     for _ in 0..3 {
         t = wrap.replace_all(&t, "$1").to_string();
     }
+    // Strip explicit line-break commands: `\\`, `\\[0.5em]`, `\\*`. These show
+    // up in `\title{...}` for two-line/decorated titles and would otherwise
+    // surface literally to the web UI.
+    let linebreaks = Regex::new(r"\\\\(?:\*?\s*\[[^\]]*\])?").unwrap();
+    t = linebreaks.replace_all(&t, " ").to_string();
+    // Strip bare formatting commands (no braces): font sizes, weight, family,
+    // alignment markers. Word-boundary on the right so `\largesomething` isn't
+    // mangled.
+    let bare_commands = Regex::new(
+        r"\\(?:large|Large|LARGE|normalsize|small|footnotesize|scriptsize|tiny|huge|Huge|bfseries|itshape|slshape|scshape|upshape|mdseries|rmfamily|sffamily|ttfamily|centering|raggedright|raggedleft|noindent|indent|newline|linebreak|hfill|vfill|par|smallskip|medskip|bigskip|allowbreak)\b",
+    )
+    .unwrap();
+    t = bare_commands.replace_all(&t, " ").to_string();
     t = t.replace('\n', " ").replace('~', " ");
     let multispace = Regex::new(r"\s+").unwrap();
     multispace.replace_all(&t, " ").trim().to_string()
@@ -1014,6 +1028,18 @@ See~\cite{foo}.
         files.insert("tiny.tex".to_string(), "x".to_string());
         files.insert("big.tex".to_string(), "x".repeat(100));
         assert_eq!(pick_main(&files), "big.tex");
+    }
+
+    #[test]
+    fn sanitize_inline_strips_latex_decorations_from_titles() {
+        // Real-world title from arXiv:2605.12239 — the LaTeX source uses \\,
+        // \large, and \\[0.5em] to render a two-line decorated title.
+        let raw = "Harness Engineering as Categorical Architecture\\\\ \\large Structural Guarantees Are Harness-Level Properties\\\\[0.5em] \\normalsize Preprint -- Feedback Welcome";
+        let cleaned = sanitize_inline(raw);
+        assert_eq!(
+            cleaned,
+            "Harness Engineering as Categorical Architecture Structural Guarantees Are Harness-Level Properties Preprint -- Feedback Welcome"
+        );
     }
 
     #[test]
