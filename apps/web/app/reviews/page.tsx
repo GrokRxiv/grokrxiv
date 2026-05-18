@@ -66,20 +66,14 @@ function trimParam(input: string | undefined, max = 128): string | undefined {
   return t.length > 0 ? t : undefined;
 }
 
-export default async function ReviewsIndexPage({
+export default function ReviewsIndexPage({
   searchParams,
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  // Reading searchParams is fine here — the data fetch happens inside the
-  // <Suspense>-wrapped ReviewsList below. Next.js 16 Cache Components forbid
-  // awaiting uncached data directly in a route component, so the Supabase
-  // query is hoisted into the child.
-  const { page: pageRaw, q: qRaw, field: fieldRaw } = await searchParams;
-  const page = clampPage(pageRaw);
-  const q = trimParam(qRaw);
-  const field = trimParam(fieldRaw, 32);
-
+  // The route component is intentionally static so Next.js can prerender +
+  // prefetch it. Everything that depends on searchParams (form prefill +
+  // data fetch) lives inside the <Suspense> boundary below.
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-8 py-10">
       <header className="flex flex-col gap-3">
@@ -102,6 +96,25 @@ export default async function ReviewsIndexPage({
         </p>
       </header>
 
+      <Suspense fallback={<ReviewsBodySkeleton />}>
+        <ReviewsBody searchParams={searchParams} />
+      </Suspense>
+    </div>
+  );
+}
+
+async function ReviewsBody({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const { page: pageRaw, q: qRaw, field: fieldRaw } = await searchParams;
+  const page = clampPage(pageRaw);
+  const q = trimParam(qRaw);
+  const field = trimParam(fieldRaw, 32);
+
+  return (
+    <>
       <form
         method="get"
         action="/reviews"
@@ -144,7 +157,16 @@ export default async function ReviewsIndexPage({
       >
         <ReviewsList page={page} q={q} field={field} />
       </Suspense>
-    </div>
+    </>
+  );
+}
+
+function ReviewsBodySkeleton() {
+  return (
+    <>
+      <div className="flex h-20 animate-pulse rounded-lg bg-[color:var(--color-muted)]" />
+      <ReviewsListSkeleton />
+    </>
   );
 }
 
