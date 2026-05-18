@@ -282,6 +282,149 @@ async fn github_repo_metadata(
     }
 }
 
+/// Phase B facts: prior-art candidates retrieved by metadata similarity.
+/// Fed to the Novelty specialist so it judges novelty against actual neighbors
+/// instead of its training-cutoff memory.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct NoveltyFacts {
+    pub related_papers: Vec<RelatedPaper>,
+    /// Set when the external API failed; the LLM should fall back to its own
+    /// memory and explicitly note the gap. Empty string when retrieval worked.
+    pub retrieval_error: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RelatedPaper {
+    pub title: String,
+    pub abstract_snippet: Option<String>,
+    pub year: Option<u32>,
+    pub primary_author: Option<String>,
+    pub source: String,
+    /// Source-specific identifier (S2 paperId, arxiv id, etc.).
+    pub source_id: String,
+    pub url: Option<String>,
+    pub doi: Option<String>,
+    pub arxiv_id: Option<String>,
+}
+
+/// Single Semantic Scholar search against the paper title. Free API, no auth.
+/// Failure modes are soft — empty `related_papers` + populated
+/// `retrieval_error` so the prompt can fall back to LLM-only novelty judgment.
+pub async fn gather_novelty_facts(
+    http: &reqwest::Client,
+    extract: &PaperExtract,
+) -> NoveltyFacts {
+    let title = extract.title.trim();
+    if title.is_empty() {
+        return NoveltyFacts {
+            related_papers: vec![],
+            retrieval_error: "paper extract has no title".into(),
+        };
+    }
+    let url = format!(
+        "https://api.semanticscholar.org/graph/v1/paper/search?query={query}&limit=20&fields=title,abstract,year,authors,externalIds",
+        query = semantic_scholar_url_encode(title),
+    );
+    let req = http
+        .get(&url)
+        .header("User-Agent", "grokrxiv-review")
+        .timeout(std::time::Duration::from_secs(15));
+    match req.send().await {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or(serde_json::Value::Null);
+            let papers = body
+                .get("data")
+                .and_then(|d| d.as_array())
+                .map(|arr| arr.iter().take(20).map(parse_s2_paper).collect::<Vec<_>>())
+                .unwrap_or_default();
+            NoveltyFacts {
+                related_papers: papers,
+                retrieval_error: String::new(),
+            }
+        }
+        Ok(r) => NoveltyFacts {
+            related_papers: vec![],
+            retrieval_error: format!("semantic_scholar status={}", r.status().as_u16()),
+        },
+        Err(e) => NoveltyFacts {
+            related_papers: vec![],
+            retrieval_error: format!("semantic_scholar network: {e}"),
+        },
+    }
+}
+
+fn parse_s2_paper(item: &serde_json::Value) -> RelatedPaper {
+    let title = item
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let abstract_snippet = item
+        .get("abstract")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            let snippet: String = s.chars().take(280).collect();
+            snippet
+        });
+    let year = item
+        .get("year")
+        .and_then(|v| v.as_u64())
+        .map(|y| y as u32);
+    let primary_author = item
+        .get("authors")
+        .and_then(|a| a.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let s2_id = item
+        .get("paperId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let external_ids = item.get("externalIds");
+    let doi = external_ids
+        .and_then(|e| e.get("DOI"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let arxiv_id = external_ids
+        .and_then(|e| e.get("ArXiv"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let url = if !s2_id.is_empty() {
+        Some(format!("https://www.semanticscholar.org/paper/{s2_id}"))
+    } else {
+        arxiv_id
+            .as_deref()
+            .map(|a| format!("https://arxiv.org/abs/{a}"))
+    };
+    RelatedPaper {
+        title,
+        abstract_snippet,
+        year,
+        primary_author,
+        source: "semantic_scholar".to_string(),
+        source_id: s2_id,
+        url,
+        doi,
+        arxiv_id,
+    }
+}
+
+fn semantic_scholar_url_encode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else if b == b' ' {
+            out.push('+');
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +494,59 @@ mod tests {
         });
         let urls = collect_urls(&extract);
         assert_eq!(urls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn semantic_scholar_search_parses_data_array_and_caps_at_20() {
+        let server = wiremock::MockServer::start().await;
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        for i in 0..25 {
+            items.push(serde_json::json!({
+                "paperId": format!("paper{i}"),
+                "title": format!("Related Title {i}"),
+                "abstract": "An abstract snippet about the work.",
+                "year": 2024,
+                "authors": [{ "name": format!("Author {i}") }],
+                "externalIds": { "ArXiv": format!("2401.{:05}", 10000 + i) }
+            }));
+        }
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/graph/v1/paper/search"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "total": 25,
+                    "data": items,
+                })),
+            )
+            .mount(&server)
+            .await;
+        // Build a verifier that points at the mock — gather_novelty_facts is
+        // hardcoded to the real S2 URL, so swap via a tiny local copy of the
+        // logic. We just assert the parser end-to-end by calling it.
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!("{}/graph/v1/paper/search?query=t&limit=20&fields=title", server.uri()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let papers = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| arr.iter().take(20).map(parse_s2_paper).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert_eq!(papers.len(), 20);
+        assert_eq!(papers[0].title, "Related Title 0");
+        assert!(papers[0].url.as_deref().unwrap().contains("paper0"));
+        assert_eq!(papers[0].arxiv_id.as_deref(), Some("2401.10000"));
+    }
+
+    #[test]
+    fn semantic_scholar_url_encode_matches_form_urlencoded() {
+        assert_eq!(semantic_scholar_url_encode("a b c"), "a+b+c");
+        assert_eq!(semantic_scholar_url_encode("foo:bar/baz"), "foo%3Abar%2Fbaz");
+        assert_eq!(semantic_scholar_url_encode("simple"), "simple");
     }
 
     #[tokio::test]

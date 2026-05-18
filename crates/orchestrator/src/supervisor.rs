@@ -484,16 +484,19 @@ async fn run_review_dag_inner(
     // consumes these facts as ground truth via build_specialist_prompt; the
     // merge step overlays the verified URL/repo state onto the LLM's
     // reproducibility_review output before insert_review_agent.
-    let reproducibility_facts =
-        crate::agents::specialist_facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref())
-            .await;
+    let (reproducibility_facts, novelty_facts) = tokio::join!(
+        crate::agents::specialist_facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref()),
+        crate::agents::specialist_facts::gather_novelty_facts(&state.http, extract_arc.as_ref()),
+    );
     tracing::info!(
         %paper_id,
         %review_id,
         urls_checked = reproducibility_facts.urls_checked.len(),
         urls_reachable = reproducibility_facts.urls_checked.iter().filter(|u| u.reachable).count(),
         github_repos = reproducibility_facts.github_repos.len(),
-        "review: gathered reproducibility facts (URL reachability + github metadata)"
+        related_papers = novelty_facts.related_papers.len(),
+        novelty_retrieval_error = %novelty_facts.retrieval_error,
+        "review: gathered reproducibility + novelty facts"
     );
     if let Some(notes) = moderator_notes.as_deref() {
         tracing::info!(
@@ -512,8 +515,13 @@ async fn run_review_dag_inner(
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
-        let role_facts = if matches!(role, AgentRole::Reproducibility) {
+        let repro_for_role = if matches!(role, AgentRole::Reproducibility) {
             Some(&reproducibility_facts)
+        } else {
+            None
+        };
+        let novelty_for_role = if matches!(role, AgentRole::Novelty) {
+            Some(&novelty_facts)
         } else {
             None
         };
@@ -521,7 +529,8 @@ async fn run_review_dag_inner(
             role,
             extract_arc.as_ref(),
             moderator_notes.as_deref(),
-            role_facts,
+            repro_for_role,
+            novelty_for_role,
         );
         if let Some(root) = debug_root.as_deref() {
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
@@ -648,6 +657,9 @@ async fn run_review_dag_inner(
             }
             AgentRole::Reproducibility => {
                 merge_reproducibility_facts_into_output(output.clone(), &reproducibility_facts)
+            }
+            AgentRole::Novelty => {
+                merge_novelty_facts_into_output(output.clone(), &novelty_facts)
             }
             _ => output.clone(),
         };
@@ -1150,6 +1162,47 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
     s
 }
 
+/// Pre-populate `novelty_review.related_work[]` with the verified prior-art
+/// candidates from Semantic Scholar. Entries already produced by the LLM are
+/// preserved; we append the verifier candidates that the LLM didn't already
+/// cite (matched by case-insensitive title prefix).
+fn merge_novelty_facts_into_output(
+    mut output: serde_json::Value,
+    facts: &crate::agents::specialist_facts::NoveltyFacts,
+) -> serde_json::Value {
+    let Some(obj) = output.as_object_mut() else {
+        return output;
+    };
+    let related = obj
+        .entry("related_work".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(arr) = related.as_array_mut() else {
+        return output;
+    };
+    let existing_titles: std::collections::HashSet<String> = arr
+        .iter()
+        .filter_map(|v| v.get("title").and_then(|t| t.as_str()))
+        .map(|s| s.to_ascii_lowercase().chars().take(80).collect::<String>())
+        .collect();
+    for p in &facts.related_papers {
+        let title_key: String = p.title.to_ascii_lowercase().chars().take(80).collect();
+        if existing_titles.contains(&title_key) {
+            continue;
+        }
+        arr.push(serde_json::json!({
+            "title": p.title,
+            "year": p.year,
+            "venue": p.source,
+            "url": p.url,
+            "doi": p.doi,
+            "arxiv_id": p.arxiv_id,
+            "relation": "candidate_neighbor",
+            "notes": p.abstract_snippet,
+        }));
+    }
+    output
+}
+
 /// Overlay verified URL / GitHub repo state onto the LLM's
 /// `reproducibility_review`. Auto-adds a `concerns` entry for each
 /// unreachable URL and each archived repo so the moderator UI surfaces the
@@ -1468,6 +1521,7 @@ fn build_specialist_prompt(
     extract: &grokrxiv_schemas::PaperExtract,
     moderator_notes: Option<&str>,
     reproducibility_facts: Option<&crate::agents::specialist_facts::ReproducibilityFacts>,
+    novelty_facts: Option<&crate::agents::specialist_facts::NoveltyFacts>,
 ) -> String {
     use grokrxiv_schemas::AgentRole;
 
@@ -1637,6 +1691,49 @@ fn build_specialist_prompt(
                  - An UNREACHABLE code/dataset URL is a `severity: major` reproducibility concern; \
                    add a `concerns` entry naming the URL and the status code.\n\n",
             );
+        }
+    }
+    if let Some(facts) = novelty_facts {
+        if !facts.related_papers.is_empty() {
+            out.push_str(
+                "Verified prior-art candidates (retrieved by metadata similarity — judge novelty \
+                 against these, do NOT rely on memory of pre-2024 literature):\n\n",
+            );
+            for (i, p) in facts.related_papers.iter().enumerate().take(20) {
+                let year = p
+                    .year
+                    .map(|y| y.to_string())
+                    .unwrap_or_else(|| "n.d.".to_string());
+                let author = p.primary_author.as_deref().unwrap_or("unknown");
+                let snippet = p
+                    .abstract_snippet
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no abstract)");
+                out.push_str(&format!(
+                    "{:>2}. [{year}] {author} — {title}\n    {snippet}\n",
+                    i + 1,
+                    title = p.title,
+                ));
+                if let Some(arxiv) = &p.arxiv_id {
+                    out.push_str(&format!("    arXiv:{arxiv}\n"));
+                }
+                if let Some(doi) = &p.doi {
+                    out.push_str(&format!("    doi:{doi}\n"));
+                }
+            }
+            out.push_str(
+                "\nRules:\n\
+                 - Each related paper above is a real, retrievable neighbor — treat its existence \
+                   as ground truth. Do NOT claim a paper does not exist if it's listed here.\n\
+                 - When the manuscript's novelty claim conflicts with a related paper, lower \
+                   `novelty_score` and add a `missing_prior_art` entry citing the related paper.\n\n",
+            );
+        } else if !facts.retrieval_error.is_empty() {
+            out.push_str(&format!(
+                "Prior-art retrieval failed ({}); fall back to memory but flag the gap in confidence.\n\n",
+                facts.retrieval_error,
+            ));
         }
     }
     out.push_str(&format!("Task: {task}"));
@@ -2527,7 +2624,7 @@ mod tests {
             AgentRole::Novelty,
             AgentRole::Reproducibility,
         ] {
-            let prompt = build_specialist_prompt(role, &extract, None, None);
+            let prompt = build_specialist_prompt(role, &extract, None, None, None);
             assert!(
                 prompt.contains("## 1. Introduction"),
                 "role {role:?}: prompt missing heading: {}",
@@ -2569,7 +2666,7 @@ mod tests {
         );
 
         let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None);
 
         // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
         let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
@@ -2617,7 +2714,7 @@ mod tests {
         );
         extract.bibliography[0].title = Some("A foundational paper".to_string());
 
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None);
         assert!(
             prompt.contains("Bibliography (2 entries):"),
             "expected bibliography header in prompt"
@@ -2658,7 +2755,7 @@ mod tests {
             )],
             vec!["Some citation, 2020."],
         );
-        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None);
+        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None);
         assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
         assert!(!prompt.contains("introductory body markdown"));
         assert!(!prompt.contains("Bibliography"));
@@ -2674,7 +2771,7 @@ mod tests {
         // Summary budget = 48_000. Build a single 100_000-char section.
         let huge = "abcdefghij".repeat(10_000); // 100_000 chars
         let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
-        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None);
+        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None, None);
         assert!(
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
@@ -2867,6 +2964,7 @@ mod tests {
             &extract,
             Some("Please tighten the proof of Theorem 3."),
             None,
+            None,
         );
         assert!(
             prompt.contains("Moderator notes from a prior `request-changes` round"),
@@ -2886,9 +2984,9 @@ mod tests {
             vec![("1. Intro", "Some content.".to_string())],
             vec!["[Foo23] Foo et al."],
         );
-        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None);
+        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None);
         assert!(!p_none.contains("Moderator notes"), "None should not emit the section");
-        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None);
+        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None, None);
         assert!(!p_blank.contains("Moderator notes"), "whitespace-only should not emit the section");
     }
 
