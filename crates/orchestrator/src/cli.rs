@@ -174,6 +174,16 @@ pub enum Command {
         /// arXiv IDs (e.g. `2605.12484`).
         #[arg(required = true)]
         arxiv_ids: Vec<String>,
+        /// Phase 5: after the review reaches `awaiting_moderation`, dispatch
+        /// based on `meta_review.recommendation`:
+        ///   accept | minor_revision → open PR via `approve`
+        ///   reject                  → public rejection via `reject`
+        ///   major_revision          → stays at awaiting_moderation (operator
+        ///                             runs request-changes manually).
+        /// Failures during the auto-step are logged WARN and the review is
+        /// left at awaiting_moderation for manual handling.
+        #[arg(long)]
+        auto_moderate: bool,
     },
     /// Fetch + extract one or more papers, validate reviewer input, then stop before review.
     Extract {
@@ -533,7 +543,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => print_config(show_secrets || cmd_show, runtime_cfg.as_ref(), json),
         Command::Migrate => migrate().await,
         Command::Categories => print_categories(),
-        Command::Ingest { arxiv_ids } => ingest_many(&arxiv_ids, json).await,
+        Command::Ingest {
+            arxiv_ids,
+            auto_moderate,
+        } => ingest_many(&arxiv_ids, auto_moderate, json).await,
         Command::Extract { arxiv_ids } => extract_many(&arxiv_ids, json).await,
         Command::IngestRange {
             from,
@@ -708,7 +721,11 @@ fn print_categories() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
+async fn ingest_many(
+    arxiv_ids: &[String],
+    auto_moderate: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
@@ -724,6 +741,11 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
             crate::cli_status::emit(format!(
                 "paper {id}: review_id={review_id} awaiting human moderation"
             ));
+            if auto_moderate {
+                if let Err(e) = auto_moderate_review(&state, review_id, json).await {
+                    tracing::warn!(%review_id, err = %e, "auto-moderate dispatch failed; review left at awaiting_moderation");
+                }
+            }
             if json {
                 println!(
                     "{}",
@@ -765,6 +787,11 @@ async fn ingest_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
                 crate::cli_status::emit(format!(
                     "paper {id}: review_id={review_id} awaiting human moderation"
                 ));
+                if auto_moderate {
+                    if let Err(e) = auto_moderate_review(&state, review_id, json).await {
+                        tracing::warn!(%review_id, err = %e, "auto-moderate dispatch failed; review left at awaiting_moderation");
+                    }
+                }
                 if json {
                     successes.push(serde_json::json!({
                         "arxiv_id": id,
@@ -1773,7 +1800,7 @@ async fn review_source(
     if json {
         review_arxiv_ids_json(&arxiv_ids).await
     } else {
-        ingest_many(&arxiv_ids, false).await
+        ingest_many(&arxiv_ids, false, false).await
     }
 }
 
@@ -2278,6 +2305,91 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
 
     crate::routes::webhook::spawn_revalidate(&state, review_id);
     println!("rejected={review_id}");
+    Ok(())
+}
+
+/// Phase 5: dispatch on `meta_review.recommendation` after a review reaches
+/// `awaiting_moderation`. Called by `grokrxiv ingest --auto-moderate`.
+///
+/// - `accept` / `minor_revision` → open PR via approve (gate already aligned).
+/// - `reject` → rejection public artifact, rationale = joined weaknesses.
+/// - `major_revision` → leave at awaiting_moderation; operator runs
+///   `grokrxiv request-changes` manually (avoids unbounded re-review loops).
+///
+/// All failures inside this function are logged WARN and bubbled up so the
+/// caller can decide whether to surface them. The review row is never
+/// modified to a worse state on auto-moderate failure.
+async fn auto_moderate_review(
+    state: &super::AppState,
+    review_id: Uuid,
+    json: bool,
+) -> anyhow::Result<()> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("auto-moderate: DATABASE_URL not configured"))?;
+    let meta: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .ok();
+    let recommendation = meta
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    tracing::info!(
+        target: "auto_moderate",
+        %review_id,
+        recommendation,
+        "auto-moderate dispatch"
+    );
+    match recommendation {
+        "accept" | "minor_revision" => {
+            #[cfg(feature = "grokrxiv-publisher")]
+            {
+                approve_impl(state, review_id, false, json).await?;
+            }
+            #[cfg(not(feature = "grokrxiv-publisher"))]
+            {
+                anyhow::bail!("auto-moderate accept requires grokrxiv-publisher feature");
+            }
+        }
+        "reject" => {
+            let rationale = meta
+                .as_ref()
+                .and_then(|m| m.get("weaknesses"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|w| w.as_str())
+                        .map(|s| format!("- {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    "Auto-rejected by meta_reviewer recommendation; no weaknesses listed.".into()
+                });
+            reject(review_id, &rationale).await?;
+        }
+        "major_revision" => {
+            tracing::info!(
+                target: "auto_moderate",
+                %review_id,
+                "major_revision: leaving at awaiting_moderation; run `grokrxiv request-changes` to dispatch"
+            );
+        }
+        other => {
+            tracing::warn!(
+                target: "auto_moderate",
+                %review_id,
+                recommendation = other,
+                "unknown recommendation; leaving at awaiting_moderation"
+            );
+        }
+    }
     Ok(())
 }
 
