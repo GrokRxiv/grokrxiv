@@ -209,6 +209,31 @@ pub async fn insert_review(
     Ok(id)
 }
 
+/// Phase 3: fetch the latest moderator `--notes` recorded via
+/// `grokrxiv request-changes` for any prior review of this paper. The
+/// supervisor surfaces these notes to specialist + meta prompts on the next
+/// review pass so the agents react to operator feedback. Returns `None` when
+/// the paper has no `changes_requested` history.
+pub async fn fetch_latest_changes_request_notes(
+    pool: &PgPool,
+    paper_id: Uuid,
+) -> sqlx::Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "select mq.notes \
+         from moderation_queue mq \
+         join reviews r on r.id = mq.review_id \
+         where r.paper_id = $1 \
+           and mq.state = 'changes_requested' \
+           and mq.notes is not null \
+         order by mq.created_at desc \
+         limit 1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(n,)| n))
+}
+
 /// Look up the PR URL of the most recently superseded review for a paper, if
 /// any. The publisher uses this to close the stale PR on `grokrxiv-reviews`
 /// after the new review's PR is opened.

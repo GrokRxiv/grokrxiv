@@ -2259,7 +2259,10 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `grokrxiv request-changes <REVIEW_ID> --notes TEXT`.
+/// `grokrxiv request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
+/// moderator's notes in `moderation_queue.notes`, then trigger a fresh
+/// review of the same paper. The agents see the notes via
+/// `db::fetch_latest_changes_request_notes` on the next pass.
 async fn request_changes(review_id: Uuid, notes: &str) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
@@ -2279,7 +2282,29 @@ async fn request_changes(review_id: Uuid, notes: &str) -> anyhow::Result<()> {
     if n == 0 {
         anyhow::bail!("request-changes: no moderation_queue row for review {review_id}");
     }
-    println!("request-changes={review_id}");
+
+    // Look up the paper this review belongs to, then trigger a fresh review.
+    // The new pass calls fetch_latest_changes_request_notes(paper_id), which
+    // returns the notes we just wrote, and threads them into specialist prompts.
+    let paper_id: Uuid = sqlx::query_scalar("select paper_id from reviews where id = $1")
+        .bind(review_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("request-changes: paper lookup failed: {e}"))?;
+
+    crate::cli_status::emit(format!(
+        "review {review_id}: notes recorded; running fresh review pass for paper {paper_id}"
+    ));
+    #[cfg(feature = "grokrxiv-ingest")]
+    {
+        let new_review_id =
+            super::supervisor::run_review_for_paper_blocking(&state, paper_id).await?;
+        println!("request-changes={review_id} new_review_id={new_review_id} paper_id={paper_id}");
+    }
+    #[cfg(not(feature = "grokrxiv-ingest"))]
+    {
+        println!("request-changes={review_id} paper_id={paper_id} (re-review skipped: build without grokrxiv-ingest feature)");
+    }
     Ok(())
 }
 

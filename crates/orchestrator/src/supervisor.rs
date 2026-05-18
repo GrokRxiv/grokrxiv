@@ -472,6 +472,20 @@ async fn run_review_dag_inner(
     let specialist_content_hash =
         sha256_hex(&serde_json::to_vec(&specialist_input).unwrap_or_default());
 
+    // Phase 3: surface moderator notes from any prior `grokrxiv request-changes`
+    // run on this paper. The agents react to operator feedback on the next pass.
+    let moderator_notes: Option<String> = crate::db::fetch_latest_changes_request_notes(pool, paper_id)
+        .await
+        .unwrap_or(None);
+    if let Some(notes) = moderator_notes.as_deref() {
+        tracing::info!(
+            %paper_id,
+            %review_id,
+            notes_len = notes.len(),
+            "review: surfacing moderator notes from prior changes-requested round"
+        );
+    }
+
     // Track 8a: optional dump of each rendered prompt to disk for inspection.
     // Triggered by the CLI's `--debug-prompt` flag → `GROKRXIV_DEBUG_PROMPT_DIR`
     // env var. Best-effort: any I/O failure is swallowed by `dump_debug_prompt`.
@@ -480,7 +494,11 @@ async fn run_review_dag_inner(
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
-        let prompt = build_specialist_prompt(role, extract_arc.as_ref());
+        let prompt = build_specialist_prompt(
+            role,
+            extract_arc.as_ref(),
+            moderator_notes.as_deref(),
+        );
         if let Some(root) = debug_root.as_deref() {
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
         }
@@ -1302,6 +1320,7 @@ fn push_citation_sentence(sentences: &mut Vec<String>, sentence: &str) {
 fn build_specialist_prompt(
     role: grokrxiv_schemas::AgentRole,
     extract: &grokrxiv_schemas::PaperExtract,
+    moderator_notes: Option<&str>,
 ) -> String {
     use grokrxiv_schemas::AgentRole;
 
@@ -1386,6 +1405,14 @@ fn build_specialist_prompt(
     if !bib_block.is_empty() {
         out.push_str(&bib_block);
         out.push('\n');
+    }
+    if let Some(notes) = moderator_notes.filter(|s| !s.trim().is_empty()) {
+        out.push_str(
+            "Moderator notes from a prior `request-changes` round — treat these as authoritative \
+             priorities for this review pass:\n\n",
+        );
+        out.push_str(notes.trim());
+        out.push_str("\n\n");
     }
     out.push_str(&format!("Task: {task}"));
     out
@@ -2275,7 +2302,7 @@ mod tests {
             AgentRole::Novelty,
             AgentRole::Reproducibility,
         ] {
-            let prompt = build_specialist_prompt(role, &extract);
+            let prompt = build_specialist_prompt(role, &extract, None);
             assert!(
                 prompt.contains("## 1. Introduction"),
                 "role {role:?}: prompt missing heading: {}",
@@ -2317,7 +2344,7 @@ mod tests {
         );
 
         let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract);
+        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None);
 
         // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
         let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
@@ -2365,7 +2392,7 @@ mod tests {
         );
         extract.bibliography[0].title = Some("A foundational paper".to_string());
 
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract);
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None);
         assert!(
             prompt.contains("Bibliography (2 entries):"),
             "expected bibliography header in prompt"
@@ -2406,7 +2433,7 @@ mod tests {
             )],
             vec!["Some citation, 2020."],
         );
-        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract);
+        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None);
         assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
         assert!(!prompt.contains("introductory body markdown"));
         assert!(!prompt.contains("Bibliography"));
@@ -2422,7 +2449,7 @@ mod tests {
         // Summary budget = 48_000. Build a single 100_000-char section.
         let huge = "abcdefghij".repeat(10_000); // 100_000 chars
         let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
-        let prompt = build_specialist_prompt(AgentRole::Summary, &extract);
+        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None);
         assert!(
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
@@ -2463,6 +2490,43 @@ mod tests {
             assert!(!p.contains("PROOF-AS-CODE AXIOM"), "axiom should only fire for TC/Reproducibility");
             assert!(!p.contains("RECOMMENDATION GATE"), "gate should only fire for MetaReviewer");
         }
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn specialist_prompt_renders_moderator_notes_when_present() {
+        use grokrxiv_schemas::AgentRole;
+        let extract = fake_extract(
+            vec![("1. Intro", "Some content.".to_string())],
+            vec!["[Foo23] Foo et al."],
+        );
+        let prompt = build_specialist_prompt(
+            AgentRole::TechnicalCorrectness,
+            &extract,
+            Some("Please tighten the proof of Theorem 3."),
+        );
+        assert!(
+            prompt.contains("Moderator notes from a prior `request-changes` round"),
+            "moderator-notes section should be rendered"
+        );
+        assert!(
+            prompt.contains("tighten the proof of Theorem 3"),
+            "operator's notes should be embedded verbatim"
+        );
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn specialist_prompt_omits_moderator_notes_when_absent_or_blank() {
+        use grokrxiv_schemas::AgentRole;
+        let extract = fake_extract(
+            vec![("1. Intro", "Some content.".to_string())],
+            vec!["[Foo23] Foo et al."],
+        );
+        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None);
+        assert!(!p_none.contains("Moderator notes"), "None should not emit the section");
+        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "));
+        assert!(!p_blank.contains("Moderator notes"), "whitespace-only should not emit the section");
     }
 
     #[test]
