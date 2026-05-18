@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
+import { MathText } from "@/components/math-text";
 import type { ReviewWithPaper } from "@/lib/types";
 
 export function ReviewCard({ review }: { review: ReviewWithPaper }) {
@@ -22,7 +23,7 @@ export function ReviewCard({ review }: { review: ReviewWithPaper }) {
             <ReviewStatusBadge status={review.status} />
           </div>
           <CardTitle className="line-clamp-3 text-base">
-            {paper.title}
+            <MathText as="span">{paper.title}</MathText>
           </CardTitle>
           <CardDescription className="line-clamp-1">
             {paper.authors

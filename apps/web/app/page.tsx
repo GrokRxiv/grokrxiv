@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { unstable_cacheTag as cacheTag } from "next/cache";
 import { Button } from "@/components/ui/button";
 import { UploadDropzone } from "@/components/upload-dropzone";
 import { PipelineDiagram } from "@/components/pipeline-diagram";
@@ -74,6 +75,7 @@ export default function HomePage() {
 
 async function ReviewsGrid() {
   "use cache";
+  cacheTag("reviews-list");
   const { data } = await listPublishedReviewsAnon({ limit: 9 });
   if (data.length === 0) {
     return (

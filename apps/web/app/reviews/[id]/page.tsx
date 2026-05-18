@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { unstable_cacheTag as cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { AgentAccordion } from "@/components/agent-accordion";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { MarkdownBody } from "@/components/markdown-body";
+import { MathText } from "@/components/math-text";
 import { ReviewToc } from "@/components/review-toc";
 import { JsonLd } from "@/components/json-ld";
 import {
@@ -34,6 +36,8 @@ async function loadReviewWithPaper(
   rejection: { rationale_md: string; created_at: string } | null;
 } | null> {
   "use cache";
+  cacheTag(`review:${id}`);
+  cacheTag("reviews-list");
   const review = await getReviewByIdAnon(id);
   if (!review) return null;
   // Hide non-public statuses (e.g. awaiting_moderation, withdrawn) from anon
@@ -191,9 +195,12 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                 ))}
               </div>
             ) : null}
-            <h1 className="text-balance text-3xl font-bold tracking-tight md:text-4xl">
+            <MathText
+              as="h1"
+              className="text-balance text-3xl font-bold tracking-tight md:text-4xl"
+            >
               {paper.title}
-            </h1>
+            </MathText>
             <p className="text-sm text-[color:var(--color-muted-foreground)]">
               {paper.authors.map((a) => a.name).join(", ")}
             </p>

@@ -2,14 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { unstable_cacheTag as cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
+import { MathText } from "@/components/math-text";
 import { getPaperByArxivIdAnon } from "@/lib/supabase/anon";
 import { PUBLIC_REVIEW_STATUSES } from "@/lib/types";
 
 async function loadPaper(arxiv: string) {
   "use cache";
+  cacheTag(`paper:${arxiv}`);
+  cacheTag("reviews-list");
   return getPaperByArxivIdAnon(arxiv);
 }
 
@@ -61,9 +65,12 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
             arXiv:{paper.arxiv_id}
           </Badge>
         </div>
-        <h1 className="text-balance text-3xl font-bold tracking-tight md:text-4xl">
+        <MathText
+          as="h1"
+          className="text-balance text-3xl font-bold tracking-tight md:text-4xl"
+        >
           {paper.title}
-        </h1>
+        </MathText>
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
           {paper.authors.map((a) => a.name).join(", ")}
         </p>
