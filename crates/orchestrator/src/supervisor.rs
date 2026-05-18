@@ -613,13 +613,23 @@ async fn run_review_dag_inner(
         &specialist_results
     {
         let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
+        // Phase: split the citation review between LLM and verifier. The
+        // verifier owns existence + DOI/URL (real Crossref/arXiv lookups);
+        // the LLM owns relevance + missing-references prose. Merge before
+        // persisting so a single consistent citation_review JSON lands on
+        // review_agents.output.
+        let output_to_persist = if matches!(*role, AgentRole::Citation) {
+            merge_citation_verifier_into_output(output.clone(), v_notes.as_ref())
+        } else {
+            output.clone()
+        };
         crate::db::insert_review_agent(
             pool,
             crate::db::ReviewAgentInsert {
                 review_id,
                 role: *role,
                 model: used_model,
-                output: output.clone(),
+                output: output_to_persist,
                 verifier_status: v_status,
                 verifier_notes: v_notes.clone(),
                 tokens_in: *tokens_in,
@@ -1110,6 +1120,60 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
         }
     }
     s
+}
+
+/// Overlay the verifier's per-entry resolution (`exists`, `resolved_doi`,
+/// `resolved_url`) onto the LLM specialist's `citation_review.entries[*]`.
+/// The LLM's `relevance` / `notes` / `explanation` / `summary` /
+/// `missing_references` are preserved. The match is by index (the spec
+/// requires both arrays in bibliography order); when the LLM array is shorter
+/// the extra verifier rows are appended so no validation work is lost.
+fn merge_citation_verifier_into_output(
+    mut output: serde_json::Value,
+    v_notes: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(v_entries) = v_notes
+        .and_then(|n| n.get("entries"))
+        .and_then(|e| e.as_array())
+    else {
+        return output;
+    };
+    let Some(entries) = output
+        .get_mut("entries")
+        .and_then(|e| e.as_array_mut())
+    else {
+        return output;
+    };
+    for (i, v_entry) in v_entries.iter().enumerate() {
+        let exists = v_entry.get("exists").cloned().unwrap_or(serde_json::Value::Bool(false));
+        let resolved_doi = v_entry.get("resolved_doi").cloned().unwrap_or(serde_json::Value::Null);
+        let resolved_url = v_entry.get("resolved_url").cloned().unwrap_or(serde_json::Value::Null);
+        if let Some(out_entry) = entries.get_mut(i).and_then(|v| v.as_object_mut()) {
+            out_entry.insert("exists".into(), exists);
+            out_entry.insert("resolved_doi".into(), resolved_doi);
+            out_entry.insert("resolved_url".into(), resolved_url);
+        } else {
+            // Verifier saw more entries than the LLM emitted — synthesize a
+            // minimal citation_review entry so the verified data isn't lost.
+            // Schema requires citation/relevance/notes/explanation; fill with
+            // verifier-sourced defaults.
+            let raw = v_entry
+                .get("raw")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
+            entries.push(serde_json::json!({
+                "citation": { "key": format!("[{}]", i + 1), "raw": raw, "title": null, "authors": [] },
+                "exists": exists,
+                "resolved_doi": resolved_doi,
+                "resolved_url": resolved_url,
+                "relevance": "medium",
+                "notes": null,
+                "explanation": "Entry resolved by verifier; LLM specialist did not include it in its review output.",
+            }));
+        }
+    }
+    output
 }
 
 /// arXiv category prefixes for fields where executable verification is the
@@ -2496,6 +2560,69 @@ mod tests {
             assert!(!p.contains("PROOF-AS-CODE AXIOM"), "axiom should only fire for TC/Reproducibility");
             assert!(!p.contains("RECOMMENDATION GATE"), "gate should only fire for MetaReviewer");
         }
+    }
+
+    #[test]
+    fn merge_citation_verifier_into_output_overlays_per_entry() {
+        let llm_output = serde_json::json!({
+            "entries": [
+                {
+                    "citation": { "key": "[1]", "raw": "Foo et al.", "title": null, "authors": [] },
+                    "exists": false,
+                    "resolved_doi": null,
+                    "resolved_url": null,
+                    "relevance": "high",
+                    "notes": "Used in Section 3",
+                    "explanation": "Cited as the source of Theorem 2."
+                },
+                {
+                    "citation": { "key": "[2]", "raw": "Bar et al.", "title": null, "authors": [] },
+                    "exists": false,
+                    "resolved_doi": null,
+                    "resolved_url": null,
+                    "relevance": "medium",
+                    "notes": null,
+                    "explanation": "Cited in passing."
+                }
+            ],
+            "missing_references": [],
+            "summary": "LLM prose stays.",
+            "confidence": 0.7
+        });
+        let v_notes = serde_json::json!({
+            "checked": 2,
+            "unresolved": ["Bar et al."],
+            "entries": [
+                { "raw": "Foo et al.", "exists": true,  "resolved_doi": "10.1/foo", "resolved_url": "https://doi.org/10.1/foo", "source": "crossref" },
+                { "raw": "Bar et al.", "exists": false, "resolved_doi": null,       "resolved_url": null,                       "source": "none" }
+            ]
+        });
+        let merged = merge_citation_verifier_into_output(llm_output, Some(&v_notes));
+        let entries = merged.get("entries").unwrap().as_array().unwrap();
+        // Entry 0: verifier marks resolved.
+        assert_eq!(entries[0]["exists"], serde_json::Value::Bool(true));
+        assert_eq!(entries[0]["resolved_doi"], "10.1/foo");
+        assert_eq!(entries[0]["resolved_url"], "https://doi.org/10.1/foo");
+        // LLM prose preserved.
+        assert_eq!(entries[0]["relevance"], "high");
+        assert_eq!(entries[0]["notes"], "Used in Section 3");
+        // Entry 1: still unresolved.
+        assert_eq!(entries[1]["exists"], serde_json::Value::Bool(false));
+        assert_eq!(entries[1]["resolved_doi"], serde_json::Value::Null);
+        // Summary intact.
+        assert_eq!(merged["summary"], "LLM prose stays.");
+    }
+
+    #[test]
+    fn merge_citation_verifier_passes_through_when_no_notes() {
+        let llm_output = serde_json::json!({
+            "entries": [{ "citation": {"key":"[1]","raw":"x","title":null,"authors":[]}, "exists": false, "resolved_doi": null, "resolved_url": null, "relevance": "low", "notes": null, "explanation": "" }],
+            "missing_references": [],
+            "summary": "s",
+            "confidence": 0.0
+        });
+        let merged = merge_citation_verifier_into_output(llm_output.clone(), None);
+        assert_eq!(merged, llm_output);
     }
 
     #[cfg(feature = "grokrxiv-ingest")]

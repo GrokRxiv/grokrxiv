@@ -254,41 +254,60 @@ impl Verifier for CitationVerifier {
             .collect();
         let arxiv_resolved = self.resolve_arxiv_ids(ctx.http, &arxiv_ids).await;
 
-        // Phase 2: walk every citation. Every entry counts towards `total`
-        // now — including plain refs that have neither DOI nor arxiv_id.
+        // Phase 2: walk every citation, recording per-entry resolution so the
+        // supervisor can overlay this onto the LLM specialist's citation_review
+        // output before persisting.
         let mut total: u32 = 0;
         let mut unresolved: Vec<String> = Vec::new();
         let mut resolved_via_biblio: u32 = 0;
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(ctx.paper.bibliography.len());
         for c in &ctx.paper.bibliography {
             total += 1;
-            let mut ok = false;
+            let mut resolved_doi: Option<String> = None;
+            let mut resolved_url: Option<String> = None;
+            let mut source: Option<&'static str> = None;
+
             if let Some(doi) = &c.doi {
                 if self.resolve_doi(ctx.http, doi).await {
-                    ok = true;
+                    resolved_doi = Some(doi.clone());
+                    resolved_url = Some(format!("https://doi.org/{doi}"));
+                    source = Some("crossref");
                 }
             }
-            if !ok {
+            if source.is_none() {
                 if let Some(arxiv_id) = &c.arxiv_id {
                     if arxiv_resolved.contains(arxiv_id) {
-                        ok = true;
+                        let canonical = strip_version(arxiv_id);
+                        resolved_url = Some(format!("https://arxiv.org/abs/{canonical}"));
+                        source = Some("arxiv");
                     }
                 }
             }
-            if !ok && c.doi.is_none() && c.arxiv_id.is_none() {
-                if self.resolve_bibliographic(ctx.http, &c.raw).await.is_some() {
-                    ok = true;
+            if source.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
+                if let Some(doi) = self.resolve_bibliographic(ctx.http, &c.raw).await {
+                    resolved_doi = Some(doi.clone());
+                    resolved_url = Some(format!("https://doi.org/{doi}"));
+                    source = Some("crossref_bibliographic");
                     resolved_via_biblio += 1;
                 }
             }
-            if !ok {
+            let exists = source.is_some();
+            if !exists {
                 unresolved.push(c.raw.clone());
             }
+            entries.push(json!({
+                "raw": c.raw,
+                "exists": exists,
+                "resolved_doi": resolved_doi,
+                "resolved_url": resolved_url,
+                "source": source.unwrap_or("none"),
+            }));
         }
 
         if total == 0 {
             return VerifierResult {
                 status: VerifierStatus::Pass,
-                notes: json!({ "checked": 0 }),
+                notes: json!({ "checked": 0, "entries": [] }),
             };
         }
         let frac = unresolved.len() as f32 / total as f32;
@@ -306,6 +325,7 @@ impl Verifier for CitationVerifier {
                 "unresolved": unresolved,
                 "unresolved_fraction": frac,
                 "resolved_via_bibliographic_query": resolved_via_biblio,
+                "entries": entries,
             }),
         }
     }
