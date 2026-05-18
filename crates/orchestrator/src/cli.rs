@@ -2231,10 +2231,13 @@ async fn merge_pr_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
     )
 }
 
-/// `grokrxiv reject <REVIEW_ID> --reason TEXT`. Updates the most-recent
-/// moderation_queue row's state to `rejected`, leaves `reviews.status` at
-/// `awaiting_moderation` per spec.
+/// `grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
+/// public terminal state. Writes `moderation_queue` like before but ALSO:
+///   - inserts a `rejections` row with the reason as `rationale_md`,
+///   - flips `reviews.status` to `rejected`,
+///   - revalidates the public site so the red "Rejected" badge lands.
 async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
+    use grokrxiv_schemas::ReviewStatus;
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let pool = state
@@ -2242,6 +2245,7 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("reject: DATABASE_URL not configured"))?;
     let moderator = moderator_handle();
+
     let n = crate::db::update_moderation_state(
         pool,
         review_id,
@@ -2255,6 +2259,24 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
             "reject: no moderation_queue row for review {review_id} (was insert_moderation_pending called?)"
         );
     }
+
+    sqlx::query(
+        "insert into rejections (review_id, rationale_md, created_by) values ($1, $2, $3)",
+    )
+    .bind(review_id)
+    .bind(reason)
+    .bind(&moderator)
+    .execute(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("reject: insert rejections row: {e}"))?;
+
+    let rows_updated =
+        crate::db::set_review_status(pool, review_id, ReviewStatus::Rejected, None).await?;
+    if rows_updated == 0 {
+        anyhow::bail!("reject: failed to transition review {review_id} to status=rejected");
+    }
+
+    crate::routes::webhook::spawn_revalidate(&state, review_id);
     println!("rejected={review_id}");
     Ok(())
 }

@@ -408,6 +408,10 @@ pub enum ReviewStatus {
     Corrected,
     /// Review was withdrawn after publication.
     Withdrawn,
+    /// Moderator rejected the review before publication. Terminal; a public
+    /// rationale lives on the `rejections` table and the web `/reviews/<id>`
+    /// page renders it with a red "Rejected" badge.
+    Rejected,
 }
 
 // ---------------------------------------------------------------------------

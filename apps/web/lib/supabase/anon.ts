@@ -84,6 +84,24 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
   return data as unknown as Review;
 }
 
+/// Phase 4: fetch the moderator's rationale for a rejected review. Returns
+/// null when the review is not rejected (RLS denies cross-status reads).
+export async function getRejectionByReviewIdAnon(
+  reviewId: string,
+): Promise<{ rationale_md: string; created_at: string } | null> {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("rejections")
+    .select("rationale_md, created_at")
+    .eq("review_id", reviewId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data as { rationale_md: string; created_at: string };
+}
+
 // Paper rows are only exposed once at least one public (published/corrected)
 // review references them. Otherwise anon could enumerate the ingestion queue.
 async function paperHasPublicReviewAnon(

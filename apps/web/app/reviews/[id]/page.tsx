@@ -11,7 +11,11 @@ import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { MarkdownBody } from "@/components/markdown-body";
 import { ReviewToc } from "@/components/review-toc";
 import { JsonLd } from "@/components/json-ld";
-import { getPaperByIdAnon, getReviewByIdAnon } from "@/lib/supabase/anon";
+import {
+  getPaperByIdAnon,
+  getReviewByIdAnon,
+  getRejectionByReviewIdAnon,
+} from "@/lib/supabase/anon";
 import { CANONICAL_URL } from "@/lib/env";
 import { buildTocFromMarkdown } from "@/lib/toc";
 import {
@@ -24,7 +28,11 @@ type Params = { id: string };
 
 async function loadReviewWithPaper(
   id: string,
-): Promise<{ review: Review; paper: Paper } | null> {
+): Promise<{
+  review: Review;
+  paper: Paper;
+  rejection: { rationale_md: string; created_at: string } | null;
+} | null> {
   "use cache";
   const review = await getReviewByIdAnon(id);
   if (!review) return null;
@@ -33,7 +41,11 @@ async function loadReviewWithPaper(
   if (!PUBLIC_REVIEW_STATUSES.includes(review.status)) return null;
   const paper = await getPaperByIdAnon(review.paper_id);
   if (!paper) return null;
-  return { review, paper };
+  const rejection =
+    review.status === "rejected"
+      ? await getRejectionByReviewIdAnon(id)
+      : null;
+  return { review, paper, rejection };
 }
 
 export async function generateMetadata({
@@ -93,7 +105,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
   const { id } = await params;
   const data = await loadReviewWithPaper(id);
   if (!data) notFound();
-  const { review, paper } = data;
+  const { review, paper, rejection } = data;
 
   const arxivUrl = `https://arxiv.org/abs/${paper.arxiv_id}`;
   const bibtex = buildBibtex(paper, review, id);
@@ -216,6 +228,20 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
               ) : null}
             </div>
           </header>
+
+          {rejection ? (
+            <section
+              className="flex flex-col gap-3 rounded-md border border-red-700 bg-red-950/40 p-4"
+              aria-label="Moderator rejection rationale"
+            >
+              <h2 className="text-lg font-semibold text-red-200">
+                Moderator rejection rationale
+              </h2>
+              <div className="prose-review prose-invert text-red-50">
+                <MarkdownBody>{rejection.rationale_md}</MarkdownBody>
+              </div>
+            </section>
+          ) : null}
 
           <Separator />
 
