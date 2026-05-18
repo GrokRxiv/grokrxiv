@@ -477,6 +477,24 @@ async fn run_review_dag_inner(
     let moderator_notes: Option<String> = crate::db::fetch_latest_changes_request_notes(pool, paper_id)
         .await
         .unwrap_or(None);
+
+    // Phase A (review-specialist tools): pre-resolve verified facts for the
+    // Reproducibility specialist. HEAD-checks every URL in the paper extract +
+    // hits the public GitHub API for github.com/<owner>/<repo>. The LLM later
+    // consumes these facts as ground truth via build_specialist_prompt; the
+    // merge step overlays the verified URL/repo state onto the LLM's
+    // reproducibility_review output before insert_review_agent.
+    let reproducibility_facts =
+        crate::agents::specialist_facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref())
+            .await;
+    tracing::info!(
+        %paper_id,
+        %review_id,
+        urls_checked = reproducibility_facts.urls_checked.len(),
+        urls_reachable = reproducibility_facts.urls_checked.iter().filter(|u| u.reachable).count(),
+        github_repos = reproducibility_facts.github_repos.len(),
+        "review: gathered reproducibility facts (URL reachability + github metadata)"
+    );
     if let Some(notes) = moderator_notes.as_deref() {
         tracing::info!(
             %paper_id,
@@ -494,10 +512,16 @@ async fn run_review_dag_inner(
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
     for role in specialist_roles {
+        let role_facts = if matches!(role, AgentRole::Reproducibility) {
+            Some(&reproducibility_facts)
+        } else {
+            None
+        };
         let prompt = build_specialist_prompt(
             role,
             extract_arc.as_ref(),
             moderator_notes.as_deref(),
+            role_facts,
         );
         if let Some(root) = debug_root.as_deref() {
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
@@ -618,10 +642,14 @@ async fn run_review_dag_inner(
         // the LLM owns relevance + missing-references prose. Merge before
         // persisting so a single consistent citation_review JSON lands on
         // review_agents.output.
-        let output_to_persist = if matches!(*role, AgentRole::Citation) {
-            merge_citation_verifier_into_output(output.clone(), v_notes.as_ref())
-        } else {
-            output.clone()
+        let output_to_persist = match *role {
+            AgentRole::Citation => {
+                merge_citation_verifier_into_output(output.clone(), v_notes.as_ref())
+            }
+            AgentRole::Reproducibility => {
+                merge_reproducibility_facts_into_output(output.clone(), &reproducibility_facts)
+            }
+            _ => output.clone(),
         };
         crate::db::insert_review_agent(
             pool,
@@ -1122,6 +1150,60 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
     s
 }
 
+/// Overlay verified URL / GitHub repo state onto the LLM's
+/// `reproducibility_review`. Auto-adds a `concerns` entry for each
+/// unreachable URL and each archived repo so the moderator UI surfaces the
+/// gap regardless of whether the LLM noticed it. Existing concerns from the
+/// LLM are preserved; we only append.
+fn merge_reproducibility_facts_into_output(
+    mut output: serde_json::Value,
+    facts: &crate::agents::specialist_facts::ReproducibilityFacts,
+) -> serde_json::Value {
+    let Some(obj) = output.as_object_mut() else {
+        return output;
+    };
+    // Concerns array: append, don't clobber.
+    let concerns = obj
+        .entry("concerns".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(concerns_arr) = concerns.as_array_mut() else {
+        return output;
+    };
+    use crate::agents::specialist_facts::UrlKind;
+    for u in &facts.urls_checked {
+        if u.reachable {
+            continue;
+        }
+        let area = match u.kind {
+            UrlKind::Code => "code",
+            UrlKind::Dataset => "data",
+            UrlKind::Other => "other",
+        };
+        let status = u
+            .status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "network_error".to_string());
+        concerns_arr.push(serde_json::json!({
+            "area": area,
+            "description": format!("Verifier could not reach `{}` (status={})", u.url, status),
+            "severity": "major",
+        }));
+    }
+    for r in &facts.github_repos {
+        if matches!(r.archived, Some(true)) {
+            concerns_arr.push(serde_json::json!({
+                "area": "code",
+                "description": format!(
+                    "GitHub repository `{}/{}` is marked archived — code is no longer maintained.",
+                    r.owner, r.repo
+                ),
+                "severity": "minor",
+            }));
+        }
+    }
+    output
+}
+
 /// Overlay the verifier's per-entry resolution (`exists`, `resolved_doi`,
 /// `resolved_url`) onto the LLM specialist's `citation_review.entries[*]`.
 /// The LLM's `relevance` / `notes` / `explanation` / `summary` /
@@ -1385,6 +1467,7 @@ fn build_specialist_prompt(
     role: grokrxiv_schemas::AgentRole,
     extract: &grokrxiv_schemas::PaperExtract,
     moderator_notes: Option<&str>,
+    reproducibility_facts: Option<&crate::agents::specialist_facts::ReproducibilityFacts>,
 ) -> String {
     use grokrxiv_schemas::AgentRole;
 
@@ -1483,6 +1566,78 @@ fn build_specialist_prompt(
         );
         out.push_str(notes.trim());
         out.push_str("\n\n");
+    }
+    if let Some(facts) = reproducibility_facts {
+        if !facts.urls_checked.is_empty() || !facts.github_repos.is_empty() {
+            out.push_str(
+                "Verified availability facts (deterministically retrieved — do NOT re-check, \
+                 treat as authoritative):\n\n",
+            );
+            if !facts.urls_checked.is_empty() {
+                out.push_str("URLs checked:\n");
+                for u in &facts.urls_checked {
+                    let status_str = u
+                        .status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "network_error".to_string());
+                    let kind = match u.kind {
+                        crate::agents::specialist_facts::UrlKind::Code => "code",
+                        crate::agents::specialist_facts::UrlKind::Dataset => "dataset",
+                        crate::agents::specialist_facts::UrlKind::Other => "other",
+                    };
+                    out.push_str(&format!(
+                        "- [{kind}] {url} → {state} (status={status_str})\n",
+                        url = u.url,
+                        state = if u.reachable { "REACHABLE" } else { "UNREACHABLE" },
+                    ));
+                }
+                out.push('\n');
+            }
+            if !facts.github_repos.is_empty() {
+                out.push_str("GitHub repositories:\n");
+                for r in &facts.github_repos {
+                    if !r.exists {
+                        out.push_str(&format!(
+                            "- {}/{}: NOT FOUND (404 or private without token)\n",
+                            r.owner, r.repo
+                        ));
+                        continue;
+                    }
+                    let mut tags: Vec<String> = Vec::new();
+                    if let Some(p) = &r.pushed_at {
+                        tags.push(format!("last_pushed={p}"));
+                    }
+                    if let Some(s) = r.stargazers_count {
+                        tags.push(format!("stars={s}"));
+                    }
+                    if let Some(l) = &r.license_spdx {
+                        tags.push(format!("license={l}"));
+                    }
+                    if matches!(r.archived, Some(true)) {
+                        tags.push("ARCHIVED".to_string());
+                    }
+                    out.push_str(&format!(
+                        "- {}/{}: exists; {}\n",
+                        r.owner,
+                        r.repo,
+                        if tags.is_empty() {
+                            "no metadata".to_string()
+                        } else {
+                            tags.join(", ")
+                        }
+                    ));
+                }
+                out.push('\n');
+            }
+            out.push_str(
+                "Rules:\n\
+                 - A `code_url` from the paper is only resolved iff its entry above is REACHABLE.\n\
+                 - A repository marked ARCHIVED implies the work is no longer maintained — \
+                   surface as a `severity: minor` concern.\n\
+                 - An UNREACHABLE code/dataset URL is a `severity: major` reproducibility concern; \
+                   add a `concerns` entry naming the URL and the status code.\n\n",
+            );
+        }
     }
     out.push_str(&format!("Task: {task}"));
     out
@@ -2372,7 +2527,7 @@ mod tests {
             AgentRole::Novelty,
             AgentRole::Reproducibility,
         ] {
-            let prompt = build_specialist_prompt(role, &extract, None);
+            let prompt = build_specialist_prompt(role, &extract, None, None);
             assert!(
                 prompt.contains("## 1. Introduction"),
                 "role {role:?}: prompt missing heading: {}",
@@ -2414,7 +2569,7 @@ mod tests {
         );
 
         let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None);
+        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None);
 
         // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
         let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
@@ -2462,7 +2617,7 @@ mod tests {
         );
         extract.bibliography[0].title = Some("A foundational paper".to_string());
 
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None);
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None);
         assert!(
             prompt.contains("Bibliography (2 entries):"),
             "expected bibliography header in prompt"
@@ -2503,7 +2658,7 @@ mod tests {
             )],
             vec!["Some citation, 2020."],
         );
-        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None);
+        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None);
         assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
         assert!(!prompt.contains("introductory body markdown"));
         assert!(!prompt.contains("Bibliography"));
@@ -2519,7 +2674,7 @@ mod tests {
         // Summary budget = 48_000. Build a single 100_000-char section.
         let huge = "abcdefghij".repeat(10_000); // 100_000 chars
         let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
-        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None);
+        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None);
         assert!(
             prompt.contains("[…truncated…]"),
             "expected the 60/40 truncation marker for single oversized section"
@@ -2614,6 +2769,80 @@ mod tests {
     }
 
     #[test]
+    fn merge_reproducibility_facts_appends_concerns_for_dead_urls_and_archived_repos() {
+        use crate::agents::specialist_facts::{
+            GithubRepoFact, ReproducibilityFacts, UrlCheck, UrlKind,
+        };
+        let llm = serde_json::json!({
+            "code_availability": "open_source",
+            "code_url": "https://github.com/foo/bar",
+            "data_availability": "public",
+            "data_url": null,
+            "environment": null,
+            "concerns": [{ "area": "evaluation", "description": "no held-out test set", "severity": "minor" }],
+            "reproducibility_score": 0.8,
+            "confidence": 0.7
+        });
+        let facts = ReproducibilityFacts {
+            urls_checked: vec![
+                UrlCheck {
+                    url: "https://github.com/foo/bar".into(),
+                    reachable: false,
+                    status: Some(404),
+                    final_url: None,
+                    kind: UrlKind::Code,
+                },
+                UrlCheck {
+                    url: "https://zenodo.org/record/123".into(),
+                    reachable: false,
+                    status: Some(410),
+                    final_url: None,
+                    kind: UrlKind::Dataset,
+                },
+                UrlCheck {
+                    url: "https://example.com/keep".into(),
+                    reachable: true,
+                    status: Some(200),
+                    final_url: None,
+                    kind: UrlKind::Other,
+                },
+            ],
+            github_repos: vec![GithubRepoFact {
+                owner: "foo".into(),
+                repo: "bar".into(),
+                exists: true,
+                default_branch: Some("main".into()),
+                pushed_at: Some("2020-01-01T00:00:00Z".into()),
+                stargazers_count: Some(5),
+                license_spdx: None,
+                archived: Some(true),
+            }],
+        };
+        let merged = merge_reproducibility_facts_into_output(llm, &facts);
+        let concerns = merged["concerns"].as_array().unwrap();
+        // 1 existing + 2 unreachable urls (code + dataset) + 1 archived repo = 4.
+        assert_eq!(concerns.len(), 4);
+        // The existing concern is preserved.
+        assert_eq!(concerns[0]["description"], "no held-out test set");
+        // The two unreachable URL concerns are appended at major severity.
+        let dead_url_concerns: Vec<_> = concerns
+            .iter()
+            .filter(|c| c["description"].as_str().unwrap_or("").contains("could not reach"))
+            .collect();
+        assert_eq!(dead_url_concerns.len(), 2);
+        for c in &dead_url_concerns {
+            assert_eq!(c["severity"], "major");
+        }
+        // The archived-repo concern is minor.
+        let archived: Vec<_> = concerns
+            .iter()
+            .filter(|c| c["description"].as_str().unwrap_or("").contains("archived"))
+            .collect();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0]["severity"], "minor");
+    }
+
+    #[test]
     fn merge_citation_verifier_passes_through_when_no_notes() {
         let llm_output = serde_json::json!({
             "entries": [{ "citation": {"key":"[1]","raw":"x","title":null,"authors":[]}, "exists": false, "resolved_doi": null, "resolved_url": null, "relevance": "low", "notes": null, "explanation": "" }],
@@ -2637,6 +2866,7 @@ mod tests {
             AgentRole::TechnicalCorrectness,
             &extract,
             Some("Please tighten the proof of Theorem 3."),
+            None,
         );
         assert!(
             prompt.contains("Moderator notes from a prior `request-changes` round"),
@@ -2656,9 +2886,9 @@ mod tests {
             vec![("1. Intro", "Some content.".to_string())],
             vec!["[Foo23] Foo et al."],
         );
-        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None);
+        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None);
         assert!(!p_none.contains("Moderator notes"), "None should not emit the section");
-        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "));
+        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None);
         assert!(!p_blank.contains("Moderator notes"), "whitespace-only should not emit the section");
     }
 

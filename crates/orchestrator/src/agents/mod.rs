@@ -14,6 +14,7 @@ pub mod extraction;
 pub mod review_agents;
 pub mod runners;
 pub mod sandbox;
+pub mod specialist_facts;
 pub mod traits;
 pub mod types;
 

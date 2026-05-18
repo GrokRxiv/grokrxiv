@@ -1582,7 +1582,24 @@ fn citation_contexts_for(
     let Some(key) = citation_key(citation) else {
         return Vec::new();
     };
-    let needles = [format!("@{key}"), format!("[{key}]"), format!("{{{key}}}")];
+    // Strip surrounding brackets so a key like `[1]` produces needles for `[1]`
+    // (numeric citation style) not `[[1]]`. Some extractors emit `key="[1]"`,
+    // others emit `key="1"`; handle both.
+    let bare = key
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let bracketed = format!("[{bare}]");
+    let mut needles: Vec<String> = vec![
+        format!("@{bare}"),     // BibTeX-style `@Deutsch1991`
+        bracketed.clone(),       // Numeric `[1]`
+        format!("{{{bare}}}"),  // LaTeX `{Deutsch1991}`
+    ];
+    // Preserve the original key as a needle too — covers cases where the
+    // body already includes the bracketed form (e.g. raw cite key `Deutsch1991`).
+    if key != bare && !needles.contains(&key) {
+        needles.push(key.clone());
+    }
     artifact
         .get("sections")
         .and_then(|v| v.as_array())
