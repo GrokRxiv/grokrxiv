@@ -265,6 +265,11 @@ pub enum Command {
     Approve {
         /// UUID of the review to approve for PR handoff. This does not merge or publish.
         review_id: Uuid,
+        /// Bypass the meta_review.recommendation gate. Required when the
+        /// meta-reviewer recommended `reject` or `major_revision`, or when
+        /// no recommendation was recorded.
+        #[arg(long)]
+        force: bool,
     },
     /// Merge the open publication PR (squash). The GitHub webhook then flips
     /// `reviews.status` to `published` and revalidates the public site.
@@ -548,7 +553,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             format,
             out,
         } => render(review_id, format, out).await,
-        Command::Approve { review_id } => approve(review_id, json).await,
+        Command::Approve { review_id, force } => approve(review_id, force, json).await,
         Command::Merge { review_id } => merge_pr_cmd(review_id, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
@@ -1886,17 +1891,22 @@ async fn render(
     }
 }
 
-async fn approve(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn approve(review_id: Uuid, force: bool, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
         "review {review_id}: opening publication PR; human merge is required before publish"
     ));
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
-    approve_impl(&state, review_id, json).await
+    approve_impl(&state, review_id, force, json).await
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn approve_impl(
+    state: &super::AppState,
+    review_id: Uuid,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     use grokrxiv_publisher::{AdminCaller, GithubPublisher, OpenReviewPr};
     use grokrxiv_schemas::ReviewStatus;
 
@@ -1916,6 +1926,48 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let (_, arxiv_id, title, field, paper_id) = row;
+
+    // Phase 2: recommendation gate. Read meta_review.recommendation and bail
+    // unless the operator passed --force. Missing recommendation is also a
+    // bail — better to fail loudly than to publish an unverified row.
+    let meta_recommendation: Option<String> = sqlx::query_scalar(
+        "select meta_review->>'recommendation' from reviews where id = $1",
+    )
+    .bind(review_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(None);
+    match meta_recommendation.as_deref() {
+        Some("accept") | Some("minor_revision") => {}
+        Some(rec @ ("reject" | "major_revision")) if !force => {
+            anyhow::bail!(
+                "meta_reviewer recommended `{rec}` for review {review_id}. \
+                 Refusing to open a PR. Use `grokrxiv reject {review_id} --reason …` \
+                 or `grokrxiv request-changes {review_id} --notes …`; if you want \
+                 to publish anyway, re-run with `--force`."
+            );
+        }
+        Some(rec @ ("reject" | "major_revision")) => {
+            tracing::warn!(
+                %review_id,
+                recommendation = rec,
+                "approve --force: bypassing meta_review.recommendation gate"
+            );
+        }
+        Some(other) => {
+            tracing::warn!(%review_id, recommendation = other, "approve: unknown recommendation value, treating as ok");
+        }
+        None if force => {
+            tracing::warn!(%review_id, "approve --force: no meta_review.recommendation recorded, bypassing gate");
+        }
+        None => {
+            anyhow::bail!(
+                "review {review_id} has no meta_review.recommendation \
+                 (incomplete review run?). Re-run `grokrxiv re-review <paper_id>` \
+                 first, or pass `--force` to override."
+            );
+        }
+    }
 
     // Read on-disk artifacts produced by the M1 run.
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1997,8 +2049,7 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
         body_md: format!(
             "Approved by `grokrxiv approve {review_id}`.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
-             See linked artifacts in this PR; the rendered review.html is the human-readable preview.\n\n\
-             grokrxiv-review-id: {review_id}",
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
             public_url = std::env::var("GROKRXIV_PUBLIC_URL")
                 .unwrap_or_else(|_| "https://grokrxiv.org".into()),
         ),
@@ -2095,6 +2146,7 @@ async fn close_superseded_pr_if_any_cli(
 async fn approve_impl(
     _state: &super::AppState,
     review_id: Uuid,
+    _force: bool,
     _json: bool,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
