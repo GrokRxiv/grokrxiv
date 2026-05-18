@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/html_quality_review.schema.json",
+  "title": "HtmlQualityReview",
+  "description": "Output of the post-render html_quality stage. Codex (gpt-5.5) reads the rendered review.html, emits a fixed copy and a list of every change it made. Strict JSON, OpenAI-strict-compatible.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fixed_html": {
+      "type": "string",
+      "description": "The corrected HTML document. If no changes were necessary this is the original HTML byte-for-byte."
+    },
+    "fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "Where in the document the change applies (e.g., 'h1 title', 'section #methods anchor', 'figure caption near eq:3'). Free text."
+          },
+          "issue": {
+            "type": "string",
+            "description": "What was wrong. e.g., 'literal LaTeX layout commands surfaced as text', 'broken table cell alignment', 'orphaned section anchor'."
+          },
+          "before": {
+            "type": ["string", "null"],
+            "description": "The original HTML fragment, truncated to a readable snippet. Null when the fix is structural (e.g., adding a missing element)."
+          },
+          "after": {
+            "type": ["string", "null"],
+            "description": "The rewritten HTML fragment. Null when the fix is a deletion."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "minor", "major", "critical"],
+            "description": "Reader-impact severity. 'critical' = unreadable / wrong content; 'major' = renders but obviously broken; 'minor' = cosmetic; 'info' = a note about something acceptable."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "One sentence justifying the change so a moderator can audit."
+          }
+        },
+        "required": ["location", "issue", "before", "after", "severity", "rationale"]
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph summary of what was fixed and what (if anything) the moderator should still double-check by eye."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Codex's confidence that the rewrite preserved meaning. Below 0.7 the moderator should diff before publishing."
+    }
+  },
+  "required": ["fixed_html", "fixes", "summary", "confidence"]
+}

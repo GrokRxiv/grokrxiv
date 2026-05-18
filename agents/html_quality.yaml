@@ -1,0 +1,15 @@
+id: html_quality
+role: "Post-render quality harness for GrokRxiv's own review HTML — find and fix formatting / readability issues before the moderation page renders. NOT a peer reviewer of the source paper; this audits OUR generated artifact."
+provider: openai
+# codex CLI maps openai → gpt-5.5 by default; override with
+# GROKRXIV_HTML_QUALITY_MODEL.
+model: gpt-5.5
+runner: cli
+prompt_template: prompts/html_quality.md
+input_schema: schemas/render_artifact.schema.json
+output_schema: schemas/html_quality_review.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 180
+escalation: human

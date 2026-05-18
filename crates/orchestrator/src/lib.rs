@@ -13,6 +13,7 @@ pub mod cli_status;
 pub mod config;
 pub mod db;
 pub mod doctor;
+pub mod html_review;
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 pub mod ingest_pipeline;
 pub mod routes;

@@ -1331,6 +1331,21 @@ fn merge_citation_verifier_into_output(
     output
 }
 
+/// Phase F: kill switch for the html_quality post-render stage. Truthy values
+/// (`1`/`true`/`yes`/`on`) skip the codex audit for fast smoke tests or when
+/// the codex CLI is unavailable. Default is enabled — the stage logs warn +
+/// proceeds without rewriting if codex itself fails, so leaving this off is
+/// safe in production.
+fn html_quality_disabled() -> bool {
+    matches!(
+        std::env::var("GROKRXIV_HTML_QUALITY_DISABLE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 /// arXiv category prefixes for fields where executable verification is the
 /// state of the art and its absence is evidence of weakness. Kept hard-coded
 /// because the list is short and stable; broaden as new tooling lands.
@@ -2020,6 +2035,16 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     tokio::fs::write(dir.join("review.md"), md).await?;
     tokio::fs::write(dir.join("review.tex"), tex).await?;
     tokio::fs::write(dir.join("bundle.zip"), &zip).await?;
+
+    // Phase F: post-render HTML quality harness. Codex (gpt-5.5) audits the
+    // rendered review.html for formatting / readability issues and writes a
+    // corrected copy back along with a formatting_fixes.json sidecar. Skipped
+    // when GROKRXIV_HTML_QUALITY_DISABLE=1 (useful for fast smoke tests).
+    if !html_quality_disabled() {
+        if let Err(e) = crate::html_review::review_and_fix_html(state, review_id, &dir).await {
+            tracing::warn!(%review_id, err = %e, "html_quality: stage errored — leaving review.html as-is");
+        }
+    }
 
     let dir_str = format!("artifacts/{review_id}");
     let _ = crate::db::set_review_artifacts(
