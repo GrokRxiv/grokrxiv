@@ -46,7 +46,7 @@ function failOnHydrationWarning(errors: string[]) {
 }
 
 test.describe("upload flow (live)", () => {
-  test("uploading sample.pdf produces Sample ready + iframe content + blob: bundle.zip", async ({
+  test("uploading sample.pdf produces Sample ready + iframe content + zip download", async ({
     page,
     request,
   }) => {
@@ -97,7 +97,7 @@ test.describe("upload flow (live)", () => {
     // contents here because Playwright's evaluate context can't reach the
     // page's blob registry, and triggering a real download cancels under
     // headless mode on macOS.
-    const dl = page.getByRole("link", { name: /Download bundle\.zip/i });
+    const dl = page.getByRole("link", { name: /Download sample review/i });
     await expect(dl).toBeVisible();
     const href = await dl.getAttribute("href");
     expect(href).toMatch(/^blob:http/);

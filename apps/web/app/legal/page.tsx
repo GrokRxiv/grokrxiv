@@ -26,10 +26,9 @@ export default function LegalPage() {
         <p className="text-base">
           <strong>GrokRxiv reviews are AI-generated.</strong> They are not the
           result of formal academic peer review: no editor, no journal, and no
-          human reviewer signs off on them. The reviews are produced by large
-          language models running under a typed verifier ladder and are
-          published only after human moderation, but the underlying judgments
-          come from machine learning systems.
+          journal-appointed reviewer signs off on them. Reviews are checked and
+          moderated before publication, but the underlying judgments come from
+          machine learning systems.
         </p>
         <p className="text-base">
           <strong>GrokRxiv is not endorsed by arXiv.</strong> We are not
@@ -76,13 +75,8 @@ export default function LegalPage() {
           arXiv compliance
         </h2>
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
-          The ingest pipeline uses a single connection to{" "}
-          <code className="font-mono text-xs">export.arxiv.org</code> with at
-          least three seconds between requests, identifies itself with a{" "}
-          <code className="font-mono text-xs">User-Agent</code> containing a
-          contact email, and stores arXiv PDF and LaTeX source only in a
-          private bucket strictly for re-processing. Every review links back
-          to{" "}
+          GrokRxiv respects arXiv access guidelines, identifies itself when
+          fetching paper data, and links every review back to{" "}
           <code className="break-all font-mono text-xs">
             https://arxiv.org/abs/&lt;id&gt;
           </code>

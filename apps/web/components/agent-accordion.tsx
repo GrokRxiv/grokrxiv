@@ -6,7 +6,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Badge } from "@/components/ui/badge";
 import { VerifierStatusBadge } from "@/components/review-status-badge";
 import type { AgentOutput, AgentRole } from "@/lib/types";
 
@@ -16,7 +15,7 @@ const ROLE_LABEL: Record<AgentRole, string> = {
   novelty: "Novelty",
   reproducibility: "Reproducibility",
   citation: "Citation",
-  meta_reviewer: "Meta reviewer",
+  meta_reviewer: "Overall reviewer",
 };
 
 const ROLE_ORDER: AgentRole[] = [
@@ -46,12 +45,6 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
                 <span className="text-sm font-semibold text-slate-100">
                   {ROLE_LABEL[agent.role] ?? agent.role}
                 </span>
-                <Badge
-                  variant="secondary"
-                  className="bg-slate-800 font-mono text-xs text-slate-100"
-                >
-                  {agent.model}
-                </Badge>
               </div>
               <VerifierStatusBadge status={agent.verifier_status} />
             </div>

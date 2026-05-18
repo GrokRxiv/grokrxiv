@@ -4,17 +4,17 @@ const STEPS = [
   {
     icon: FileText,
     title: "Ingest",
-    body: "arXiv puller + PDF/LaTeX extraction. Normalized into a typed paper artifact.",
+    body: "GrokRxiv fetches the paper and prepares the text, equations, references, and figures for review.",
   },
   {
     icon: Workflow,
-    title: "Review DAG",
-    body: "Six specialist LLM reviewers run in parallel under a verifier ladder (schema, citation, tone, render).",
+    title: "Review",
+    body: "The paper is evaluated for summary, correctness, novelty, reproducibility, citations, and overall recommendation.",
   },
   {
     icon: GitPullRequest,
     title: "Publish",
-    body: "Bundle + PR to github.com/GrokRxiv/grokrxiv-reviews. Human merges, site revalidates.",
+    body: "A human moderator approves, rejects, or requests changes before a public review appears on the site.",
   },
 ];
 

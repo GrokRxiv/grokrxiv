@@ -73,16 +73,15 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     clearTimeout(timeout);
-    const msg = err instanceof Error ? err.message : "Upstream error";
     const aborted = err instanceof Error && err.name === "AbortError";
     return NextResponse.json(
       {
         error: aborted
           ? "Preview timed out after 60s."
-          : `Could not reach the orchestrator: ${msg}`,
+          : "Sample review service is temporarily unavailable.",
         hint: aborted
           ? "The paper may be very long; try a shorter PDF or retry."
-          : `Is the orchestrator running at ${ORCHESTRATOR_INTERNAL_URL}? Try \`just orch\` or \`docker compose up orchestrator\`.`,
+          : "Please try again later.",
       },
       { status: aborted ? 504 : 502 },
     );

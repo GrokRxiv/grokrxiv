@@ -12,10 +12,13 @@ import {
   type ReviewSummary,
   type ReviewWithPaper,
 } from "@/lib/types";
+import { SUPABASE_AUTH_COOKIE_NAME } from "@/lib/supabase/cookie";
+import { supabaseErrorMessage } from "@/lib/supabase/errors";
 
 export async function createSupabaseServerClient() {
   const cookieStore = await cookies();
   return createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    cookieOptions: { name: SUPABASE_AUTH_COOKIE_NAME },
     cookies: {
       getAll() {
         return cookieStore.getAll();
@@ -39,7 +42,7 @@ export async function listPublishedReviews(opts: {
   limit?: number;
   page?: number;
   field?: string;
-}): Promise<{ data: ReviewWithPaper[]; total: number }> {
+}): Promise<{ data: ReviewWithPaper[]; total: number; error?: string }> {
   if (!isSupabaseConfigured()) {
     return { data: [], total: 0 };
   }
@@ -68,7 +71,11 @@ export async function listPublishedReviews(opts: {
 
   const { data, count, error } = await query;
   if (error || !data) {
-    return { data: [], total: 0 };
+    return {
+      data: [],
+      total: 0,
+      error: error ? supabaseErrorMessage(error) : "Supabase query failed.",
+    };
   }
   return {
     data: data as unknown as ReviewWithPaper[],

@@ -7,6 +7,7 @@ import {
   SUPABASE_URL,
   isSupabaseConfigured,
 } from "@/lib/env";
+import { supabaseErrorMessage } from "@/lib/supabase/errors";
 import {
   PUBLIC_REVIEW_STATUSES,
   type Paper,
@@ -27,7 +28,7 @@ export async function listPublishedReviewsAnon(opts: {
   field?: string;
   /** Optional case-insensitive search over `papers.title` and `papers.abstract`. */
   q?: string;
-}): Promise<{ data: ReviewWithPaper[]; total: number }> {
+}): Promise<{ data: ReviewWithPaper[]; total: number; error?: string }> {
   if (!isSupabaseConfigured()) return { data: [], total: 0 };
   const supabase = client();
   const limit = opts.limit ?? 12;
@@ -60,7 +61,13 @@ export async function listPublishedReviewsAnon(opts: {
     );
   }
   const { data, count, error } = await qb;
-  if (error || !data) return { data: [], total: 0 };
+  if (error || !data) {
+    return {
+      data: [],
+      total: 0,
+      error: error ? supabaseErrorMessage(error) : "Supabase query failed.",
+    };
+  }
   return {
     data: data as unknown as ReviewWithPaper[],
     total: count ?? data.length,

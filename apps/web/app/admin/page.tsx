@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { Suspense } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,8 +12,6 @@ import {
 } from "@/components/ui/card";
 import { canModerate, getCurrentUser } from "@/lib/auth/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-
-export const dynamic = "force-dynamic";
 
 type ModerationRow = {
   id: string;
@@ -48,7 +47,38 @@ type SubmissionRow = {
   created_at: string;
 };
 
-export default async function AdminPage() {
+function formatReviewType(value: string): string {
+  switch (value) {
+    case "sample_preview":
+      return "Sample preview";
+    case "public_free":
+      return "Public full review";
+    case "paid_standard":
+      return "Public paid review";
+    case "paid_private":
+      return "Private review";
+    case "premium_api":
+      return "Premium review";
+    default:
+      return value.replaceAll("_", " ");
+  }
+}
+
+export default function AdminPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-8 text-sm text-[color:var(--color-muted-foreground)]">
+          Loading admin console...
+        </div>
+      }
+    >
+      <AdminPageContent />
+    </Suspense>
+  );
+}
+
+async function AdminPageContent() {
   const { user, role } = await getCurrentUser();
   if (!user) redirect("/login?next=/admin");
   if (!canModerate(role)) notFound();
@@ -81,8 +111,9 @@ export default async function AdminPage() {
         </p>
         <h1 className="text-3xl font-bold tracking-tight">Moderation and quota</h1>
         <p className="max-w-3xl text-[color:var(--color-muted-foreground)]">
-          Public approvals open PRs to the public review repo. Private approvals
-          release the review to the user dashboard and optional private archive.
+          Public approvals send reviews to the public archive. Private
+          approvals release reviews only to the user dashboard and private
+          archive.
         </p>
         <div>
           <Button asChild variant="outline">
@@ -94,10 +125,10 @@ export default async function AdminPage() {
       {setupError ? (
         <Card className="border-amber-600 bg-amber-950/20">
           <CardHeader>
-            <CardTitle>Admin schema not applied</CardTitle>
+            <CardTitle>Admin data unavailable</CardTitle>
             <CardDescription>
-              Apply the latest Supabase migration before using auth, quotas, or
-              private-review moderation.
+              Moderation and submission data could not be loaded. Check the
+              application setup before taking moderation action.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -148,7 +179,7 @@ export default async function AdminPage() {
               <tr>
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">Visibility</th>
-                <th className="px-4 py-3">Profile</th>
+                <th className="px-4 py-3">Review type</th>
                 <th className="px-4 py-3">State</th>
               </tr>
             </thead>
@@ -162,7 +193,9 @@ export default async function AdminPage() {
                     {submission.source}
                   </td>
                   <td className="px-4 py-3">{submission.visibility}</td>
-                  <td className="px-4 py-3">{submission.compute_profile}</td>
+                  <td className="px-4 py-3">
+                    {formatReviewType(submission.compute_profile)}
+                  </td>
                   <td className="px-4 py-3">
                     <Badge variant="outline">{submission.state}</Badge>
                   </td>

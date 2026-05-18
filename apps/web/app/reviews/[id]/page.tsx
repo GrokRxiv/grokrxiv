@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { unstable_cacheTag as cacheTag } from "next/cache";
+import { cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -165,9 +165,9 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
 
   const metaReviewMd = buildMetaReviewMarkdown(review);
   const tocItems = [
-    { id: "meta-review", text: "Meta review", level: 2 as const },
+    { id: "meta-review", text: "Overall review", level: 2 as const },
     ...buildTocFromMarkdown(metaReviewMd),
-    { id: "specialist-agents", text: "Specialist agents", level: 2 as const },
+    { id: "review-details", text: "Review details", level: 2 as const },
   ];
 
   return (
@@ -182,19 +182,6 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                 <Badge variant="outline">{paper.field}</Badge>
               ) : null}
             </div>
-            {review.models_used && Object.keys(review.models_used).length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(review.models_used).map(([role, model]) => (
-                  <Badge
-                    key={role}
-                    variant="secondary"
-                    className="bg-slate-800 font-mono text-xs text-slate-100"
-                  >
-                    {role}: {model}
-                  </Badge>
-                ))}
-              </div>
-            ) : null}
             <MathText
               as="h1"
               className="text-balance text-3xl font-bold tracking-tight md:text-4xl"
@@ -220,7 +207,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                   rel="noopener noreferrer"
                   className="break-all underline underline-offset-4"
                 >
-                  GitHub PR
+                  Publication record
                 </Link>
               ) : null}
               {review.github_review_url ? (
@@ -230,7 +217,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                   rel="noopener noreferrer"
                   className="break-all underline underline-offset-4"
                 >
-                  Canonical artifact
+                  Review archive
                 </Link>
               ) : null}
             </div>
@@ -257,7 +244,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
               id="meta-review"
               className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2"
             >
-              Meta review
+              Overall review
             </h2>
             <div className="prose-review">
               <MetaReviewBody markdown={metaReviewMd} />
@@ -268,10 +255,10 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
 
           <section className="flex flex-col gap-4">
             <h2
-              id="specialist-agents"
+              id="review-details"
               className="text-2xl font-semibold border-b border-[color:var(--color-border)] pb-2"
             >
-              Specialist agents
+              Review details
             </h2>
             <AgentAccordion agents={review.agents ?? []} />
           </section>
@@ -281,7 +268,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
           <ReviewToc items={tocItems} />
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Artifacts</CardTitle>
+              <CardTitle className="text-base">Downloads</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
               {review.github_review_url ? (
@@ -291,7 +278,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Download bundle.zip
+                    Download review package
                   </a>
                 </Button>
               ) : null}
@@ -302,7 +289,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Open PR on GitHub
+                    Open publication record
                   </a>
                 </Button>
               ) : null}

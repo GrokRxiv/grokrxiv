@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { unstable_cacheTag as cacheTag } from "next/cache";
+import { cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
@@ -116,9 +116,8 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="break-words text-xs text-[color:var(--color-muted-foreground)]">
-                    {Object.entries(r.models_used ?? {})
-                      .map(([role, model]) => `${role}: ${model}`)
-                      .join(" · ")}
+                    Open the full review for the summary, recommendation, and
+                    detailed findings.
                   </CardContent>
                 </Card>
               </Link>

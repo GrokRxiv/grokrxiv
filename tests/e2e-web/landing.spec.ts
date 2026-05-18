@@ -200,27 +200,20 @@ test.describe("GrokRxiv landing page", () => {
 
     if (health && health.ok()) {
       // Live path: expect either "Sample ready" + download, or a structured
-      // error (e.g. when ANTHROPIC_API_KEY is missing). What is NOT acceptable
+      // service error. What is NOT acceptable
       // is the raw "fetch failed" string surfacing in the UI.
       await expect(
-        page.getByText(/sample ready|hint|orchestrator/i).first(),
+        page.getByText(/sample ready|temporarily unavailable|preview timed out/i).first(),
       ).toBeVisible({ timeout: 75_000 });
     } else {
-      // Orchestrator down: expect our new error + hint copy, not "fetch failed".
+      // Service down: expect user-facing error + hint copy, not "fetch failed".
       await expect(page.getByText("Upload failed")).toBeVisible({
         timeout: 15_000,
       });
-      // Either the error message or hint must mention the orchestrator —
-      // i.e. we're telling the user something actionable. The error message
-      // AND the hint both legitimately mention "orchestrator"; that's fine —
-      // we just want at least one occurrence.
       await expect(
-        page.getByText(/orchestrator|just orch|docker compose/i).first(),
+        page.getByText(/Sample review service is temporarily unavailable/i),
       ).toBeVisible();
-      // And the hint specifically must include actionable next-step copy.
-      await expect(
-        page.getByText(/just orch|docker compose/i).first(),
-      ).toBeVisible();
+      await expect(page.getByText(/Please try again later/i)).toBeVisible();
       // Critically: the bare "fetch failed" string should NOT appear.
       await expect(page.getByText(/^fetch failed$/)).toHaveCount(0);
     }

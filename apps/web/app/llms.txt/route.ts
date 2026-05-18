@@ -8,9 +8,9 @@ export function GET() {
 > Agentic peer-review system that automates the review → revise → publish pipeline for arXiv papers.
 
 ## What it is
-- AI-generated peer reviews of arXiv papers
-- Six specialist LLM reviewers under a typed verifier ladder
-- Public artifacts at github.com/GrokRxiv/grokrxiv-reviews
+- AI-generated review reports for arXiv papers
+- Structured coverage of summary, correctness, novelty, reproducibility, and citations
+- Public reviews are moderated before publication
 - HTML, Markdown, LaTeX, and zip bundle per review
 
 ## Upload a paper

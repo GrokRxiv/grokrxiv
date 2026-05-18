@@ -47,7 +47,7 @@ export async function POST(req: Request) {
       {
         error: "premium_api_requires_cost_cap",
         detail:
-          "API-backed jobs must explicitly use compute_profile=premium_api and set cost_cap_usd.",
+          "Premium jobs must explicitly use compute_profile=premium_api and set cost_cap_usd.",
       },
       { status: 400 },
     );

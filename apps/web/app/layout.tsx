@@ -18,7 +18,8 @@ const mono = JetBrains_Mono({
 });
 
 const SITE_BLURB =
-  "GrokRxiv is an agentic peer-review system that automates the review → revise → publish pipeline for arXiv papers. Six specialist LLM reviewers run under a typed verifier ladder; every review ships as a human-gated PR.";
+  "GrokRxiv creates structured review reports for arXiv papers. Public reviews are checked and moderated before publication.";
+const GA_MEASUREMENT_ID = "G-82HHZNTJYH";
 
 export const metadata: Metadata = {
   metadataBase: new URL(CANONICAL_URL),
@@ -40,6 +41,15 @@ export const metadata: Metadata = {
     title: "GrokRxiv — Agentic peer review for arXiv",
     description: SITE_BLURB,
   },
+  icons: {
+    icon: [
+      { url: "/brand/grokrxiv-mark.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
@@ -54,6 +64,27 @@ export default function RootLayout({
             before paint. Without this the page renders light at SSR, then
             the client's useEffect adds .dark, causing a visible flicker. */}
         <Script src="/theme-init.js" strategy="beforeInteractive" />
+        {process.env.NODE_ENV === "production" ? (
+          <>
+            <Script
+              async
+              src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`}
+              strategy="afterInteractive"
+            />
+            <Script
+              id="google-analytics"
+              strategy="afterInteractive"
+              dangerouslySetInnerHTML={{
+                __html: `
+                  window.dataLayer = window.dataLayer || [];
+                  function gtag(){dataLayer.push(arguments);}
+                  gtag('js', new Date());
+                  gtag('config', '${GA_MEASUREMENT_ID}');
+                `,
+              }}
+            />
+          </>
+        ) : null}
       </head>
       <body className={`${sans.variable} ${mono.variable} font-sans`}>
         <Header />

@@ -103,9 +103,8 @@ export function UploadDropzone() {
               Drop a PDF to generate a sample review
             </h3>
             <p className="mb-4 max-w-md text-sm text-[color:var(--color-muted-foreground)]">
-              Fast single-pass sample — not a published GrokRxiv review. Full
-              six-agent reviews run automatically on newly ingested arXiv
-              papers and land in moderation before publication.
+              Fast sample only — not a published GrokRxiv review. Full paper
+              reviews require an account and moderation before publication.
             </p>
             <input
               ref={inputRef}
@@ -223,7 +222,7 @@ function DoneView({
             href={bundleUrl}
             download={`grokrxiv-sample-${result.sample_review_id}.zip`}
           >
-            Download bundle.zip
+            Download sample review
           </a>
         </Button>
         <Button variant="ghost" onClick={onReset}>

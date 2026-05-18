@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">GrokRxiv</title>
+  <desc id="desc">A compact app icon showing a paper connected to typed review DAG nodes.</desc>
+  <defs>
+    <linearGradient id="bg" x1="120" y1="88" x2="904" y2="936" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101827" />
+      <stop offset="1" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="paper" x1="270" y1="150" x2="770" y2="865" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" />
+      <stop offset="1" stop-color="#e6eef7" />
+    </linearGradient>
+    <filter id="shadow" x="150" y="80" width="760" height="860" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="28" stdDeviation="30" flood-color="#000000" flood-opacity=".34" />
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="208" fill="url(#bg)" />
+  <path d="M122 702c135 86 303 119 468 82 116-26 218-84 312-169v213c0 41-33 74-74 74H196c-41 0-74-33-74-74V702Z" fill="#0f766e" opacity=".16" />
+
+  <g filter="url(#shadow)">
+    <path d="M276 132h354l178 178v578H276V132Z" fill="url(#paper)" />
+    <path d="M630 132v132c0 25 20 46 46 46h132L630 132Z" fill="#dbe7f4" />
+    <path d="M276 132h354l178 178v578H276V132Z" fill="none" stroke="#ffffff" stroke-opacity=".75" stroke-width="22" stroke-linejoin="round" />
+    <path d="M630 132v132c0 25 20 46 46 46h132" fill="none" stroke="#8fa2b7" stroke-opacity=".6" stroke-width="24" stroke-linejoin="round" />
+  </g>
+
+  <g fill="none" stroke="#64748b" stroke-linecap="round" stroke-width="26" opacity=".46">
+    <path d="M372 420h274" />
+    <path d="M372 510h194" />
+    <path d="M372 600h232" />
+  </g>
+
+  <g fill="none" stroke="#14b8a6" stroke-linecap="round" stroke-linejoin="round" stroke-width="34">
+    <path d="M410 748 520 668 632 748" />
+    <path d="M520 668V536" />
+    <path d="M520 668h166" />
+  </g>
+
+  <g stroke="#0f172a" stroke-width="18">
+    <circle cx="520" cy="536" r="48" fill="#14b8a6" />
+    <circle cx="410" cy="748" r="48" fill="#14b8a6" />
+    <circle cx="632" cy="748" r="48" fill="#14b8a6" />
+    <circle cx="686" cy="668" r="58" fill="#f59e0b" />
+  </g>
+
+  <path d="M672 642h28v52h-28zM650 668h72" fill="none" stroke="#0f172a" stroke-linecap="round" stroke-linejoin="round" stroke-width="20" />
+</svg>

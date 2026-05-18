@@ -3,6 +3,10 @@ import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PUBLIC_REVIEW_STATUSES, type ReviewStatus } from "@/lib/types";
 import { isSupabaseConfigured } from "@/lib/env";
+import {
+  supabaseErrorCode,
+  supabaseErrorMessage,
+} from "@/lib/supabase/errors";
 
 const Query = z.object({
   page: z.coerce.number().int().min(1).max(10_000).default(1),
@@ -43,7 +47,13 @@ export async function GET(request: Request) {
 
   const { data, count, error } = await q;
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: supabaseErrorCode(error),
+        detail: supabaseErrorMessage(error),
+      },
+      { status: 500 },
+    );
   }
   // Strip the joined paper object from the row payload — the public list
   // returns ReviewSummary only.

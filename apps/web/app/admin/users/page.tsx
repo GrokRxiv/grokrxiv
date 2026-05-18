@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { Suspense } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -10,8 +11,6 @@ import {
 import { canModerate, getCurrentUser } from "@/lib/auth/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export const dynamic = "force-dynamic";
-
 type ProfileRow = {
   user_id: string;
   display_name: string | null;
@@ -20,7 +19,21 @@ type ProfileRow = {
   created_at: string;
 };
 
-export default async function AdminUsersPage() {
+export default function AdminUsersPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-8 text-sm text-[color:var(--color-muted-foreground)]">
+          Loading users...
+        </div>
+      }
+    >
+      <AdminUsersPageContent />
+    </Suspense>
+  );
+}
+
+async function AdminUsersPageContent() {
   const { user, role } = await getCurrentUser();
   if (!user) redirect("/login?next=/admin/users");
   if (!canModerate(role)) notFound();
@@ -51,8 +64,11 @@ export default async function AdminUsersPage() {
       {error ? (
         <Card className="border-amber-600 bg-amber-950/20">
           <CardHeader>
-            <CardTitle>User schema not applied</CardTitle>
-            <CardDescription>{error.message}</CardDescription>
+            <CardTitle>User data unavailable</CardTitle>
+            <CardDescription>
+              User quota data could not be loaded. Check the application setup
+              before changing account limits.
+            </CardDescription>
           </CardHeader>
         </Card>
       ) : null}

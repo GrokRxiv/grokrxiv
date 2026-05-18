@@ -67,6 +67,10 @@ services:
 
   web:
     image: node:20-alpine
+    # Prefer native ARM on Apple Silicon. If a local image/dependency is not
+    # available for ARM, set GROKRXIV_WEB_PLATFORM=linux/amd64 to run under
+    # Docker Desktop emulation.
+    platform: "${GROKRXIV_WEB_PLATFORM:-linux/arm64}"
     container_name: grokrxiv-web
     depends_on:
       orchestrator:
@@ -74,8 +78,11 @@ services:
     working_dir: /workspace/apps/web
     environment:
       NEXT_PUBLIC_SITE_URL: "http://localhost:3000"
-      # Inside the container, host services are reached via host.docker.internal.
-      NEXT_PUBLIC_SUPABASE_URL: "${NEXT_PUBLIC_SUPABASE_URL:-http://host.docker.internal:54321}"
+      # Browser-facing URL. This is compiled into the client bundle, so it
+      # must be reachable from Chrome/Safari on the host.
+      NEXT_PUBLIC_SUPABASE_URL: "${NEXT_PUBLIC_SUPABASE_URL:-http://127.0.0.1:54321}"
+      # Server-side URL for the Docker container to reach the host Supabase CLI.
+      SUPABASE_INTERNAL_URL: "${SUPABASE_INTERNAL_URL:-http://host.docker.internal:54321}"
       # Supabase CLI local-dev keys. Override these from .env for cloud/staging.
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "${NEXT_PUBLIC_SUPABASE_ANON_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0}"
       SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU}"

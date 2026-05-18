@@ -78,7 +78,7 @@ export default async function OgImage({
             color: "#94a3b8",
           }}
         >
-          <span>Verifier-gated AI peer review</span>
+          <span>Public GrokRxiv review</span>
           <span>grokrxiv.org</span>
         </div>
       </div>

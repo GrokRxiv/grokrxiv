@@ -114,3 +114,19 @@ those CLIs use their own logged-in local auth instead of inherited API keys.
 | `NEXT_PUBLIC_SUPABASE_URL`           | Supabase URL for read endpoints |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`      | Supabase anon key |
 | `REVALIDATE_SECRET`                  | Required on the revalidate route |
+
+## Supabase Auth SMTP
+
+| Env                 | Notes |
+|---------------------|-------|
+| `SMTP_HOST`         | Mailgun SMTP host, `smtp.mailgun.org` for US domains |
+| `SMTP_PORT`         | `587` |
+| `SMTP_USER`         | Mailgun SMTP user, e.g. `postmaster@appmail.magnetonlabs.com` |
+| `SMTP_PASS`         | Mailgun SMTP password; secret, never `NEXT_PUBLIC_*` |
+| `SMTP_ADMIN_EMAIL`  | Sender address, e.g. `no-reply@appmail.magnetonlabs.com` |
+| `SMTP_SENDER_NAME`  | Sender display name, e.g. `GrokRxiv` |
+
+Supabase Auth sends magic-link email. The web app should not send login email
+through EmailJS or any browser-side mail provider. Local Supabase keeps SMTP
+enabled in `supabase/config.toml`, but routes it to the local Mailpit/Inbucket
+container instead of Mailgun.

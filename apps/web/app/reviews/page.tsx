@@ -27,7 +27,7 @@ const COMMON_FIELDS = [
 const PAGE_SIZE = 20;
 const TITLE = "GrokRxiv Reviews";
 const DESCRIPTION =
-  "Browse every GrokRxiv AI peer review. Filter by arXiv field, search by title or abstract, paginate by date.";
+  "Browse public GrokRxiv reviews. Filter by arXiv field, search by title or abstract, paginate by date.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -84,15 +84,15 @@ export default function ReviewsIndexPage({
           {TITLE}
         </h1>
         <p className="max-w-3xl text-[color:var(--color-muted-foreground)]">
-          Every review here is gated through a typed verifier ladder and merged
-          by a human moderator on{" "}
+          Every review here has passed automated checks and human moderation
+          before publication. Approved public reviews are archived at{" "}
           <Link
             href="https://github.com/GrokRxiv/grokrxiv-reviews"
             className="underline underline-offset-4"
           >
             github.com/GrokRxiv/grokrxiv-reviews
           </Link>{" "}
-          before becoming visible. Newest first.
+          and listed newest first.
         </p>
       </header>
 
@@ -179,7 +179,7 @@ async function ReviewsList({
   q: string | undefined;
   field: string | undefined;
 }) {
-  const { data, total } = await listPublishedReviewsAnon({
+  const { data, total, error } = await listPublishedReviewsAnon({
     limit: PAGE_SIZE,
     page,
     field,
@@ -202,6 +202,13 @@ async function ReviewsList({
 
   return (
     <section className="flex flex-col gap-4">
+      {error ? (
+        <div className="rounded-lg border border-amber-600 bg-amber-950/20 p-4 text-sm text-amber-100">
+          <p className="font-medium">Review data setup needs attention.</p>
+          <p className="mt-1 text-amber-100/80">{error}</p>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[color:var(--color-muted-foreground)]">
         <span>
           {total === 0

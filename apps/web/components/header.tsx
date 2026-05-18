@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { BrandMark } from "@/components/brand-mark";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV_LINKS = [
   { href: "/reviews", label: "Reviews" },
+  { href: "/pricing", label: "Pricing" },
   { href: "/about", label: "About" },
   { href: "/api-docs", label: "API" },
   { href: "/dashboard", label: "Dashboard" },
@@ -14,9 +16,11 @@ export function Header() {
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-2 px-4">
         <Link
           href="/"
-          className="font-mono text-lg font-bold tracking-tight"
+          className="flex shrink-0 items-center gap-2 font-mono text-lg font-bold tracking-tight"
+          aria-label="GrokRxiv home"
         >
-          GrokRxiv
+          <BrandMark />
+          <span>GrokRxiv</span>
         </Link>
 
         {/* Desktop + tablet nav (>= sm). Hidden on narrow phones. */}

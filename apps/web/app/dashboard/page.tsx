@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,8 +12,6 @@ import {
 } from "@/components/ui/card";
 import { getCurrentUser } from "@/lib/auth/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-
-export const dynamic = "force-dynamic";
 
 const COUNTED_FULL_REVIEW_STATES = [
   "queued",
@@ -48,7 +47,38 @@ function freeReviewLimit(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
 }
 
-export default async function DashboardPage() {
+function formatReviewType(value: string): string {
+  switch (value) {
+    case "sample_preview":
+      return "Sample preview";
+    case "public_free":
+      return "Public full review";
+    case "paid_standard":
+      return "Public paid review";
+    case "paid_private":
+      return "Private review";
+    case "premium_api":
+      return "Premium review";
+    default:
+      return value.replaceAll("_", " ");
+  }
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-8 text-sm text-[color:var(--color-muted-foreground)]">
+          Loading dashboard...
+        </div>
+      }
+    >
+      <DashboardPageContent />
+    </Suspense>
+  );
+}
+
+async function DashboardPageContent() {
   const { user, role } = await getCurrentUser();
   if (!user) redirect("/login?next=/dashboard");
 
@@ -91,19 +121,19 @@ export default async function DashboardPage() {
         </p>
         <h1 className="text-3xl font-bold tracking-tight">Your GrokRxiv reviews</h1>
         <p className="max-w-3xl text-[color:var(--color-muted-foreground)]">
-          Run full paper reviews from here once the job enqueue UI is wired.
-          The homepage PDF upload remains a sample preview and does not consume
-          full-review quota.
+          Full paper reviews will appear here as they move through review and
+          moderation. The homepage PDF upload remains a sample preview and does
+          not consume full-review quota.
         </p>
       </header>
 
       {setupError ? (
         <Card className="border-amber-600 bg-amber-950/20">
           <CardHeader>
-            <CardTitle>Auth schema not applied</CardTitle>
+            <CardTitle>Account data unavailable</CardTitle>
             <CardDescription>
-              Apply the latest Supabase migration before using dashboard
-              quotas. The public site can still render existing public reviews.
+              Dashboard limits and submissions are temporarily unavailable.
+              Public reviews remain available.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -144,9 +174,14 @@ export default async function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button asChild variant="outline">
-              <Link href="/#upload">Run sample preview</Link>
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline">
+                <Link href="/#upload">Run sample preview</Link>
+              </Button>
+              <Button asChild variant="ghost">
+                <Link href="/pricing">View pricing</Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </section>
@@ -166,7 +201,7 @@ export default async function DashboardPage() {
                 <tr>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">Visibility</th>
-                  <th className="px-4 py-3">Profile</th>
+                  <th className="px-4 py-3">Review type</th>
                   <th className="px-4 py-3">State</th>
                   <th className="px-4 py-3">Created</th>
                 </tr>
@@ -181,7 +216,9 @@ export default async function DashboardPage() {
                       {submission.source}
                     </td>
                     <td className="px-4 py-3">{submission.visibility}</td>
-                    <td className="px-4 py-3">{submission.compute_profile}</td>
+                    <td className="px-4 py-3">
+                      {formatReviewType(submission.compute_profile)}
+                    </td>
                     <td className="px-4 py-3">
                       <Badge variant="outline">{submission.state}</Badge>
                     </td>
