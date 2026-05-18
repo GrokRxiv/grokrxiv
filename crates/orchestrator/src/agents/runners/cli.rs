@@ -200,30 +200,7 @@ impl AgentRunner for CliRunner {
         }
 
         let started = Instant::now();
-        if spec.role == grokrxiv_schemas::AgentRole::Citation && deterministic_citation_review() {
-            tracing::info!(
-                role = "citation",
-                "using deterministic citation review from extracted bibliography contexts"
-            );
-            let output = fallback_citation_review(&input.artifact);
-            let parsed = validate_parsed(output, &spec.schema)?;
-            let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-            return Ok(AgentRun {
-                role: spec.role,
-                runner: AgentRunnerKind::Cli,
-                model: spec.model.clone(),
-                output: parsed,
-                tokens_in: None,
-                tokens_out: None,
-                latency_ms,
-                cache_hit: false,
-                sandbox_ref: None,
-                verifier_status: None,
-                verifier_notes: None,
-            });
-        }
-
-        let timeout_dur = cli_timeout();
+        let timeout_dur = cli_timeout_for(spec);
 
         // FP-RPT3b B4: surface the per-provider auth path at INFO level once
         // per process so the operator can audit the $0-marginal-cost claim
@@ -363,7 +340,7 @@ impl AgentRunner for CliRunner {
         }
 
         let started = Instant::now();
-        let timeout_dur = cli_timeout();
+        let timeout_dur = cli_timeout_for(spec);
         log_auth_path_once(&spec.provider);
 
         let prompt = render_tool_prompt(spec, messages, tools, ctx)?;
@@ -745,23 +722,23 @@ fn build_api_fallback_providers(
     Ok(map)
 }
 
-/// Read `GROKRXIV_CLI_TIMEOUT_SECS` (default 180s).
-fn cli_timeout() -> Duration {
-    let secs = std::env::var("GROKRXIV_CLI_TIMEOUT_SECS")
+/// Resolve the subprocess timeout. Priority order:
+///   1. `GROKRXIV_CLI_TIMEOUT_SECS` env var (operator override).
+///   2. `spec.timeout_secs` from `agents/<role>.yaml`.
+///   3. `DEFAULT_CLI_TIMEOUT_SECS`.
+/// The env var stays a global escape hatch but no longer silently overrides
+/// the YAML's per-role budget.
+fn cli_timeout_for(spec: &AgentSpec) -> Duration {
+    if let Some(secs) = std::env::var("GROKRXIV_CLI_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CLI_TIMEOUT_SECS);
-    Duration::from_secs(secs)
-}
-
-fn deterministic_citation_review() -> bool {
-    matches!(
-        std::env::var("GROKRXIV_CITATION_REVIEW_DETERMINISTIC")
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    {
+        return Duration::from_secs(secs);
+    }
+    if spec.timeout_secs > 0 {
+        return Duration::from_secs(spec.timeout_secs.into());
+    }
+    Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
 }
 
 /// Compose the per-CLI command. Pure: does not spawn anything. For codex it
@@ -2142,18 +2119,34 @@ mod tests {
         );
     }
 
+    /// Phase: spec.timeout_secs plumbing. Run as a single test to keep env-var
+    /// state changes serial (parallel test threads share process env).
     #[test]
-    fn citation_review_uses_cli_llm_by_default() {
-        let _guard = EnvVarGuard::clear(&["GROKRXIV_CITATION_REVIEW_DETERMINISTIC"]);
-
-        assert!(!deterministic_citation_review());
-    }
-
-    #[test]
-    fn citation_review_can_be_forced_deterministic() {
-        let _guard = EnvVarGuard::set(&[("GROKRXIV_CITATION_REVIEW_DETERMINISTIC", "1")]);
-
-        assert!(deterministic_citation_review());
+    fn cli_timeout_for_resolution_order() {
+        // 1. env var wins over everything.
+        {
+            let _guard = EnvVarGuard::set(&[("GROKRXIV_CLI_TIMEOUT_SECS", "42")]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.timeout_secs = 999;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+        }
+        // 2. no env var → spec wins over default.
+        {
+            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.timeout_secs = 120;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(120));
+        }
+        // 3. no env var, spec=0 → falls back to default.
+        {
+            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.timeout_secs = 0;
+            assert_eq!(
+                cli_timeout_for(&spec),
+                Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
+            );
+        }
     }
 
     #[test]

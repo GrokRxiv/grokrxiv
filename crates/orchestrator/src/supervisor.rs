@@ -1368,10 +1368,16 @@ fn build_specialist_prompt(
              `environment`, `concerns`."
         }
         AgentRole::Citation => {
-            "Audit the bibliography using the citation contexts. Return exactly one \
-             `entries` item per bibliography item, in bibliography order. If no external \
-             lookup is possible, preserve the citation, mark `exists=false`, assign the \
-             best relevance from context, and explain the uncertainty. Provide `summary` \
+            "Focus on RELEVANCE and MISSING WORK — a separate deterministic \
+             verifier (Crossref + arXiv batch lookups) handles existence and \
+             DOI/URL resolution and writes its results to `verifier_notes`. \
+             Your job: for each bibliography entry, set `relevance` from the \
+             extracted in-text contexts (`high`/`medium`/`low`/`unrelated`), \
+             write `explanation` describing where and why it's cited, and \
+             leave `exists`/`resolved_doi`/`resolved_url` at their defaults \
+             (`false`/`null`) since the verifier will overlay ground truth. \
+             Populate `missing_references` with prior work you would expect \
+             the paper to cite but doesn't, with reasons. Provide `summary` \
              and `confidence`."
         }
         AgentRole::MetaReviewer => unreachable!("MetaReviewer handled above"),
