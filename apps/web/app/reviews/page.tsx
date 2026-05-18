@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { ReviewCard } from "@/components/review-card";
 import { Button } from "@/components/ui/button";
 import { listPublishedReviewsAnon } from "@/lib/supabase/anon";
@@ -70,31 +71,14 @@ export default async function ReviewsIndexPage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
+  // Reading searchParams is fine here — the data fetch happens inside the
+  // <Suspense>-wrapped ReviewsList below. Next.js 16 Cache Components forbid
+  // awaiting uncached data directly in a route component, so the Supabase
+  // query is hoisted into the child.
   const { page: pageRaw, q: qRaw, field: fieldRaw } = await searchParams;
   const page = clampPage(pageRaw);
   const q = trimParam(qRaw);
   const field = trimParam(fieldRaw, 32);
-
-  const { data, total } = await listPublishedReviewsAnon({
-    limit: PAGE_SIZE,
-    page,
-    field,
-    q,
-  });
-
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const hasPrev = page > 1;
-  const hasNext = page < pageCount;
-
-  const baseHref = (overrides: Partial<SearchParams> = {}) => {
-    const params = new URLSearchParams();
-    const next = { page: String(page), q, field, ...overrides };
-    if (next.q) params.set("q", next.q);
-    if (next.field) params.set("field", next.field);
-    if (next.page && next.page !== "1") params.set("page", next.page);
-    const qs = params.toString();
-    return qs ? `/reviews?${qs}` : "/reviews";
-  };
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-8 py-10">
@@ -154,79 +138,131 @@ export default async function ReviewsIndexPage({
         </Button>
       </form>
 
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[color:var(--color-muted-foreground)]">
-          <span>
-            {total === 0
-              ? "No matching reviews."
-              : `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(
-                  page * PAGE_SIZE,
-                  total,
-                )} of ${total}`}
-          </span>
-          <span>
-            Page {page} of {pageCount}
-          </span>
-        </div>
-
-        {data.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-[color:var(--color-border)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
-            <p className="mb-2 font-medium">
-              No reviews match your filters yet.
-            </p>
-            <p>
-              Try widening the search, removing the field filter, or{" "}
-              <Link href="/#upload" className="underline underline-offset-4">
-                upload a sample PDF
-              </Link>{" "}
-              from the homepage.
-            </p>
-          </div>
-        ) : (
-          <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {data.map((r) => (
-              <li key={r.id}>
-                <article aria-label={`Review of arXiv:${r.paper?.arxiv_id ?? ""}`}>
-                  <ReviewCard review={r} />
-                </article>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <nav
-          aria-label="Pagination"
-          className="flex items-center justify-between gap-3 pt-2"
-        >
-          <Button asChild variant="outline" disabled={!hasPrev}>
-            <Link
-              href={
-                hasPrev ? baseHref({ page: String(page - 1) }) : "/reviews"
-              }
-              aria-disabled={!hasPrev}
-              aria-label="Previous page"
-              tabIndex={hasPrev ? 0 : -1}
-            >
-              ← Prev
-            </Link>
-          </Button>
-          <span className="text-sm text-[color:var(--color-muted-foreground)]">
-            Page {page} of {pageCount}
-          </span>
-          <Button asChild variant="outline" disabled={!hasNext}>
-            <Link
-              href={
-                hasNext ? baseHref({ page: String(page + 1) }) : "/reviews"
-              }
-              aria-disabled={!hasNext}
-              aria-label="Next page"
-              tabIndex={hasNext ? 0 : -1}
-            >
-              Next →
-            </Link>
-          </Button>
-        </nav>
-      </section>
+      <Suspense
+        key={`${page}-${q ?? ""}-${field ?? ""}`}
+        fallback={<ReviewsListSkeleton />}
+      >
+        <ReviewsList page={page} q={q} field={field} />
+      </Suspense>
     </div>
+  );
+}
+
+async function ReviewsList({
+  page,
+  q,
+  field,
+}: {
+  page: number;
+  q: string | undefined;
+  field: string | undefined;
+}) {
+  const { data, total } = await listPublishedReviewsAnon({
+    limit: PAGE_SIZE,
+    page,
+    field,
+    q,
+  });
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hasPrev = page > 1;
+  const hasNext = page < pageCount;
+
+  const baseHref = (overrides: Partial<SearchParams> = {}) => {
+    const params = new URLSearchParams();
+    const next = { page: String(page), q, field, ...overrides };
+    if (next.q) params.set("q", next.q);
+    if (next.field) params.set("field", next.field);
+    if (next.page && next.page !== "1") params.set("page", next.page);
+    const qs = params.toString();
+    return qs ? `/reviews?${qs}` : "/reviews";
+  };
+
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[color:var(--color-muted-foreground)]">
+        <span>
+          {total === 0
+            ? "No matching reviews."
+            : `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(
+                page * PAGE_SIZE,
+                total,
+              )} of ${total}`}
+        </span>
+        <span>
+          Page {page} of {pageCount}
+        </span>
+      </div>
+
+      {data.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-[color:var(--color-border)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
+          <p className="mb-2 font-medium">
+            No reviews match your filters yet.
+          </p>
+          <p>
+            Try widening the search, removing the field filter, or{" "}
+            <Link href="/#upload" className="underline underline-offset-4">
+              upload a sample PDF
+            </Link>{" "}
+            from the homepage.
+          </p>
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {data.map((r) => (
+            <li key={r.id}>
+              <article aria-label={`Review of arXiv:${r.paper?.arxiv_id ?? ""}`}>
+                <ReviewCard review={r} />
+              </article>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <nav
+        aria-label="Pagination"
+        className="flex items-center justify-between gap-3 pt-2"
+      >
+        <Button asChild variant="outline" disabled={!hasPrev}>
+          <Link
+            href={hasPrev ? baseHref({ page: String(page - 1) }) : "/reviews"}
+            aria-disabled={!hasPrev}
+            aria-label="Previous page"
+            tabIndex={hasPrev ? 0 : -1}
+          >
+            ← Prev
+          </Link>
+        </Button>
+        <span className="text-sm text-[color:var(--color-muted-foreground)]">
+          Page {page} of {pageCount}
+        </span>
+        <Button asChild variant="outline" disabled={!hasNext}>
+          <Link
+            href={hasNext ? baseHref({ page: String(page + 1) }) : "/reviews"}
+            aria-disabled={!hasNext}
+            aria-label="Next page"
+            tabIndex={hasNext ? 0 : -1}
+          >
+            Next →
+          </Link>
+        </Button>
+      </nav>
+    </section>
+  );
+}
+
+function ReviewsListSkeleton() {
+  return (
+    <section className="flex flex-col gap-4" aria-busy="true">
+      <div className="h-4 w-48 animate-pulse rounded bg-[color:var(--color-muted)]" />
+      <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <li
+            key={i}
+            className="h-44 animate-pulse rounded-lg bg-[color:var(--color-muted)]"
+          />
+        ))}
+      </ul>
+    </section>
   );
 }
