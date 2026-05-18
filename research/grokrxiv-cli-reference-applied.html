@@ -399,8 +399,11 @@ paper prints <code>arxiv_id=… review_id=…</code>; multiple papers fan out in
 <p>Run fetch + extraction only, then audit the reviewer input artifacts. This is
 the fast standalone check for the extractor before running reviewers:</p>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --status</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#9ECBFF"> extract</span><span style="color:#79B8FF"> 2605.00561</span></span></code></pre></figure>
-<p>The default TeX conversion is Pandoc. LaTeXML semantic AST enrichment runs only
-when <code>GROKRXIV_TEX_ENABLE_LATEXML=1</code>; extraction LLM tool loops run only when
+<p>The default TeX conversion is Pandoc. Local installs find <code>pandoc</code> on PATH or
+via <code>GROKRXIV_PANDOC_BIN</code>; the orchestrator Docker image installs official
+Pandoc by default unless built with <code>GROKRXIV_DOCKER_INSTALL_PANDOC=0</code>.
+LaTeXML semantic AST enrichment runs only when
+<code>GROKRXIV_TEX_ENABLE_LATEXML=1</code>; extraction LLM tool loops run only when
 <code>GROKRXIV_FORCE_AGENT_EXTRACTION=1</code>.</p>
 <h4 id="grokrxiv-review-extracted---force-arxiv_idpaper_idurl"><a class="anchor" aria-label="anchor" href="#grokrxiv-review-extracted---force-arxiv_idpaper_idurl">#</a><code>grokrxiv review-extracted [--force] &#x3C;arxiv_id|paper_id|url></code></h4>
 <p>Run only the review DAG for a paper whose extraction artifacts are already
@@ -474,7 +477,7 @@ frontend).</p>
 </ul>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-17T02:59:30.059Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-18T14:34:10.764Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

@@ -71,7 +71,7 @@ pub struct DoctorReport {
     pub publisher: Option<CheckResult>,
     /// Pandoc binary check (required for TeX→Markdown conversion).
     pub pandoc: Option<CheckResult>,
-    /// LaTeXML binary check (optional; falls back to pandoc-only).
+    /// LaTeXML binary check (optional; checked only when semantic AST is enabled).
     pub latexml: Option<CheckResult>,
     /// Local Supabase Storage REST endpoint reachability (Tier-2 writes).
     pub supabase_storage: Option<CheckResult>,
@@ -422,9 +422,9 @@ fn check_publisher(report: &mut DoctorReport) {
     });
 }
 
-/// Pandoc + LaTeXML reachability. Pandoc is required (FAIL if <3.0 or
-/// missing); LaTeXML is optional (Skipped if missing — the TeX pipeline
-/// falls back to pandoc-only).
+/// Pandoc + optional LaTeXML reachability. Pandoc is required (FAIL if <3.0 or
+/// missing); LaTeXML is checked only when semantic AST enrichment is explicitly
+/// enabled.
 fn check_doc_converters(report: &mut DoctorReport) {
     let pandoc_bin = std::env::var("GROKRXIV_PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
     report.pandoc = Some(match run_version(&pandoc_bin) {
@@ -444,14 +444,44 @@ fn check_doc_converters(report: &mut DoctorReport) {
         Err(e) => CheckResult::fail(format!("`{pandoc_bin} --version` failed: {e}")),
     });
 
+    if env_truthy("GROKRXIV_TEX_DISABLE_LATEXML") {
+        report.latexml = Some(CheckResult::skipped(
+            "GROKRXIV_TEX_DISABLE_LATEXML set; LaTeXML semantic AST enrichment disabled",
+        ));
+        return;
+    }
+    if !env_truthy("GROKRXIV_TEX_ENABLE_LATEXML") {
+        report.latexml = Some(CheckResult::skipped(
+            "GROKRXIV_TEX_ENABLE_LATEXML unset; LaTeXML semantic AST enrichment disabled",
+        ));
+        return;
+    }
+
     let latexml_bin =
         std::env::var("GROKRXIV_LATEXML_BIN").unwrap_or_else(|_| "latexml".to_string());
-    report.latexml = Some(match run_version(&latexml_bin) {
-        Ok(out) => CheckResult::ok(format!("latexml {}", first_version_token(&out))),
-        Err(_) => CheckResult::skipped(format!(
-            "`{latexml_bin}` not on PATH; TeX path will use pandoc-only fallback"
-        )),
-    });
+    let latexmlpost_bin =
+        std::env::var("GROKRXIV_LATEXMLPOST_BIN").unwrap_or_else(|_| "latexmlpost".to_string());
+    let latexml = match run_version(&latexml_bin) {
+        Ok(out) => first_version_token(&out),
+        Err(e) => {
+            report.latexml = Some(CheckResult::fail(format!(
+                "`{latexml_bin} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}"
+            )));
+            return;
+        }
+    };
+    let latexmlpost = match run_version(&latexmlpost_bin) {
+        Ok(out) => first_version_token(&out),
+        Err(e) => {
+            report.latexml = Some(CheckResult::fail(format!(
+                "`{latexmlpost_bin} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}"
+            )));
+            return;
+        }
+    };
+    report.latexml = Some(CheckResult::ok(format!(
+        "latexml {latexml}; latexmlpost {latexmlpost}"
+    )));
 }
 
 fn run_version(bin: &str) -> anyhow::Result<String> {
@@ -473,6 +503,13 @@ fn parse_pandoc_major(version_output: &str) -> Option<u32> {
         }
     }
     None
+}
+
+fn env_truthy(key: &str) -> bool {
+    matches!(
+        std::env::var(key).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    )
 }
 
 fn first_version_token(version_output: &str) -> String {
@@ -589,4 +626,130 @@ fn check_extraction_agent_yaml(report: &mut DoctorReport) {
     report.extraction_agents.equations = Some(check_one(&roots, "equations"));
     report.extraction_agents.theorems = Some(check_one(&roots, "theorems"));
     report.extraction_agents.citations = Some(check_one(&roots, "citations"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn clear(names: &[&'static str]) -> Self {
+            let saved = names
+                .iter()
+                .map(|name| (*name, std::env::var(name).ok()))
+                .collect();
+            for name in names {
+                std::env::remove_var(name);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_bin(dir: &tempfile::TempDir, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.path().join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(file, "#!/bin/sh").unwrap();
+        writeln!(file, "{body}").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.display().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn doctor_skips_latexml_when_semantic_ast_is_not_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::clear(&[
+            "GROKRXIV_PANDOC_BIN",
+            "GROKRXIV_LATEXML_BIN",
+            "GROKRXIV_LATEXMLPOST_BIN",
+            "GROKRXIV_TEX_ENABLE_LATEXML",
+            "GROKRXIV_TEX_DISABLE_LATEXML",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "GROKRXIV_PANDOC_BIN",
+            fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
+        );
+        std::env::set_var(
+            "GROKRXIV_LATEXML_BIN",
+            tmp.path().join("missing-latexml").display().to_string(),
+        );
+
+        let mut report = DoctorReport::new("test");
+        check_doc_converters(&mut report);
+
+        assert_eq!(
+            report.pandoc.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        let latexml = report.latexml.expect("latexml check");
+        assert_eq!(latexml.status, CheckStatus::Skipped);
+        assert!(
+            latexml.message.contains("GROKRXIV_TEX_ENABLE_LATEXML"),
+            "unexpected message: {}",
+            latexml.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn doctor_requires_latexmlpost_when_semantic_ast_is_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::clear(&[
+            "GROKRXIV_PANDOC_BIN",
+            "GROKRXIV_LATEXML_BIN",
+            "GROKRXIV_LATEXMLPOST_BIN",
+            "GROKRXIV_TEX_ENABLE_LATEXML",
+            "GROKRXIV_TEX_DISABLE_LATEXML",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "GROKRXIV_PANDOC_BIN",
+            fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
+        );
+        std::env::set_var(
+            "GROKRXIV_LATEXML_BIN",
+            fake_bin(&tmp, "latexml", "echo 'latexml 0.8.8'"),
+        );
+        std::env::set_var(
+            "GROKRXIV_LATEXMLPOST_BIN",
+            tmp.path().join("missing-latexmlpost").display().to_string(),
+        );
+        std::env::set_var("GROKRXIV_TEX_ENABLE_LATEXML", "1");
+
+        let mut report = DoctorReport::new("test");
+        check_doc_converters(&mut report);
+
+        let latexml = report.latexml.expect("latexml check");
+        assert_eq!(latexml.status, CheckStatus::Fail);
+        assert!(
+            latexml.message.contains("latexmlpost"),
+            "unexpected message: {}",
+            latexml.message
+        );
+    }
 }

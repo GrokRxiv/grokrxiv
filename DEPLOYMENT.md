@@ -50,8 +50,10 @@ it exists for operator scripts and CI. It is NOT shipped to end users.
 * `infra/railway.json` points Railway at `infra/docker/orchestrator.Dockerfile`.
 * The Dockerfile is a 2-stage musl-friendly build: `rust:1.82-slim` for the
   release binary, `debian:bookworm-slim` for the runtime image. The image
-  bakes `agents/`, `schemas/`, and `prompts/` into `/etc/grokrxiv/`, so a
-  schema change requires a fresh build.
+  bakes official Pandoc plus `agents/`, `schemas/`, and `prompts/` into the
+  runtime image, so a schema or converter-version change requires a fresh
+  build. Set Docker build arg `INSTALL_PANDOC=0` only for a slim image that
+  will provide `pandoc` separately via PATH or `GROKRXIV_PANDOC_BIN`.
 * Start command (from `railway.json`): `/usr/local/bin/orchestrator`.
 * Health check path: `/healthz` (handled in `crates/orchestrator/src/routes/healthz.rs`).
 * Restart policy: ON_FAILURE up to 5 retries.

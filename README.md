@@ -12,7 +12,9 @@ The contract is the JSON schema, not the model. Backends are interchangeable: fr
 
 ## Quickstart
 
-Prerequisites: `pnpm`, `cargo` (Rust ≥1.80), `supabase` CLI, Docker.
+Prerequisites: `pnpm`, `cargo` (Rust ≥1.80), `supabase` CLI, Docker, and
+Pandoc for local TeX extraction. The orchestrator Docker image installs Pandoc
+by default.
 
 ```sh
 # 1. Install JS deps + start Supabase locally

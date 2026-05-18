@@ -32,6 +32,8 @@ services:
     build:
       context: .
       dockerfile: infra/docker/orchestrator.Dockerfile
+      args:
+        INSTALL_PANDOC: "${GROKRXIV_DOCKER_INSTALL_PANDOC:-1}"
     container_name: grokrxiv-orchestrator
     environment:
       ORCHESTRATOR_BIND: "0.0.0.0:8080"

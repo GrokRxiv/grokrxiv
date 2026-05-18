@@ -89,9 +89,13 @@ serve:
 doctor:
     grokrxiv doctor
 
-# Install pandoc + latexml (TeX→Markdown + semantic-AST pipeline).
+# Install Pandoc for TeX -> Markdown conversion.
 setup-pandoc:
-    brew install pandoc latexml
+    brew install pandoc
+
+# Optional: install LaTeXML semantic-AST enrichment tools.
+setup-latexml:
+    brew install latexml
 
 dev:
     @echo "Starting web (3000) + orchestrator (8080) in parallel..."

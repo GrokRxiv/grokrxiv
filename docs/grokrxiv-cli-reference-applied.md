@@ -122,8 +122,11 @@ the fast standalone check for the extractor before running reviewers:
 grokrxiv --runner cli --extractor cli --status --no-cache extract 2605.00561
 ```
 
-The default TeX conversion is Pandoc. LaTeXML semantic AST enrichment runs only
-when `GROKRXIV_TEX_ENABLE_LATEXML=1`; extraction LLM tool loops run only when
+The default TeX conversion is Pandoc. Local installs find `pandoc` on PATH or
+via `GROKRXIV_PANDOC_BIN`; the orchestrator Docker image installs official
+Pandoc by default unless built with `GROKRXIV_DOCKER_INSTALL_PANDOC=0`.
+LaTeXML semantic AST enrichment runs only when
+`GROKRXIV_TEX_ENABLE_LATEXML=1`; extraction LLM tool loops run only when
 `GROKRXIV_FORCE_AGENT_EXTRACTION=1`.
 
 #### `grokrxiv review-extracted [--force] <arxiv_id|paper_id|url>`

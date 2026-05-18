@@ -2,7 +2,12 @@
 #
 # GrokRxiv orchestrator — multi-stage Rust build.
 # Stage 1: compile a release binary against musl-friendly bookworm.
-# Stage 2: minimal Debian slim runtime with CA certs + libssl.
+# Stage 2: Debian slim runtime with CA certs, libssl, tini, and optional Pandoc.
+
+ARG PANDOC_VERSION=3.9.0.2
+ARG PANDOC_SHA256_AMD64=a69abfababda8a56969a254b09f9553a7be89ddec00d4e0fe9fd585d71a67508
+ARG PANDOC_SHA256_ARM64=b6d21e8f9c3b15744f5a7ab40248019157ed7793875dbe0383d4c82ff572b528
+ARG INSTALL_PANDOC=1
 
 FROM rust:1.82-slim AS builder
 WORKDIR /app
@@ -31,13 +36,36 @@ RUN cargo build --release -p grokrxiv-orchestrator
 
 FROM debian:bookworm-slim AS runtime
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+ARG TARGETARCH
+ARG PANDOC_VERSION
+ARG PANDOC_SHA256_AMD64
+ARG PANDOC_SHA256_ARM64
+ARG INSTALL_PANDOC
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       ca-certificates \
       libssl3 \
-      tini \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --create-home --shell /usr/sbin/nologin grokrxiv
+      tini; \
+    if [ "$INSTALL_PANDOC" = "1" ]; then \
+      apt-get install -y --no-install-recommends curl tar; \
+      case "$TARGETARCH" in \
+        amd64) pandoc_arch="amd64"; pandoc_sha="$PANDOC_SHA256_AMD64" ;; \
+        arm64) pandoc_arch="arm64"; pandoc_sha="$PANDOC_SHA256_ARM64" ;; \
+        *) echo "unsupported Pandoc TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+      esac; \
+      pandoc_url="https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-${pandoc_arch}.tar.gz"; \
+      curl -fsSL "$pandoc_url" -o /tmp/pandoc.tar.gz; \
+      printf '%s  %s\n' "$pandoc_sha" /tmp/pandoc.tar.gz | sha256sum -c -; \
+      mkdir -p /tmp/pandoc; \
+      tar -xzf /tmp/pandoc.tar.gz -C /tmp/pandoc --strip-components=1; \
+      install -m 0755 /tmp/pandoc/bin/pandoc /usr/local/bin/pandoc; \
+      rm -rf /tmp/pandoc /tmp/pandoc.tar.gz; \
+      apt-get purge -y --auto-remove curl; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    useradd --system --create-home --shell /usr/sbin/nologin grokrxiv
 
 COPY --from=builder /app/target/release/grokrxiv-orchestrator /usr/local/bin/orchestrator
 COPY agents  /etc/grokrxiv/agents

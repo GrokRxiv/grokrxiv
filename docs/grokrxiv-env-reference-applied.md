@@ -42,8 +42,12 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_CITATION_MODEL`      | `gemini-3-flash-preview`    | Citation model; same role as `--model-for citation=...` |
 | `GROKRXIV_META_REVIEWER_MODEL` | `claude-sonnet-4-6`         | Meta-review synthesis model; same role as `--model-for meta_reviewer=...` |
 | `GROKRXIV_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
+| `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
+| `GROKRXIV_DOCKER_INSTALL_PANDOC` | `1`                       | docker-compose build arg. Set `0` before build to omit Pandoc from the orchestrator image |
 | `GROKRXIV_TEX_ENABLE_LATEXML`  | _none_                      | Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter |
 | `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
+| `GROKRXIV_LATEXML_BIN`         | `latexml`                   | Optional LaTeXML binary checked only when `GROKRXIV_TEX_ENABLE_LATEXML=1` |
+| `GROKRXIV_LATEXMLPOST_BIN`     | `latexmlpost`               | Optional LaTeXML postprocessor checked only when `GROKRXIV_TEX_ENABLE_LATEXML=1` |
 | `GROKRXIV_FORCE_AGENT_EXTRACTION` | _none_                    | Run extraction LLM tool loops instead of the deterministic local extractor |
 
 ## Provider keys — API runner
