@@ -1961,6 +1961,8 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
             .bind(&simulated)
             .execute(pool)
             .await;
+        // Even the simulated approval should flip the badge on the local site.
+        crate::routes::webhook::spawn_revalidate(state, review_id);
         if json {
             println!(
                 "{}",
@@ -1993,8 +1995,12 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
         title: pr_title,
         review_id,
         body_md: format!(
-            "Approved by `grokrxiv approve {review_id}`. \
-             See linked artifacts in this PR; the rendered review.html is the human-readable preview."
+            "Approved by `grokrxiv approve {review_id}`.\n\n\
+             **Public page:** {public_url}/reviews/{review_id}\n\n\
+             See linked artifacts in this PR; the rendered review.html is the human-readable preview.\n\n\
+             grokrxiv-review-id: {review_id}",
+            public_url = std::env::var("GROKRXIV_PUBLIC_URL")
+                .unwrap_or_else(|_| "https://grokrxiv.org".into()),
         ),
     };
     let pr_url = publisher
@@ -2012,6 +2018,10 @@ async fn approve_impl(state: &super::AppState, review_id: Uuid, json: bool) -> a
 
     // FP-RPT3c C2 — close any superseded PR for this paper.
     close_superseded_pr_if_any_cli(pool, &publisher, &admin, paper_id, &pr_url).await;
+
+    // Phase 1: revalidate the public site so the "In Review" badge lands
+    // immediately, instead of waiting on the merge webhook.
+    crate::routes::webhook::spawn_revalidate(state, review_id);
 
     if json {
         println!(
