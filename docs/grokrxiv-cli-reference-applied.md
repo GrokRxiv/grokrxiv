@@ -45,6 +45,12 @@ When the resolved runtime is CLI-only (`--runner cli --extractor cli`),
 API key env vars from local CLI children. Direct provider API calls are enabled
 only by explicit API selection.
 
+Docker runs the same CLI path. The orchestrator image installs `claude`,
+`codex`, and `gemini`; compose mounts local CLI auth read-only and the
+entrypoint copies only those auth bundles into `/home/grokrxiv` at startup.
+Hosted deploys should provide the same files as runtime secrets, not baked
+image layers.
+
 Review specialists run in parallel by default. Set
 `GROKRXIV_REVIEW_CONCURRENCY=1` for serial debugging, or set another positive
 integer to cap concurrent specialist CLI/API children.
@@ -82,8 +88,19 @@ The "single command for one paper" entry point. `source` may be:
 - legacy arXiv id, e.g. `math-ph/0506010`
 - local PDF, e.g. `./paper.pdf`              (deferred — Track I follow-up)
 - local LaTeX, e.g. `./paper.tex`            (deferred — Track I follow-up)
+- git repository, e.g. `https://github.com/org/repo --type git --paper-path paper.tex`
+- git corpus, e.g. `https://github.com/org/repo --type git --corpus --scan-root papers`
 - `-` to read from stdin                      (deferred — Track I follow-up)
 - `@<path>` to read a newline-delimited file of sources (recurses through this list)
+
+For corpus review, GrokRxiv scans for `.tex` and `.pdf`, de-duplicates
+matching TeX/PDF pairs, prefers TeX, and creates one review per manuscript:
+
+```sh
+grokrxiv --runner cli --extractor cli --status --no-cache \
+  review https://github.com/MagnetonIO/emergent_spacetime \
+  --type git --rev main --corpus --scan-root papers/information-theory/src
+```
 
 With `--json`, after the run we emit:
 

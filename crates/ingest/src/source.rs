@@ -114,7 +114,50 @@ pub enum ReviewSourceSpec {
         /// Optional field/category metadata.
         #[serde(default)]
         field: Option<String>,
+        /// Optional corpus group id when a repository scan expands into many
+        /// manuscripts.
+        #[serde(default)]
+        corpus_id: Option<String>,
     },
+}
+
+/// Options for repository corpus discovery.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CorpusScanOptions {
+    /// Optional root inside the repository to scan.
+    #[serde(default)]
+    pub scan_root: Option<PathBuf>,
+    /// Optional include globs. Supports simple `*.ext` and `prefix/**` forms.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Optional exclude globs. Supports simple `*.ext` and `prefix/**` forms.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Optional cap after de-duplication.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// One discovered manuscript in a git corpus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorpusManuscriptCandidate {
+    /// Relative path inside the repository.
+    pub path: PathBuf,
+    /// Manuscript format.
+    pub format: LocalSourceFormat,
+    /// Best-effort title, currently available for TeX candidates.
+    pub title: Option<String>,
+}
+
+/// Best-effort subject/category inference for non-arXiv sources.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferredSubject {
+    /// Inferred or explicitly supplied field.
+    pub field: Option<String>,
+    /// Confidence in `[0,1]`.
+    pub confidence: f64,
+    /// Machine-readable reason.
+    pub reason: String,
 }
 
 /// Stable identity for a prepared review source.
@@ -169,14 +212,16 @@ pub async fn prepare_review_source(spec: ReviewSourceSpec) -> Result<PreparedRev
             title,
             authors,
             field,
+            corpus_id,
         } => {
-            prepare_git_repo_source(
+            prepare_git_repo_source_with_corpus(
                 &repo,
                 rev.as_deref(),
                 paper_path.as_deref(),
                 title,
                 authors,
                 field,
+                corpus_id,
             )
             .await
         }
@@ -231,6 +276,20 @@ pub async fn prepare_git_repo_source(
     authors: Vec<Author>,
     field: Option<String>,
 ) -> Result<PreparedReviewSource> {
+    prepare_git_repo_source_with_corpus(repo, rev, paper_path, title, authors, field, None).await
+}
+
+/// Clone a git repository into a tempdir and prepare its PDF or TeX manuscript,
+/// retaining an optional corpus id in source metadata.
+pub async fn prepare_git_repo_source_with_corpus(
+    repo: &str,
+    rev: Option<&str>,
+    paper_path: Option<&Path>,
+    title: Option<String>,
+    authors: Vec<Author>,
+    field: Option<String>,
+    corpus_id: Option<String>,
+) -> Result<PreparedReviewSource> {
     let tmp = TempDir::new().context("create temp dir for git source")?;
     let checkout = tmp.path().join("repo");
 
@@ -284,10 +343,30 @@ pub async fn prepare_git_repo_source(
             "paper_path": rel_path.display().to_string(),
             "format": format.as_str(),
             "manuscript_hash": manuscript_hash,
-            "source_id_hint": format!("{id_prefix}-{short}")
+            "source_id_hint": format!("{id_prefix}-{short}"),
+            "corpus_id": corpus_id,
         }),
     )
     .await
+}
+
+/// Clone a git repository once and list reviewable corpus manuscripts.
+pub async fn scan_git_repo_corpus(
+    repo: &str,
+    rev: Option<&str>,
+    options: &CorpusScanOptions,
+) -> Result<Vec<CorpusManuscriptCandidate>> {
+    let tmp = TempDir::new().context("create temp dir for git corpus scan")?;
+    let checkout = tmp.path().join("repo");
+    run_git(&["clone", "--quiet", repo, path_str(&checkout)?], None)
+        .await
+        .with_context(|| format!("clone git corpus source {repo}"))?;
+    if let Some(rev) = rev {
+        run_git(&["checkout", "--quiet", rev], Some(&checkout))
+            .await
+            .with_context(|| format!("checkout git revision {rev}"))?;
+    }
+    scan_corpus_manuscripts(&checkout, options.scan_root.as_deref(), options)
 }
 
 async fn prepare_arxiv_source(arxiv_id: &str) -> Result<PreparedReviewSource> {
@@ -327,7 +406,7 @@ async fn prepare_bytes_source(
     title: Option<String>,
     authors: Vec<Author>,
     field: Option<String>,
-    source_metadata: Value,
+    mut source_metadata: Value,
 ) -> Result<PreparedReviewSource> {
     let content_hash = sha256_hex(&bytes);
     let source_id = format!("{id_prefix}-{}", short_hash(&content_hash));
@@ -349,12 +428,19 @@ async fn prepare_bytes_source(
             let resolved_title = title
                 .or_else(|| infer_pdf_title(&normalized.text))
                 .unwrap_or_else(|| identity.display_label.clone());
+            let inferred = infer_subject_field(
+                field,
+                &source_metadata.to_string(),
+                &resolved_title,
+                &normalized.text,
+            );
+            attach_inferred_subject(&mut source_metadata, &inferred);
             let extract = PaperExtract {
                 arxiv_id: source_id.clone(),
                 title: resolved_title,
                 authors,
                 abstract_: String::new(),
-                field,
+                field: inferred.field,
                 sections,
                 figures: Vec::new(),
                 bibliography,
@@ -366,12 +452,19 @@ async fn prepare_bytes_source(
             let tex = parse_bundle(&bytes)
                 .await
                 .context("parse local tex source")?;
+            let inferred = infer_subject_field(
+                field,
+                &source_metadata.to_string(),
+                title.as_deref().unwrap_or(&tex.title),
+                &tex.abstract_text,
+            );
+            attach_inferred_subject(&mut source_metadata, &inferred);
             let extract = PaperExtract {
                 arxiv_id: source_id.clone(),
                 title: title.unwrap_or(tex.title),
                 authors,
                 abstract_: tex.abstract_text,
-                field,
+                field: inferred.field,
                 sections: tex.sections,
                 figures: Vec::new(),
                 bibliography: tex.bibliography,
@@ -457,6 +550,64 @@ fn select_git_manuscript(repo_root: &Path, paper_path: Option<&Path>) -> Result<
     }
 }
 
+/// Scan a repository checkout for corpus manuscripts.
+pub fn scan_corpus_manuscripts(
+    repo_root: &Path,
+    scan_root: Option<&Path>,
+    options: &CorpusScanOptions,
+) -> Result<Vec<CorpusManuscriptCandidate>> {
+    let scan_dir = match scan_root {
+        Some(path) => {
+            ensure_relative_inside_repo(path)?;
+            repo_root.join(path)
+        }
+        None => repo_root.to_path_buf(),
+    };
+    if !scan_dir.is_dir() {
+        bail!("corpus scan root {} is not a directory", scan_dir.display());
+    }
+
+    let mut tex = Vec::new();
+    let mut pdf = Vec::new();
+    collect_candidates(repo_root, &scan_dir, &mut tex, &mut pdf)?;
+
+    let mut candidates = Vec::new();
+    for path in tex {
+        if !looks_like_main_tex(&path).unwrap_or(false) {
+            continue;
+        }
+        let rel = path.strip_prefix(repo_root).unwrap_or(&path).to_path_buf();
+        if !corpus_path_allowed(&rel, options) {
+            continue;
+        }
+        let title = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|body| extract_tex_title(&body));
+        candidates.push(CorpusManuscriptCandidate {
+            path: rel,
+            format: LocalSourceFormat::Tex,
+            title,
+        });
+    }
+    for path in pdf {
+        let rel = path.strip_prefix(repo_root).unwrap_or(&path).to_path_buf();
+        if !corpus_path_allowed(&rel, options) {
+            continue;
+        }
+        candidates.push(CorpusManuscriptCandidate {
+            path: rel,
+            format: LocalSourceFormat::Pdf,
+            title: None,
+        });
+    }
+    candidates.sort_by_key(|c| c.path.clone());
+    candidates = dedupe_corpus_candidates(candidates);
+    if let Some(limit) = options.limit {
+        candidates.truncate(limit);
+    }
+    Ok(candidates)
+}
+
 fn collect_candidates(
     root: &Path,
     dir: &Path,
@@ -469,7 +620,7 @@ fn collect_candidates(
         let entry = entry?;
         let path = entry.path();
         let file_name = entry.file_name();
-        if file_name == ".git" || file_name == "target" {
+        if should_skip_corpus_dir(&file_name) {
             continue;
         }
         if path.is_dir() {
@@ -487,10 +638,180 @@ fn collect_candidates(
     Ok(())
 }
 
+fn ensure_relative_inside_repo(path: &Path) -> Result<()> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        bail!("path must be relative and stay inside the repository");
+    }
+    Ok(())
+}
+
+fn should_skip_corpus_dir(file_name: &OsStr) -> bool {
+    matches!(
+        file_name.to_str(),
+        Some(".git" | "target" | "node_modules" | ".next" | "dist" | "build")
+    )
+}
+
+fn corpus_path_allowed(path: &Path, options: &CorpusScanOptions) -> bool {
+    let rel = path.to_string_lossy();
+    let included = options.include.is_empty()
+        || options
+            .include
+            .iter()
+            .any(|pattern| simple_glob_match(pattern, &rel));
+    let excluded = options
+        .exclude
+        .iter()
+        .any(|pattern| simple_glob_match(pattern, &rel));
+    included && !excluded
+}
+
+fn simple_glob_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return false;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return value == prefix || value.starts_with(&format!("{prefix}/"));
+    }
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        return value.ends_with(&format!(".{ext}"));
+    }
+    if !pattern.contains('*') {
+        return value == pattern;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut remainder = value;
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if idx == 0 && !pattern.starts_with('*') {
+            if let Some(stripped) = remainder.strip_prefix(part) {
+                remainder = stripped;
+                continue;
+            }
+            return false;
+        }
+        let Some(pos) = remainder.find(part) else {
+            return false;
+        };
+        remainder = &remainder[pos + part.len()..];
+    }
+    pattern.ends_with('*') || remainder.is_empty()
+}
+
+fn dedupe_corpus_candidates(
+    candidates: Vec<CorpusManuscriptCandidate>,
+) -> Vec<CorpusManuscriptCandidate> {
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<String, CorpusManuscriptCandidate> = BTreeMap::new();
+    for candidate in candidates {
+        let key = corpus_dedupe_key(&candidate);
+        match by_key.get(&key) {
+            Some(existing)
+                if existing.format == LocalSourceFormat::Tex
+                    || candidate.format == LocalSourceFormat::Pdf => {}
+            _ => {
+                by_key.insert(key, candidate);
+            }
+        }
+    }
+    let mut out: Vec<_> = by_key.into_values().collect();
+    out.sort_by_key(|candidate| candidate.path.clone());
+    out
+}
+
+fn corpus_dedupe_key(candidate: &CorpusManuscriptCandidate) -> String {
+    candidate
+        .path
+        .with_extension("")
+        .to_string_lossy()
+        .to_ascii_lowercase()
+}
+
 fn looks_like_main_tex(path: &Path) -> Result<bool> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("read tex candidate {}", path.display()))?;
     Ok(text.contains("\\documentclass") && text.contains("\\begin{document}"))
+}
+
+fn extract_tex_title(body: &str) -> Option<String> {
+    let start = body.find("\\title{")? + "\\title{".len();
+    let rest = &body[start..];
+    let end = rest.find('}')?;
+    let title = rest[..end].replace(['\n', '\r', '\t'], " ");
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty()).then_some(title)
+}
+
+/// Infer an arXiv-like field for non-arXiv sources.
+pub fn infer_subject_field(
+    explicit_field: Option<String>,
+    source_hint: &str,
+    title: &str,
+    abstract_: &str,
+) -> InferredSubject {
+    if let Some(field) = explicit_field
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+    {
+        return InferredSubject {
+            field: Some(field),
+            confidence: 1.0,
+            reason: "explicit_field".to_string(),
+        };
+    }
+
+    let context = format!("{source_hint}\n{title}\n{abstract_}").to_ascii_lowercase();
+    let (field, confidence, reason) = if context.contains("information-theory")
+        || context.contains("information theory")
+        || context.contains("information-theoretic")
+    {
+        ("cs.IT", 0.82, "information_theory_hint")
+    } else if context.contains("directed type theory")
+        || context.contains("type theory")
+        || context.contains("logic")
+    {
+        ("cs.LO", 0.78, "logic_type_theory_hint")
+    } else if context.contains("yoneda")
+        || context.contains("category-theoretic")
+        || context.contains("category theoretic")
+        || context.contains("categorical")
+    {
+        ("math.CT", 0.72, "category_theory_hint")
+    } else if context.contains("quantum information") || context.contains("quantum error") {
+        ("quant-ph", 0.72, "quantum_information_hint")
+    } else if context.contains("spacetime") || context.contains("thermodynamic") {
+        ("physics.gen-ph", 0.58, "physics_hint")
+    } else {
+        ("uncategorized", 0.0, "fallback")
+    };
+    InferredSubject {
+        field: Some(field.to_string()),
+        confidence,
+        reason: reason.to_string(),
+    }
+}
+
+fn attach_inferred_subject(metadata: &mut Value, inferred: &InferredSubject) {
+    let payload = json!({
+        "field": inferred.field,
+        "confidence": inferred.confidence,
+        "reason": inferred.reason,
+    });
+    match metadata {
+        Value::Object(map) => {
+            map.insert("inferred_subjects".to_string(), payload);
+        }
+        other => {
+            *other = json!({ "inferred_subjects": payload });
+        }
+    }
 }
 
 fn format_relative_candidates(root: &Path, candidates: &[PathBuf]) -> String {
@@ -645,5 +966,87 @@ mod tests {
         assert!(message.contains("pass --paper-path"));
         assert!(message.contains("first.pdf"));
         assert!(message.contains("sources/second.pdf"));
+    }
+
+    #[test]
+    fn corpus_scan_deduplicates_pdf_when_matching_tex_exists() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp
+            .path()
+            .join("papers")
+            .join("information-theory")
+            .join("src");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("paper.tex"),
+            "\\documentclass{article}\\title{Information Theory}\\begin{document}Main\\end{document}",
+        )
+        .unwrap();
+        std::fs::write(root.join("paper.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(root.join("other.pdf"), b"%PDF-1.7").unwrap();
+
+        let found = scan_corpus_manuscripts(
+            tmp.path(),
+            Some(Path::new("papers/information-theory/src")),
+            &CorpusScanOptions::default(),
+        )
+        .unwrap();
+
+        let paths: Vec<String> = found
+            .iter()
+            .map(|candidate| candidate.path.display().to_string())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "papers/information-theory/src/other.pdf",
+                "papers/information-theory/src/paper.tex",
+            ]
+        );
+    }
+
+    #[test]
+    fn corpus_scan_ignores_build_and_git_directories() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("target")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(
+            tmp.path().join("main.tex"),
+            "\\documentclass{article}\\begin{document}Main\\end{document}",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("target").join("generated.tex"),
+            "\\documentclass{article}\\begin{document}Generated\\end{document}",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join(".git").join("hidden.pdf"), b"%PDF-1.7").unwrap();
+
+        let found =
+            scan_corpus_manuscripts(tmp.path(), None, &CorpusScanOptions::default()).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, PathBuf::from("main.tex"));
+    }
+
+    #[test]
+    fn subject_inference_uses_explicit_field_then_content_hints() {
+        let explicit = infer_subject_field(
+            Some("math.CT".to_string()),
+            "papers/information-theory/src/paper.tex",
+            "Information Theory",
+            "",
+        );
+        assert_eq!(explicit.field.as_deref(), Some("math.CT"));
+        assert_eq!(explicit.reason, "explicit_field");
+
+        let inferred = infer_subject_field(
+            None,
+            "papers/information-theory/src/paper.tex",
+            "Constraint Satisfaction in Information-Theoretic Frameworks",
+            "A categorical approach to information theory.",
+        );
+        assert_eq!(inferred.field.as_deref(), Some("cs.IT"));
+        assert!(inferred.confidence >= 0.7);
     }
 }

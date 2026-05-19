@@ -35,6 +35,7 @@ services:
       dockerfile: infra/docker/orchestrator.Dockerfile
       args:
         INSTALL_PANDOC: "${GROKRXIV_DOCKER_INSTALL_PANDOC:-1}"
+        INSTALL_AGENT_CLIS: "${GROKRXIV_DOCKER_INSTALL_AGENT_CLIS:-1}"
     container_name: grokrxiv-orchestrator
     environment:
       ORCHESTRATOR_BIND: "0.0.0.0:8080"
@@ -49,6 +50,7 @@ services:
       GROKRXIV_RUNNER: "${GROKRXIV_RUNNER:-cli}"
       GROKRXIV_EXTRACTOR: "${GROKRXIV_EXTRACTOR:-cli}"
       GROKRXIV_ALLOW_PROVIDER_API: "${GROKRXIV_ALLOW_PROVIDER_API:-0}"
+      GROKRXIV_REQUIRE_CLI_AUTH: "${GROKRXIV_REQUIRE_CLI_AUTH:-1}"
       GROKRXIV_SUMMARY_MODEL: "${GROKRXIV_SUMMARY_MODEL:-claude-haiku-4-5-20251001}"
       GROKRXIV_TECHNICAL_CORRECTNESS_MODEL: "${GROKRXIV_TECHNICAL_CORRECTNESS_MODEL:-claude-opus-4-7}"
       GROKRXIV_NOVELTY_MODEL: "${GROKRXIV_NOVELTY_MODEL:-gemini-3-flash-preview}"
@@ -82,6 +84,12 @@ services:
       - ./schemas:/etc/grokrxiv/schemas:ro
       - ./prompts:/etc/grokrxiv/prompts:ro
       - ${GROKRXIV_DOCKER_DATA_REPO_SOURCE:-../grokrxiv-data}:${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}
+      # Provider CLI auth is mounted read-only, copied into /home/grokrxiv at
+      # container startup, and never baked into the image.
+      - ${HOME}/.claude.json:/run/secrets/grokrxiv-cli-auth/.claude.json:ro
+      - ${HOME}/.claude:/run/secrets/grokrxiv-cli-auth/.claude:ro
+      - ${HOME}/.codex:/run/secrets/grokrxiv-cli-auth/.codex:ro
+      - ${HOME}/.gemini:/run/secrets/grokrxiv-cli-auth/.gemini:ro
     healthcheck:
       test:
         [

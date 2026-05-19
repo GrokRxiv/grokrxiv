@@ -5,6 +5,8 @@
 //! exit code to 1.
 
 use serde::Serialize;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -337,27 +339,92 @@ async fn ping_openai(client: &reqwest::Client, key: &str) -> anyhow::Result<()> 
 }
 
 fn check_cli_runners(report: &mut DoctorReport) {
+    let config = CliRunnerCheckConfig::from_env();
+    check_cli_runners_with(report, &config);
+}
+
+struct CliRunnerCheckConfig {
+    path: OsString,
+    home: PathBuf,
+    require_auth: bool,
+}
+
+impl CliRunnerCheckConfig {
+    fn from_env() -> Self {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/home/grokrxiv"));
+        let cli_selected = std::env::var("GROKRXIV_RUNNER")
+            .ok()
+            .map(|v| v.eq_ignore_ascii_case("cli"))
+            .unwrap_or(false)
+            || std::env::var("GROKRXIV_EXTRACTOR")
+                .ok()
+                .map(|v| v.eq_ignore_ascii_case("cli"))
+                .unwrap_or(false);
+        Self {
+            path,
+            home,
+            require_auth: env_truthy("GROKRXIV_REQUIRE_CLI_AUTH") || cli_selected,
+        }
+    }
+}
+
+fn check_cli_runners_with(report: &mut DoctorReport, config: &CliRunnerCheckConfig) {
     for (name, slot) in [
         ("claude", &mut report.cli_runners.claude),
         ("codex", &mut report.cli_runners.codex),
         ("gemini", &mut report.cli_runners.gemini),
     ] {
-        *slot = Some(match which(name) {
-            Some(p) => CheckResult::ok(format!("found {p}")),
+        *slot = Some(match which_in_path(name, &config.path) {
+            Some(p) => match cli_auth_status(name, &config.home) {
+                Some(auth) => CheckResult::ok(format!("found {p}; auth {auth}")),
+                None if config.require_auth => CheckResult::fail(format!(
+                    "found {p}; auth missing in {}",
+                    config.home.display()
+                )),
+                None => CheckResult::ok(format!("found {p}; auth not checked")),
+            },
+            None if config.require_auth => CheckResult::fail(format!("`{name}` not on PATH")),
             None => CheckResult::skipped(format!("`{name}` not on PATH")),
         });
     }
 }
 
-fn which(bin: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
+fn which_in_path(bin: &str, path: &OsString) -> Option<String> {
+    for dir in std::env::split_paths(path) {
         let candidate = dir.join(bin);
         if candidate.is_file() {
             return Some(candidate.display().to_string());
         }
     }
     None
+}
+
+fn cli_auth_status(name: &str, home: &Path) -> Option<&'static str> {
+    match name {
+        "claude" => {
+            if home.join(".claude.json").is_file() {
+                Some("present (.claude.json)")
+            } else if home.join(".claude").is_dir() {
+                Some("present (.claude)")
+            } else {
+                None
+            }
+        }
+        "codex" => home
+            .join(".codex")
+            .join("auth.json")
+            .is_file()
+            .then_some("present (.codex/auth.json)"),
+        "gemini" => home
+            .join(".gemini")
+            .join("oauth_creds.json")
+            .is_file()
+            .then_some("present (.gemini/oauth_creds.json)"),
+        _ => None,
+    }
 }
 
 async fn check_cloud_runners(report: &mut DoctorReport) {
@@ -746,6 +813,74 @@ mod tests {
                 .citations
                 .as_ref()
                 .map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runner_check_fails_when_cli_mode_requires_missing_auth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let claude = fake_bin(&tmp, "claude", "echo '2.1.144 (Claude Code)'");
+        std::fs::rename(&claude, bin_dir.join("claude")).unwrap();
+
+        let config = CliRunnerCheckConfig {
+            path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
+            home: tmp.path().join("home"),
+            require_auth: true,
+        };
+        let mut report = DoctorReport::new("test");
+
+        check_cli_runners_with(&mut report, &config);
+
+        let result = report.cli_runners.claude.expect("claude check");
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(
+            result.message.contains("auth missing"),
+            "{}",
+            result.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runner_check_accepts_binary_and_auth_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        for name in ["claude", "codex", "gemini"] {
+            let bin = fake_bin(&tmp, name, &format!("echo '{name} ok'"));
+            std::fs::rename(&bin, bin_dir.join(name)).unwrap();
+        }
+        std::fs::write(home.join(".claude.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(home.join(".gemini").join("oauth_creds.json"), "{}").unwrap();
+
+        let config = CliRunnerCheckConfig {
+            path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
+            home,
+            require_auth: true,
+        };
+        let mut report = DoctorReport::new("test");
+
+        check_cli_runners_with(&mut report, &config);
+
+        assert_eq!(
+            report.cli_runners.claude.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        assert_eq!(
+            report.cli_runners.codex.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        assert_eq!(
+            report.cli_runners.gemini.as_ref().map(|c| c.status),
             Some(CheckStatus::Ok)
         );
     }

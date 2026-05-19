@@ -138,7 +138,7 @@ pub struct Cli {
 }
 
 /// Hint for `grokrxiv review <source>` when the source can't be inferred.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
     /// arXiv id or URL.
@@ -263,6 +263,24 @@ pub enum Command {
         /// Optional field/category override for local file or git sources.
         #[arg(long)]
         field: Option<String>,
+        /// Scan a git repository/folder for every reviewable TeX/PDF
+        /// manuscript and run one review per discovered paper.
+        #[arg(long)]
+        corpus: bool,
+        /// Relative root inside the git repository to scan when `--corpus`.
+        #[arg(long, value_name = "PATH")]
+        scan_root: Option<PathBuf>,
+        /// Maximum number of corpus manuscripts to review after de-duplication.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Include glob for corpus scan. Repeatable; supports simple `*.tex`
+        /// and `prefix/**` forms.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Exclude glob for corpus scan. Repeatable; supports simple `*.tex`
+        /// and `prefix/**` forms.
+        #[arg(long)]
+        exclude: Vec<String>,
     },
     /// Re-run the review DAG against an already-ingested paper.
     #[command(hide = true)]
@@ -332,6 +350,9 @@ pub enum Command {
     Publish {
         /// UUID of the review whose PR should be merged.
         review_id: Uuid,
+        /// Bypass the latest automated gate and merge anyway.
+        #[arg(long)]
+        force: bool,
     },
     /// Re-run the post-render html_quality harness on an already-rendered
     /// review. Reads `artifacts/<review_id>/review.html`, runs codex (gpt-5.5)
@@ -593,7 +614,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     );
 
     if dry_run {
-        if let Command::Publish { review_id } = &command {
+        if let Command::Publish { review_id, .. } = &command {
             if json {
                 println!(
                     "{}",
@@ -645,6 +666,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             paper_path,
             title,
             field,
+            corpus,
+            scan_root,
+            limit,
+            include,
+            exclude,
         } => {
             review_source(
                 &source,
@@ -654,6 +680,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     paper_path,
                     title,
                     field,
+                    corpus,
+                    scan_root,
+                    limit,
+                    include,
+                    exclude,
                 },
                 json,
                 dry_run,
@@ -676,7 +707,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             review_id,
             max_wait_secs,
         } => feedback_loop_smoke(review_id, max_wait_secs, json).await,
-        Command::Publish { review_id } => publish_cmd(review_id, json).await,
+        Command::Publish { review_id, force } => publish_cmd(review_id, force, json).await,
         Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
@@ -1711,9 +1742,13 @@ enum ResolvedSource {
     Arxiv(String),
     /// Local file path. Kind is best-guess from the extension.
     LocalFile(std::path::PathBuf, SourceType),
-    /// Git repository source. The optional revision and paper path are applied
-    /// by `review_source` so batch files can share CLI-level overrides.
-    GitRepo(String),
+    /// Git repository source. Corpus expansion can attach an explicit
+    /// manuscript path and group id per resolved paper.
+    GitRepo {
+        repo: String,
+        paper_path: Option<PathBuf>,
+        corpus_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1722,6 +1757,11 @@ struct ReviewSourceOptions {
     paper_path: Option<PathBuf>,
     title: Option<String>,
     field: Option<String>,
+    corpus: bool,
+    scan_root: Option<PathBuf>,
+    limit: Option<usize>,
+    include: Vec<String>,
+    exclude: Vec<String>,
 }
 
 /// Try to recognise the source as an arXiv id or arXiv URL. Returns the bare
@@ -1866,7 +1906,11 @@ async fn resolve_source(
         return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
     }
     if matches!(type_hint, Some(SourceType::Git)) {
-        return Ok(vec![ResolvedSource::GitRepo(source.to_string())]);
+        return Ok(vec![ResolvedSource::GitRepo {
+            repo: source.to_string(),
+            paper_path: None,
+            corpus_id: None,
+        }]);
     }
     if let Some(id) = parse_arxiv_source(source) {
         return Ok(vec![ResolvedSource::Arxiv(id)]);
@@ -1877,7 +1921,11 @@ async fn resolve_source(
         return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
     }
     if looks_like_git_source(source) {
-        return Ok(vec![ResolvedSource::GitRepo(source.to_string())]);
+        return Ok(vec![ResolvedSource::GitRepo {
+            repo: source.to_string(),
+            paper_path: None,
+            corpus_id: None,
+        }]);
     }
     anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
@@ -1891,6 +1939,7 @@ async fn review_source(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     let resolved = resolve_source(source, type_hint).await?;
+    let resolved = expand_corpus_sources(resolved, &options).await?;
     if dry_run {
         let plan: Vec<serde_json::Value> = resolved
             .iter()
@@ -1901,11 +1950,19 @@ async fn review_source(
                     "path": p.display().to_string(),
                     "type": format!("{k:?}"),
                 }),
-                ResolvedSource::GitRepo(repo) => serde_json::json!({
+                ResolvedSource::GitRepo {
+                    repo,
+                    paper_path,
+                    corpus_id,
+                } => serde_json::json!({
                     "kind": "git_repo",
                     "repo": repo,
                     "rev": options.rev.as_deref(),
-                    "paper_path": options.paper_path.as_ref().map(|p| p.display().to_string()),
+                    "paper_path": paper_path
+                        .as_ref()
+                        .or(options.paper_path.as_ref())
+                        .map(|p| p.display().to_string()),
+                    "corpus_id": corpus_id,
                 }),
             })
             .collect();
@@ -1936,6 +1993,66 @@ async fn review_source(
         let _ = (resolved, options, json);
         anyhow::bail!("review requires --features full (grokrxiv-ingest)")
     }
+}
+
+async fn expand_corpus_sources(
+    resolved: Vec<ResolvedSource>,
+    options: &ReviewSourceOptions,
+) -> anyhow::Result<Vec<ResolvedSource>> {
+    if !options.corpus {
+        return Ok(resolved);
+    }
+    if options.paper_path.is_some() {
+        anyhow::bail!("--corpus cannot be combined with --paper-path; use --scan-root/--include/--exclude instead");
+    }
+    let mut expanded = Vec::new();
+    for source in resolved {
+        match source {
+            ResolvedSource::GitRepo { repo, .. } => {
+                let scan_options = grokrxiv_ingest::CorpusScanOptions {
+                    scan_root: options.scan_root.clone(),
+                    include: options.include.clone(),
+                    exclude: options.exclude.clone(),
+                    limit: options.limit,
+                };
+                let candidates = grokrxiv_ingest::scan_git_repo_corpus(
+                    &repo,
+                    options.rev.as_deref(),
+                    &scan_options,
+                )
+                .await?;
+                let corpus_id =
+                    corpus_id_for(&repo, options.rev.as_deref(), options.scan_root.as_ref());
+                crate::cli_status::emit(format!(
+                    "corpus {corpus_id}: discovered {} manuscript(s)",
+                    candidates.len()
+                ));
+                for candidate in candidates {
+                    expanded.push(ResolvedSource::GitRepo {
+                        repo: repo.clone(),
+                        paper_path: Some(candidate.path),
+                        corpus_id: Some(corpus_id.clone()),
+                    });
+                }
+            }
+            _ => anyhow::bail!("--corpus only supports git repository sources"),
+        }
+    }
+    Ok(expanded)
+}
+
+fn corpus_id_for(repo: &str, rev: Option<&str>, scan_root: Option<&PathBuf>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(repo.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(rev.unwrap_or("HEAD").as_bytes());
+    hasher.update(b"\0");
+    if let Some(scan_root) = scan_root {
+        hasher.update(scan_root.display().to_string().as_bytes());
+    }
+    let hash = hex::encode(hasher.finalize());
+    format!("git-corpus-{}", &hash[..12])
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -2004,14 +2121,19 @@ async fn review_resolved_sources(
                     .await?,
                 );
             }
-            ResolvedSource::GitRepo(repo) => {
+            ResolvedSource::GitRepo {
+                repo,
+                paper_path,
+                corpus_id,
+            } => {
                 let spec = grokrxiv_ingest::ReviewSourceSpec::GitRepo {
                     repo: repo.clone(),
                     rev: options.rev.clone(),
-                    paper_path: options.paper_path.clone(),
+                    paper_path: paper_path.clone().or_else(|| options.paper_path.clone()),
                     title: options.title.clone(),
                     authors: Vec::new(),
                     field: options.field.clone(),
+                    corpus_id: corpus_id.clone(),
                 };
                 let (paper_id, review_id, source_kind, source_id) =
                     review_prepared_source(&state, spec).await?;
@@ -3420,7 +3542,7 @@ async fn approve_impl(
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
         "review {review_id}: merging publication PR; webhook will flip status to published"
     ));
@@ -3442,7 +3564,39 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             "review {review_id} has no github_pr_url; run `grokrxiv approve {review_id}` first"
         )
     })?;
-    let pr_number = grokrxiv_publisher::parse_pr_number(&pr_url).ok_or_else(|| {
+
+    let meta_review: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    let recommendation = meta_review
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(|v| v.as_str());
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    let publication_gate =
+        crate::review_gate::PublicationGate::evaluate(crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate,
+        });
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
+        anyhow::bail!(
+            "publish refused: latest automated gate for review {review_id} is not pass: {} \
+             Run `grokrxiv request-revisions {review_id}` or `grokrxiv publish {review_id} --force`.",
+            publication_gate.reason
+        );
+    }
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass {
+        tracing::warn!(
+            %review_id,
+            reason = %publication_gate.reason,
+            "publish --force: bypassing latest automated gate"
+        );
+    }
+
+    let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
              Re-run `grokrxiv approve` with GITHUB_TOKEN set."
@@ -3451,14 +3605,12 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
 
     let token = std::env::var("GITHUB_TOKEN")
         .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to merge"))?;
-    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()
         .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
     let resp = client
-        .pulls(&owner, &repo)
+        .pulls(owner, repo)
         .merge(pr_number)
         .method(octocrab::params::pulls::MergeMethod::Squash)
         .send()
@@ -3490,7 +3642,7 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]
-async fn publish_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, _force: bool, _json: bool) -> anyhow::Result<()> {
     anyhow::bail!(
         "publish <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
@@ -3897,14 +4049,26 @@ mod tests {
         let publish = Cli::try_parse_from(["grokrxiv", "publish", &review_id.to_string()])
             .expect("publish should parse");
         match publish.command {
-            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            Command::Publish {
+                review_id: parsed,
+                force,
+            } => {
+                assert_eq!(parsed, review_id);
+                assert!(!force);
+            }
             other => panic!("expected publish command, got {other:?}"),
         }
 
-        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string()])
+        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string(), "--force"])
             .expect("hidden merge alias should parse");
         match merge.command {
-            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            Command::Publish {
+                review_id: parsed,
+                force,
+            } => {
+                assert_eq!(parsed, review_id);
+                assert!(force);
+            }
             other => panic!("expected publish command from hidden alias, got {other:?}"),
         }
     }
@@ -4095,6 +4259,56 @@ mod tests {
         Cli::command().write_long_help(&mut help).unwrap();
         let help = String::from_utf8(help).unwrap();
         assert!(!help.contains("feedback-loop-smoke"));
+    }
+
+    #[test]
+    fn cli_parses_git_corpus_review_options() {
+        let cli = Cli::try_parse_from([
+            "grokrxiv",
+            "--runner",
+            "cli",
+            "--extractor",
+            "cli",
+            "review",
+            "https://github.com/MagnetonIO/emergent_spacetime",
+            "--type",
+            "git",
+            "--rev",
+            "main",
+            "--corpus",
+            "--scan-root",
+            "papers/information-theory/src",
+            "--limit",
+            "1",
+            "--include",
+            "*.tex",
+            "--exclude",
+            "target/**",
+        ])
+        .expect("git corpus review command should parse");
+
+        match cli.command {
+            Command::Review {
+                r#type,
+                corpus,
+                scan_root,
+                limit,
+                include,
+                exclude,
+                ..
+            } => {
+                assert_eq!(r#type, Some(SourceType::Git));
+                assert!(corpus);
+                assert_eq!(
+                    scan_root,
+                    Some(PathBuf::from("papers/information-theory/src"))
+                );
+                assert_eq!(limit, Some(1));
+                assert_eq!(include, vec!["*.tex"]);
+                assert_eq!(exclude, vec!["target/**"]);
+            }
+            other => panic!("expected Review command, got {other:?}"),
+        }
     }
 
     #[cfg(feature = "grokrxiv-storage")]

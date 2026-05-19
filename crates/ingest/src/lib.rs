@@ -20,8 +20,9 @@ pub use extract::{
 pub use listing::{fetch_listing, IngestError, ALL_CATEGORIES, DEFAULT_ACTIVE_CATEGORIES};
 pub use pipeline::{ingest, ingest_staged, DeterministicIngest};
 pub use source::{
-    prepare_git_repo_source, prepare_local_file_source, prepare_review_source, LocalSourceFormat,
-    PreparedReviewSource, ReviewSourceSpec, SourceIdentity, SourceKind,
+    prepare_git_repo_source, prepare_local_file_source, prepare_review_source,
+    scan_git_repo_corpus, CorpusManuscriptCandidate, CorpusScanOptions, InferredSubject,
+    LocalSourceFormat, PreparedReviewSource, ReviewSourceSpec, SourceIdentity, SourceKind,
 };
 pub use tex::{parse_bundle, source_url, TexExtract};
 pub use types::*;
