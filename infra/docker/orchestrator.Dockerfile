@@ -81,4 +81,4 @@ ENV ORCHESTRATOR_BIND=0.0.0.0:8080 \
 USER grokrxiv
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/usr/local/bin/orchestrator"]
+CMD ["/usr/local/bin/orchestrator", "serve"]

@@ -1,7 +1,7 @@
 //! Run the long-running HTTP API + supervisor + scheduler.
 //!
-//! Extracted from `main.rs` so the CLI's `serve` subcommand and the binary's
-//! default invocation share the exact same code path.
+//! Extracted from `main.rs` so every launcher can call the explicit `serve`
+//! subcommand without duplicating boot logic.
 
 use std::net::SocketAddr;
 

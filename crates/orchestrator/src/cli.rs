@@ -38,22 +38,24 @@ type PaperListRow = (
     version,
     about = "GrokRxiv — agentic peer-review pipeline for arXiv",
     long_about = None,
+    arg_required_else_help = true,
+    subcommand_required = true,
 )]
 pub struct Cli {
-    /// Subcommand to dispatch. Defaults to `Serve` when unset.
+    /// Subcommand to dispatch.
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 
     /// Whether agents should run in `review_only` mode (default) or
     /// `review_and_revise` mode (emit a `revision_artifact` alongside the
     /// usual review output). RPT2 Track F.
-    #[arg(long, value_enum, global = true, default_value_t = AgentMode::ReviewOnly)]
+    #[arg(long, value_enum, global = true, default_value_t = AgentMode::ReviewOnly, hide = true)]
     pub mode: AgentMode,
 
     /// When `--mode review_and_revise`, controls what gets patched: the
     /// paper's LaTeX source (`paper_latex`, default) or GrokRxiv's own
     /// review output (`grokrxiv_review_output`).
-    #[arg(long, value_enum, global = true, default_value_t = RevisionTarget::PaperLatex)]
+    #[arg(long, value_enum, global = true, default_value_t = RevisionTarget::PaperLatex, hide = true)]
     pub revision_target: RevisionTarget,
 
     // ---------- RPT2 Track I global runner/sandbox/cost/profile flags ----------
@@ -65,35 +67,35 @@ pub struct Cli {
     pub extractor: Option<ExtractorKind>,
     /// Per-role runner override, e.g. `--runner-for technical_correctness=cli`.
     /// Repeatable.
-    #[arg(long, global = true, value_parser = parse_role_runner, value_name = "ROLE=RUNNER")]
+    #[arg(long, global = true, value_parser = parse_role_runner, value_name = "ROLE=RUNNER", hide = true)]
     pub runner_for: Vec<(AgentRole, AgentRunnerKind)>,
     /// Sandbox policy applied to runners that support it.
-    #[arg(long, value_enum, global = true)]
+    #[arg(long, value_enum, global = true, hide = true)]
     pub sandbox: Option<SandboxPolicy>,
     /// Cloud agent provider (e.g. `vercel_open_agents`, `e2b`).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub cloud_provider: Option<String>,
     /// LiteLLM gateway URL (overrides env).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub litellm_url: Option<String>,
     /// Ollama host (overrides env).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub ollama_host: Option<String>,
     /// Per-role model override, e.g. `--model-for summary=claude-haiku-4-5`.
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_model, value_name = "ROLE=MODEL")]
     pub model_for: Vec<(AgentRole, String)>,
     /// Hard cap on total cost (USD) for one review.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub max_cost_usd: Option<f64>,
     /// Skip the review cache.
     #[arg(long, global = true)]
     pub no_cache: bool,
     /// Offline mode (disallow network where avoidable).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub offline: bool,
     /// Plan-only: print what would run but don't make LLM calls.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub dry_run: bool,
     /// Emit JSON instead of human-readable text on commands that support it.
     #[arg(long, global = true)]
@@ -111,26 +113,26 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
     /// `config show` flag: print provider secrets in cleartext.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub show_secrets: bool,
     /// Track 8a: dump the rendered prompt for each role to
     /// `./debug-prompts/<arxiv_id>/<role>.md` after the review finishes.
     /// Exports `GROKRXIV_DEBUG_PROMPT_DIR` for the supervisor; the supervisor
     /// writes one file per role per paper. The directory is printed at the
     /// end of the run.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub debug_prompt: bool,
     /// RPT3 Wave-3 Team-F: skip selected extraction stages. Comma-separated
     /// names from `{vlm, macros, equations, theorems, citations}`. Each
     /// skipped stage produces a `status: "skipped"` entry in
     /// `extraction_report.json`. Exported as `GROKRXIV_INGEST_SKIP_STAGES`.
-    #[arg(long, global = true, value_name = "STAGES")]
+    #[arg(long, global = true, value_name = "STAGES", hide = true)]
     pub skip_stages: Option<String>,
     /// RPT3 Wave-3 Team-F: skip Tier-2 (Supabase) writes even when
     /// `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set. Tier-1 (the
     /// local grokrxiv-data clone) is still written. Exported as
     /// `GROKRXIV_DRY_RUN_STORAGE=1`.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub dry_run_storage: bool,
 }
 
@@ -152,7 +154,7 @@ pub enum SourceType {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     // ---------- service ----------
-    /// Run the HTTP API + tokio supervisor + scheduler (default).
+    /// Run the HTTP API + tokio supervisor + scheduler.
     Serve,
     /// Print which env vars / external deps / DB / LLM providers are reachable.
     Doctor,
@@ -164,12 +166,15 @@ pub enum Command {
         show_secrets: bool,
     },
     /// Apply pending Supabase migrations (idempotent).
+    #[command(hide = true)]
     Migrate,
     /// Print ALL_CATEGORIES, DEFAULT_ACTIVE_CATEGORIES, and the active env diff.
+    #[command(hide = true)]
     Categories,
 
     // ---------- ingestion ----------
     /// Synchronously ingest + review one or more papers.
+    #[command(hide = true)]
     Ingest {
         /// arXiv IDs (e.g. `2605.12484`).
         #[arg(required = true)]
@@ -192,6 +197,7 @@ pub enum Command {
         arxiv_ids: Vec<String>,
     },
     /// Bulk OAI-PMH backfill across an arXiv date range.
+    #[command(hide = true)]
     IngestRange {
         /// Start of the date range (inclusive).
         #[arg(long)]
@@ -207,6 +213,7 @@ pub enum Command {
         no_review: bool,
     },
     /// One-shot equivalent of the daily scheduler tick.
+    #[command(hide = true)]
     IngestDaily,
 
     // ---------- review lifecycle ----------
@@ -229,10 +236,10 @@ pub enum Command {
     /// `source` can be:
     /// - an arXiv id (e.g. `2605.12484`),
     /// - an arXiv URL (`https://arxiv.org/abs/...` / `/pdf/...`),
-    /// - a local PDF path (`./paper.pdf`),
-    /// - a local LaTeX path (`./paper.tex`),
-    /// - `-` to read from stdin (use `--type` to disambiguate kind),
-    /// - `@<path>` to read a newline-delimited file of one source per line.
+    /// - `@<path>` to read a newline-delimited file of arXiv sources.
+    ///
+    /// Local PDF/Tex/stdin sources are parsed for dry-run diagnostics, but the
+    /// production review path currently requires arXiv sources.
     Review {
         /// Source: arXiv id | URL | path | `-` | `@file`.
         source: String,
@@ -241,6 +248,7 @@ pub enum Command {
         r#type: Option<SourceType>,
     },
     /// Re-run the review DAG against an already-ingested paper.
+    #[command(hide = true)]
     ReReview {
         /// UUID of the paper to re-review.
         paper_id: Uuid,
@@ -254,11 +262,13 @@ pub enum Command {
         source: String,
     },
     /// Re-run the verifier ladder against a review.
+    #[command(hide = true)]
     Verify {
         /// UUID of the review to re-verify.
         review_id: Uuid,
     },
     /// Re-emit one or all artifacts for a persisted review.
+    #[command(hide = true)]
     Render {
         /// UUID of the review to render.
         review_id: Uuid,
@@ -281,9 +291,10 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Merge the open publication PR (squash). The GitHub webhook then flips
-    /// `reviews.status` to `published` and revalidates the public site.
-    Merge {
+    /// Publish a review by merging its open publication PR. The GitHub webhook
+    /// then flips `reviews.status` to `published` and revalidates the public site.
+    #[command(alias = "merge")]
+    Publish {
         /// UUID of the review whose PR should be merged.
         review_id: Uuid,
     },
@@ -291,6 +302,7 @@ pub enum Command {
     /// review. Reads `artifacts/<review_id>/review.html`, runs codex (gpt-5.5)
     /// to fix formatting issues, writes the corrected HTML back, and persists
     /// `formatting_fixes.json` sidecar.
+    #[command(hide = true)]
     HtmlReview {
         /// UUID of the review whose review.html should be audited + fixed.
         /// Required unless `--all` is set.
@@ -317,6 +329,7 @@ pub enum Command {
         notes: String,
     },
     /// Withdraw a published review (status → withdrawn; revalidates).
+    #[command(hide = true)]
     Withdraw {
         /// UUID of the review to withdraw.
         review_id: Uuid,
@@ -325,6 +338,7 @@ pub enum Command {
         reason: String,
     },
     /// Append a correction; status → corrected.
+    #[command(hide = true)]
     Correct {
         /// UUID of the review being corrected.
         review_id: Uuid,
@@ -340,6 +354,7 @@ pub enum Command {
         review_id: Uuid,
     },
     /// Stream the jobs table tail.
+    #[command(hide = true)]
     TailJobs {
         /// Optional `kind` filter (e.g. `Ingest`, `Review`).
         #[arg(long)]
@@ -531,7 +546,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         std::env::remove_var("GROKRXIV_DRY_RUN_STORAGE");
     }
 
-    let command = cli.command.unwrap_or(Command::Serve);
+    let command = cli.command;
     let is_review_command = matches!(
         command,
         Command::Review { .. }
@@ -541,6 +556,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::IngestRange { .. }
             | Command::IngestDaily
     );
+
+    if dry_run {
+        if let Command::Publish { review_id } = &command {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "dry_run": true,
+                        "command": "publish",
+                        "review_id": review_id,
+                    }))?
+                );
+            } else {
+                println!("dry_run=true command=publish review_id={review_id}");
+            }
+            return Ok(());
+        }
+    }
 
     let result = match command {
         Command::Serve => super::serve::run().await,
@@ -580,7 +613,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             out,
         } => render(review_id, format, out).await,
         Command::Approve { review_id, force } => approve(review_id, force, json).await,
-        Command::Merge { review_id } => merge_pr_cmd(review_id, json).await,
+        Command::Publish { review_id } => publish_cmd(review_id, json).await,
         Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
@@ -735,11 +768,7 @@ fn print_categories() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ingest_many(
-    arxiv_ids: &[String],
-    auto_moderate: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn ingest_many(arxiv_ids: &[String], auto_moderate: bool, json: bool) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
@@ -1971,13 +2000,12 @@ async fn approve_impl(
     // Phase 2: recommendation gate. Read meta_review.recommendation and bail
     // unless the operator passed --force. Missing recommendation is also a
     // bail — better to fail loudly than to publish an unverified row.
-    let meta_recommendation: Option<String> = sqlx::query_scalar(
-        "select meta_review->>'recommendation' from reviews where id = $1",
-    )
-    .bind(review_id)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(None);
+    let meta_recommendation: Option<String> =
+        sqlx::query_scalar("select meta_review->>'recommendation' from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
     match meta_recommendation.as_deref() {
         Some("accept") | Some("minor_revision") => {}
         Some(rec @ ("reject" | "major_revision")) if !force => {
@@ -2280,7 +2308,7 @@ async fn approve_impl(
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn merge_pr_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
         "review {review_id}: merging publication PR; webhook will flip status to published"
     ));
@@ -2350,20 +2378,16 @@ async fn merge_pr_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]
-async fn merge_pr_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
     anyhow::bail!(
-        "merge <{review_id}> requires --features full (grokrxiv-publisher) at build time."
+        "publish <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
 }
 
 /// `grokrxiv html-review [<id>|--all]`. Re-runs the post-render html_quality
 /// harness on already-rendered reviews. Used to backfill existing reviews
 /// after the harness lands, or to re-run after prompt iteration.
-async fn html_review_cmd(
-    review_id: Option<Uuid>,
-    all: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn html_review_cmd(review_id: Option<Uuid>, all: bool, json: bool) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let pool = state
@@ -2382,8 +2406,9 @@ async fn html_review_cmd(
         .await
         .map_err(|e| anyhow::anyhow!("html-review: load review ids: {e}"))?
     } else {
-        let id = review_id
-            .ok_or_else(|| anyhow::anyhow!("html-review: REVIEW_ID required unless --all is set"))?;
+        let id = review_id.ok_or_else(|| {
+            anyhow::anyhow!("html-review: REVIEW_ID required unless --all is set")
+        })?;
         vec![id]
     };
 
@@ -2455,15 +2480,13 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
         );
     }
 
-    sqlx::query(
-        "insert into rejections (review_id, rationale_md, created_by) values ($1, $2, $3)",
-    )
-    .bind(review_id)
-    .bind(reason)
-    .bind(&moderator)
-    .execute(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("reject: insert rejections row: {e}"))?;
+    sqlx::query("insert into rejections (review_id, rationale_md, created_by) values ($1, $2, $3)")
+        .bind(review_id)
+        .bind(reason)
+        .bind(&moderator)
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("reject: insert rejections row: {e}"))?;
 
     let rows_updated =
         crate::db::set_review_status(pool, review_id, ReviewStatus::Rejected, None).await?;
@@ -2704,6 +2727,87 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     #[test]
+    fn bare_grokrxiv_prints_help_instead_of_serving() {
+        let err = Cli::try_parse_from(["grokrxiv"]).expect_err("bare CLI should print help");
+        let text = err.to_string();
+        assert!(text.contains("Usage: grokrxiv"));
+        assert!(text.contains("Commands:"));
+        assert!(text.contains("review"));
+        assert!(text.contains("serve"));
+    }
+
+    #[test]
+    fn default_help_shows_operator_surface_only() {
+        let mut cmd = Cli::command();
+        let help = cmd.render_long_help().to_string();
+
+        for visible in [
+            "serve",
+            "doctor",
+            "config",
+            "review",
+            "extract",
+            "review-extracted",
+            "list",
+            "show",
+            "approve",
+            "publish",
+            "reject",
+            "request-changes",
+            "open",
+        ] {
+            assert!(
+                help.contains(visible),
+                "expected `{visible}` in help:\n{help}"
+            );
+        }
+
+        for hidden in [
+            "merge",
+            "tail-jobs",
+            "html-review",
+            "migrate",
+            "ingest-range",
+            "ingest-daily",
+        ] {
+            assert!(
+                !help.contains(hidden),
+                "did not expect `{hidden}` in default help:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_parses_publish_and_hidden_merge_alias() {
+        let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+
+        let publish = Cli::try_parse_from(["grokrxiv", "publish", &review_id.to_string()])
+            .expect("publish should parse");
+        match publish.command {
+            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            other => panic!("expected publish command, got {other:?}"),
+        }
+
+        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string()])
+            .expect("hidden merge alias should parse");
+        match merge.command {
+            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            other => panic!("expected publish command from hidden alias, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_dry_run_returns_before_db_or_github() {
+        let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+        let cli = Cli::try_parse_from(["grokrxiv", "--dry-run", "publish", &review_id.to_string()])
+            .expect("publish --dry-run should parse");
+
+        run(cli)
+            .await
+            .expect("publish --dry-run should not require DB or GitHub");
+    }
+
+    #[test]
     fn cli_parses_status_flags() {
         let status = Cli::try_parse_from(["grokrxiv", "--status", "doctor"]).unwrap();
         assert!(status.status);
@@ -2735,7 +2839,7 @@ mod tests {
         assert_eq!(parsed.extractor, Some(ExtractorKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Some(Command::Extract { arxiv_ids }) => assert_eq!(arxiv_ids, vec!["2605.00561"]),
+            Command::Extract { arxiv_ids } => assert_eq!(arxiv_ids, vec!["2605.00561"]),
             other => panic!("expected extract command, got {other:?}"),
         }
     }
@@ -2755,7 +2859,7 @@ mod tests {
         assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Some(Command::ReviewExtracted { source, force }) => {
+            Command::ReviewExtracted { source, force } => {
                 assert_eq!(source, "2605.00561");
                 assert!(!force);
             }
@@ -2765,7 +2869,7 @@ mod tests {
         let forced =
             Cli::try_parse_from(["grokrxiv", "review-extracted", "--force", "2605.00561"]).unwrap();
         match forced.command {
-            Some(Command::ReviewExtracted { source, force }) => {
+            Command::ReviewExtracted { source, force } => {
                 assert_eq!(source, "2605.00561");
                 assert!(force);
             }
@@ -2797,9 +2901,9 @@ mod tests {
         let listed =
             Cli::try_parse_from(["grokrxiv", "list", "extracted", "--limit", "50"]).unwrap();
         match listed.command {
-            Some(Command::List {
+            Command::List {
                 what: ListKind::Extracted { limit, .. },
-            }) => assert_eq!(limit, 50),
+            } => assert_eq!(limit, 50),
             other => panic!("expected list extracted command, got {other:?}"),
         }
 
@@ -2813,14 +2917,14 @@ mod tests {
         ])
         .unwrap();
         match reviews.command {
-            Some(Command::List {
+            Command::List {
                 what:
                     ListKind::Reviews {
                         review_status,
                         json,
                         ..
                     },
-            }) => {
+            } => {
                 assert_eq!(review_status.as_deref(), Some("awaiting_moderation"));
                 assert!(json);
             }

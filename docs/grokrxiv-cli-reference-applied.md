@@ -12,6 +12,9 @@ just doctor           # preflight
 just serve            # blocking; runs HTTP API + supervisor + scheduler
 ```
 
+Bare `grokrxiv` prints help and exits. Start the long-running service
+explicitly with `grokrxiv serve`.
+
 ## Global flags (apply to every subcommand)
 
 | Flag                       | Default        | Notes |
@@ -51,8 +54,7 @@ integer to cap concurrent specialist CLI/API children.
 ### Service
 
 #### `grokrxiv serve`
-Runs the orchestrator: HTTP API + supervisor + scheduler. Identical to the
-`grokrxiv-orchestrator` default. Blocks forever.
+Runs the orchestrator: HTTP API + supervisor + scheduler. Blocks forever.
 
 #### `grokrxiv doctor`
 Runs the preflight checks (env vars, DB URL, API runner reachability, CLI
@@ -69,14 +71,6 @@ grokrxiv doctor --json | jq .         # machine
 Prints the resolved config: the env-based legacy `Config` *and* the layered
 `RuntimeConfig` (defaults → TOML → env → CLI). Add `--json` for a structured
 view. Secrets are redacted as `***` unless `--show-secrets` is passed.
-
-#### `grokrxiv migrate`
-Applies pending Supabase migrations (currently delegates to
-`bash infra/supabase/setup.sh`; native bridge tracked under task #11).
-
-#### `grokrxiv categories`
-Prints `DEFAULT_ACTIVE_CATEGORIES` and the active env override
-(`INGEST_CATEGORIES`).
 
 ### Canonical review entry point
 
@@ -108,11 +102,7 @@ With `--json`, after the run we emit:
 
 The smoke test in `tests/m1-pipeline.sh` asserts on this envelope.
 
-### Ingestion (lower-level)
-
-#### `grokrxiv ingest <arxiv_id>...`
-Synchronously ingest + run the review DAG on one or more papers. Single
-paper prints `arxiv_id=… review_id=…`; multiple papers fan out in parallel.
+### Ingestion
 
 #### `grokrxiv extract <arxiv_id>...`
 Run fetch + extraction only, then audit the reviewer input artifacts. This is
@@ -144,12 +134,6 @@ when available. With `--json`, it emits `{ "status": "already_reviewed", ... }`.
 Use `--force` only when you intend to supersede the existing review after new
 review input, comments, or paper/extraction changes.
 
-#### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
-Bulk OAI-PMH backfill across a date range.
-
-#### `grokrxiv ingest-daily`
-Equivalent of the daily scheduler tick (yesterday → today).
-
 ### Review lifecycle
 
 #### `grokrxiv list reviews [--review-status S] [--field F] [--limit N] [--json]`
@@ -159,15 +143,6 @@ Equivalent of the daily scheduler tick (yesterday → today).
 #### `grokrxiv show <REVIEW_ID> [--json]`
 Pretty-print a review (paper, agents, verifier status, optional PR URL).
 
-#### `grokrxiv re-review <PAPER_ID>`
-Re-run the review DAG against an already-ingested paper (renamed from `review`).
-
-#### `grokrxiv verify <REVIEW_ID>`
-Re-print the per-agent verifier_status rows for a review.
-
-#### `grokrxiv render <REVIEW_ID> [--format html|md|tex|pdf|zip] [--out PATH]`
-Re-emit artifacts for a persisted review.
-
 ### Moderation
 
 #### `grokrxiv approve <REVIEW_ID> [--json]`
@@ -176,23 +151,61 @@ publish the review; a human merge plus the GitHub webhook performs the
 `published` transition. Prints `pr_url=…`. With `--json`, returns
 `{review_id, pr_url, status}`. Without `GITHUB_TOKEN`, the PR is simulated.
 
+#### `grokrxiv publish <REVIEW_ID> [--json]`
+Publish a review by merging its open publication PR. The GitHub webhook then
+flips the review to `published` and revalidates the public site. `merge` is
+kept as a hidden compatibility alias for this command.
+
 #### `grokrxiv reject <REVIEW_ID> --reason TEXT`
 Mark a review rejected (review stays `awaiting_moderation`).
 
 #### `grokrxiv request-changes <REVIEW_ID> --notes TEXT`
 Mark a review as needing operator changes.
 
-#### `grokrxiv withdraw <REVIEW_ID> --reason TEXT`
-Withdraw a published review (status → `withdrawn`; revalidates the
-frontend).
-
-#### `grokrxiv correct <REVIEW_ID> --rationale-md PATH`
-Append a correction; status → `corrected`.
-
 ### Conveniences
 
 #### `grokrxiv open <REVIEW_ID>`
 Print (and on macOS, `open(1)`) the `/reviews/<id>` URL.
+
+### Advanced and hidden commands
+
+These remain callable for compatibility and admin repair work, but are hidden
+from default `--help`.
+
+#### `grokrxiv ingest <arxiv_id>...`
+Lower-level arXiv-only ingest + review path. Prefer `grokrxiv review`.
+
+#### `grokrxiv re-review <PAPER_ID>`
+Re-run the review DAG against an already-ingested paper. Prefer
+`grokrxiv review-extracted --force` for operator reruns.
+
+#### `grokrxiv verify <REVIEW_ID>`
+Re-print the per-agent verifier_status rows for a review.
+
+#### `grokrxiv render <REVIEW_ID> [--format html|md|tex|pdf|zip] [--out PATH]`
+Re-emit artifacts for a persisted review.
+
+#### `grokrxiv correct <REVIEW_ID> --rationale-md PATH`
+Append a correction; status → `corrected`.
+
+#### `grokrxiv withdraw <REVIEW_ID> --reason TEXT`
+Withdraw a published review (status → `withdrawn`; revalidates the frontend).
+
+#### `grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]`
+Bulk OAI-PMH backfill across a date range.
+
+#### `grokrxiv ingest-daily`
+Equivalent of the daily scheduler tick (yesterday → today).
+
+#### `grokrxiv migrate`
+Stub: points operators to `bash infra/supabase/setup.sh` until native migration
+wiring lands.
+
+#### `grokrxiv categories`
+Prints `DEFAULT_ACTIVE_CATEGORIES` and the active env override.
+
+#### `grokrxiv html-review [<REVIEW_ID>|--all]`
+Internal post-render formatting harness.
 
 #### `grokrxiv tail-jobs [--kind K] [--state S]`
 Stream the jobs table tail. (Wiring tracked under task #15.)

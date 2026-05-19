@@ -12,6 +12,8 @@ cargo install --path crates/orchestrator --features full --bin grokrxiv --locked
 
 # Verify
 grokrxiv --version            # grokrxiv 0.1.0
+grokrxiv                     # prints help; does not start the server
+grokrxiv serve               # start HTTP API + supervisor + scheduler
 grokrxiv doctor               # preflight per-runner reachability check
 grokrxiv doctor --json        # machine-readable
 ```
@@ -47,8 +49,9 @@ Each role uses the provider/model from its `agents/*.yaml`:
 # Single paper, default review runner + default extractor = cli
 grokrxiv review 2605.00228 --json
 
-# Batch parallel (orchestrator fan-out)
-grokrxiv ingest 2605.00228 2605.00316 2605.00478 --json
+# Batch from a source manifest (one arXiv id or URL per line)
+printf '%s\n' 2605.00228 2605.00316 2605.00478 > /tmp/grokrxiv-sources.txt
+grokrxiv review @/tmp/grokrxiv-sources.txt --json
 ```
 
 Cost: review and extraction use the local CLI auth path by default. In
@@ -76,12 +79,12 @@ grokrxiv review 2605.00001 --runner api --extractor api --json
 ```sh
 # Run everything via API but route the expensive technical_correctness
 # through your Claude Code subscription instead
-grokrxiv ingest 2605.12484 \
+grokrxiv review 2605.12484 \
   --runner-for technical_correctness=cli \
   --json
 
 # Run cheap roles on local OSS (requires Ollama running)
-grokrxiv ingest 2605.12484 \
+grokrxiv review 2605.12484 \
   --runner-for summary=local_inference \
   --runner-for citation=local_inference \
   --json
@@ -90,9 +93,13 @@ grokrxiv ingest 2605.12484 \
 ## Approve → real GitHub PR
 
 ```sh
-# After ingest completes, approve to open a real PR on GrokRxiv/grokrxiv-reviews
+# After review completes, approve to open a real PR on GrokRxiv/grokrxiv-reviews
 grokrxiv approve <REVIEW_UUID> --json
 # Returns: {"pr_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/N", ...}
+
+# After human review, publish by merging the open PR.
+# You can do this in GitHub, or explicitly from the CLI:
+grokrxiv publish <REVIEW_UUID> --json
 ```
 
 ## Web visibility

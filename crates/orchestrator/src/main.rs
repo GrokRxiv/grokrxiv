@@ -3,7 +3,7 @@
 //! The CLI surface (subcommands, flags, --help) lives in `cli.rs`. This file
 //! only handles boot wiring and process exit.
 
-use clap::Parser;
+use clap::{error::ErrorKind, Parser};
 use grokrxiv_orchestrator::cli::{run, Cli};
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
@@ -13,7 +13,14 @@ async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     init_tracing();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) if err.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            let _ = err.print();
+            return ExitCode::SUCCESS;
+        }
+        Err(err) => err.exit(),
+    };
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
