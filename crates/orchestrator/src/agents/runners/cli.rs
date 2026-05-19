@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -439,18 +439,17 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
     format!(
-        "{system}\n\n\
-         GrokRxiv has prepared the exact review inputs in your current working directory.\n\
-         Use these files only:\n\
-         - review_input.json: canonical JSON artifact to review\n\
-         - prompt.md: role-specific task\n\
+        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
+         Read and follow these files only:\n\
          - system.md: role instruction\n\
+         - prompt.md: role-specific task\n\
+         - review_input.json: canonical JSON artifact to review\n\
          - schema.json: required output schema\n\n\
+         Return exactly one JSON object that validates against schema.json. \
+         Do not include prose, markdown fences, or extra properties.\n\n\
          Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
-         If you use local file tools, restrict them to the current directory and these files.\n\n\
-         Role task:\n{user}",
-        system = input.system_prompt,
-        user = input.user_prompt,
+         If you use local file tools, restrict them to the current directory and these files.",
+        role = role_slug(input.role),
     )
 }
 
@@ -885,6 +884,22 @@ async fn exec_and_capture(
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn `{}`: {e}", built.program))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for `{}`", built.program))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stderr for `{}`", built.program))?;
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).await.map(|_| buf)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.map(|_| buf)
+    });
 
     if uses_stdin {
         if let Some(mut stdin) = child.stdin.take() {
@@ -897,15 +912,13 @@ async fn exec_and_capture(
         }
     }
 
-    let wait_fut = child.wait_with_output();
-    let output = match timeout(timeout_dur, wait_fut).await {
-        Ok(Ok(o)) => o,
+    let status = match timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(status)) => status,
         Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
         Err(_) => {
-            // Timed out — we already moved `child` into wait_with_output, so
-            // we can't call .kill(). wait_with_output drops the child handle
-            // which on tokio signals the process and reaps it. To be safe
-            // surface a clear error.
+            let _ = timeout(Duration::from_secs(5), child.kill()).await;
+            stdout_task.abort();
+            stderr_task.abort();
             anyhow::bail!(
                 "CliRunner timed out after {}s for role {:?}",
                 timeout_dur.as_secs(),
@@ -913,9 +926,17 @@ async fn exec_and_capture(
             );
         }
     };
+    let stdout = stdout_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stdout task failed for `{}`: {e}", built.program))?
+        .map_err(|e| anyhow::anyhow!("read stdout for `{}` failed: {e}", built.program))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stderr task failed for `{}`: {e}", built.program))?
+        .map_err(|e| anyhow::anyhow!("read stderr for `{}` failed: {e}", built.program))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr).to_string();
         // FP-RPT3b B5: classify as a structured quota error when stderr
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
@@ -928,19 +949,19 @@ async fn exec_and_capture(
             .context(format!(
                 "`{}` exited with {:?} for role {:?}",
                 built.program,
-                output.status.code(),
+                status.code(),
                 role,
             )));
         }
         anyhow::bail!(
             "`{}` exited with {:?} for role {:?}: {stderr}",
             built.program,
-            output.status.code(),
+            status.code(),
             role,
         );
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stdout = String::from_utf8_lossy(&stdout).to_string();
     Ok(stdout)
 }
 
@@ -2204,6 +2225,10 @@ mod tests {
 
         let rendered = render_review_prompt_with_files(&input);
         assert!(rendered.contains("review_input.json"));
+        assert!(
+            !rendered.contains("review this paper"),
+            "review prompt should reference prompt.md instead of duplicating the role task"
+        );
         assert!(rendered.contains("Do not search parent directories"));
     }
 
@@ -2899,6 +2924,62 @@ mod tests {
         assert!(
             downcast.is_none(),
             "non-quota failures must not be tagged as QuotaExhausted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_kills_child_on_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("grokrxiv-cli-timeout-kill-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-cli.sh");
+        let pid_file = dir.join("pid");
+        let _ = std::fs::remove_file(&pid_file);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                pid_file.to_string_lossy()
+            ),
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let err = exec_and_capture(
+            &built,
+            Duration::from_secs(1),
+            grokrxiv_schemas::AgentRole::Novelty,
+            "gemini",
+        )
+        .await
+        .expect_err("subprocess should time out");
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("pid file")
+            .trim()
+            .to_string();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run kill -0");
+        assert!(
+            !status.success(),
+            "timed-out child process {pid} should have been killed"
         );
     }
 

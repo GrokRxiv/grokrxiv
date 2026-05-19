@@ -2918,20 +2918,26 @@ async fn load_correction_source_snapshot(
     paper_id: Uuid,
     source_id: Option<&str>,
 ) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
-    let row: Option<(String, Option<String>, Option<String>, serde_json::Value)> = sqlx::query_as(
-        "select coalesce(source_kind, 'arxiv'), source_uri, source_id, source_metadata \
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select coalesce(source_kind, 'arxiv'), arxiv_id, source_uri, source_id, source_metadata \
              from papers where id = $1",
     )
     .bind(paper_id)
     .fetch_optional(pool)
     .await?;
-    let Some((source_kind, source_uri, row_source_id, source_metadata)) = row else {
+    let Some((source_kind, arxiv_id, source_uri, row_source_id, source_metadata)) = row else {
         return Ok(None);
     };
     let stable_source_id = source_id
         .map(str::to_owned)
         .or(row_source_id)
-        .unwrap_or_else(|| format!("paper-{paper_id}"));
+        .unwrap_or_else(|| arxiv_id.clone());
     let adapter = source_metadata
         .get("adapter")
         .and_then(|v| v.as_object())
@@ -2994,8 +3000,47 @@ async fn load_correction_source_snapshot(
                 bytes,
             }))
         }
+        "arxiv" => load_arxiv_correction_source_snapshot(&arxiv_id, &stable_source_id).await,
         _ => Ok(None),
     }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn load_arxiv_correction_source_snapshot(
+    arxiv_id: &str,
+    stable_source_id: &str,
+) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
+    let staged = grokrxiv_ingest::ingest_staged(arxiv_id)
+        .await
+        .with_context(|| format!("fetch arXiv correction source {arxiv_id}"))?;
+    if let Some(source_tarball) = staged.source_tarball.as_ref() {
+        match grokrxiv_ingest::extract_main_tex_source(source_tarball) {
+            Ok(main) => {
+                return Ok(Some(CorrectionSourceSnapshot {
+                    repo_path: correction_repo_path(stable_source_id, Path::new(&main.path)),
+                    bytes: main.contents.into_bytes(),
+                }));
+            }
+            Err(e) => {
+                tracing::warn!(%arxiv_id, err = %e, "arXiv source bundle did not yield editable main TeX; falling back to PDF if available");
+            }
+        }
+    }
+    if let Some(pdf_bytes) = staged.pdf_bytes {
+        return Ok(Some(CorrectionSourceSnapshot {
+            repo_path: correction_repo_path(stable_source_id, Path::new("paper.pdf")),
+            bytes: pdf_bytes.to_vec(),
+        }));
+    }
+    Ok(None)
+}
+
+#[cfg(not(feature = "grokrxiv-ingest"))]
+async fn load_arxiv_correction_source_snapshot(
+    _arxiv_id: &str,
+    _stable_source_id: &str,
+) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
+    Ok(None)
 }
 
 async fn run_git_for_correction<'a, I>(args: I, cwd: Option<&Path>) -> anyhow::Result<()>
@@ -3080,6 +3125,46 @@ struct GhComment {
     url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SmokeEditPlan {
+    edit_path: PathBuf,
+    git_add_paths: Vec<PathBuf>,
+    payload: String,
+}
+
+fn pr_body_needs_revision_refresh(body: &str) -> bool {
+    extract_correction_source_marker(body).is_none()
+}
+
+fn smoke_edit_plan(correction_path: &str) -> anyhow::Result<SmokeEditPlan> {
+    ensure_safe_relative_marker(correction_path)?;
+    let correction = PathBuf::from(correction_path);
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let extension = correction
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "pdf" {
+        let sidecar = correction
+            .parent()
+            .map(|parent| parent.join("grokrxiv-smoke-trigger.md"))
+            .unwrap_or_else(|| PathBuf::from("grokrxiv-smoke-trigger.md"));
+        return Ok(SmokeEditPlan {
+            edit_path: sidecar.clone(),
+            git_add_paths: vec![sidecar],
+            payload: format!(
+                "\n- {timestamp}: GrokRxiv feedback-loop smoke trigger for PDF-backed correction PR `{correction_path}`.\n"
+            ),
+        });
+    }
+    Ok(SmokeEditPlan {
+        edit_path: correction.clone(),
+        git_add_paths: vec![correction],
+        payload: format!("\n% GrokRxiv feedback-loop smoke correction {timestamp}\n"),
+    })
+}
+
 async fn feedback_loop_smoke(
     review_id: Uuid,
     max_wait_secs: u64,
@@ -3125,7 +3210,7 @@ async fn feedback_loop_smoke(
             })?;
     }
     let pr_url = pr_url.ok_or_else(|| anyhow::anyhow!("review {review_id} has no real PR URL"))?;
-    let (owner, repo, pr_number) = parse_github_pr_url(&pr_url)
+    let (mut owner, mut repo, mut pr_number) = parse_github_pr_url(&pr_url)
         .or_else(|| {
             Some((
                 thread.repo_owner.clone()?,
@@ -3134,7 +3219,38 @@ async fn feedback_loop_smoke(
             ))
         })
         .ok_or_else(|| anyhow::anyhow!("github_pr_url is not a GitHub PR URL: {pr_url}"))?;
-    let pr_info = gh_pr_view(&owner, &repo, pr_number).await?;
+    let mut pr_info = gh_pr_view(&owner, &repo, pr_number).await?;
+    if pr_info
+        .body
+        .as_deref()
+        .map(pr_body_needs_revision_refresh)
+        .unwrap_or(true)
+    {
+        crate::cli_status::emit(format!(
+            "review {review_id}: existing PR lacks correction source marker; refreshing revision PR"
+        ));
+        let refreshed_pr_url =
+            request_revisions_impl(&state, review_id, None, false, false).await?;
+        thread = crate::db::fetch_feedback_loop_thread(pool, review_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("review {review_id} disappeared after revision PR refresh")
+            })?;
+        (owner, repo, pr_number) = parse_github_pr_url(&refreshed_pr_url)
+            .or_else(|| {
+                Some((
+                    thread.repo_owner.clone()?,
+                    thread.repo_name.clone()?,
+                    u64::try_from(thread.pr_number?).ok()?,
+                ))
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "refreshed github_pr_url is not a GitHub PR URL: {refreshed_pr_url}"
+                )
+            })?;
+        pr_info = gh_pr_view(&owner, &repo, pr_number).await?;
+    }
     let correction_path = pr_info
         .body
         .as_deref()
@@ -3186,20 +3302,20 @@ async fn feedback_loop_smoke(
     if !correction_file.starts_with(&checkout) {
         anyhow::bail!("correction source path escapes checkout");
     }
+    let smoke_plan = smoke_edit_plan(correction_path)?;
+    let edit_file = checkout.join(&smoke_plan.edit_path);
+    if !edit_file.starts_with(&checkout) {
+        anyhow::bail!("smoke edit path escapes checkout");
+    }
     tokio::fs::OpenOptions::new()
+        .create(true)
         .append(true)
-        .open(&correction_file)
+        .open(&edit_file)
         .await
-        .with_context(|| format!("open correction source {}", correction_path))?
-        .write_all(
-            format!(
-                "\n% GrokRxiv feedback-loop smoke correction {}\n",
-                chrono::Utc::now().to_rfc3339()
-            )
-            .as_bytes(),
-        )
+        .with_context(|| format!("open smoke edit {}", smoke_plan.edit_path.display()))?
+        .write_all(smoke_plan.payload.as_bytes())
         .await
-        .with_context(|| format!("append smoke correction to {}", correction_path))?;
+        .with_context(|| format!("write smoke edit {}", smoke_plan.edit_path.display()))?;
     run_process(
         "git",
         vec!["config".into(), "user.name".into(), "GrokRxiv Smoke".into()],
@@ -3216,12 +3332,14 @@ async fn feedback_loop_smoke(
         Some(&checkout),
     )
     .await?;
-    run_process(
-        "git",
-        vec!["add".into(), correction_path.to_string()],
-        Some(&checkout),
-    )
-    .await?;
+    for path in &smoke_plan.git_add_paths {
+        run_process(
+            "git",
+            vec!["add".into(), path.to_string_lossy().to_string()],
+            Some(&checkout),
+        )
+        .await?;
+    }
     run_process(
         "git",
         vec![
@@ -3258,6 +3376,7 @@ async fn feedback_loop_smoke(
         .ok_or_else(|| anyhow::anyhow!("re-review finished without new_review_id"))?;
     let marker = format!("<!-- grokrxiv:gate-feedback:review-{review_id} -->");
     let gate_comment = gh_find_gate_comment(&owner, &repo, pr_number, &marker).await?;
+    let gate = load_publication_gate_for_review_output(pool, new_review_id).await?;
 
     let output = serde_json::json!({
         "prior_review_id": review_id,
@@ -3266,6 +3385,9 @@ async fn feedback_loop_smoke(
         "request_id": request.id,
         "pr_url": pr_info.url,
         "commit_sha": commit_sha,
+        "gate_verdict": gate.verdict,
+        "recommendation": gate.recommendation,
+        "gate_reason": gate.reason,
         "gate_comment_url": gate_comment.url.or(thread.feedback_comment_url),
     });
     if json {
@@ -3276,11 +3398,36 @@ async fn feedback_loop_smoke(
         println!("request_id={}", request.id);
         println!("pr_url={}", pr_info.url);
         println!("commit_sha={commit_sha}");
+        println!("gate_verdict={:?}", gate.verdict);
+        println!("recommendation={}", gate.recommendation);
         if let Some(url) = output.get("gate_comment_url").and_then(|v| v.as_str()) {
             println!("gate_comment_url={url}");
         }
     }
     Ok(())
+}
+
+async fn load_publication_gate_for_review_output(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> anyhow::Result<crate::review_gate::PublicationGate> {
+    let meta: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    let recommendation = meta
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(serde_json::Value::as_str);
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    Ok(crate::review_gate::PublicationGate::evaluate(
+        crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate,
+        },
+    ))
 }
 
 async fn poll_rereview_request(
@@ -4259,6 +4406,49 @@ mod tests {
         Cli::command().write_long_help(&mut help).unwrap();
         let help = String::from_utf8(help).unwrap();
         assert!(!help.contains("feedback-loop-smoke"));
+    }
+
+    #[test]
+    fn feedback_loop_pr_without_correction_marker_requires_refresh() {
+        let stale_body = "\
+Needs revision.
+
+grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
+";
+        assert!(pr_body_needs_revision_refresh(stale_body));
+
+        let fresh_body = "\
+Needs revision.
+
+grokrxiv-correction-source-path: corrections/source/paper.tex
+grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
+";
+        assert!(!pr_body_needs_revision_refresh(fresh_body));
+    }
+
+    #[test]
+    fn smoke_edit_plan_uses_sidecar_for_pdf_and_inline_comment_for_tex() {
+        let tex = smoke_edit_plan("corrections/source/paper.tex").expect("tex plan");
+        assert_eq!(tex.edit_path, PathBuf::from("corrections/source/paper.tex"));
+        assert!(tex
+            .git_add_paths
+            .contains(&PathBuf::from("corrections/source/paper.tex")));
+        assert!(tex
+            .payload
+            .contains("% GrokRxiv feedback-loop smoke correction"));
+
+        let pdf = smoke_edit_plan("corrections/source/paper.pdf").expect("pdf plan");
+        assert_eq!(
+            pdf.edit_path,
+            PathBuf::from("corrections/source/grokrxiv-smoke-trigger.md")
+        );
+        assert!(pdf.git_add_paths.contains(&PathBuf::from(
+            "corrections/source/grokrxiv-smoke-trigger.md"
+        )));
+        assert!(!pdf
+            .git_add_paths
+            .contains(&PathBuf::from("corrections/source/paper.pdf")));
+        assert!(pdf.payload.contains("PDF-backed correction PR"));
     }
 
     #[test]

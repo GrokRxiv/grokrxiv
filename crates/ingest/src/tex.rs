@@ -59,9 +59,32 @@ pub struct TexExtract {
     pub semantic_ast: Option<Value>,
 }
 
+/// Editable main TeX source extracted from an arXiv source bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MainTexSource {
+    /// Relative path of the selected main TeX file inside the bundle.
+    pub path: String,
+    /// UTF-8 TeX contents of the selected main file.
+    pub contents: String,
+}
+
 /// Build the canonical source URL for an arXiv id.
 pub fn source_url(arxiv_id: &str) -> String {
     format!("{ARXIV_SOURCE}{arxiv_id}")
+}
+
+/// Extract the selected editable main `.tex` file from an arXiv source bundle.
+pub fn extract_main_tex_source(bytes: &Bytes) -> Result<MainTexSource> {
+    let files = unpack(bytes)?;
+    if files.is_empty() {
+        return Err(anyhow!("source bundle contained no .tex files"));
+    }
+    let path = pick_main(&files);
+    let contents = files
+        .get(&path)
+        .cloned()
+        .ok_or_else(|| anyhow!("selected main tex source {path} was not in bundle"))?;
+    Ok(MainTexSource { path, contents })
 }
 
 /// Parse an arXiv source bundle into a [`TexExtract`] via a Pandoc + LaTeXML
@@ -859,6 +882,22 @@ mod tests {
             enc.finish().unwrap();
         }
         Bytes::from(gz_buf)
+    }
+
+    #[test]
+    fn extract_main_tex_source_prefers_documentclass_file() {
+        let bundle = make_targz(&[
+            ("supplement.tex", "\\section{Supplement}\n"),
+            (
+                "paper/main.tex",
+                "\\documentclass{article}\n\\title{Main Paper}\n\\begin{document}\nBody\n\\end{document}\n",
+            ),
+            ("refs.bib", "@article{a,title={A}}\n"),
+        ]);
+
+        let main = extract_main_tex_source(&bundle).expect("main tex source");
+        assert_eq!(main.path, "paper/main.tex");
+        assert!(main.contents.contains("\\title{Main Paper}"));
     }
 
     #[tokio::test(flavor = "current_thread")]

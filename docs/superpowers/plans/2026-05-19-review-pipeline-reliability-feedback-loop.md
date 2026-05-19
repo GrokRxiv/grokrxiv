@@ -690,11 +690,22 @@ Expected: no new generated prompt/research/search-index dirt from the test matri
 **Files:**
 - No code changes expected; this is live acceptance.
 
-- [ ] **Step 1: Confirm Claude status before spending time**
+- [ ] **Step 1: Start only the webhook receiver needed for the smoke**
+
+Run the orchestrator with the scheduler disabled so the live smoke does not trigger unrelated arXiv backfill work:
+
+```bash
+GROKRXIV_DISABLE_SCHEDULER=1 \
+grokrxiv --runner cli --extractor cli --status serve
+```
+
+Confirm `localhost:8080` is listening and the public tunnel points to `/webhook/github`.
+
+- [ ] **Step 2: Confirm Claude status before spending time**
 
 Use the operator-visible status page. If Claude Opus/Sonnet is degraded, do not treat a live review failure as a repo regression.
 
-- [ ] **Step 2: Choose a reviewed git-source paper**
+- [ ] **Step 3: Choose a reviewed git-source paper**
 
 ```bash
 set -a
@@ -706,7 +717,7 @@ grokrxiv list reviews --json \
 
 Pick a review whose paper source is `git_repo` and whose artifacts exist under `artifacts/<review_id>`.
 
-- [ ] **Step 3: Open or reuse a real revision PR**
+- [ ] **Step 4: Open or reuse a real revision PR**
 
 ```bash
 grokrxiv request-revisions <review_id> --json
@@ -714,7 +725,7 @@ grokrxiv request-revisions <review_id> --json
 
 Expected JSON contains a real GitHub PR URL under `https://github.com/GrokRxiv/grokrxiv-reviews/pull/<n>`, not `SIMULATED`.
 
-- [ ] **Step 4: Run hidden push-loop smoke**
+- [ ] **Step 5: Run hidden push-loop smoke**
 
 ```bash
 GROKRXIV_E2E_ALLOW_GITHUB_PUSH=1 \
@@ -731,7 +742,7 @@ Expected:
 - stable GitHub feedback comment is updated in place,
 - JSON includes `new_review_id` and `gate_comment_url`.
 
-- [ ] **Step 5: Continue loop if gate fails**
+- [ ] **Step 6: Continue loop if gate fails**
 
 If the feedback comment says failed, repeat:
 
@@ -742,7 +753,7 @@ grokrxiv feedback-loop-smoke <review_id> --max-wait-secs 7200 --json
 
 Expected: same feedback comment URL, updated body. Stop when verdict is `pass`, or stop with the exact failed reason if the paper genuinely cannot pass.
 
-- [ ] **Step 6: Verify DB and GitHub state**
+- [ ] **Step 7: Verify DB and GitHub state**
 
 ```bash
 grokrxiv show <new_review_id>
@@ -776,3 +787,75 @@ Expected:
 - Clone/change/push/wait test: Task 4 implementation and Task 7 live run.
 - Use existing reviewed papers: Task 7 starts from local reviewed DB rows.
 - Avoid expanding public command surface: Task 4 command is hidden and opt-in gated.
+
+## Verified Rust Pipeline Fix Backlog
+
+This backlog synthesizes the 2026-05-19 Rust ingest/review audit into actionable follow-up work. It is intentionally narrower than the raw notes: several issues are real, several are tuning or cleanup, and a few were overstated. Implement these after the live feedback-loop repair unless they block validation.
+
+### Tier 1: Correctness Bugs
+
+- [ ] **Quorum failure lifecycle is wrong.** If fewer than the required specialist outputs are usable, the supervisor records a synthetic gate failure but can leave the new review visible as if it reached moderation. Fix by transitioning the review and any partial specialist rows to the terminal failure state used by the pipeline, and add tests for one specialist fail, two specialists fail, and moderator visibility.
+- [ ] **Citation verifier treats transient network failures like fake citations.** Crossref/arXiv 429/5xx/timeouts should become `unknown` or retryable verifier notes, not hard `exists=false`. Fix classification, retry once on transient errors, and exclude unknowns from fake-citation thresholds.
+- [ ] **arXiv citation lookup is under-batched.** The bug is real, but not exactly a "100 citation" cap: the current verifier makes one arXiv API `id_list` request and relies on API defaults. Chunk requests and page results explicitly.
+- [ ] **Citation/repro fact merges must not mutate error outputs.** If a specialist output contains an `error` object, skip verifier-fact overlay instead of appending real data onto an error payload.
+- [ ] **Citation merge fabricates LLM relevance.** Verifier-only entries get `"relevance": "medium"`, which looks like an LLM judgment. Persist verifier-only findings separately or use an explicit non-scored sentinel the meta-reviewer cannot treat as a specialist rating.
+- [ ] **Reproducibility URL findings need dedupe and severity by URL kind.** Deduplicate repeated broken URLs and grade code/dataset URLs higher than vanity or documentation links.
+- [ ] **Moderator notes DB errors are too quiet.** If request-change notes cannot be fetched for a re-review, log the DB error and surface enough context to avoid silently dropping moderator instructions.
+- [ ] **Cache hashing should fail loud on serialization failure.** Replace `unwrap_or_default()` style fallbacks with explicit errors so a broken serialization path cannot collapse distinct cache inputs.
+- [ ] **Ingest fallback can skip artifact persistence.** If staged ingest fails and the legacy fallback succeeds, paper artifact rows can be incomplete. Delete the fallback or write the minimal artifact/storage rows required for re-runs to converge.
+
+### Tier 2: Cost And Latency
+
+- [ ] **Parallelize reproducibility URL checks.** URL reachability and GitHub metadata checks run serially. Use bounded concurrency, for example `buffer_unordered(8)`, with per-URL timeout and clear result classification.
+- [ ] **Redesign `html_quality` output.** The current shape can require the model to echo the full rendered HTML. Replace with a patch-list schema such as `{kind, old, new, reason}` and apply patches in Rust.
+- [ ] **Move blocking temp-file writes off the async executor.** Review workdir setup uses synchronous file I/O on async paths. Use `tokio::fs` where practical.
+- [ ] **Cache JSON schema validators.** `JsonSchemaVerifier` should build schemas once at construction time instead of rebuilding on every verify call.
+- [ ] **Avoid duplicating review input in workdirs.** `prepare_review_workdir` writes both `prompt.md` and `review_input.json` with overlapping paper payloads. Keep one canonical channel plus small file references.
+- [ ] **Calibrate body budgets per model.** `technical_correctness` uses a very large body budget; reserve context for schema/system/citation material and output, and make this model-aware.
+
+### Tier 3: Contract Drift And Cleanup
+
+- [ ] **Make the declared review DAG executable or rename it as metadata.** `review_dag.rs` builds topology and validates it, but execution still walks roles manually in `supervisor.rs`. Either drive execution from the DAG or explicitly scope the DAG as policy metadata.
+- [ ] **Move role slugs onto `AgentRole`.** Role slug mapping is duplicated across modules.
+- [ ] **Narrow `MAX_RETRIES` cleanup.** It is not dead code; it is used in the channel retry path. The actual issue is that several CLI execution paths bypass that retry policy.
+- [ ] **Deprecate or rename `apply_revisions`.** It returns a hardcoded simulated PR URL and should not look like a real publication path.
+- [ ] **Remove personal default paths.** Do not default to `/Users/mlong/...` for data repo paths. Prefer a loud missing-config error or a relative development default.
+- [ ] **Centralize arXiv id validation.** Metadata and citation verifier code have different rules; consolidate in `grokrxiv-schemas`.
+- [ ] **Use `url::form_urlencoded`.** Replace hand-rolled URL encoders.
+- [ ] **Make YAML runtime fields truthful.** `agents/*.yaml` declares fields such as `verifiers` and `concurrency` that are not runtime sources of truth today. Either honor them or remove them.
+- [ ] **Fix `html_quality.yaml` schema drift.** The declared input schema does not match what the runner passes.
+- [ ] **Remove unused parameter trails.** Clean `let _ = state`, `let _ = paper_id`, and similar markers when touching those modules.
+
+### Tier 4: Verifier Rungs Need Hardening
+
+- [ ] **Make `SupportVerifier` role-aware or remove it.** Passing on any output with one long string is too weak to imply support.
+- [ ] **Run `ToneVerifier` over text fields, not stringified JSON.** Current stringification can flag keys or legitimate quoted terminology.
+- [ ] **Move `RenderVerifier` to render-stage artifacts.** Running it against specialist JSON is mostly vacuous.
+
+### Tier 5: Prompt And Retrieval Drift
+
+- [ ] **Rewrite citation prompt contract.** `prompts/citation.md` tells the model to fill fields that the verifier later overlays. The prompt should say which fields the LLM owns and which fields are verifier-owned.
+- [ ] **Pick one meta-reviewer policy source.** Do not duplicate proof-as-code gate language in both prompt templates and role-system prompt construction.
+- [ ] **Improve Semantic Scholar candidate retrieval.** Title-only search is noisy for generic titles. Prefer exact-title or DOI/arXiv-id lookup, then fuzzy fallback with confidence labels.
+
+### Tier 6: Larger Refactors
+
+- [ ] **Split `supervisor.rs` by responsibility.** Target modules: `dag.rs`, `prompts.rs`, `merges.rs`, `cache.rs`, `verify.rs`, and orchestration glue.
+- [ ] **Split `cli.rs` by command family.** Separate operator commands, review commands, moderation/publish commands, and hidden smoke commands.
+- [ ] **Decide the extraction-agent future.** Tool-loop extraction code remains large and mostly disabled unless `GROKRXIV_FORCE_AGENT_EXTRACTION=1`. Either restore it as a supported path or delete/deprecate it in favor of deterministic extraction.
+- [ ] **Prefer `pdftotext -layout` when available.** Use system PDF text extraction for better fidelity, with `pdf-extract` as fallback.
+
+### Tier 7: Regression Tests
+
+- [ ] Add tests for one specialist fail where quorum still passes.
+- [ ] Add tests for two specialist fails where quorum fails and no zombie moderator-visible rows remain.
+- [ ] Add cache-hit short-circuit tests.
+- [ ] Add `html_quality` timeout tests proving finalization does not fail solely because HTML cleanup timed out.
+- [ ] Add CLI-only acceptance tests for request-changes, re-review, approve, reject, withdraw, correct, and publish handoff paths.
+
+### Explicitly Out Of Scope For This Backlog
+
+- Web app auth/pricing/quota work.
+- Stripe.
+- Bulk backfills.
+- Provider-account quota monitoring.
