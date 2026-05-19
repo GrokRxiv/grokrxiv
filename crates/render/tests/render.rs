@@ -108,6 +108,23 @@ fn markdown_omits_disclaimer_and_shows_corrections() {
 }
 
 #[test]
+fn local_source_artifacts_do_not_render_arxiv_prefix() {
+    let (meta, mut paper, agents) = fixture();
+    paper.arxiv_id = "local-pdf-d96363843fd8".into();
+    paper.source_format = Some("pdf".into());
+
+    let html = render_html(&meta, &paper, &agents).expect("render html");
+    let md = render_markdown(&meta, &paper, &agents);
+    let tex = render_latex(&meta, &paper, &agents);
+
+    for artifact in [&html, &md, &tex] {
+        assert!(artifact.contains("local-pdf-d96363843fd8"));
+        assert!(!artifact.contains("arXiv:local-pdf-d96363843fd8"));
+        assert!(!artifact.contains("arxiv.org/abs/local-pdf-d96363843fd8"));
+    }
+}
+
+#[test]
 fn latex_omits_disclaimer_and_balanced_braces() {
     let (meta, paper, agents) = fixture();
     let tex = render_latex(&meta, &paper, &agents);

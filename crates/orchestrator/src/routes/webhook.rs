@@ -1,13 +1,13 @@
-//! `POST /webhook/github` — GitHub PR-merge webhook.
+//! `POST /webhook/github` — GitHub PR lifecycle webhook.
 //!
 //! Hardening:
 //!
 //! * Verifies the `X-Hub-Signature-256` HMAC against
 //!   `GITHUB_WEBHOOK_SECRET`.
-//! * Only acts on `pull_request.closed` events with `merged = true`.
-//! * Verifies the merged branch name matches `review/<arxiv_id>-*`, the
-//!   pattern the publisher creates. Anything else is ignored as 200 OK so
-//!   the GitHub UI doesn't keep re-delivering.
+//! * Publishes on `pull_request.closed` events with `merged = true`.
+//! * Re-runs review on `pull_request.synchronize` correction commits.
+//! * Verifies review branches match the publisher's `review/<source>-<short>`
+//!   pattern. Anything else is ignored as 200 OK so GitHub stops redelivering.
 //! * On a verified merge: updates the review row to `published` and posts to
 //!   `WEB_REVALIDATE_URL` with `REVALIDATE_SECRET`.
 
@@ -19,6 +19,7 @@ use axum::Json;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
+use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -66,10 +67,32 @@ pub async fn github(
         }
     };
 
+    let event = headers
+        .get("X-GitHub-Event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !event.is_empty() && event != "pull_request" {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "event": event })),
+        )
+            .into_response();
+    }
+    let delivery_id = headers
+        .get("X-GitHub-Delivery")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let action = payload
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if action == "synchronize" {
+        return handle_pull_request_synchronize(state, &payload, delivery_id.as_deref())
+            .await
+            .into_response();
+    }
+
     let merged = payload
         .get("pull_request")
         .and_then(|pr| pr.get("merged"))
@@ -143,6 +166,571 @@ pub async fn github(
         .into_response()
 }
 
+async fn handle_pull_request_synchronize(
+    state: AppState,
+    payload: &Value,
+    delivery_id: Option<&str>,
+) -> (StatusCode, Json<Value>) {
+    let Some(pool) = state.db.as_ref() else {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "reason": "DATABASE_URL not configured" })),
+        );
+    };
+    let pr_body = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("body"))
+        .and_then(Value::as_str);
+    let review_id = pr_body.and_then(extract_review_id_from_body);
+    let correction_source_path = pr_body.and_then(extract_correction_source_path_from_body);
+    let Some(prior_review_id) = review_id else {
+        tracing::warn!("synchronize webhook: pr body missing grokrxiv-review-id marker");
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "reason": "missing review marker" })),
+        );
+    };
+
+    let branch = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("head"))
+        .and_then(|h| h.get("ref"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_valid_review_branch(branch) {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "branch": branch })),
+        );
+    }
+
+    let paper_id: Uuid = match sqlx::query_scalar("select paper_id from reviews where id = $1")
+        .bind(prior_review_id)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(%prior_review_id, err = %e, "synchronize webhook: review row not found");
+            return (
+                StatusCode::OK,
+                Json(json!({ "ignored": true, "reason": "review not found" })),
+            );
+        }
+    };
+    let pr_number = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("number"))
+        .or_else(|| payload.get("number"))
+        .and_then(Value::as_i64);
+    let pr_url = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("html_url"))
+        .and_then(Value::as_str);
+    let head_sha = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("head"))
+        .and_then(|h| h.get("sha"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if head_sha.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "reason": "missing head sha" })),
+        );
+    }
+    let repo_owner = payload
+        .get("repository")
+        .and_then(|r| r.get("owner"))
+        .and_then(|o| o.get("login"))
+        .and_then(Value::as_str)
+        .unwrap_or("GrokRxiv");
+    let head_repo_clone_url = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("head"))
+        .and_then(|h| h.get("repo"))
+        .and_then(|r| r.get("clone_url"))
+        .and_then(Value::as_str);
+    let repo_name = payload
+        .get("repository")
+        .and_then(|r| r.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("grokrxiv-reviews");
+    let sender = payload
+        .get("sender")
+        .and_then(|s| s.get("login"))
+        .and_then(Value::as_str);
+
+    let event_payload = json!({
+        "action": "synchronize",
+        "pr_number": pr_number,
+        "pr_url": pr_url,
+        "head_ref": branch,
+        "head_sha": head_sha,
+        "head_repo_clone_url": head_repo_clone_url,
+        "correction_source_path": correction_source_path,
+        "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "sender": sender,
+    });
+    match crate::db::insert_review_event(
+        pool,
+        Some(prior_review_id),
+        Some(paper_id),
+        "github_pr_synchronize",
+        "github",
+        &event_payload,
+        delivery_id,
+    )
+    .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ignored": true, "reason": "duplicate delivery" })),
+            );
+        }
+        Err(e) => {
+            tracing::warn!(%prior_review_id, err = %e, "synchronize webhook: event insert failed");
+        }
+    }
+
+    let _ = crate::db::upsert_github_review_thread(
+        pool,
+        prior_review_id,
+        paper_id,
+        repo_owner,
+        repo_name,
+        pr_number,
+        pr_url,
+        Some(branch),
+        Some(head_sha),
+    )
+    .await;
+
+    let request_id = match crate::db::enqueue_rereview_for_commit(
+        pool,
+        paper_id,
+        prior_review_id,
+        head_sha,
+        sender,
+        Some("GitHub PR synchronize: author correction commit"),
+    )
+    .await
+    {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return (
+                StatusCode::OK,
+                Json(
+                    json!({ "ignored": true, "reason": "duplicate commit", "head_sha": head_sha }),
+                ),
+            );
+        }
+        Err(e) => {
+            tracing::error!(%prior_review_id, %paper_id, err = %e, "synchronize webhook: enqueue re-review failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "enqueue re-review failed" })),
+            );
+        }
+    };
+
+    spawn_rereview_for_correction(
+        state.clone(),
+        request_id,
+        paper_id,
+        prior_review_id,
+        repo_owner.to_string(),
+        repo_name.to_string(),
+        pr_number,
+        pr_url.map(str::to_owned),
+        branch.to_string(),
+        head_sha.to_string(),
+        head_repo_clone_url.map(str::to_owned),
+        correction_source_path.map(str::to_owned),
+    );
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "rereview_request_id": request_id,
+            "paper_id": paper_id,
+            "prior_review_id": prior_review_id,
+            "head_sha": head_sha,
+        })),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_rereview_for_correction(
+    state: AppState,
+    request_id: Uuid,
+    paper_id: Uuid,
+    prior_review_id: Uuid,
+    repo_owner: String,
+    repo_name: String,
+    pr_number: Option<i64>,
+    pr_url: Option<String>,
+    head_ref: String,
+    head_sha: String,
+    head_repo_clone_url: Option<String>,
+    correction_source_path: Option<String>,
+) {
+    #[cfg(feature = "grokrxiv-ingest")]
+    tokio::spawn(async move {
+        let Some(pool) = state.db.as_ref() else {
+            return;
+        };
+        let _ = crate::db::mark_rereview_running(pool, request_id).await;
+        match run_correction_review(
+            &state,
+            paper_id,
+            &head_sha,
+            head_repo_clone_url.as_deref(),
+            correction_source_path.as_deref(),
+        )
+        .await
+        {
+            Ok(new_review_id) => {
+                let _ = crate::db::mark_rereview_done(pool, request_id, new_review_id).await;
+                let _ = crate::db::insert_review_event(
+                    pool,
+                    Some(new_review_id),
+                    Some(paper_id),
+                    "rereview_completed",
+                    "github",
+                    &json!({
+                        "prior_review_id": prior_review_id,
+                        "request_id": request_id,
+                        "head_ref": head_ref,
+                        "head_sha": head_sha,
+                    }),
+                    None,
+                )
+                .await;
+                post_rereview_gate_feedback(
+                    &state,
+                    pool,
+                    prior_review_id,
+                    new_review_id,
+                    paper_id,
+                    &repo_owner,
+                    &repo_name,
+                    pr_number,
+                    pr_url.as_deref(),
+                    head_ref.as_str(),
+                    head_sha.as_str(),
+                )
+                .await;
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                let _ = crate::db::mark_rereview_failed(pool, request_id, &error).await;
+                tracing::error!(
+                    %request_id,
+                    %paper_id,
+                    %prior_review_id,
+                    err = %error,
+                    "GitHub correction re-review failed"
+                );
+            }
+        }
+    });
+
+    #[cfg(not(feature = "grokrxiv-ingest"))]
+    {
+        let _ = (
+            state,
+            request_id,
+            paper_id,
+            prior_review_id,
+            repo_owner,
+            repo_name,
+            pr_number,
+            pr_url,
+            head_ref,
+            head_sha,
+            head_repo_clone_url,
+            correction_source_path,
+        );
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_correction_review(
+    state: &AppState,
+    paper_id: Uuid,
+    head_sha: &str,
+    head_repo_clone_url: Option<&str>,
+    correction_source_path: Option<&str>,
+) -> anyhow::Result<Uuid> {
+    if let Some((extract, source)) = prepare_git_correction_extract(
+        state,
+        paper_id,
+        head_sha,
+        head_repo_clone_url,
+        correction_source_path,
+    )
+    .await?
+    {
+        if let Some(pool) = state.db.as_ref() {
+            let _ =
+                crate::db::update_paper_source_snapshot(pool, paper_id, &extract, &source).await;
+        }
+        return crate::supervisor::run_review_for_extract_blocking(state, paper_id, extract).await;
+    }
+    crate::supervisor::run_review_for_paper_blocking(state, paper_id).await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn prepare_git_correction_extract(
+    state: &AppState,
+    paper_id: Uuid,
+    head_sha: &str,
+    head_repo_clone_url: Option<&str>,
+    correction_source_path: Option<&str>,
+) -> anyhow::Result<
+    Option<(
+        grokrxiv_schemas::PaperExtract,
+        crate::db::PaperSourceMetadata,
+    )>,
+> {
+    let Some(pool) = state.db.as_ref() else {
+        return Ok(None);
+    };
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select source_kind, source_id, source_uri, title, field, source_metadata \
+         from papers where id = $1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_kind, stable_source_id, _source_uri, title, field, source_metadata)) = row
+    else {
+        return Ok(None);
+    };
+    let stable_source_id = stable_source_id.unwrap_or_else(|| format!("git-repo-{paper_id}"));
+    let adapter = source_metadata
+        .get("adapter")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let (repo, rev, paper_path) = if let Some(correction_path) = correction_source_path {
+        let repo = head_repo_clone_url
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("correction PR is missing head repo clone URL"))?;
+        (
+            repo,
+            Some(head_sha.to_string()),
+            Some(std::path::PathBuf::from(correction_path)),
+        )
+    } else {
+        if source_kind != "git_repo" {
+            return Ok(None);
+        }
+        let repo = head_repo_clone_url
+            .map(str::to_owned)
+            .or_else(|| {
+                adapter
+                    .get("repo")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or_else(|| anyhow::anyhow!("git correction source is missing repo URL"))?;
+        let paper_path = adapter
+            .get("paper_path")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from);
+        (repo, Some(head_sha.to_string()), paper_path)
+    };
+    let prepared = grokrxiv_ingest::prepare_git_repo_source(
+        &repo,
+        rev.as_deref(),
+        paper_path.as_deref(),
+        Some(title),
+        Vec::new(),
+        field,
+    )
+    .await?;
+    let display_label = prepared.identity.display_label.clone();
+    let canonical_uri = prepared.identity.canonical_uri.clone();
+    let arxiv_id = prepared.identity.arxiv_id.clone();
+    let content_hash = prepared.identity.content_hash.clone();
+    let source_metadata = serde_json::json!({
+        "display_label": display_label,
+        "canonical_uri": canonical_uri,
+        "arxiv_id": arxiv_id,
+        "adapter": prepared.source_metadata,
+        "stable_source_id": stable_source_id.clone(),
+        "correction_source_path": correction_source_path,
+    });
+    let source = crate::db::PaperSourceMetadata {
+        source_kind,
+        source_id: stable_source_id,
+        source_uri: Some(canonical_uri),
+        source_hash: Some(content_hash),
+        source_metadata,
+    };
+    Ok(Some((prepared.extract, source)))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+#[allow(clippy::too_many_arguments)]
+async fn post_rereview_gate_feedback(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    prior_review_id: Uuid,
+    new_review_id: Uuid,
+    paper_id: Uuid,
+    repo_owner: &str,
+    repo_name: &str,
+    pr_number: Option<i64>,
+    pr_url: Option<&str>,
+    head_ref: &str,
+    head_sha: &str,
+) {
+    let Some(pr_number) = pr_number else {
+        return;
+    };
+    let meta: Option<Value> = sqlx::query_scalar("select meta_review from reviews where id = $1")
+        .bind(new_review_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(None);
+    let recommendation = meta
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let marker_key = format!("review-{prior_review_id}");
+    let specialist_gate = match crate::db::load_specialist_gate_for_review(pool, new_review_id)
+        .await
+    {
+        Ok(gate) => gate,
+        Err(e) => {
+            tracing::warn!(%new_review_id, err = %e, "failed to load specialist gate for re-review feedback");
+            crate::review_gate::SpecialistGate::evaluate(
+                &[],
+                crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM,
+                crate::review_dag::canonical_specialist_roles().len(),
+            )
+        }
+    };
+    let (body, failure) = rereview_gate_comment_body(
+        new_review_id,
+        Some(recommendation),
+        meta.as_ref(),
+        specialist_gate,
+    );
+    if let Some(failure) = failure.as_ref() {
+        let _ = crate::github_feedback::record_gate_failure(state, new_review_id, failure).await;
+    }
+    match crate::github_feedback::post_or_update_gate_feedback_comment(
+        state,
+        repo_owner,
+        repo_name,
+        pr_number,
+        &marker_key,
+        &body,
+    )
+    .await
+    {
+        Ok(Some(comment)) => {
+            if let Ok(comment_id) = i64::try_from(comment.comment_id) {
+                let _ = crate::db::upsert_github_review_thread(
+                    pool,
+                    new_review_id,
+                    paper_id,
+                    repo_owner,
+                    repo_name,
+                    Some(pr_number),
+                    pr_url,
+                    Some(head_ref),
+                    Some(head_sha),
+                )
+                .await;
+                let _ = crate::db::update_github_feedback_comment(
+                    pool,
+                    new_review_id,
+                    comment_id,
+                    &comment.html_url,
+                )
+                .await;
+                let _ = crate::db::attach_gate_feedback_comment(
+                    pool,
+                    new_review_id,
+                    comment_id,
+                    &comment.html_url,
+                )
+                .await;
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(%new_review_id, err = %e, "GitHub gate-feedback comment failed");
+        }
+    }
+}
+
+fn rereview_gate_comment_body(
+    new_review_id: Uuid,
+    recommendation: Option<&str>,
+    meta: Option<&Value>,
+    specialist_gate: crate::review_gate::SpecialistGate,
+) -> (String, Option<crate::github_feedback::GateFailureArtifact>) {
+    let gate =
+        crate::review_gate::PublicationGate::evaluate(crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate,
+        });
+    match gate.verdict {
+        crate::review_gate::GateVerdict::Pass => (
+            crate::github_feedback::gate_pass_comment_body(new_review_id, &gate.recommendation),
+            None,
+        ),
+        crate::review_gate::GateVerdict::Warn | crate::review_gate::GateVerdict::Fail => {
+            let failure = crate::github_feedback::gate_failure_from_publication_gate(
+                new_review_id,
+                &gate,
+                meta,
+            );
+            (
+                crate::github_feedback::gate_failure_comment_body(
+                    new_review_id,
+                    &gate.recommendation,
+                    &failure,
+                ),
+                Some(failure),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+fn rereview_gate_comment_body_for_test(
+    new_review_id: Uuid,
+    recommendation: Option<&str>,
+    meta: Option<&Value>,
+) -> String {
+    rereview_gate_comment_body(
+        new_review_id,
+        recommendation,
+        meta,
+        crate::review_gate::SpecialistGate::all_pass_for_test(),
+    )
+    .0
+}
+
 /// Fire-and-forget POST to `WEB_REVALIDATE_URL` so the Next.js ISR cache flips
 /// the affected `/reviews/<id>` and `/` pages immediately. Used by both the
 /// merge webhook (after `pr_open → published`) and `grokrxiv approve` (after
@@ -192,80 +780,25 @@ pub fn verify_signature(secret: &[u8], body: &[u8], header: &str) -> bool {
     mac.verify_slice(&sig_bytes).is_ok()
 }
 
-/// Branches the publisher creates look like `review/<arxiv_id>-<short-uuid>`.
-/// We require the arXiv-id segment to match the modern format `YYMM.NNNNN[vN]`
-/// or the legacy `subject-class/NNNNNNN` form and reject anything else. We
-/// hand-roll the parsing to avoid a regex dependency on this hot path.
+/// Branches the publisher creates look like `review/<source-id>-<short-uuid>`.
+/// V1 accepts arXiv ids plus local/git source ids made from safe ASCII
+/// characters; the PR body marker remains the authoritative review id.
 fn is_valid_review_branch(branch: &str) -> bool {
     let Some(rest) = branch.strip_prefix("review/") else {
         return false;
     };
-    let Some((arxiv_id, suffix)) = rest.rsplit_once('-') else {
+    let Some((source_id, suffix)) = rest.rsplit_once('-') else {
         return false;
     };
     if suffix.is_empty() || suffix.len() > 16 || !suffix.chars().all(|c| c.is_ascii_alphanumeric())
     {
         return false;
     }
-    is_modern_arxiv_id(arxiv_id) || is_legacy_arxiv_id(arxiv_id)
-}
-
-fn is_modern_arxiv_id(id: &str) -> bool {
-    // `YYMM.NNNNN` with optional `vN` suffix. YYMM is 4 digits, NNNNN is 4–5
-    // digits.
-    let (core, version_ok) = match id.find('v') {
-        Some(idx) => {
-            let v = &id[idx + 1..];
-            (
-                &id[..idx],
-                !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()),
-            )
-        }
-        None => (id, true),
-    };
-    if !version_ok {
-        return false;
-    }
-    let Some((yymm, num)) = core.split_once('.') else {
-        return false;
-    };
-    yymm.len() == 4
-        && yymm.chars().all(|c| c.is_ascii_digit())
-        && (num.len() == 4 || num.len() == 5)
-        && num.chars().all(|c| c.is_ascii_digit())
-}
-
-fn is_legacy_arxiv_id(id: &str) -> bool {
-    // `subject-class[.subcategory]/NNNNNNN[vN]` (e.g. `math.AG/0301001`).
-    let (core, version_ok) = match id.find('v') {
-        Some(idx) if idx > id.find('/').unwrap_or(0) => {
-            let v = &id[idx + 1..];
-            (
-                &id[..idx],
-                !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()),
-            )
-        }
-        _ => (id, true),
-    };
-    if !version_ok {
-        return false;
-    }
-    let Some((subject, num)) = core.split_once('/') else {
-        return false;
-    };
-    if num.len() != 7 || !num.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    // Subject: lowercase letters / hyphens, optionally `.XX` subcategory.
-    let (head, sub) = match subject.split_once('.') {
-        Some((h, s)) => (h, Some(s)),
-        None => (subject, None),
-    };
-    let head_ok = !head.is_empty() && head.chars().all(|c| c.is_ascii_lowercase() || c == '-');
-    let sub_ok = sub
-        .map(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_uppercase()))
-        .unwrap_or(true);
-    head_ok && sub_ok
+    !source_id.is_empty()
+        && source_id.len() <= 96
+        && source_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
 fn extract_review_id_from_body(body: &str) -> Option<uuid::Uuid> {
@@ -275,6 +808,18 @@ fn extract_review_id_from_body(body: &str) -> Option<uuid::Uuid> {
         if let Some(rest) = line.trim().strip_prefix("grokrxiv-review-id:") {
             if let Ok(id) = rest.trim().parse::<uuid::Uuid>() {
                 return Some(id);
+            }
+        }
+    }
+    None
+}
+
+fn extract_correction_source_path_from_body(body: &str) -> Option<&str> {
+    for line in body.lines() {
+        if let Some(rest) = line.trim().strip_prefix("grokrxiv-correction-source-path:") {
+            let path = rest.trim();
+            if !path.is_empty() && !path.starts_with('/') && !path.contains("..") {
+                return Some(path);
             }
         }
     }
@@ -311,12 +856,22 @@ mod tests {
     }
 
     #[test]
+    fn accepts_content_hash_source_branches() {
+        assert!(is_valid_review_branch(
+            "review/local-tex-a1b2c3d4e5f6-deadbee"
+        ));
+        assert!(is_valid_review_branch(
+            "review/git-pdf-a1b2c3d4e5f6-feed1234"
+        ));
+    }
+
+    #[test]
     fn rejects_malformed_branches() {
         assert!(!is_valid_review_branch("review/anything"));
         assert!(!is_valid_review_branch("review/2605.12484"));
         assert!(!is_valid_review_branch("review/2605.12484-"));
         assert!(!is_valid_review_branch("main"));
-        assert!(!is_valid_review_branch("review/12-abc"));
+        assert!(!is_valid_review_branch("review/source id-abc"));
     }
 
     #[test]
@@ -324,5 +879,54 @@ mod tests {
         let body = "Closes #42\n\ngrokrxiv-review-id: 11111111-1111-1111-1111-111111111111\n";
         let id = extract_review_id_from_body(body).unwrap();
         assert_eq!(id.to_string(), "11111111-1111-1111-1111-111111111111");
+    }
+
+    #[test]
+    fn extracts_correction_source_marker() {
+        let body = "\
+Edit the manuscript snapshot.
+
+grokrxiv-correction-source-path: corrections/source-1/paper.tex
+grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
+";
+        assert_eq!(
+            extract_correction_source_path_from_body(body),
+            Some("corrections/source-1/paper.tex")
+        );
+        assert_eq!(
+            extract_review_id_from_body(body).map(|id| id.to_string()),
+            Some("11111111-1111-1111-1111-111111111111".to_string())
+        );
+    }
+
+    #[test]
+    fn correction_source_marker_rejects_unsafe_paths() {
+        assert_eq!(
+            extract_correction_source_path_from_body(
+                "grokrxiv-correction-source-path: /tmp/paper.tex"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_correction_source_path_from_body(
+                "grokrxiv-correction-source-path: corrections/../paper.tex"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rereview_feedback_treats_minor_revision_as_failed_gate() {
+        let body = rereview_gate_comment_body_for_test(
+            uuid::Uuid::nil(),
+            Some("minor_revision"),
+            Some(&serde_json::json!({
+                "summary": "Needs small fixes.",
+                "weaknesses": ["citation context missing"],
+                "questions": []
+            })),
+        );
+        assert!(body.contains("Automated Review Gate: Failed"), "{body}");
+        assert!(body.contains("minor_revision"), "{body}");
     }
 }

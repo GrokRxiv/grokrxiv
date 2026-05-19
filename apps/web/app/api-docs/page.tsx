@@ -78,9 +78,9 @@ export default function ApiDocsPage() {
       />
       <Endpoint
         method="GET"
-        path="/api/v1/papers/:arxiv_id"
-        body="Fetch a paper and all of its public reviews."
-        example={`curl https://grokrxiv.org/api/v1/papers/2401.12345`}
+        path="/api/v1/papers/:source_id"
+        body="Fetch a paper and all of its public reviews by arXiv id or GrokRxiv source id."
+        example={`curl https://grokrxiv.org/api/v1/papers/2401.12345\ncurl https://grokrxiv.org/api/v1/papers/local-pdf-d96363843fd8`}
       />
       <Endpoint
         method="POST"

@@ -72,10 +72,7 @@ impl CitationVerifier {
 
     /// Construct a verifier with both bases overridden — used by tests that
     /// also need to mock the arXiv endpoint.
-    pub fn with_all_bases(
-        crossref_base: impl Into<String>,
-        arxiv_base: impl Into<String>,
-    ) -> Self {
+    pub fn with_all_bases(crossref_base: impl Into<String>, arxiv_base: impl Into<String>) -> Self {
         Self {
             crossref_base: crossref_base.into(),
             arxiv_base: arxiv_base.into(),
@@ -101,11 +98,7 @@ impl CitationVerifier {
     /// once and returns the set of ids the server responded with. arXiv
     /// returns an Atom feed; we parse it permissively by scanning for the
     /// `<id>http(s)://arxiv.org/abs/{id}</id>` lines.
-    async fn resolve_arxiv_ids(
-        &self,
-        http: &reqwest::Client,
-        ids: &[String],
-    ) -> HashSet<String> {
+    async fn resolve_arxiv_ids(&self, http: &reqwest::Client, ids: &[String]) -> HashSet<String> {
         if ids.is_empty() {
             return HashSet::new();
         }
@@ -161,11 +154,7 @@ impl CitationVerifier {
     /// Free-text crossref bibliographic lookup for refs that carry neither a
     /// DOI nor an arxiv_id. Returns the resolved DOI when crossref's top hit
     /// scores above `BIBLIOGRAPHIC_MATCH_SCORE_MIN`. Cached by `raw` string.
-    async fn resolve_bibliographic(
-        &self,
-        http: &reqwest::Client,
-        raw: &str,
-    ) -> Option<String> {
+    async fn resolve_bibliographic(&self, http: &reqwest::Client, raw: &str) -> Option<String> {
         if raw.trim().is_empty() {
             return None;
         }
@@ -183,7 +172,9 @@ impl CitationVerifier {
                 .and_then(|v| top_doi_if_scored(&v, BIBLIOGRAPHIC_MATCH_SCORE_MIN)),
             _ => None,
         };
-        self.biblio_cache.lock().insert(raw.to_string(), resolved.clone());
+        self.biblio_cache
+            .lock()
+            .insert(raw.to_string(), resolved.clone());
         resolved
     }
 
@@ -364,11 +355,7 @@ fn url_form_encode(raw: &str) -> String {
 /// Parse a crossref `/works` response and return the top hit's DOI iff its
 /// `score` is at or above `min_score`.
 fn top_doi_if_scored(body: &serde_json::Value, min_score: f64) -> Option<String> {
-    let item = body
-        .get("message")?
-        .get("items")?
-        .as_array()?
-        .first()?;
+    let item = body.get("message")?.get("items")?.as_array()?.first()?;
     let score = item.get("score")?.as_f64()?;
     if score < min_score {
         return None;
@@ -518,7 +505,11 @@ mod tests {
         };
         let r = v.verify(&json!({}), &ctx).await;
         // 1 / 3 = 33% unresolved → Fail (threshold is 30%).
-        assert!(matches!(r.status, VerifierStatus::Fail), "got {:?}", r.status);
+        assert!(
+            matches!(r.status, VerifierStatus::Fail),
+            "got {:?}",
+            r.status
+        );
         assert_eq!(r.notes["checked"], 3);
         let unresolved = r.notes["unresolved"].as_array().unwrap();
         assert_eq!(unresolved.len(), 1);
@@ -554,7 +545,11 @@ mod tests {
             http: &http,
         };
         let r = v.verify(&json!({}), &ctx).await;
-        assert!(matches!(r.status, VerifierStatus::Pass), "got {:?}", r.status);
+        assert!(
+            matches!(r.status, VerifierStatus::Pass),
+            "got {:?}",
+            r.status
+        );
         assert_eq!(r.notes["checked"], 1);
         assert_eq!(r.notes["resolved_via_bibliographic_query"], 1);
     }
@@ -589,7 +584,11 @@ mod tests {
         };
         let r = v.verify(&json!({}), &ctx).await;
         // 100% unresolved → Fail.
-        assert!(matches!(r.status, VerifierStatus::Fail), "got {:?}", r.status);
+        assert!(
+            matches!(r.status, VerifierStatus::Fail),
+            "got {:?}",
+            r.status
+        );
         assert_eq!(r.notes["resolved_via_bibliographic_query"], 0);
         assert_eq!(r.notes["unresolved"].as_array().unwrap().len(), 1);
     }

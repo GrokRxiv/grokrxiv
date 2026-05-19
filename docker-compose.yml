@@ -6,7 +6,8 @@
 #
 #   * orchestrator — Rust HTTP API + tokio supervisor (the same binary you
 #                    get from `cargo build`). Mounts ./agents, ./schemas,
-#                    ./prompts read-only.
+#                    ./prompts read-only and the sibling grokrxiv-data repo for
+#                    local artifact writes.
 #   * web          — Next.js dev server with HMR.
 #
 # Usage:
@@ -14,8 +15,8 @@
 #   # 1. Start Supabase (Postgres on :54322, Storage on :54321, Studio :54323):
 #   supabase start
 #
-#   # 2. Provide your API key(s):
-#   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+#   # 2. Configure .env. Local development defaults to CLI/subscription runners
+#   #    with direct provider API fallback disabled.
 #
 #   # 3. Bring up orchestrator + web:
 #   docker compose up --build
@@ -40,11 +41,33 @@ services:
       # Talk to the Supabase CLI's Postgres on the host. `host.docker.internal`
       # resolves to the macOS/Windows host's loopback inside containers.
       DATABASE_URL: "postgres://postgres:postgres@host.docker.internal:54322/postgres"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      GOOGLE_GENERATIVE_AI_API_KEY: "${GOOGLE_GENERATIVE_AI_API_KEY:-}"
+      SUPABASE_URL: "${SUPABASE_INTERNAL_URL:-http://host.docker.internal:54321}"
+      SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:-}"
+      # Do not inherit the host's absolute GROKRXIV_DATA_REPO_PATH here; inside
+      # Docker the repo is mounted at the container path below.
+      GROKRXIV_DATA_REPO_PATH: "${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}"
+      GROKRXIV_RUNNER: "${GROKRXIV_RUNNER:-cli}"
+      GROKRXIV_EXTRACTOR: "${GROKRXIV_EXTRACTOR:-cli}"
+      GROKRXIV_ALLOW_PROVIDER_API: "${GROKRXIV_ALLOW_PROVIDER_API:-0}"
+      GROKRXIV_SUMMARY_MODEL: "${GROKRXIV_SUMMARY_MODEL:-claude-haiku-4-5-20251001}"
+      GROKRXIV_TECHNICAL_CORRECTNESS_MODEL: "${GROKRXIV_TECHNICAL_CORRECTNESS_MODEL:-claude-opus-4-7}"
+      GROKRXIV_NOVELTY_MODEL: "${GROKRXIV_NOVELTY_MODEL:-gemini-3-flash-preview}"
+      GROKRXIV_REPRODUCIBILITY_MODEL: "${GROKRXIV_REPRODUCIBILITY_MODEL:-gpt-5.5}"
+      GROKRXIV_CITATION_MODEL: "${GROKRXIV_CITATION_MODEL:-gemini-3-flash-preview}"
+      GROKRXIV_META_REVIEWER_MODEL: "${GROKRXIV_META_REVIEWER_MODEL:-claude-sonnet-4-6}"
+      # Local compose must not inherit paid provider API keys from the host
+      # shell. Direct provider APIs are explicit opt-in for API-backend tests.
+      ANTHROPIC_API_KEY: "${GROKRXIV_DOCKER_ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${GROKRXIV_DOCKER_OPENAI_API_KEY:-}"
+      GOOGLE_GENERATIVE_AI_API_KEY: "${GROKRXIV_DOCKER_GOOGLE_GENERATIVE_AI_API_KEY:-}"
       VLLM_BASE_URL: "${VLLM_BASE_URL:-}"
       ARXIV_USER_AGENT: "${ARXIV_USER_AGENT:-GrokRxiv/0.1 (+local-dev)}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      GROKRXIV_REVIEWS_OWNER: "${GROKRXIV_REVIEWS_OWNER:-GrokRxiv}"
+      GROKRXIV_REVIEWS_REPO: "${GROKRXIV_REVIEWS_REPO:-grokrxiv-reviews}"
+      GROKRXIV_PUBLIC_REVIEWS_REPO: "${GROKRXIV_PUBLIC_REVIEWS_REPO:-GrokRxiv/grokrxiv-reviews}"
+      GROKRXIV_PRIVATE_REVIEWS_REPO: "${GROKRXIV_PRIVATE_REVIEWS_REPO:-GrokRxiv/grokrxiv-private-reviews}"
+      GROKRXIV_PUBLIC_URL: "${GROKRXIV_PUBLIC_URL:-https://grokrxiv.org}"
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-local-dev-secret}"
       WEB_REVALIDATE_URL: "http://web:3000/api/revalidate"
       REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
@@ -58,8 +81,13 @@ services:
       - ./agents:/etc/grokrxiv/agents:ro
       - ./schemas:/etc/grokrxiv/schemas:ro
       - ./prompts:/etc/grokrxiv/prompts:ro
+      - ${GROKRXIV_DOCKER_DATA_REPO_SOURCE:-../grokrxiv-data}:${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}
     healthcheck:
-      test: ["CMD", "/usr/local/bin/orchestrator", "doctor"]
+      test:
+        [
+          "CMD-SHELL",
+          "GROKRXIV_DOCTOR_REQUIRE_RUNNER=0 /usr/local/bin/orchestrator doctor >/dev/null",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

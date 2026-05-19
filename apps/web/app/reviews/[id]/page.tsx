@@ -8,11 +8,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { AgentAccordion } from "@/components/agent-accordion";
-import { ReviewStatusBadge } from "@/components/review-status-badge";
+import {
+  AutomatedGateBadge,
+  ReviewStatusBadge,
+} from "@/components/review-status-badge";
 import { MarkdownBody } from "@/components/markdown-body";
 import { MathText } from "@/components/math-text";
 import { ReviewToc } from "@/components/review-toc";
 import { JsonLd } from "@/components/json-ld";
+import {
+  SourceDetails,
+  SourceLink,
+  sourceInfoForPaper,
+} from "@/components/source-label";
 import {
   getPaperByIdAnon,
   getReviewByIdAnon,
@@ -63,16 +71,17 @@ export async function generateMetadata({
     return { title: "Review not found" };
   }
   const { paper, review } = data;
-  const title = `${paper.title} — GrokRxiv review of arXiv:${paper.arxiv_id}`;
+  const source = sourceInfoForPaper(paper);
+  const title = `${paper.title} — GrokRxiv review of ${source.detail}`;
   const summary = review.meta_review?.summary?.trim();
   const description = (() => {
     if (summary && summary.length > 0) {
       // Description should lead with the paper title so the snippet Google
       // shows starts with searchable content, not a generic intro.
       const tail = summary.slice(0, 180).replace(/\s+/g, " ").trim();
-      return `GrokRxiv AI peer review of "${paper.title}" (arXiv:${paper.arxiv_id}). ${tail}`;
+      return `GrokRxiv AI peer review of "${paper.title}" (${source.detail}). ${tail}`;
     }
-    return `GrokRxiv AI peer review of "${paper.title}" (arXiv:${paper.arxiv_id}).`;
+    return `GrokRxiv AI peer review of "${paper.title}" (${source.detail}).`;
   })();
   const url = `${CANONICAL_URL}/reviews/${id}`;
   return {
@@ -111,19 +120,22 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
   if (!data) notFound();
   const { review, paper, rejection } = data;
 
-  const arxivUrl = `https://arxiv.org/abs/${paper.arxiv_id}`;
+  const source = sourceInfoForPaper(paper);
+  const feedbackCommentUrl =
+    review.gate_failure_comment_url ?? review.github_comment_url ?? null;
   const bibtex = buildBibtex(paper, review, id);
 
   const reviewUrl = `${CANONICAL_URL}/reviews/${id}`;
+  const articleId = source.uri ?? reviewUrl;
   const jsonLd = {
     "@context": "https://schema.org",
     "@graph": [
       {
         "@type": "ScholarlyArticle",
-        "@id": arxivUrl,
+        "@id": articleId,
         name: paper.title,
         headline: paper.title,
-        identifier: `arXiv:${paper.arxiv_id}`,
+        identifier: source.detail,
         author: paper.authors.map((a) => ({
           "@type": "Person",
           name: a.name,
@@ -136,15 +148,14 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
               }
             : {}),
         })),
-        sameAs: arxivUrl,
-        url: arxivUrl,
+        ...(source.uri ? { sameAs: source.uri, url: source.uri } : {}),
       },
       {
         "@type": "Review",
         "@id": reviewUrl,
         url: reviewUrl,
         name: `GrokRxiv review of "${paper.title}"`,
-        itemReviewed: { "@id": arxivUrl },
+        itemReviewed: { "@id": articleId },
         author: {
           "@type": "Organization",
           name: "GrokRxiv",
@@ -178,6 +189,9 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
           <header className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <ReviewStatusBadge status={review.status} />
+              <AutomatedGateBadge
+                recommendation={review.meta_review?.recommendation}
+              />
               {paper.field ? (
                 <Badge variant="outline">{paper.field}</Badge>
               ) : null}
@@ -192,14 +206,10 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
               {paper.authors.map((a) => a.name).join(", ")}
             </p>
             <div className="flex flex-wrap gap-3 text-sm">
-              <Link
-                href={arxivUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <SourceLink
+                paper={paper}
                 className="break-all font-mono underline underline-offset-4"
-              >
-                arXiv:{paper.arxiv_id}
-              </Link>
+              />
               {review.github_pr_url ? (
                 <Link
                   href={review.github_pr_url}
@@ -220,20 +230,50 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                   Review archive
                 </Link>
               ) : null}
+              {review.github_comment_url ? (
+                <Link
+                  href={review.github_comment_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all underline underline-offset-4"
+                >
+                  Review comment
+                </Link>
+              ) : null}
             </div>
           </header>
 
-          {rejection ? (
+          {rejection || hasGateFailure(review) ? (
             <section
               className="flex flex-col gap-3 rounded-md border border-red-700 bg-red-950/40 p-4"
-              aria-label="Moderator rejection rationale"
+              aria-label="Gate failure and rejection feedback"
             >
               <h2 className="text-lg font-semibold text-red-200">
-                Moderator rejection rationale
+                Review feedback
               </h2>
-              <div className="prose-review prose-invert text-red-50">
-                <MarkdownBody>{rejection.rationale_md}</MarkdownBody>
-              </div>
+              {review.gate_failure_reason ? (
+                <p className="text-sm text-red-50">{review.gate_failure_reason}</p>
+              ) : null}
+              {review.gate_failure_instructions ? (
+                <div className="prose-review prose-invert text-red-50">
+                  <MarkdownBody>{review.gate_failure_instructions}</MarkdownBody>
+                </div>
+              ) : null}
+              {rejection ? (
+                <div className="prose-review prose-invert text-red-50">
+                  <MarkdownBody>{rejection.rationale_md}</MarkdownBody>
+                </div>
+              ) : null}
+              {feedbackCommentUrl ? (
+                <Link
+                  href={feedbackCommentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all text-sm font-medium text-red-100 underline underline-offset-4"
+                >
+                  View GitHub feedback comment
+                </Link>
+              ) : null}
             </section>
           ) : null}
 
@@ -293,11 +333,14 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                   </a>
                 </Button>
               ) : null}
-              <Button asChild variant="outline" className="w-full">
-                <a href={arxivUrl} target="_blank" rel="noopener noreferrer">
-                  View on arXiv
-                </a>
-              </Button>
+              {source.uri ? (
+                <Button asChild variant="outline" className="w-full">
+                  <a href={source.uri} target="_blank" rel="noopener noreferrer">
+                    {source.isArxiv ? "View on arXiv" : `Open ${source.label}`}
+                  </a>
+                </Button>
+              ) : null}
+              <SourceDetails paper={paper} />
               <details className="rounded-md border border-[color:var(--color-border)] p-3">
                 <summary className="cursor-pointer text-sm font-medium">
                   Cite this review (BibTeX)
@@ -347,16 +390,30 @@ function MetaReviewBody({ markdown }: { markdown: string }) {
   return <MarkdownBody>{markdown}</MarkdownBody>;
 }
 
+function hasGateFailure(review: Review): boolean {
+  return Boolean(
+    review.gate_failure_reason ||
+      review.gate_failure_instructions ||
+      review.gate_failure_comment_url ||
+      review.github_comment_url,
+  );
+}
+
 function buildBibtex(paper: Paper, review: Review, id: string): string {
   const year = new Date(
     review.published_at ?? review.created_at,
   ).getUTCFullYear();
-  const key = `grokrxiv:${paper.arxiv_id.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const source = sourceInfoForPaper(paper);
+  const keySource = (paper.source_id || paper.arxiv_id || id).replace(
+    /[^a-zA-Z0-9]/g,
+    "",
+  );
+  const key = `grokrxiv:${keySource}`;
   const authors = paper.authors.map((a) => a.name).join(" and ");
   return `@misc{${key},
   title  = {{Review of "${paper.title.replace(/[{}]/g, "")}"}},
   author = {{GrokRxiv}},
-  note   = {AI peer review of ${authors}, arXiv:${paper.arxiv_id}},
+  note   = {AI peer review of ${authors}, ${source.detail}},
   year   = {${year}},
   url    = {${CANONICAL_URL}/reviews/${id}}
 }`;

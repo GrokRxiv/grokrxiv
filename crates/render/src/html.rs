@@ -46,6 +46,8 @@ pub fn render_html(
         paper => paper,
         meta => meta,
         agents => agent_views,
+        source_label => crate::paper_source_label(&paper.arxiv_id),
+        source_url => crate::paper_source_url(&paper.arxiv_id),
         recommendation_label => recommendation_label(meta.recommendation),
         confidence_pct => (meta.confidence.clamp(0.0, 1.0) * 100.0).round() as i32,
     })

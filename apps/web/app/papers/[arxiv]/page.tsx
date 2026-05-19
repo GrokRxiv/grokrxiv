@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { MathText } from "@/components/math-text";
+import { SourceBadge, SourceLink } from "@/components/source-label";
 import { getPaperByArxivIdAnon } from "@/lib/supabase/anon";
 import { PUBLIC_REVIEW_STATUSES } from "@/lib/types";
 
@@ -61,9 +62,7 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           {paper.field ? <Badge variant="outline">{paper.field}</Badge> : null}
-          <Badge variant="secondary" className="font-mono">
-            arXiv:{paper.arxiv_id}
-          </Badge>
+          <SourceBadge paper={paper} />
         </div>
         <MathText
           as="h1"
@@ -74,14 +73,10 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
           {paper.authors.map((a) => a.name).join(", ")}
         </p>
-        <Link
-          href={`https://arxiv.org/abs/${paper.arxiv_id}`}
-          target="_blank"
-          rel="noopener noreferrer"
+        <SourceLink
+          paper={paper}
           className="break-all font-mono text-sm underline underline-offset-4"
-        >
-          View on arXiv →
-        </Link>
+        />
         {paper.abstract ? (
           <p className="max-w-3xl break-words text-[color:var(--color-muted-foreground)]">
             {paper.abstract}

@@ -42,7 +42,7 @@
     <h1>{{ paper.title }}</h1>
     <p class="muted">
       <span class="brand">GrokRxiv</span> review of
-      <a class="meta-link" href="https://arxiv.org/abs/{{ paper.arxiv_id }}">arXiv:{{ paper.arxiv_id }}</a>
+      {% if source_url %}<a class="meta-link" href="{{ source_url|safe }}">{{ source_label }}</a>{% else %}<span class="meta-link">{{ source_label }}</span>{% endif %}
       {% if paper.field %} · <span>{{ paper.field }}</span>{% endif %}
     </p>
     <p class="muted">
@@ -116,7 +116,7 @@
   </section>
 
   <footer class="footer-disclaimer">
-    <p class="muted">Rendered by <span class="brand">GrokRxiv</span>. Source: <a href="https://arxiv.org/abs/{{ paper.arxiv_id }}">arXiv:{{ paper.arxiv_id }}</a>.</p>
+    <p class="muted">Rendered by <span class="brand">GrokRxiv</span>. Source: {% if source_url %}<a href="{{ source_url|safe }}">{{ source_label }}</a>{% else %}<span>{{ source_label }}</span>{% endif %}.</p>
   </footer>
 </body>
 </html>

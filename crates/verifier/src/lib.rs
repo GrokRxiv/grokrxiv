@@ -2,8 +2,8 @@
 //!
 //! A [`Verifier`] is a single rung in the ladder that inspects an artifact
 //! (JSON) and returns a structured [`VerifierResult`]. The standard ladder
-//! runs the four implementations: JSON schema, citation existence, tone, and
-//! render integrity.
+//! runs the implementations for schema, metadata, support, citation existence,
+//! tone, and render integrity.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +15,7 @@ pub mod support;
 pub mod tone;
 
 use async_trait::async_trait;
-use grokrxiv_schemas::{PaperExtract, VerifierResult};
+use grokrxiv_schemas::{AgentRole, PaperExtract, VerifierResult};
 
 pub use citation::CitationVerifier;
 pub use json_schema::JsonSchemaVerifier;
@@ -65,13 +65,26 @@ impl VerifierLadder {
     /// schema is provided; pass `Some(schema_json)` to validate against the
     /// agent's contract.
     pub fn standard(schema: Option<serde_json::Value>) -> Self {
+        Self::with_citation(schema, true)
+    }
+
+    /// Construct a role-aware standard ladder. Citation lookups are restricted
+    /// to the citation role so non-citation specialists are not penalized for
+    /// missing citation-shaped artifacts.
+    pub fn standard_for_role(role: AgentRole, schema: Option<serde_json::Value>) -> Self {
+        Self::with_citation(schema, matches!(role, AgentRole::Citation))
+    }
+
+    fn with_citation(schema: Option<serde_json::Value>, include_citation: bool) -> Self {
         let mut l = Self::new();
         l.steps.push(Box::new(JsonSchemaVerifier::new(
             schema.unwrap_or_else(|| serde_json::json!({ "type": "object" })),
         )));
         l.steps.push(Box::new(MetadataVerifier::new()));
         l.steps.push(Box::new(SupportVerifier::new()));
-        l.steps.push(Box::new(CitationVerifier::new()));
+        if include_citation {
+            l.steps.push(Box::new(CitationVerifier::new()));
+        }
         l.steps.push(Box::new(ToneVerifier::new()));
         l.steps.push(Box::new(RenderVerifier::new()));
         l
@@ -146,5 +159,51 @@ mod tests {
 
         assert!(names.contains(&"metadata".to_string()));
         assert!(names.contains(&"support".to_string()));
+    }
+
+    #[tokio::test]
+    async fn role_aware_ladder_excludes_citation_for_non_citation_roles() {
+        let ladder = VerifierLadder::standard_for_role(
+            AgentRole::Summary,
+            Some(json!({ "type": "object" })),
+        );
+        let http = reqwest::Client::new();
+        let paper = paper();
+        let ctx = VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let names: Vec<String> = ladder
+            .run(&json!({ "summary": "supported review" }), &ctx)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        assert!(!names.contains(&"citation".to_string()));
+    }
+
+    #[tokio::test]
+    async fn role_aware_ladder_includes_citation_for_citation_role() {
+        let ladder = VerifierLadder::standard_for_role(
+            AgentRole::Citation,
+            Some(json!({ "type": "object" })),
+        );
+        let http = reqwest::Client::new();
+        let paper = paper();
+        let ctx = VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let names: Vec<String> = ladder
+            .run(&json!({ "entries": [] }), &ctx)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        assert!(names.contains(&"citation".to_string()));
     }
 }

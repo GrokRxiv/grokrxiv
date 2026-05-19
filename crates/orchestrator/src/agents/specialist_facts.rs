@@ -25,32 +25,51 @@ pub struct ReproducibilityFacts {
     pub github_repos: Vec<GithubRepoFact>,
 }
 
+/// Reachability result for one URL extracted from the paper.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UrlCheck {
+    /// Original URL as it appeared in the extracted text.
     pub url: String,
+    /// Whether the URL appears to resolve to an existing resource.
     pub reachable: bool,
+    /// HTTP status code returned by the probe, when a response was received.
     pub status: Option<u16>,
+    /// Final URL after redirects, when available.
     pub final_url: Option<String>,
+    /// Best-effort classification of the URL's purpose.
     pub kind: UrlKind,
 }
 
+/// Best-effort URL category used by reproducibility reviewers.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UrlKind {
+    /// Source-code or model repository.
     Code,
+    /// Dataset or data-hosting location.
     Dataset,
+    /// Any other referenced URL.
     Other,
 }
 
+/// Public GitHub repository metadata resolved from a referenced URL.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GithubRepoFact {
+    /// Repository owner or organization.
     pub owner: String,
+    /// Repository name.
     pub repo: String,
+    /// Whether the GitHub API found the repository.
     pub exists: bool,
+    /// Repository default branch, when known.
     pub default_branch: Option<String>,
+    /// Last push timestamp reported by GitHub.
     pub pushed_at: Option<String>,
+    /// Public stargazer count reported by GitHub.
     pub stargazers_count: Option<u64>,
+    /// SPDX license identifier, when GitHub reports one.
     pub license_spdx: Option<String>,
+    /// Whether the repository is archived.
     pub archived: Option<bool>,
 }
 
@@ -123,8 +142,7 @@ fn find_urls(text: &str) -> Vec<String> {
             let after = &text[start..];
             let end = after
                 .find(|c: char| {
-                    c.is_whitespace()
-                        || matches!(c, '>' | '<' | '"' | '\'' | '`' | '|' | '\\')
+                    c.is_whitespace() || matches!(c, '>' | '<' | '"' | '\'' | '`' | '|' | '\\')
                 })
                 .unwrap_or(after.len());
             let mut url = after[..end].to_string();
@@ -215,11 +233,7 @@ pub fn parse_github_url(url: &str) -> Option<(String, String)> {
     Some((owner.to_string(), repo.to_string()))
 }
 
-async fn github_repo_metadata(
-    http: &reqwest::Client,
-    owner: &str,
-    repo: &str,
-) -> GithubRepoFact {
+async fn github_repo_metadata(http: &reqwest::Client, owner: &str, repo: &str) -> GithubRepoFact {
     let url = format!("https://api.github.com/repos/{owner}/{repo}");
     let mut req = http
         .get(&url)
@@ -287,33 +301,40 @@ async fn github_repo_metadata(
 /// instead of its training-cutoff memory.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct NoveltyFacts {
+    /// Prior-art candidates returned by the metadata search.
     pub related_papers: Vec<RelatedPaper>,
     /// Set when the external API failed; the LLM should fall back to its own
     /// memory and explicitly note the gap. Empty string when retrieval worked.
     pub retrieval_error: String,
 }
 
+/// Prior-art candidate used by the Novelty specialist.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RelatedPaper {
+    /// Candidate paper title.
     pub title: String,
+    /// Short abstract excerpt, when available.
     pub abstract_snippet: Option<String>,
+    /// Publication year, when provided by the source.
     pub year: Option<u32>,
+    /// First listed author, when provided by the source.
     pub primary_author: Option<String>,
+    /// Retrieval source name.
     pub source: String,
     /// Source-specific identifier (S2 paperId, arxiv id, etc.).
     pub source_id: String,
+    /// Canonical web URL for the candidate, when known.
     pub url: Option<String>,
+    /// DOI for the candidate, when known.
     pub doi: Option<String>,
+    /// arXiv identifier for the candidate, when known.
     pub arxiv_id: Option<String>,
 }
 
 /// Single Semantic Scholar search against the paper title. Free API, no auth.
 /// Failure modes are soft — empty `related_papers` + populated
 /// `retrieval_error` so the prompt can fall back to LLM-only novelty judgment.
-pub async fn gather_novelty_facts(
-    http: &reqwest::Client,
-    extract: &PaperExtract,
-) -> NoveltyFacts {
+pub async fn gather_novelty_facts(http: &reqwest::Client, extract: &PaperExtract) -> NoveltyFacts {
     let title = extract.title.trim();
     if title.is_empty() {
         return NoveltyFacts {
@@ -359,17 +380,11 @@ fn parse_s2_paper(item: &serde_json::Value) -> RelatedPaper {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let abstract_snippet = item
-        .get("abstract")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            let snippet: String = s.chars().take(280).collect();
-            snippet
-        });
-    let year = item
-        .get("year")
-        .and_then(|v| v.as_u64())
-        .map(|y| y as u32);
+    let abstract_snippet = item.get("abstract").and_then(|v| v.as_str()).map(|s| {
+        let snippet: String = s.chars().take(280).collect();
+        snippet
+    });
+    let year = item.get("year").and_then(|v| v.as_u64()).map(|y| y as u32);
     let primary_author = item
         .get("authors")
         .and_then(|a| a.as_array())
@@ -432,27 +447,38 @@ fn semantic_scholar_url_encode(raw: &str) -> String {
 /// No HTTP, no LLM — pure regex over already-extracted section bodies.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct TechnicalCorrectnessFacts {
+    /// Markdown tables detected in the extracted paper body.
     pub tables: Vec<TableFact>,
+    /// Equation labels detected in the extracted paper body.
     pub equation_labels: Vec<EquationLabelFact>,
+    /// Big-O and related complexity mentions detected in prose.
     pub complexity_mentions: Vec<ComplexityMention>,
 }
 
+/// Markdown table summary extracted from a section body.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableFact {
+    /// Section heading where the table appears.
     pub section: String,
     /// First non-empty row, usually the column headers.
     pub header_row: String,
+    /// Number of rows in the table block, including the header.
     pub row_count: usize,
 }
 
+/// Equation label extracted from a section body.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EquationLabelFact {
+    /// Section heading where the label appears.
     pub section: String,
+    /// Equation label text.
     pub label: String,
 }
 
+/// Complexity notation mention extracted from prose.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ComplexityMention {
+    /// Section heading where the notation appears.
     pub section: String,
     /// The exact substring, e.g. "O(n log n)" or "Θ(n^2)".
     pub notation: String,
@@ -515,7 +541,10 @@ fn extract_tables(section: &str, body: &str) -> Vec<TableFact> {
                 && lines[block_end].trim().ends_with('|')
             {
                 let inner = lines[block_end].trim().trim_matches('|');
-                if inner.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ' | '\t')) {
+                if inner
+                    .chars()
+                    .all(|c| matches!(c, '-' | ':' | '|' | ' ' | '\t'))
+                {
                     has_separator = true;
                 }
                 block_end += 1;
@@ -549,10 +578,7 @@ fn extract_equation_labels(section: &str, body: &str) -> Vec<EquationLabelFact> 
         let start = i + rel + 7;
         if let Some(end_rel) = body[start..].find('}') {
             let label = body[start..start + end_rel].trim();
-            if label.starts_with("eq")
-                || label.starts_with("equation")
-                || label.starts_with("Eq")
-            {
+            if label.starts_with("eq") || label.starts_with("equation") || label.starts_with("Eq") {
                 let key = label.to_string();
                 if seen.insert(key.clone()) {
                     out.push(EquationLabelFact {
@@ -622,9 +648,8 @@ mod tests {
 
     #[test]
     fn find_urls_picks_up_https_and_strips_trailing_punctuation() {
-        let urls = find_urls(
-            "See https://github.com/foo/bar for code, also http://example.com/data.tar.",
-        );
+        let urls =
+            find_urls("See https://github.com/foo/bar for code, also http://example.com/data.tar.");
         assert!(urls.contains(&"https://github.com/foo/bar".to_string()));
         assert!(urls.contains(&"http://example.com/data.tar".to_string()));
     }
@@ -650,7 +675,10 @@ mod tests {
     fn classify_url_recognizes_code_and_dataset_hosts() {
         assert_eq!(classify_url("https://github.com/foo/bar"), UrlKind::Code);
         assert_eq!(classify_url("https://huggingface.co/foo"), UrlKind::Code);
-        assert_eq!(classify_url("https://zenodo.org/record/1"), UrlKind::Dataset);
+        assert_eq!(
+            classify_url("https://zenodo.org/record/1"),
+            UrlKind::Dataset
+        );
         assert_eq!(classify_url("https://example.com"), UrlKind::Other);
     }
 
@@ -671,7 +699,8 @@ mod tests {
 
     #[test]
     fn extract_tables_finds_markdown_tables_and_counts_rows() {
-        let body = "Intro prose.\n\n| col1 | col2 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\nNext para.";
+        let body =
+            "Intro prose.\n\n| col1 | col2 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\nNext para.";
         let tables = extract_tables("3. Results", body);
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].section, "3. Results");
@@ -681,7 +710,8 @@ mod tests {
 
     #[test]
     fn extract_equation_labels_picks_up_label_macros() {
-        let body = "Eq \\label{eq:main}: text. Later \\label{section} not an eq. \\label{eq:bound} too.";
+        let body =
+            "Eq \\label{eq:main}: text. Later \\label{section} not an eq. \\label{eq:bound} too.";
         let eqs = extract_equation_labels("2. Methods", body);
         let labels: Vec<&str> = eqs.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"eq:main"));
@@ -726,7 +756,10 @@ mod tests {
         // hardcoded to the real S2 URL, so swap via a tiny local copy of the
         // logic. We just assert the parser end-to-end by calling it.
         let body: serde_json::Value = reqwest::Client::new()
-            .get(format!("{}/graph/v1/paper/search?query=t&limit=20&fields=title", server.uri()))
+            .get(format!(
+                "{}/graph/v1/paper/search?query=t&limit=20&fields=title",
+                server.uri()
+            ))
             .send()
             .await
             .unwrap()
@@ -747,7 +780,10 @@ mod tests {
     #[test]
     fn semantic_scholar_url_encode_matches_form_urlencoded() {
         assert_eq!(semantic_scholar_url_encode("a b c"), "a+b+c");
-        assert_eq!(semantic_scholar_url_encode("foo:bar/baz"), "foo%3Abar%2Fbaz");
+        assert_eq!(
+            semantic_scholar_url_encode("foo:bar/baz"),
+            "foo%3Abar%2Fbaz"
+        );
         assert_eq!(semantic_scholar_url_encode("simple"), "simple");
     }
 
@@ -765,18 +801,8 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::new();
-        let good = head_check(
-            &http,
-            &format!("{}/good", server.uri()),
-            UrlKind::Other,
-        )
-        .await;
-        let dead = head_check(
-            &http,
-            &format!("{}/dead", server.uri()),
-            UrlKind::Other,
-        )
-        .await;
+        let good = head_check(&http, &format!("{}/good", server.uri()), UrlKind::Other).await;
+        let dead = head_check(&http, &format!("{}/dead", server.uri()), UrlKind::Other).await;
         assert!(good.reachable);
         assert_eq!(good.status, Some(200));
         assert!(!dead.reachable);

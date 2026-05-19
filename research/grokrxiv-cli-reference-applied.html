@@ -226,6 +226,8 @@ CI-friendly) and <code>grokrxiv</code> (ergonomic, what <code>just install</code
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> install</span><span style="color:#6A737D">          # cargo install --path crates/orchestrator --features full --bin grokrxiv --locked</span></span>
 <span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">           # preflight</span></span>
 <span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> serve</span><span style="color:#6A737D">            # blocking; runs HTTP API + supervisor + scheduler</span></span></code></pre></figure>
+<p>Bare <code>grokrxiv</code> prints help and exits. Start the long-running service
+explicitly with <code>grokrxiv serve</code>.</p>
 <h2 id="global-flags-apply-to-every-subcommand"><a class="anchor" aria-label="anchor" href="#global-flags-apply-to-every-subcommand">#</a>Global flags (apply to every subcommand)</h2>
 <table>
 <thead>
@@ -348,8 +350,7 @@ integer to cap concurrent specialist CLI/API children.</p>
 <h2 id="subcommands"><a class="anchor" aria-label="anchor" href="#subcommands">#</a>Subcommands</h2>
 <h3 id="service"><a class="anchor" aria-label="anchor" href="#service">#</a>Service</h3>
 <h4 id="grokrxiv-serve"><a class="anchor" aria-label="anchor" href="#grokrxiv-serve">#</a><code>grokrxiv serve</code></h4>
-<p>Runs the orchestrator: HTTP API + supervisor + scheduler. Identical to the
-<code>grokrxiv-orchestrator</code> default. Blocks forever.</p>
+<p>Runs the orchestrator: HTTP API + supervisor + scheduler. Blocks forever.</p>
 <h4 id="grokrxiv-doctor"><a class="anchor" aria-label="anchor" href="#grokrxiv-doctor">#</a><code>grokrxiv doctor</code></h4>
 <p>Runs the preflight checks (env vars, DB URL, API runner reachability, CLI
 binaries on PATH, cloud reachability, local-inference reachability,
@@ -361,12 +362,6 @@ no review runner reachable). Add <code>--json</code> for a structured report.</p
 <p>Prints the resolved config: the env-based legacy <code>Config</code> <em>and</em> the layered
 <code>RuntimeConfig</code> (defaults → TOML → env → CLI). Add <code>--json</code> for a structured
 view. Secrets are redacted as <code>***</code> unless <code>--show-secrets</code> is passed.</p>
-<h4 id="grokrxiv-migrate"><a class="anchor" aria-label="anchor" href="#grokrxiv-migrate">#</a><code>grokrxiv migrate</code></h4>
-<p>Applies pending Supabase migrations (currently delegates to
-<code>bash infra/supabase/setup.sh</code>; native bridge tracked under task #11).</p>
-<h4 id="grokrxiv-categories"><a class="anchor" aria-label="anchor" href="#grokrxiv-categories">#</a><code>grokrxiv categories</code></h4>
-<p>Prints <code>DEFAULT_ACTIVE_CATEGORIES</code> and the active env override
-(<code>INGEST_CATEGORIES</code>).</p>
 <h3 id="canonical-review-entry-point"><a class="anchor" aria-label="anchor" href="#canonical-review-entry-point">#</a>Canonical review entry point</h3>
 <h4 id="grokrxiv-review-source---type-t"><a class="anchor" aria-label="anchor" href="#grokrxiv-review-source---type-t">#</a><code>grokrxiv review &#x3C;source> [--type T]</code></h4>
 <p>The "single command for one paper" entry point. <code>source</code> may be:</p>
@@ -391,10 +386,7 @@ view. Secrets are redacted as <code>***</code> unless <code>--show-secrets</code
 <span data-line=""><span style="color:#E1E4E8">  ]</span></span>
 <span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
 <p>The smoke test in <code>tests/m1-pipeline.sh</code> asserts on this envelope.</p>
-<h3 id="ingestion-lower-level"><a class="anchor" aria-label="anchor" href="#ingestion-lower-level">#</a>Ingestion (lower-level)</h3>
-<h4 id="grokrxiv-ingest-arxiv_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-arxiv_id">#</a><code>grokrxiv ingest &#x3C;arxiv_id>...</code></h4>
-<p>Synchronously ingest + run the review DAG on one or more papers. Single
-paper prints <code>arxiv_id=… review_id=…</code>; multiple papers fan out in parallel.</p>
+<h3 id="ingestion"><a class="anchor" aria-label="anchor" href="#ingestion">#</a>Ingestion</h3>
 <h4 id="grokrxiv-extract-arxiv_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-extract-arxiv_id">#</a><code>grokrxiv extract &#x3C;arxiv_id>...</code></h4>
 <p>Run fetch + extraction only, then audit the reviewer input artifacts. This is
 the fast standalone check for the extractor before running reviewers:</p>
@@ -415,40 +407,56 @@ persisted. This reuses <code>review_input.json</code> and avoids re-running extr
 when available. With <code>--json</code>, it emits <code>{ "status": "already_reviewed", ... }</code>.
 Use <code>--force</code> only when you intend to supersede the existing review after new
 review input, comments, or paper/extraction changes.</p>
-<h4 id="grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review">#</a><code>grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]</code></h4>
-<p>Bulk OAI-PMH backfill across a date range.</p>
-<h4 id="grokrxiv-ingest-daily"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-daily">#</a><code>grokrxiv ingest-daily</code></h4>
-<p>Equivalent of the daily scheduler tick (yesterday → today).</p>
 <h3 id="review-lifecycle"><a class="anchor" aria-label="anchor" href="#review-lifecycle">#</a>Review lifecycle</h3>
 <h4 id="grokrxiv-list-reviews---review-status-s---field-f---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-reviews---review-status-s---field-f---limit-n---json">#</a><code>grokrxiv list reviews [--review-status S] [--field F] [--limit N] [--json]</code></h4>
 <h4 id="grokrxiv-list-papers---field-f---has-review---extracted---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-papers---field-f---has-review---extracted---limit-n---json">#</a><code>grokrxiv list papers [--field F] [--has-review] [--extracted] [--limit N] [--json]</code></h4>
 <h4 id="grokrxiv-list-extracted---field-f---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-extracted---field-f---limit-n---json">#</a><code>grokrxiv list extracted [--field F] [--limit N] [--json]</code></h4>
 <h4 id="grokrxiv-show-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-show-review_id---json">#</a><code>grokrxiv show &#x3C;REVIEW_ID> [--json]</code></h4>
 <p>Pretty-print a review (paper, agents, verifier status, optional PR URL).</p>
-<h4 id="grokrxiv-re-review-paper_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-re-review-paper_id">#</a><code>grokrxiv re-review &#x3C;PAPER_ID></code></h4>
-<p>Re-run the review DAG against an already-ingested paper (renamed from <code>review</code>).</p>
-<h4 id="grokrxiv-verify-review_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-verify-review_id">#</a><code>grokrxiv verify &#x3C;REVIEW_ID></code></h4>
-<p>Re-print the per-agent verifier_status rows for a review.</p>
-<h4 id="grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path">#</a><code>grokrxiv render &#x3C;REVIEW_ID> [--format html|md|tex|pdf|zip] [--out PATH]</code></h4>
-<p>Re-emit artifacts for a persisted review.</p>
 <h3 id="moderation"><a class="anchor" aria-label="anchor" href="#moderation">#</a>Moderation</h3>
 <h4 id="grokrxiv-approve-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-approve-review_id---json">#</a><code>grokrxiv approve &#x3C;REVIEW_ID> [--json]</code></h4>
 <p>Open the publication PR on <code>GrokRxiv/grokrxiv-reviews</code>. This does not merge or
 publish the review; a human merge plus the GitHub webhook performs the
 <code>published</code> transition. Prints <code>pr_url=…</code>. With <code>--json</code>, returns
 <code>{review_id, pr_url, status}</code>. Without <code>GITHUB_TOKEN</code>, the PR is simulated.</p>
+<h4 id="grokrxiv-publish-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-publish-review_id---json">#</a><code>grokrxiv publish &#x3C;REVIEW_ID> [--json]</code></h4>
+<p>Publish a review by merging its open publication PR. The GitHub webhook then
+flips the review to <code>published</code> and revalidates the public site. <code>merge</code> is
+kept as a hidden compatibility alias for this command.</p>
 <h4 id="grokrxiv-reject-review_id---reason-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-reject-review_id---reason-text">#</a><code>grokrxiv reject &#x3C;REVIEW_ID> --reason TEXT</code></h4>
 <p>Mark a review rejected (review stays <code>awaiting_moderation</code>).</p>
 <h4 id="grokrxiv-request-changes-review_id---notes-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-request-changes-review_id---notes-text">#</a><code>grokrxiv request-changes &#x3C;REVIEW_ID> --notes TEXT</code></h4>
 <p>Mark a review as needing operator changes.</p>
-<h4 id="grokrxiv-withdraw-review_id---reason-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-withdraw-review_id---reason-text">#</a><code>grokrxiv withdraw &#x3C;REVIEW_ID> --reason TEXT</code></h4>
-<p>Withdraw a published review (status → <code>withdrawn</code>; revalidates the
-frontend).</p>
-<h4 id="grokrxiv-correct-review_id---rationale-md-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-correct-review_id---rationale-md-path">#</a><code>grokrxiv correct &#x3C;REVIEW_ID> --rationale-md PATH</code></h4>
-<p>Append a correction; status → <code>corrected</code>.</p>
 <h3 id="conveniences"><a class="anchor" aria-label="anchor" href="#conveniences">#</a>Conveniences</h3>
 <h4 id="grokrxiv-open-review_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-open-review_id">#</a><code>grokrxiv open &#x3C;REVIEW_ID></code></h4>
 <p>Print (and on macOS, <code>open(1)</code>) the <code>/reviews/&#x3C;id></code> URL.</p>
+<h3 id="advanced-and-hidden-commands"><a class="anchor" aria-label="anchor" href="#advanced-and-hidden-commands">#</a>Advanced and hidden commands</h3>
+<p>These remain callable for compatibility and admin repair work, but are hidden
+from default <code>--help</code>.</p>
+<h4 id="grokrxiv-ingest-arxiv_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-arxiv_id">#</a><code>grokrxiv ingest &#x3C;arxiv_id>...</code></h4>
+<p>Lower-level arXiv-only ingest + review path. Prefer <code>grokrxiv review</code>.</p>
+<h4 id="grokrxiv-re-review-paper_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-re-review-paper_id">#</a><code>grokrxiv re-review &#x3C;PAPER_ID></code></h4>
+<p>Re-run the review DAG against an already-ingested paper. Prefer
+<code>grokrxiv review-extracted --force</code> for operator reruns.</p>
+<h4 id="grokrxiv-verify-review_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-verify-review_id">#</a><code>grokrxiv verify &#x3C;REVIEW_ID></code></h4>
+<p>Re-print the per-agent verifier_status rows for a review.</p>
+<h4 id="grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path">#</a><code>grokrxiv render &#x3C;REVIEW_ID> [--format html|md|tex|pdf|zip] [--out PATH]</code></h4>
+<p>Re-emit artifacts for a persisted review.</p>
+<h4 id="grokrxiv-correct-review_id---rationale-md-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-correct-review_id---rationale-md-path">#</a><code>grokrxiv correct &#x3C;REVIEW_ID> --rationale-md PATH</code></h4>
+<p>Append a correction; status → <code>corrected</code>.</p>
+<h4 id="grokrxiv-withdraw-review_id---reason-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-withdraw-review_id---reason-text">#</a><code>grokrxiv withdraw &#x3C;REVIEW_ID> --reason TEXT</code></h4>
+<p>Withdraw a published review (status → <code>withdrawn</code>; revalidates the frontend).</p>
+<h4 id="grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review">#</a><code>grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]</code></h4>
+<p>Bulk OAI-PMH backfill across a date range.</p>
+<h4 id="grokrxiv-ingest-daily"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-daily">#</a><code>grokrxiv ingest-daily</code></h4>
+<p>Equivalent of the daily scheduler tick (yesterday → today).</p>
+<h4 id="grokrxiv-migrate"><a class="anchor" aria-label="anchor" href="#grokrxiv-migrate">#</a><code>grokrxiv migrate</code></h4>
+<p>Stub: points operators to <code>bash infra/supabase/setup.sh</code> until native migration
+wiring lands.</p>
+<h4 id="grokrxiv-categories"><a class="anchor" aria-label="anchor" href="#grokrxiv-categories">#</a><code>grokrxiv categories</code></h4>
+<p>Prints <code>DEFAULT_ACTIVE_CATEGORIES</code> and the active env override.</p>
+<h4 id="grokrxiv-html-review-review_id--all"><a class="anchor" aria-label="anchor" href="#grokrxiv-html-review-review_id--all">#</a><code>grokrxiv html-review [&#x3C;REVIEW_ID>|--all]</code></h4>
+<p>Internal post-render formatting harness.</p>
 <h4 id="grokrxiv-tail-jobs---kind-k---state-s"><a class="anchor" aria-label="anchor" href="#grokrxiv-tail-jobs---kind-k---state-s">#</a><code>grokrxiv tail-jobs [--kind K] [--state S]</code></h4>
 <p>Stream the jobs table tail. (Wiring tracked under task #15.)</p>
 <h2 id="examples"><a class="anchor" aria-label="anchor" href="#examples">#</a>Examples</h2>
@@ -477,7 +485,7 @@ frontend).</p>
 </ul>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-18T14:34:10.764Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-18T23:55:09.195Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

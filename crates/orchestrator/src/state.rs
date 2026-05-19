@@ -431,7 +431,7 @@ fn build_agent_schemas_and_verifiers() -> (Arc<AgentSchemaMap>, Arc<VerifierMap>
     for (role, schema) in &schemas {
         ladders.insert(
             *role,
-            grokrxiv_verifier::VerifierLadder::standard(Some(schema.clone())),
+            grokrxiv_verifier::VerifierLadder::standard_for_role(*role, Some(schema.clone())),
         );
     }
 
@@ -518,5 +518,46 @@ mod tests {
         let agent = registry.get(&AgentRole::Summary).expect("summary agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
+    }
+
+    #[tokio::test]
+    async fn role_ladders_include_citation_only_for_citation_role() {
+        let (_schemas, ladders) = build_agent_schemas_and_verifiers();
+        let http = reqwest::Client::new();
+        let paper = grokrxiv_schemas::PaperExtract {
+            arxiv_id: "2605.00001".to_string(),
+            title: "Verifier Paper".to_string(),
+            authors: Vec::new(),
+            abstract_: "A paper abstract.".to_string(),
+            field: Some("cs.AI".to_string()),
+            sections: Vec::new(),
+            figures: Vec::new(),
+            bibliography: Vec::new(),
+            source_format: None,
+        };
+        let ctx = grokrxiv_verifier::VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let summary_names: Vec<String> = ladders
+            .get(&AgentRole::Summary)
+            .expect("summary ladder")
+            .run(&serde_json::json!({}), &ctx)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let citation_names: Vec<String> = ladders
+            .get(&AgentRole::Citation)
+            .expect("citation ladder")
+            .run(&serde_json::json!({}), &ctx)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        assert!(!summary_names.contains(&"citation".to_string()));
+        assert!(citation_names.contains(&"citation".to_string()));
     }
 }

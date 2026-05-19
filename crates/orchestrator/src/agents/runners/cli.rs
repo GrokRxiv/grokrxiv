@@ -1591,9 +1591,9 @@ fn citation_contexts_for(
         .to_string();
     let bracketed = format!("[{bare}]");
     let mut needles: Vec<String> = vec![
-        format!("@{bare}"),     // BibTeX-style `@Deutsch1991`
-        bracketed.clone(),       // Numeric `[1]`
-        format!("{{{bare}}}"),  // LaTeX `{Deutsch1991}`
+        format!("@{bare}"),    // BibTeX-style `@Deutsch1991`
+        bracketed.clone(),     // Numeric `[1]`
+        format!("{{{bare}}}"), // LaTeX `{Deutsch1991}`
     ];
     // Preserve the original key as a needle too — covers cases where the
     // body already includes the bracketed form (e.g. raw cite key `Deutsch1991`).

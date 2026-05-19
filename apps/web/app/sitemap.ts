@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 import {
-  listAllPaperArxivIdsAnon,
+  listAllPaperSourceKeysAnon,
   listAllPublishedReviewIdsAnon,
 } from "@/lib/supabase/anon";
 import { CANONICAL_URL } from "@/lib/env";
@@ -17,7 +17,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const [reviews, papers] = await Promise.all([
     listAllPublishedReviewIdsAnon(),
-    listAllPaperArxivIdsAnon(),
+    listAllPaperSourceKeysAnon(),
   ]);
 
   for (const r of reviews) {
@@ -30,7 +30,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   }
   for (const p of papers) {
     base.push({
-      url: `${CANONICAL_URL}/papers/${p.arxiv_id}`,
+      url: `${CANONICAL_URL}/papers/${p.source_key}`,
       lastModified: new Date(p.ingested_at),
       changeFrequency: "weekly",
       priority: 0.6,

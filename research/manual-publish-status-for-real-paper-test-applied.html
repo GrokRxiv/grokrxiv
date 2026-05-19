@@ -219,6 +219,11 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <body>
 <main class="prose">
 <h1 id="manual-transition-reviewsstatus-pr_open--published-for-rpt1-2026-05-15"><a class="anchor" aria-label="anchor" href="#manual-transition-reviewsstatus-pr_open--published-for-rpt1-2026-05-15">#</a>Manual transition <code>reviews.status</code> <code>pr_open → published</code> for RPT1 (2026-05-15)</h1>
+<blockquote>
+<p>Historical note: this was an RPT1 workaround. Current public visibility is
+<code>reviews.visibility = 'public'</code> plus <code>status IN ('pr_open','published', 'corrected','rejected')</code>; <code>pr_open</code> rows are visible as human-gated PR
+handoffs, and the merge webhook flips them to <code>published</code>.</p>
+</blockquote>
 <h2 id="what"><a class="anchor" aria-label="anchor" href="#what">#</a>What</h2>
 <p>Direct SQL UPDATE flipped 3 review rows from <code>status='pr_open'</code> to <code>status='published'</code> (with <code>published_at = now()</code>):</p>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sql" data-theme="github-dark"><code data-language="sql" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">UPDATE</span><span style="color:#E1E4E8"> reviews</span></span>
@@ -230,7 +235,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <span data-line=""><span style="color:#9ECBFF">  '2d15dcff-71f5-45f0-8fe1-9bbfd858736e'</span><span style="color:#6A737D">   -- 2605.15132 (cs.AI)</span></span>
 <span data-line=""><span style="color:#E1E4E8">);</span></span></code></pre></figure>
 <h2 id="why"><a class="anchor" aria-label="anchor" href="#why">#</a>Why</h2>
-<p>The Supabase RLS policy <code>reviews_public_read</code> gates anon-role visibility on <code>status IN ('published', 'corrected')</code>. After <code>approve</code>, the supervisor sets status to <code>'pr_open'</code> and writes the GitHub PR URL. The web frontend at <code>localhost:3000</code> does NOT show the review in this state.</p>
+<p>At the time, the Supabase RLS policy <code>reviews_public_read</code> gated anon-role visibility on <code>status IN ('published', 'corrected')</code>. After <code>approve</code>, the supervisor set status to <code>'pr_open'</code> and wrote the GitHub PR URL, but the web frontend at <code>localhost:3000</code> did not show the review in this state.</p>
 <p>The intended next-step transition <code>pr_open → published</code> is supposed to be driven by a GitHub webhook fired when the PR is merged. That webhook is FP7+ scope and not yet wired. Without it the review is invisible to the public web frontend.</p>
 <p>For RPT1 we needed end-to-end visibility (the operator's directive was "paper review needs to be visible from web interface once done"). The smallest possible change is to manually flip status. The GitHub PR stays OPEN — DB and PR state intentionally diverge for this validation pass.</p>
 <h2 id="risk"><a class="anchor" aria-label="anchor" href="#risk">#</a>Risk</h2>
@@ -277,7 +282,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <p>FP7 should implement the actual GitHub webhook → <code>published</code> transition, replacing this manual step. Once it lands, this doc becomes a historical reference for "the one time we did it by hand."</p>
 </main>
 <footer class="doc-footer">
-<p>manual-publish-status-for-real-paper-test-applied.md &middot; generated 2026-05-16T01:44:27.086Z &middot; grokrxiv</p>
+<p>manual-publish-status-for-real-paper-test-applied.md &middot; generated 2026-05-18T23:31:07.150Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

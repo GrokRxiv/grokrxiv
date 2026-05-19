@@ -48,7 +48,7 @@ pub const MAX_RETRIES: u32 = 3;
 /// error or a soft verifier warning rebadged as a fail, strict enough that the
 /// meta-reviewer never sees the corner case of "one specialist plus
 /// hallucination".
-pub const MIN_SPECIALIST_QUORUM: usize = 3;
+pub const MIN_SPECIALIST_QUORUM: usize = crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM;
 
 /// In-memory supervisor handle.
 #[derive(Clone)]
@@ -218,6 +218,23 @@ pub async fn run_review_for_paper_blocking(
     paper_id: Uuid,
 ) -> anyhow::Result<Uuid> {
     run_review_for_paper_full(state, paper_id).await
+}
+
+/// Drive the review DAG for a paper row using a caller-supplied extract.
+/// This is the non-arXiv source entry point: local PDF/TeX and git adapters
+/// prepare the same `PaperExtract` shape as arXiv ingest, then persist the
+/// paper row and call this function.
+#[cfg(feature = "grokrxiv-ingest")]
+pub async fn run_review_for_extract_blocking(
+    state: &AppState,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+) -> anyhow::Result<Uuid> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    run_review_dag_from_state(state, pool, paper_id, extract).await
 }
 
 /// Real typed DAG for a single paper.
@@ -442,15 +459,24 @@ async fn run_review_dag_inner(
     // transition the review row off the stale `awaiting_moderation` state.
     // We use `withdrawn` because the DB enum has no `failed` value.
     let dag_result: anyhow::Result<()> = async {
-    // The five specialist roles fan out in parallel; the meta-reviewer runs
-    // after they complete so it can synthesize their outputs.
-    let specialist_roles = [
-        AgentRole::Summary,
-        AgentRole::TechnicalCorrectness,
-        AgentRole::Novelty,
-        AgentRole::Reproducibility,
-        AgentRole::Citation,
-    ];
+    // The graph topology is declared as reusable data in review_dag. This
+    // function remains the executor for now: it walks the canonical topology's
+    // specialist fan-out, quorum gate, meta-reviewer, and render tail.
+    let review_dag = crate::review_dag::ReviewDag::canonical();
+    review_dag
+        .validate()
+        .map_err(|e| anyhow::anyhow!("invalid review DAG topology: {e}"))?;
+    let review_dag_layers = review_dag
+        .execution_layers()
+        .map_err(|e| anyhow::anyhow!("invalid review DAG execution layers: {e}"))?;
+    tracing::debug!(
+        nodes = review_dag.nodes().len(),
+        layers = review_dag_layers.len(),
+        "review: loaded canonical DAG topology"
+    );
+    let specialist_roles = review_dag.specialist_roles();
+    let specialist_total = review_dag.specialist_count();
+    let min_specialist_quorum = review_dag.min_specialist_quorum();
 
     let review_concurrency = specialist_review_concurrency_limit(&specialist_roles);
     crate::cli_status::emit(format!(
@@ -518,7 +544,7 @@ async fn run_review_dag_inner(
     let skip_review_cache = review_cache_disabled();
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
-    for role in specialist_roles {
+    for role in specialist_roles.iter().copied() {
         let repro_for_role = if matches!(role, AgentRole::Reproducibility) {
             Some(&reproducibility_facts)
         } else {
@@ -716,56 +742,65 @@ async fn run_review_dag_inner(
         tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
     }
 
-    // FP-RPT3b B2: quorum gate. Count specialists holding `verifier_status =
-    // pass`; if fewer than `MIN_SPECIALIST_QUORUM` (3) cleared the bar, abort
-    // before the meta-reviewer runs. The synthesis node has no fallback
-    // heuristic for partial-failure input — running it would produce a
-    // confidently-wrong MetaReview anchored on whatever survived. We persist
-    // a structured error onto `reviews.meta_review` and let the DAG bail.
-    let passing_roles: Vec<&'static str> = specialist_verifier_status
-        .iter()
-        .filter(|(_, s)| *s == Some(VerifierStatus::Pass))
-        .map(|(r, _)| role_slug(*r))
-        .collect();
-    if passing_roles.len() < MIN_SPECIALIST_QUORUM {
-        let err_payload = json!({
-            "error": format!(
-                "quorum: only {} of 5 specialists passed verification (need >= {})",
-                passing_roles.len(),
-                MIN_SPECIALIST_QUORUM,
-            ),
-            "passing_roles": passing_roles,
-            "min_quorum": MIN_SPECIALIST_QUORUM,
+    // FP-RPT3b B2: quorum gate. `warn` is usable for meta-review but not a
+    // clean publication pass; `review_gate` is the single policy source.
+    let specialist_gate = crate::review_gate::SpecialistGate::evaluate(
+        &specialist_verifier_status,
+        min_specialist_quorum,
+        specialist_total,
+    );
+    if !specialist_gate.meta_can_run {
+        let error = format!(
+            "verifier quorum not met: only {} of {} specialists produced usable output (need >= {})",
+            specialist_gate.usable_roles.len(),
+            specialist_gate.expected_total,
+            specialist_gate.min_usable,
+        );
+        let synthetic_meta = json!({
+            "summary": "Automated review gate failed before meta-review synthesis because too few specialist outputs passed verifier checks.",
+            "strengths": [],
+            "weaknesses": [
+                error,
+                format!("Roles without usable verifier output: {}", specialist_gate.blocked_roles.join(", ")),
+            ],
+            "questions": [
+                "Please address the verifier failures and resubmit corrections for automated re-review.",
+            ],
+            "recommendation": "major_revision",
+            "confidence": 1.0,
+            "gate": {
+                "name": "specialist_verifier_quorum",
+                "usable_roles": specialist_gate.usable_roles.clone(),
+                "blocked_roles": specialist_gate.blocked_roles.clone(),
+                "warning_roles": specialist_gate.warning_roles.clone(),
+                "min_quorum": specialist_gate.min_usable,
+            }
         });
-        // Persist the structured error onto the review row so operators can
-        // see why meta was skipped. Keeping this in the same shape as a
-        // successful meta-review (top-level JSON) lets the moderation UI
-        // surface it without a schema change.
-        sqlx::query("update reviews set meta_review = $2 where id = $1")
-            .bind(review_id)
-            .bind(err_payload.clone())
-            .execute(pool)
-            .await?;
-        // The DB enum has no `failed` state (see migration 20250513000001 +
-        // ReviewStatus comment): the closest signal is `withdrawn`, matching
-        // the catch-all at the outer error path (~L666). The structured
-        // `meta_review.error` is what makes this debuggable.
-        let _ = crate::db::set_review_status(
-            pool,
+        crate::db::set_review_meta_review(pool, review_id, &synthetic_meta).await?;
+
+        let failure = crate::github_feedback::gate_failure_from_meta(
             review_id,
-            grokrxiv_schemas::ReviewStatus::Withdrawn,
+            "major_revision",
+            Some(&synthetic_meta),
+        );
+        let _ = crate::github_feedback::record_gate_failure(state, review_id, &failure).await;
+        let _ = crate::db::insert_review_event(
+            pool,
+            Some(review_id),
+            Some(paper_id),
+            "automated_gate_failed",
+            "specialist_verifier_quorum",
+            &synthetic_meta,
             None,
         )
         .await;
         tracing::warn!(
             %review_id,
-            passing = passing_roles.len(),
+            usable = specialist_gate.usable_roles.len(),
             quorum = MIN_SPECIALIST_QUORUM,
-            error = %err_payload.get("error").and_then(|v| v.as_str()).unwrap_or(""),
-            "FP-RPT3b B2: specialist quorum not met; skipping meta_reviewer"
+            "specialist quorum not met; recorded major_revision gate failure"
         );
-        return Ok(());
-    }
+    } else {
 
     // Meta-reviewer: real synthesis node. FP6 A1: feed it ONLY the five
     // specialist outputs keyed by role slug. The paper extract is omitted —
@@ -904,11 +939,8 @@ async fn run_review_dag_inner(
     // into the typed `MetaReview` fails we still persist the raw JSON so the
     // moderator can inspect what the model produced.
     let _ = serde_json::from_value::<MetaReview>(meta_value.clone());
-    sqlx::query("update reviews set meta_review = $2 where id = $1")
-        .bind(review_id)
-        .bind(meta_value)
-        .execute(pool)
-        .await?;
+    crate::db::set_review_meta_review(pool, review_id, &meta_value).await?;
+    }
 
     // Render artifacts to disk under ./artifacts/<review_id>/. The renderer
     // reads back the real meta-review JSON + every review_agents row from
@@ -1090,15 +1122,7 @@ async fn verify_artifact(
 }
 
 fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
-    use grokrxiv_schemas::AgentRole;
-    match role {
-        AgentRole::Summary => "summary",
-        AgentRole::TechnicalCorrectness => "technical_correctness",
-        AgentRole::Novelty => "novelty",
-        AgentRole::Reproducibility => "reproducibility",
-        AgentRole::Citation => "citation",
-        AgentRole::MetaReviewer => "meta_reviewer",
-    }
+    crate::review_dag::role_slug(role)
 }
 
 fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) -> String {
@@ -1293,16 +1317,22 @@ fn merge_citation_verifier_into_output(
     else {
         return output;
     };
-    let Some(entries) = output
-        .get_mut("entries")
-        .and_then(|e| e.as_array_mut())
-    else {
+    let Some(entries) = output.get_mut("entries").and_then(|e| e.as_array_mut()) else {
         return output;
     };
     for (i, v_entry) in v_entries.iter().enumerate() {
-        let exists = v_entry.get("exists").cloned().unwrap_or(serde_json::Value::Bool(false));
-        let resolved_doi = v_entry.get("resolved_doi").cloned().unwrap_or(serde_json::Value::Null);
-        let resolved_url = v_entry.get("resolved_url").cloned().unwrap_or(serde_json::Value::Null);
+        let exists = v_entry
+            .get("exists")
+            .cloned()
+            .unwrap_or(serde_json::Value::Bool(false));
+        let resolved_doi = v_entry
+            .get("resolved_doi")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let resolved_url = v_entry
+            .get("resolved_url")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         if let Some(out_entry) = entries.get_mut(i).and_then(|v| v.as_object_mut()) {
             out_entry.insert("exists".into(), exists);
             out_entry.insert("resolved_doi".into(), resolved_doi);
@@ -1351,15 +1381,7 @@ fn html_quality_disabled() -> bool {
 /// because the list is short and stable; broaden as new tooling lands.
 fn is_code_amenable_field(field: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "cs.",
-        "math.",
-        "hep-",
-        "gr-qc",
-        "astro-ph",
-        "cond-mat",
-        "nlin",
-        "quant-ph",
-        "nucl-",
+        "cs.", "math.", "hep-", "gr-qc", "astro-ph", "cond-mat", "nlin", "quant-ph", "nucl-",
         "stat.",
     ];
     PREFIXES.iter().any(|p| field.starts_with(p))
@@ -1385,6 +1407,18 @@ fn body_budget_chars(role: grokrxiv_schemas::AgentRole) -> usize {
         AgentRole::Citation => 0,
         AgentRole::MetaReviewer => 0,
     }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+const DEFAULT_CITATION_PROMPT_MAX_BIB_ENTRIES: usize = 32;
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn citation_prompt_max_bib_entries() -> usize {
+    std::env::var("GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CITATION_PROMPT_MAX_BIB_ENTRIES)
 }
 
 /// Render a single section in its canonical `## {heading}\n\n{body}\n\n`
@@ -1470,11 +1504,25 @@ fn render_section_block(sections: &[grokrxiv_schemas::Section], budget: usize) -
 /// expects to cross-reference.
 #[cfg(feature = "grokrxiv-ingest")]
 fn render_bibliography(bibliography: &[grokrxiv_schemas::Citation]) -> String {
+    render_bibliography_limited(bibliography, None)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_bibliography_limited(
+    bibliography: &[grokrxiv_schemas::Citation],
+    max_entries: Option<usize>,
+) -> String {
     if bibliography.is_empty() {
         return String::new();
     }
-    let mut out = format!("Bibliography ({} entries):\n", bibliography.len());
-    for (i, c) in bibliography.iter().enumerate() {
+    let total = bibliography.len();
+    let shown = max_entries.map(|max| max.min(total)).unwrap_or(total);
+    let mut out = if shown < total {
+        format!("Bibliography ({total} entries; showing {shown}):\n")
+    } else {
+        format!("Bibliography ({total} entries):\n")
+    };
+    for (i, c) in bibliography.iter().take(shown).enumerate() {
         let key = i + 1;
         let raw = c.raw.replace('\n', " ").trim().to_string();
         let mut parts = Vec::new();
@@ -1496,6 +1544,13 @@ fn render_bibliography(bibliography: &[grokrxiv_schemas::Citation]) -> String {
             parts.push("unresolved bibliography entry".to_string());
         }
         out.push_str(&format!("[{key}] {}\n", parts.join(" | ")));
+    }
+    if shown < total {
+        let omitted = total - shown;
+        out.push_str(&format!(
+            "[…{omitted} additional bibliography entries omitted from citation LLM prompt; \
+             verifier and render artifacts preserve the full bibliography.]\n"
+        ));
     }
     out
 }
@@ -1576,7 +1631,14 @@ fn build_specialist_prompt(
         .collect::<Vec<_>>()
         .join("\n");
     let body_block = render_section_block(&extract.sections, budget);
-    let bib_block = render_bibliography(&extract.bibliography);
+    let bib_block = if matches!(role, AgentRole::Citation) {
+        render_bibliography_limited(
+            &extract.bibliography,
+            Some(citation_prompt_max_bib_entries()),
+        )
+    } else {
+        render_bibliography(&extract.bibliography)
+    };
     let citation_contexts = if matches!(role, AgentRole::Citation) {
         render_citation_contexts(&extract.sections, 24_000)
     } else {
@@ -1608,11 +1670,14 @@ fn build_specialist_prompt(
             "Focus on RELEVANCE and MISSING WORK — a separate deterministic \
              verifier (Crossref + arXiv batch lookups) handles existence and \
              DOI/URL resolution and writes its results to `verifier_notes`. \
-             Your job: for each bibliography entry, set `relevance` from the \
-             extracted in-text contexts (`high`/`medium`/`low`/`unrelated`), \
+             Your job: for each bibliography entry included below, set `relevance` \
+             from the extracted in-text contexts (`high`/`medium`/`low`/`unrelated`), \
              write `explanation` describing where and why it's cited, and \
              leave `exists`/`resolved_doi`/`resolved_url` at their defaults \
              (`false`/`null`) since the verifier will overlay ground truth. \
+             If the bibliography block says entries were omitted, do not invent \
+             entries for the omitted references; the verifier and render pipeline \
+             preserve the full bibliography separately. \
              Populate `missing_references` with prior work you would expect \
              the paper to cite but doesn't, with reasons. Provide `summary` \
              and `confidence`."
@@ -1678,7 +1743,11 @@ fn build_specialist_prompt(
                     out.push_str(&format!(
                         "- [{kind}] {url} → {state} (status={status_str})\n",
                         url = u.url,
-                        state = if u.reachable { "REACHABLE" } else { "UNREACHABLE" },
+                        state = if u.reachable {
+                            "REACHABLE"
+                        } else {
+                            "UNREACHABLE"
+                        },
                     ));
                 }
                 out.push('\n');
@@ -1900,47 +1969,22 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
-    // 1. Load the meta-review JSON + the joined paper row.
-    let row: (
-        Option<serde_json::Value>,
-        Uuid,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-    ) = sqlx::query_as(
-        "select r.meta_review, p.id, p.arxiv_id, p.title, p.abstract, p.field \
-         from reviews r join papers p on p.id = r.paper_id \
-         where r.id = $1",
-    )
-    .bind(review_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("load review row: {e}"))?;
-    let (meta_json, _paper_id, arxiv_id, title, abstract_, field) = row;
+    // 1. Load the meta-review JSON + the joined paper row + persisted agents.
+    let bundle = crate::db::load_review_render_bundle(pool, review_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("load review render bundle: {e}"))?;
+    let crate::db::ReviewRenderHeadRow {
+        meta_review: meta_json,
+        paper_id: _paper_id,
+        arxiv_id,
+        title,
+        abstract_,
+        field,
+    } = bundle.review;
 
     let meta: MetaReview = meta_json
         .and_then(|v| serde_json::from_value::<MetaReview>(v).ok())
         .unwrap_or_else(|| fallback_meta(&title));
-
-    #[derive(sqlx::FromRow)]
-    struct AgentRenderRow {
-        role: String,
-        model: String,
-        output: serde_json::Value,
-        verifier_status: Option<String>,
-        verifier_notes: Option<serde_json::Value>,
-    }
-
-    // 2. Load every agent row in role-sorted order.
-    let agent_rows: Vec<AgentRenderRow> = sqlx::query_as(
-        "select role, model, output, verifier_status, verifier_notes \
-         from review_agents where review_id = $1 order by role",
-    )
-    .bind(review_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("load review_agents: {e}"))?;
 
     // FP6 A2: the shared specialist input artifact now lives on `review_inputs`.
     // Specialists all reasoned over the same paper extract; the meta-reviewer
@@ -1952,7 +1996,7 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
         .unwrap_or(serde_json::Value::Null);
     let meta_input_for_render = {
         let mut specialists_map = serde_json::Map::new();
-        for row in &agent_rows {
+        for row in &bundle.agents {
             if row.role != "meta_reviewer" {
                 specialists_map.insert(row.role.clone(), row.output.clone());
             }
@@ -1960,16 +2004,16 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
         serde_json::json!({ "specialists": serde_json::Value::Object(specialists_map) })
     };
 
-    let mut agents: Vec<AgentRecord> = Vec::with_capacity(agent_rows.len());
-    let mut agent_jsons: Vec<(String, Vec<u8>)> = Vec::with_capacity(agent_rows.len());
-    for row in agent_rows {
+    let mut agents: Vec<AgentRecord> = Vec::with_capacity(bundle.agents.len());
+    let mut agent_jsons: Vec<(String, Vec<u8>)> = Vec::with_capacity(bundle.agents.len());
+    for row in bundle.agents {
         let role_slug = row.role.clone();
         if let Some(role) = parse_role_slug(&role_slug) {
-            let status = match row.verifier_status.as_deref() {
-                Some("warn") => VerifierStatus::Warn,
-                Some("fail") => VerifierStatus::Fail,
-                _ => VerifierStatus::Pass,
-            };
+            let status = row
+                .verifier_status
+                .as_deref()
+                .and_then(crate::db::verifier_status_from_db_str)
+                .unwrap_or(VerifierStatus::Pass);
             let notes = row.verifier_notes.unwrap_or(serde_json::Value::Null);
             let verifier = VerifierResult {
                 status,
@@ -2248,20 +2292,25 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
     // Reload the paper row's data; the ingest crate is the canonical source so
     // we round-trip through it for the fields the DAG needs.
-    let row: (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<chrono::NaiveDate>,
-    ) = sqlx::query_as(
-        "select arxiv_id, title, abstract, field, submitted_date from papers where id = $1",
-    )
-    .bind(paper_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("load paper row: {e}"))?;
-    let (arxiv_id, title, abstract_, field, _submitted) = row;
+    let row = crate::db::load_paper_review_seed(pool, paper_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("load paper row: {e}"))?;
+    let crate::db::PaperReviewSeedRow {
+        arxiv_id,
+        title,
+        abstract_,
+        field,
+        submitted_date: _submitted,
+    } = row;
+
+    if let Some(extract) = load_latest_review_input_extract(pool, paper_id).await? {
+        tracing::info!(
+            %paper_id,
+            arxiv_id = %extract.arxiv_id,
+            "review: loaded extract from latest persisted review_input"
+        );
+        return run_review_dag_from_state(state, pool, paper_id, extract).await;
+    }
 
     // RPT3 Wave-3 Team-F: prefer the persisted review_input.json (Tier-1)
     // when this paper was extracted in a previous run. The body_markdown +
@@ -2335,6 +2384,23 @@ async fn run_review_for_paper_full(state: &AppState, paper_id: Uuid) -> anyhow::
     run_review_dag_from_state(state, pool, paper_id, extract).await
 }
 
+#[cfg(feature = "grokrxiv-ingest")]
+async fn load_latest_review_input_extract(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+) -> anyhow::Result<Option<grokrxiv_schemas::PaperExtract>> {
+    let Some(artifact) = crate::db::load_latest_review_input_artifact(pool, paper_id).await? else {
+        return Ok(None);
+    };
+    match serde_json::from_value::<grokrxiv_schemas::PaperExtract>(artifact) {
+        Ok(extract) => Ok(Some(extract)),
+        Err(e) => {
+            tracing::warn!(%paper_id, err = %e, "review: latest review_input is not a PaperExtract");
+            Ok(None)
+        }
+    }
+}
+
 /// Background worker: publish a moderation-approved review to GitHub.
 /// Wraps [`grokrxiv_publisher::GithubPublisher::open_review_pr`] with an
 /// [`AdminCaller`] capability token; the caller (admin approval endpoint /
@@ -2352,26 +2418,32 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .ref_id
         .ok_or_else(|| anyhow::anyhow!("run_publish: ref_id (review id) required"))?;
 
-    let row: (Uuid, String, String, Option<String>, Uuid, String) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public') \
-         from reviews r join papers p on p.id = r.paper_id \
-         where r.id = $1",
-    )
-    .bind(review_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field, paper_id, visibility) = row;
+    let row = crate::db::load_publish_review(pool, review_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
+    let crate::db::PublishReviewRow {
+        review_id: _review_row_id,
+        arxiv_id,
+        title,
+        field,
+        paper_id,
+        visibility,
+        source_kind,
+        source_id,
+    } = row;
+    let source_ref =
+        crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
+    let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
     let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
     let repo_prefix = format!(
-        "reviews/{year}/{month:02}/{field}/{arxiv_id}",
+        "reviews/{year}/{month:02}/{field}/{artifact_id}",
         year = now.format("%Y"),
         month = now.format("%m").to_string().parse::<u32>().unwrap_or(1),
         field = field.as_deref().unwrap_or("cs"),
-        arxiv_id = arxiv_id,
+        artifact_id = artifact_id,
     );
     for name in ["review.html", "review.md", "review.tex", "bundle.zip"] {
         let path = dir_local.join(name);
@@ -2398,11 +2470,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
             "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
-        let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
-            .bind(review_id)
-            .bind(&simulated)
-            .execute(pool)
-            .await;
+        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
         return Ok(());
     };
 
@@ -2413,7 +2481,7 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
     let publisher = GithubPublisher::new(client, owner, repo);
     let admin = AdminCaller::from_admin_endpoint();
-    let pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
+    let pr_title = format!("Review: {} ({})", title, source_ref);
     let body_md = if visibility == "private" {
         "Approved by supervisor `run_publish`. \
              Private review: dashboard-only unless archived in the private reviews repo. \
@@ -2425,24 +2493,21 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
             .to_string()
     };
     let params = OpenReviewPr {
-        arxiv_id: arxiv_id.clone(),
+        arxiv_id: artifact_id,
         field: field.unwrap_or_else(|| "cs".into()),
         date: chrono::Utc::now().date_naive(),
         files,
         title: pr_title,
         review_id,
         body_md,
+        correction_source_path: None,
     };
     let pr_url = publisher
         .open_review_pr(&admin, params)
         .await
         .map_err(|e| anyhow::anyhow!("open_review_pr: {e}"))?;
     let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-    let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
-        .bind(review_id)
-        .bind(&pr_url)
-        .execute(pool)
-        .await;
+    let _ = crate::db::set_review_github_pr_url(pool, review_id, &pr_url).await;
     tracing::info!(%review_id, %pr_url, "publish complete");
 
     // FP-RPT3c C2 — close any superseded PR for this paper.
@@ -2814,7 +2879,8 @@ mod tests {
         );
 
         let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
+        let prompt =
+            build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
 
         // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
         let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
@@ -2889,6 +2955,45 @@ mod tests {
         );
     }
 
+    /// Large bibliography prompts must stay bounded for local CLI runners.
+    /// The verifier preserves full citation existence data; the LLM relevance
+    /// pass only needs a representative capped slice plus in-text contexts.
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn citation_prompt_caps_large_bibliography_for_cli_runtime() {
+        use grokrxiv_schemas::AgentRole;
+        let bibliography = (1..=40)
+            .map(|i| Box::leak(format!("Reference {i}").into_boxed_str()) as &str)
+            .collect();
+        let extract = fake_extract(
+            vec![(
+                "1. Introduction",
+                "The result follows earlier work [@ref1].".to_string(),
+            )],
+            bibliography,
+        );
+
+        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None, None);
+
+        assert!(
+            prompt.contains("Bibliography (40 entries; showing 32):"),
+            "expected capped bibliography header in prompt"
+        );
+        assert!(prompt.contains("[32] Reference 32"));
+        assert!(
+            !prompt.contains("[33] Reference 33"),
+            "entry past the prompt cap should be omitted"
+        );
+        assert!(
+            prompt.contains("additional bibliography entries omitted from citation LLM prompt"),
+            "expected explicit truncation marker"
+        );
+        assert!(
+            prompt.contains("for each bibliography entry included below"),
+            "task text must not ask the CLI to classify omitted entries"
+        );
+    }
+
     /// Track 8a-4: the MetaReviewer's specialist prompt is empty — by
     /// contract it never sees the paper body, only specialist outputs
     /// (which are added later via `build_meta_synthesis_prompt`).
@@ -2903,7 +3008,8 @@ mod tests {
             )],
             vec!["Some citation, 2020."],
         );
-        let prompt = build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None, None);
+        let prompt =
+            build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None, None);
         assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
         assert!(!prompt.contains("introductory body markdown"));
         assert!(!prompt.contains("Bibliography"));
@@ -2934,20 +3040,35 @@ mod tests {
     fn role_system_prompt_adds_proof_as_code_for_code_amenable_field() {
         use grokrxiv_schemas::AgentRole;
         let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("math.AG"));
-        assert!(tc.contains("PROOF-AS-CODE AXIOM"), "math.* should trigger axiom for technical_correctness");
+        assert!(
+            tc.contains("PROOF-AS-CODE AXIOM"),
+            "math.* should trigger axiom for technical_correctness"
+        );
         let rp = role_system_prompt(AgentRole::Reproducibility, Some("cs.LO"));
-        assert!(rp.contains("PROOF-AS-CODE AXIOM"), "cs.* should trigger axiom for reproducibility");
+        assert!(
+            rp.contains("PROOF-AS-CODE AXIOM"),
+            "cs.* should trigger axiom for reproducibility"
+        );
         let mr = role_system_prompt(AgentRole::MetaReviewer, Some("hep-th"));
-        assert!(mr.contains("RECOMMENDATION GATE"), "hep-* should trigger gate for meta_reviewer");
+        assert!(
+            mr.contains("RECOMMENDATION GATE"),
+            "hep-* should trigger gate for meta_reviewer"
+        );
     }
 
     #[test]
     fn role_system_prompt_skips_axiom_for_non_amenable_field() {
         use grokrxiv_schemas::AgentRole;
         let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("q-bio.GN"));
-        assert!(!tc.contains("PROOF-AS-CODE AXIOM"), "q-bio.* should NOT trigger the axiom");
+        assert!(
+            !tc.contains("PROOF-AS-CODE AXIOM"),
+            "q-bio.* should NOT trigger the axiom"
+        );
         let mr = role_system_prompt(AgentRole::MetaReviewer, None);
-        assert!(!mr.contains("RECOMMENDATION GATE"), "missing field should NOT trigger the gate");
+        assert!(
+            !mr.contains("RECOMMENDATION GATE"),
+            "missing field should NOT trigger the gate"
+        );
     }
 
     #[test]
@@ -2957,8 +3078,14 @@ mod tests {
         let n = role_system_prompt(AgentRole::Novelty, Some("math.AG"));
         let c = role_system_prompt(AgentRole::Citation, Some("hep-th"));
         for p in [&s, &n, &c] {
-            assert!(!p.contains("PROOF-AS-CODE AXIOM"), "axiom should only fire for TC/Reproducibility");
-            assert!(!p.contains("RECOMMENDATION GATE"), "gate should only fire for MetaReviewer");
+            assert!(
+                !p.contains("PROOF-AS-CODE AXIOM"),
+                "axiom should only fire for TC/Reproducibility"
+            );
+            assert!(
+                !p.contains("RECOMMENDATION GATE"),
+                "gate should only fire for MetaReviewer"
+            );
         }
     }
 
@@ -3072,7 +3199,12 @@ mod tests {
         // The two unreachable URL concerns are appended at major severity.
         let dead_url_concerns: Vec<_> = concerns
             .iter()
-            .filter(|c| c["description"].as_str().unwrap_or("").contains("could not reach"))
+            .filter(|c| {
+                c["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("could not reach")
+            })
             .collect();
         assert_eq!(dead_url_concerns.len(), 2);
         for c in &dead_url_concerns {
@@ -3133,19 +3265,58 @@ mod tests {
             vec![("1. Intro", "Some content.".to_string())],
             vec!["[Foo23] Foo et al."],
         );
-        let p_none = build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
-        assert!(!p_none.contains("Moderator notes"), "None should not emit the section");
-        let p_blank = build_specialist_prompt(AgentRole::Reproducibility, &extract, Some("  "), None, None, None);
-        assert!(!p_blank.contains("Moderator notes"), "whitespace-only should not emit the section");
+        let p_none =
+            build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
+        assert!(
+            !p_none.contains("Moderator notes"),
+            "None should not emit the section"
+        );
+        let p_blank = build_specialist_prompt(
+            AgentRole::Reproducibility,
+            &extract,
+            Some("  "),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !p_blank.contains("Moderator notes"),
+            "whitespace-only should not emit the section"
+        );
     }
 
     #[test]
     fn is_code_amenable_field_matches_expected_prefixes() {
-        for f in ["cs.LO", "cs.LG", "math.AG", "hep-th", "hep-ph", "gr-qc", "astro-ph.CO", "cond-mat.str-el", "nlin.CD", "quant-ph", "nucl-th", "stat.ML"] {
-            assert!(is_code_amenable_field(f), "expected {f} to be code-amenable");
+        for f in [
+            "cs.LO",
+            "cs.LG",
+            "math.AG",
+            "hep-th",
+            "hep-ph",
+            "gr-qc",
+            "astro-ph.CO",
+            "cond-mat.str-el",
+            "nlin.CD",
+            "quant-ph",
+            "nucl-th",
+            "stat.ML",
+        ] {
+            assert!(
+                is_code_amenable_field(f),
+                "expected {f} to be code-amenable"
+            );
         }
-        for f in ["q-bio.GN", "q-fin.RM", "econ.GN", "eess.SP", "physics.med-ph"] {
-            assert!(!is_code_amenable_field(f), "expected {f} to NOT be code-amenable");
+        for f in [
+            "q-bio.GN",
+            "q-fin.RM",
+            "econ.GN",
+            "eess.SP",
+            "physics.med-ph",
+        ] {
+            assert!(
+                !is_code_amenable_field(f),
+                "expected {f} to NOT be code-amenable"
+            );
         }
     }
 
@@ -3212,12 +3383,18 @@ mod tests {
     }
 
     /// FP-RPT3b B2: helper that mirrors the quorum-count predicate in
-    /// `run_review_dag`. Counts specialists with `verifier_status = pass` and
-    /// compares against `MIN_SPECIALIST_QUORUM`.
+    /// `run_review_dag`. Counts specialists with usable verifier output
+    /// (`pass` or `warn`) and compares against `MIN_SPECIALIST_QUORUM`.
     fn quorum_passes(statuses: &[Option<grokrxiv_schemas::VerifierStatus>]) -> bool {
         statuses
             .iter()
-            .filter(|s| **s == Some(grokrxiv_schemas::VerifierStatus::Pass))
+            .filter(|s| {
+                matches!(
+                    **s,
+                    Some(grokrxiv_schemas::VerifierStatus::Pass)
+                        | Some(grokrxiv_schemas::VerifierStatus::Warn)
+                )
+            })
             .count()
             >= MIN_SPECIALIST_QUORUM
     }
@@ -3229,7 +3406,7 @@ mod tests {
             Some(VerifierStatus::Pass),
             Some(VerifierStatus::Pass),
             Some(VerifierStatus::Fail),
-            Some(VerifierStatus::Warn),
+            Some(VerifierStatus::Fail),
             None,
         ];
         assert!(
@@ -3251,13 +3428,23 @@ mod tests {
         let statuses = vec![
             Some(VerifierStatus::Pass),
             Some(VerifierStatus::Pass),
-            Some(VerifierStatus::Pass),
             Some(VerifierStatus::Warn),
+            Some(VerifierStatus::Fail),
             Some(VerifierStatus::Fail),
         ];
         assert!(
             quorum_passes(&statuses),
-            "quorum should pass at exactly the 3-of-5 threshold"
+            "quorum should pass at exactly the 3-of-5 usable threshold"
+        );
+    }
+
+    #[test]
+    fn quorum_allows_meta_when_all_specialists_warn() {
+        use grokrxiv_schemas::VerifierStatus;
+        let statuses = vec![Some(VerifierStatus::Warn); 5];
+        assert!(
+            quorum_passes(&statuses),
+            "warn is non-blocking and should count as usable verifier output"
         );
     }
 
@@ -3284,23 +3471,40 @@ mod tests {
     /// schema-guessing.
     #[test]
     fn quorum_error_payload_is_structured() {
-        let passing_roles: Vec<&'static str> = vec!["summary", "novelty"];
+        let usable_roles: Vec<&'static str> = vec!["summary", "novelty"];
+        let blocked_roles: Vec<&'static str> =
+            vec!["technical_correctness", "reproducibility", "citation"];
         let payload = serde_json::json!({
-            "error": format!(
-                "quorum: only {} of 5 specialists passed verification (need >= {})",
-                passing_roles.len(),
-                MIN_SPECIALIST_QUORUM,
-            ),
-            "passing_roles": passing_roles,
-            "min_quorum": MIN_SPECIALIST_QUORUM,
+            "summary": "Automated review gate failed before meta-review synthesis because too few specialist outputs passed verifier checks.",
+            "strengths": [],
+            "weaknesses": [
+                format!(
+                    "verifier quorum not met: only {} of 5 specialists produced usable output (need >= {})",
+                    usable_roles.len(),
+                    MIN_SPECIALIST_QUORUM,
+                ),
+                format!("Roles without usable verifier output: {}", blocked_roles.join(", ")),
+            ],
+            "questions": [
+                "Please address the verifier failures and resubmit corrections for automated re-review.",
+            ],
+            "recommendation": "major_revision",
+            "confidence": 1.0,
+            "gate": {
+                "name": "specialist_verifier_quorum",
+                "usable_roles": usable_roles,
+                "blocked_roles": blocked_roles,
+                "min_quorum": MIN_SPECIALIST_QUORUM,
+            }
         });
 
         let err_msg = payload
-            .get("error")
+            .get("weaknesses")
+            .and_then(|v| v.get(0))
             .and_then(|v| v.as_str())
             .expect("error key is a string");
         assert!(
-            err_msg.starts_with("quorum: only 2 of 5 specialists passed"),
+            err_msg.starts_with("verifier quorum not met: only 2 of 5 specialists"),
             "structured error message has wrong prefix: {err_msg}"
         );
         assert!(
@@ -3308,9 +3512,13 @@ mod tests {
             "structured error must surface the quorum threshold: {err_msg}"
         );
         assert_eq!(
-            payload["passing_roles"],
+            payload["recommendation"],
+            serde_json::json!("major_revision")
+        );
+        assert_eq!(
+            payload["gate"]["usable_roles"],
             serde_json::json!(["summary", "novelty"])
         );
-        assert_eq!(payload["min_quorum"], serde_json::json!(3));
+        assert_eq!(payload["gate"]["min_quorum"], serde_json::json!(3));
     }
 }

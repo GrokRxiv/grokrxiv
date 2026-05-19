@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { revalidatePath, updateTag } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { headers } from "next/headers";
 import { z } from "zod";
 import { REVALIDATE_SECRET } from "@/lib/env";
@@ -7,7 +7,7 @@ import { REVALIDATE_SECRET } from "@/lib/env";
 const Body = z.object({
   review_id: z.string().uuid(),
   paths: z.array(z.string().min(1)).optional(),
-  /** Optional arxiv id to flush the matching paper page too. */
+  /** Optional paper source key to flush the matching paper page too. */
   arxiv_id: z.string().optional(),
 });
 
@@ -37,17 +37,16 @@ export async function POST(request: Request) {
   //   - apps/web/app/page.tsx::ReviewsGrid               → reviews-list
   //   - apps/web/app/reviews/[id]/page.tsx::loadReviewWithPaper
   //                                                       → review:<uuid>, reviews-list
-  //   - apps/web/app/papers/[arxiv]/page.tsx::loadPaper  → paper:<arxiv>, reviews-list
+  //   - apps/web/app/papers/[arxiv]/page.tsx::loadPaper  → paper:<source_key>, reviews-list
   const revalidated: string[] = [];
-  // Next.js 16 Cache Components: updateTag(tag) invalidates every `'use
-  // cache'` function tagged with `cacheTag(tag)`. revalidateTag exists but
-  // requires a CacheLife profile; updateTag is the right invalidator.
-  updateTag("reviews-list");
+  // Route Handlers cannot call updateTag; use revalidateTag with an immediate
+  // expiry profile for webhook-driven cache invalidation.
+  revalidateTag("reviews-list", { expire: 0 });
   revalidated.push("tag:reviews-list");
-  updateTag(`review:${parsed.review_id}`);
+  revalidateTag(`review:${parsed.review_id}`, { expire: 0 });
   revalidated.push(`tag:review:${parsed.review_id}`);
   if (parsed.arxiv_id) {
-    updateTag(`paper:${parsed.arxiv_id}`);
+    revalidateTag(`paper:${parsed.arxiv_id}`, { expire: 0 });
     revalidated.push(`tag:paper:${parsed.arxiv_id}`);
   }
 

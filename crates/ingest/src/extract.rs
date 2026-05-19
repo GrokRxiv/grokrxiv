@@ -87,6 +87,46 @@ pub fn normalize_pdf_text(raw: &str) -> NormalizedPdfText {
     }
 }
 
+/// Infer a manuscript title from the opening normalized PDF text.
+///
+/// This is intentionally conservative. It only considers lines before major
+/// paper body boundaries and returns `None` unless the candidate looks more
+/// like a wrapped title than front-matter noise.
+pub(crate) fn infer_pdf_title(text: &str) -> Option<String> {
+    const MAX_TITLE_LEN: usize = 180;
+
+    let mut best: Option<String> = None;
+    let mut current: Vec<String> = Vec::new();
+
+    for raw_line in text.lines().take(80) {
+        let line = INLINE_SPACE_RE.replace_all(raw_line.trim(), " ");
+        let line = line.trim();
+        if line.is_empty() {
+            finish_title_candidate(&mut current, &mut best, MAX_TITLE_LEN);
+            continue;
+        }
+        if is_title_boundary(line) {
+            break;
+        }
+        if is_pdf_title_noise(line, current.iter().map(|s| word_count(s)).sum()) {
+            finish_title_candidate(&mut current, &mut best, MAX_TITLE_LEN);
+            continue;
+        }
+        if line.len() > MAX_TITLE_LEN {
+            finish_title_candidate(&mut current, &mut best, MAX_TITLE_LEN);
+            continue;
+        }
+        current.push(line.to_string());
+        if current.join(" ").len() > MAX_TITLE_LEN {
+            current.pop();
+            finish_title_candidate(&mut current, &mut best, MAX_TITLE_LEN);
+        }
+    }
+    finish_title_candidate(&mut current, &mut best, MAX_TITLE_LEN);
+
+    best
+}
+
 static HEADING_RE: Lazy<Regex> = Lazy::new(|| {
     // `^(\d+(\.\d+)*\s+)?[A-Z][A-Za-z ]{2,}$`
     Regex::new(r"^(?P<num>\d+(?:\.\d+)*)?\s*(?P<title>[A-Z][A-Za-z ]{2,})$").unwrap()
@@ -98,6 +138,28 @@ static INLINE_SPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]+").unwrap(
 static BLANK_LINES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
 static PAGE_MARKER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:page\s+)?\d+\s*(?:of\s+\d+)?$").unwrap());
+static URL_OR_DOI_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(https?://|www\.|doi:|\b10\.\d{4,9}/)").unwrap());
+static ARXIV_LINE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\barxiv:\s*\d{4}\.\d{4,5}|\b\d{4}\.\d{4,5}v\d+\b").unwrap());
+static DATE_LINE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?ix)
+        ^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}$
+        |^\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}$
+        |^\d{4}-\d{2}-\d{2}$
+        ",
+    )
+    .unwrap()
+});
+static EMAIL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").unwrap());
+static AFFILIATION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(university|institute|department|school of|college|laboratory|lab|centre|center|faculty)\b",
+    )
+    .unwrap()
+});
 
 fn is_repeatable_header_footer(line: &str) -> bool {
     if line.len() < 4 || line.len() > 96 {
@@ -108,6 +170,128 @@ fn is_repeatable_header_footer(line: &str) -> bool {
     }
     let word_count = line.split_whitespace().count();
     word_count <= 10 && line.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+fn finish_title_candidate(
+    current: &mut Vec<String>,
+    best: &mut Option<String>,
+    max_title_len: usize,
+) {
+    if current.is_empty() {
+        return;
+    }
+    let candidate = current.join(" ");
+    current.clear();
+    if !is_confident_pdf_title(&candidate, max_title_len) {
+        return;
+    }
+    if best
+        .as_ref()
+        .map(|existing| title_score(&candidate) > title_score(existing) + 30)
+        .unwrap_or(true)
+    {
+        *best = Some(candidate);
+    }
+}
+
+fn is_confident_pdf_title(candidate: &str, max_title_len: usize) -> bool {
+    let words = word_count(candidate);
+    words >= 4
+        && candidate.len() <= max_title_len
+        && candidate.chars().any(|c| c.is_ascii_lowercase())
+        && !candidate.ends_with('.')
+        && !URL_OR_DOI_RE.is_match(candidate)
+        && !ARXIV_LINE_RE.is_match(candidate)
+}
+
+fn title_score(title: &str) -> usize {
+    let words = word_count(title);
+    let length_bonus = title.len().min(120) / 12;
+    words * 3 + length_bonus
+}
+
+fn is_title_boundary(line: &str) -> bool {
+    matches!(
+        line.trim_matches(|c: char| c == ':' || c.is_whitespace())
+            .to_ascii_lowercase()
+            .as_str(),
+        "abstract" | "introduction" | "1 introduction" | "references" | "bibliography"
+    )
+}
+
+fn is_pdf_title_noise(line: &str, current_words: usize) -> bool {
+    if PAGE_MARKER_RE.is_match(line)
+        || URL_OR_DOI_RE.is_match(line)
+        || ARXIV_LINE_RE.is_match(line)
+        || DATE_LINE_RE.is_match(line)
+        || EMAIL_RE.is_match(line)
+        || AFFILIATION_RE.is_match(line)
+    {
+        return true;
+    }
+
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("grokrxiv:") || (line.starts_with('[') && line.ends_with(']')) {
+        return true;
+    }
+    if matches!(
+        lower.as_str(),
+        "abstract" | "contents" | "table of contents" | "preprint" | "draft"
+    ) {
+        return true;
+    }
+
+    let words = word_count(line);
+    if words == 0 {
+        return true;
+    }
+    if line.len() < 8 {
+        return true;
+    }
+    if words == 1 {
+        return current_words == 0 || is_all_caps_text(line);
+    }
+    if current_words >= 7 && looks_like_post_title_front_matter(line) {
+        return true;
+    }
+    if words <= 4 && is_all_caps_text(line) {
+        return true;
+    }
+    if current_words >= 7 && looks_like_author_name_line(line) {
+        return true;
+    }
+
+    false
+}
+
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+fn is_all_caps_text(line: &str) -> bool {
+    let letters: String = line.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    !letters.is_empty() && letters.chars().all(|c| c.is_ascii_uppercase())
+}
+
+fn looks_like_author_name_line(line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() < 2 || words.len() > 4 {
+        return false;
+    }
+    words.iter().all(|word| {
+        let trimmed = word.trim_matches(|c: char| c == ',' || c == ';' || c == '*');
+        let mut chars = trimmed.chars();
+        matches!(chars.next(), Some(first) if first.is_ascii_uppercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c == '-' || c == '\'')
+    })
+}
+
+fn looks_like_post_title_front_matter(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("research")
+        || lower.contains(" series")
+        || lower.contains("paper ")
+        || lower.starts_with("paper ")
 }
 
 /// Split a text blob into [`Section`]s using a heading-line heuristic.
@@ -200,6 +384,88 @@ pub fn extract_bibliography(text: &str) -> Vec<Citation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infers_multiline_pdf_title_from_opening_text() {
+        let text = "\
+1
+Robust Local Review
+Abstractions for Scientific PDF Ingestion
+Jane Doe
+University of Example
+
+Abstract
+We study local review ingestion.
+";
+
+        assert_eq!(
+            infer_pdf_title(text).as_deref(),
+            Some("Robust Local Review Abstractions for Scientific PDF Ingestion")
+        );
+    }
+
+    #[test]
+    fn infers_pdf_title_before_abstract_boundary_and_skips_noise() {
+        let text = "\
+arXiv:2605.12345v1 [cs.DL] 18 May 2026
+https://example.org/paper
+10.1234/example.paper
+May 18, 2026
+18 May 2026
+CONTENTS
+Reliable Extraction from Local Manuscripts
+Without Metadata
+Alice Author alice@example.edu
+Department of Computer Science, Example University
+
+Abstract
+This line must not be selected as title.
+";
+
+        assert_eq!(
+            infer_pdf_title(text).as_deref(),
+            Some("Reliable Extraction from Local Manuscripts Without Metadata")
+        );
+    }
+
+    #[test]
+    fn infers_pdf_title_with_one_word_wrapped_tail() {
+        let text = "\
+30 Apr 2026
+[ math.CT ]
+GrokRxiv:2026.04.mathematical-formalisms
+
+Law I — Mathematical Formalisms:
+Categorical Foundations for Matter–Information
+Correspondence
+MagnetonIO Research
+Emergent Spacetime Dynamics Series, Paper 1 of 4
+30 April 2026
+Abstract
+We formulate the categorical grammar.
+";
+
+        assert_eq!(
+            infer_pdf_title(text).as_deref(),
+            Some(
+                "Law I — Mathematical Formalisms: Categorical Foundations for Matter–Information Correspondence"
+            )
+        );
+    }
+
+    #[test]
+    fn returns_none_when_pdf_opening_has_no_confident_title() {
+        let text = "\
+1
+Abstract
+We study a system.
+
+Introduction
+The rest of the manuscript starts here.
+";
+
+        assert_eq!(infer_pdf_title(text), None);
+    }
 
     #[test]
     fn normalizes_pdf_ligatures_headers_pages_and_hyphenation() {

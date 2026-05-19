@@ -30,6 +30,8 @@ COPY crates ./crates
 # `include_str!("../../../schemas/...")`, so the schemas tree must be present
 # during the build stage (not just the runtime stage).
 COPY schemas ./schemas
+# The HTML/PR quality prompts are also embedded with `include_str!`.
+COPY prompts ./prompts
 
 ENV RUSTUP_TOOLCHAIN=1.82.0
 RUN cargo build --release -p grokrxiv-orchestrator

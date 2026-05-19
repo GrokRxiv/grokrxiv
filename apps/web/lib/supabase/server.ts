@@ -103,12 +103,19 @@ export async function getPaperByArxivId(arxivId: string): Promise<{
   paper: Paper;
   reviews: ReviewSummary[];
 } | null> {
+  return getPaperBySourceKey(arxivId);
+}
+
+export async function getPaperBySourceKey(sourceKey: string): Promise<{
+  paper: Paper;
+  reviews: ReviewSummary[];
+} | null> {
   if (!isSupabaseConfigured()) return null;
   const supabase = await createSupabaseServerClient();
   const { data: paper, error: paperErr } = await supabase
     .from("papers")
     .select("*")
-    .eq("arxiv_id", arxivId)
+    .or(`arxiv_id.eq.${sourceKey},source_id.eq.${sourceKey}`)
     .single();
   if (paperErr || !paper) return null;
   const { data: reviews } = await supabase

@@ -10,8 +10,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  formatSubmissionSourceLabel,
+  sourceInfoForPaper,
+} from "@/components/source-label";
 import { canModerate, getCurrentUser } from "@/lib/auth/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { Paper } from "@/lib/types";
 
 type ModerationRow = {
   id: string;
@@ -24,12 +29,7 @@ type ModerationRow = {
         id: string;
         status: string;
         visibility: "public" | "private";
-        paper:
-          | {
-              arxiv_id: string;
-              title: string;
-            }
-          | null;
+        paper: Paper | null;
       }
     | null;
 };
@@ -41,6 +41,7 @@ type RawModerationRow = Omit<ModerationRow, "review"> & {
 type SubmissionRow = {
   id: string;
   source: string;
+  source_type?: string | null;
   visibility: "public" | "private";
   compute_profile: string;
   state: string;
@@ -62,6 +63,10 @@ function formatReviewType(value: string): string {
     default:
       return value.replaceAll("_", " ");
   }
+}
+
+function formatSubmissionSource(submission: SubmissionRow): string {
+  return formatSubmissionSourceLabel(submission.source, submission.source_type);
 }
 
 export default function AdminPage() {
@@ -88,13 +93,13 @@ async function AdminPageContent() {
     supabase
       .from("moderation_queue")
       .select(
-        "id, state, review_id, notes, created_at, review:reviews(id, status, visibility, paper:papers(arxiv_id, title))",
+        "id, state, review_id, notes, created_at, review:reviews(id, status, visibility, paper:papers(*))",
       )
       .order("created_at", { ascending: false })
       .limit(25),
     supabase
       .from("submissions")
-      .select("id, source, visibility, compute_profile, state, created_at")
+      .select("id, source, source_type, visibility, compute_profile, state, created_at")
       .order("created_at", { ascending: false })
       .limit(25),
   ]);
@@ -160,9 +165,9 @@ async function AdminPageContent() {
                     {row.review?.paper?.title ?? "Review awaiting paper join"}
                   </CardTitle>
                   <CardDescription>
-                    {row.review?.paper?.arxiv_id
-                      ? `arXiv:${row.review.paper.arxiv_id}`
-                      : "No arXiv id"}
+                    {row.review?.paper
+                      ? sourceInfoForPaper(row.review.paper).detail
+                      : "No paper source"}
                   </CardDescription>
                 </CardHeader>
               </Card>
@@ -190,7 +195,7 @@ async function AdminPageContent() {
                   className="border-t border-[color:var(--color-border)]"
                 >
                   <td className="max-w-xs truncate px-4 py-3 font-mono">
-                    {submission.source}
+                    {formatSubmissionSource(submission)}
                   </td>
                   <td className="px-4 py-3">{submission.visibility}</td>
                   <td className="px-4 py-3">

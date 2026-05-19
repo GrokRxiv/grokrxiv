@@ -326,6 +326,21 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td>Hard ceiling per review</td>
 </tr>
 <tr>
+<td><code>GROKRXIV_FREE_REVIEW_LIMIT</code></td>
+<td><em>none</em></td>
+<td>Lifetime free full-review cap per logged-in user; default <code>3</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_DAILY_FULL_REVIEW_LIMIT</code></td>
+<td><em>none</em></td>
+<td>Optional global daily full-review throttle</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_MONTHLY_FULL_REVIEW_LIMIT</code></td>
+<td><em>none</em></td>
+<td>Optional global monthly full-review throttle</td>
+</tr>
+<tr>
 <td><code>GROKRXIV_NO_CACHE</code></td>
 <td><code>--no-cache</code></td>
 <td><code>1</code>/<code>true</code> to enable</td>
@@ -379,6 +394,11 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>GROKRXIV_META_REVIEWER_MODEL</code></td>
 <td><code>claude-sonnet-4-6</code></td>
 <td>Meta-review synthesis model; same role as <code>--model-for meta_reviewer=...</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES</code></td>
+<td><code>32</code></td>
+<td>Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_MODERATOR</code></td>
@@ -557,7 +577,15 @@ those CLIs use their own logged-in local auth instead of inherited API keys.</p>
 </tr>
 <tr>
 <td><code>GROKRXIV_REVIEWS_REPO</code></td>
-<td>Default <code>grokrxiv-reviews</code></td>
+<td>Backward-compatible public repo alias; default <code>grokrxiv-reviews</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_PUBLIC_REVIEWS_REPO</code></td>
+<td>Public review repo, e.g. <code>GrokRxiv/grokrxiv-reviews</code></td>
+</tr>
+<tr>
+<td><code>GROKRXIV_PRIVATE_REVIEWS_REPO</code></td>
+<td>Optional paid-private archive repo, e.g. <code>GrokRxiv/grokrxiv-private-reviews</code></td>
 </tr>
 </tbody>
 </table>
@@ -600,9 +628,48 @@ those CLIs use their own logged-in local auth instead of inherited API keys.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="supabase-auth-smtp"><a class="anchor" aria-label="anchor" href="#supabase-auth-smtp">#</a>Supabase Auth SMTP</h2>
+<table>
+<thead>
+<tr>
+<th>Env</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SMTP_HOST</code></td>
+<td>Mailgun SMTP host, <code>smtp.mailgun.org</code> for US domains</td>
+</tr>
+<tr>
+<td><code>SMTP_PORT</code></td>
+<td><code>587</code></td>
+</tr>
+<tr>
+<td><code>SMTP_USER</code></td>
+<td>Mailgun SMTP user, e.g. <code>postmaster@appmail.magnetonlabs.com</code></td>
+</tr>
+<tr>
+<td><code>SMTP_PASS</code></td>
+<td>Mailgun SMTP password; secret, never <code>NEXT_PUBLIC_*</code></td>
+</tr>
+<tr>
+<td><code>SMTP_ADMIN_EMAIL</code></td>
+<td>Sender address, e.g. <code>no-reply@appmail.magnetonlabs.com</code></td>
+</tr>
+<tr>
+<td><code>SMTP_SENDER_NAME</code></td>
+<td>Sender display name, e.g. <code>GrokRxiv</code></td>
+</tr>
+</tbody>
+</table>
+<p>Supabase Auth sends magic-link email. The web app should not send login email
+through EmailJS or any browser-side mail provider. Local Supabase keeps SMTP
+enabled in <code>supabase/config.toml</code>, but routes it to the local Mailpit/Inbucket
+container instead of Mailgun.</p>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-18T14:34:05.689Z &middot; grokrxiv</p>
+<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-19T14:37:34.482Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

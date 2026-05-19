@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { formatSubmissionSourceLabel } from "@/components/source-label";
 import { getCurrentUser } from "@/lib/auth/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -62,6 +63,10 @@ function formatReviewType(value: string): string {
     default:
       return value.replaceAll("_", " ");
   }
+}
+
+function formatSubmissionSource(submission: SubmissionRow): string {
+  return formatSubmissionSourceLabel(submission.source, submission.source_type);
 }
 
 export default function DashboardPage() {
@@ -213,7 +218,7 @@ async function DashboardPageContent() {
                     className="border-t border-[color:var(--color-border)]"
                   >
                     <td className="max-w-xs truncate px-4 py-3 font-mono">
-                      {submission.source}
+                      {formatSubmissionSource(submission)}
                     </td>
                     <td className="px-4 py-3">{submission.visibility}</td>
                     <td className="px-4 py-3">
