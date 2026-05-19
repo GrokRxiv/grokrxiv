@@ -83,7 +83,7 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status, verifier_notes)",
     )
     .eq("id", id)
     .eq("visibility", "public")

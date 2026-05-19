@@ -1084,10 +1084,74 @@ fn parse_and_validate(
     // block even when --output-format=json is set. Mirrors the helper in
     // ApiRunner.
     let cleaned = strip_code_fences(extracted.trim());
-    let parsed: serde_json::Value = serde_json::from_str(cleaned)
-        .map_err(|e| anyhow::anyhow!("not valid JSON: {e}; raw={extracted:?}"))?;
+    let parsed: serde_json::Value = match serde_json::from_str(cleaned) {
+        Ok(parsed) => parsed,
+        Err(first_err) => {
+            let mut candidate_errors: Vec<String> = Vec::new();
+            for candidate in json_object_candidates(cleaned).into_iter().rev() {
+                match serde_json::from_str::<serde_json::Value>(&candidate) {
+                    Ok(parsed) => match validate_parsed(parsed, schema) {
+                        Ok(validated) => return Ok(validated),
+                        Err(err) => candidate_errors.push(err.to_string()),
+                    },
+                    Err(err) => candidate_errors.push(err.to_string()),
+                }
+            }
+            if candidate_errors.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "not valid JSON: {first_err}; raw={extracted:?}"
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "not valid JSON: {first_err}; candidate errors={}; raw={extracted:?}",
+                candidate_errors.join(" | ")
+            ));
+        }
+    };
 
     validate_parsed(parsed, schema)
+}
+
+fn json_object_candidates(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start_idx) = start.take() {
+                        out.push(text[start_idx..=idx].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn validate_parsed(
@@ -1130,9 +1194,10 @@ fn repair_review_output(
         AgentRole::Reproducibility => parse_json_lenient(extracted)
             .and_then(repair_reproducibility_review)
             .or_else(|| Some(fallback_reproducibility_review(artifact)))?,
-        AgentRole::Citation => parse_json_lenient(extracted)
-            .and_then(repair_citation_review)
-            .or_else(|| Some(fallback_citation_review(artifact)))?,
+        AgentRole::Citation => {
+            let _ = artifact;
+            parse_json_lenient(extracted).and_then(repair_citation_review)?
+        }
         _ => return None,
     };
 
@@ -1484,33 +1549,12 @@ fn repair_citation_review(parsed: serde_json::Value) -> Option<serde_json::Value
     }))
 }
 
-fn fallback_citation_review(artifact: &serde_json::Value) -> serde_json::Value {
-    let entries = artifact
-        .get("bibliography")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .enumerate()
-                .map(|(idx, item)| fallback_citation_entry(item, idx, artifact))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    serde_json::json!({
-        "entries": entries,
-        "missing_references": [],
-        "summary": "Deterministic citation review generated from extracted bibliography and in-text citation contexts. Entries are preserved for moderation; external existence lookups were not performed in this stage.",
-        "confidence": 0.55,
-    })
-}
-
 fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serde_json::Value> {
     let citation = item.get("citation")?;
     let citation_obj = normalize_citation(citation, idx);
     Some(serde_json::json!({
         "citation": citation_obj,
-        "exists": item.get("exists").and_then(|v| v.as_bool()).unwrap_or(false),
+        "exists": nullable_bool(item.get("exists")),
         "resolved_doi": nullable_string(item.get("resolved_doi")),
         "resolved_url": nullable_string(item.get("resolved_url").or_else(|| item.get("url"))),
         "relevance": normalize_relevance(item.get("relevance").and_then(|v| v.as_str())),
@@ -1518,42 +1562,6 @@ fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serd
         "explanation": text_field(item, &["explanation", "reason", "comment", "notes"])
             .unwrap_or_else(|| "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()),
     }))
-}
-
-fn fallback_citation_entry(
-    item: &serde_json::Value,
-    idx: usize,
-    artifact: &serde_json::Value,
-) -> serde_json::Value {
-    let contexts = citation_contexts_for(item, artifact);
-    let (notes, explanation, relevance) = if contexts.is_empty() {
-        (
-            "No matching in-text citation context was found in the extracted body.".to_string(),
-            "Bibliography entry preserved for human moderation; no matching extracted citation context was found and no external citation lookup was completed.".to_string(),
-            "medium",
-        )
-    } else {
-        let joined = contexts
-            .iter()
-            .take(3)
-            .map(|(section, sentence)| format!("{section}: {sentence}"))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        (
-            format!("{} extracted citation context(s) matched.", contexts.len()),
-            format!("Cited in extracted paper context(s): {joined}"),
-            "high",
-        )
-    };
-    serde_json::json!({
-        "citation": normalize_citation(item, idx),
-        "exists": false,
-        "resolved_doi": null,
-        "resolved_url": null,
-        "relevance": relevance,
-        "notes": notes,
-        "explanation": explanation,
-    })
 }
 
 fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::Value {
@@ -1596,89 +1604,6 @@ fn citation_key(citation: &serde_json::Value) -> Option<String> {
         })
 }
 
-fn citation_contexts_for(
-    citation: &serde_json::Value,
-    artifact: &serde_json::Value,
-) -> Vec<(String, String)> {
-    let Some(key) = citation_key(citation) else {
-        return Vec::new();
-    };
-    // Strip surrounding brackets so a key like `[1]` produces needles for `[1]`
-    // (numeric citation style) not `[[1]]`. Some extractors emit `key="[1]"`,
-    // others emit `key="1"`; handle both.
-    let bare = key
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    let bracketed = format!("[{bare}]");
-    let mut needles: Vec<String> = vec![
-        format!("@{bare}"),    // BibTeX-style `@Deutsch1991`
-        bracketed.clone(),     // Numeric `[1]`
-        format!("{{{bare}}}"), // LaTeX `{Deutsch1991}`
-    ];
-    // Preserve the original key as a needle too — covers cases where the
-    // body already includes the bracketed form (e.g. raw cite key `Deutsch1991`).
-    if key != bare && !needles.contains(&key) {
-        needles.push(key.clone());
-    }
-    artifact
-        .get("sections")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .flat_map(|section| {
-            let heading = section
-                .get("heading")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = section
-                .get("body_markdown")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            extract_sentences(body)
-                .into_iter()
-                .filter({
-                    let needles = needles.clone();
-                    move |sentence| needles.iter().any(|needle| sentence.contains(needle))
-                })
-                .map(move |sentence| (heading.clone(), truncate_context(&sentence)))
-        })
-        .take(5)
-        .collect()
-}
-
-fn extract_sentences(body: &str) -> Vec<String> {
-    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut sentences = Vec::new();
-    let mut current = String::new();
-    for ch in normalized.chars() {
-        current.push(ch);
-        if matches!(ch, '.' | '?' | '!') {
-            let sentence = current.trim();
-            if !sentence.is_empty() {
-                sentences.push(sentence.to_string());
-            }
-            current.clear();
-        }
-    }
-    let tail = current.trim();
-    if !tail.is_empty() {
-        sentences.push(tail.to_string());
-    }
-    sentences
-}
-
-fn truncate_context(sentence: &str) -> String {
-    const MAX: usize = 360;
-    if sentence.chars().count() <= MAX {
-        return sentence.to_string();
-    }
-    let mut out: String = sentence.chars().take(MAX.saturating_sub(16)).collect();
-    out.push_str("... [truncated]");
-    out
-}
-
 fn normalize_relevance(raw: Option<&str>) -> &'static str {
     match raw.unwrap_or("").to_ascii_lowercase().as_str() {
         "high" => "high",
@@ -1693,6 +1618,13 @@ fn nullable_string(v: Option<&serde_json::Value>) -> Option<String> {
     match v {
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
         Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn nullable_bool(v: Option<&serde_json::Value>) -> Option<bool> {
+    match v {
+        Some(serde_json::Value::Bool(b)) => Some(*b),
         _ => None,
     }
 }
@@ -2477,6 +2409,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_and_validate_extracts_fenced_json_after_prose() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["foo"],
+            "properties": { "foo": { "type": "string" } }
+        });
+        let raw = "Here is the JSON:\n\n```json\n{\"foo\":\"bar\"}\n```";
+
+        let v = parse_and_validate(raw, &schema).expect("fenced object extracted");
+
+        assert_eq!(v["foo"], "bar");
+    }
+
+    #[test]
+    fn test_parse_and_validate_prefers_last_valid_json_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["foo"],
+            "properties": { "foo": { "type": "string" } }
+        });
+        let raw = "First attempt:\n```json\n{\"foo\":7}\n```\n\n{\"foo\":\"bar\"}";
+
+        let v = parse_and_validate(raw, &schema).expect("last valid object extracted");
+
+        assert_eq!(v["foo"], "bar");
+    }
+
+    #[test]
     fn test_parse_and_validate_schema_rejects_bad_shape() {
         let schema = serde_json::json!({
             "type": "object",
@@ -2643,7 +2603,7 @@ mod tests {
     }
 
     #[test]
-    fn citation_repair_builds_honest_fallback_from_bibliography() {
+    fn citation_repair_does_not_build_schema_only_fallback_from_bibliography() {
         let schema = citation_review_schema_for_test();
         let artifact = serde_json::json!({
             "bibliography": [{
@@ -2658,25 +2618,12 @@ mod tests {
             }]
         });
 
-        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact)
-            .expect("fallback validates");
+        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact);
 
-        assert_eq!(repaired["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(repaired["entries"][0]["citation"]["key"], "doe2024");
-        assert_eq!(
-            repaired["entries"][0]["citation"]["title"],
-            "A Useful Paper"
+        assert!(
+            repaired.is_none(),
+            "citation fallback must not create a schema-shaped review without an LLM citation judgment"
         );
-        assert_eq!(repaired["entries"][0]["exists"], false);
-        assert_eq!(repaired["entries"][0]["relevance"], "high");
-        assert!(repaired["entries"][0]["explanation"]
-            .as_str()
-            .unwrap()
-            .contains("Introduction"));
-        assert!(repaired["summary"]
-            .as_str()
-            .unwrap()
-            .contains("external existence lookups were not performed"));
     }
 
     #[test]
@@ -2732,7 +2679,7 @@ mod tests {
                                 },
                                 "required": ["key", "raw", "title", "authors", "year", "venue", "doi", "arxiv_id", "url"]
                             },
-                            "exists": {"type": "boolean"},
+                            "exists": {"type": ["boolean", "null"]},
                             "resolved_doi": {"type": ["string", "null"]},
                             "resolved_url": {"type": ["string", "null"]},
                             "relevance": {"type": "string", "enum": ["high", "medium", "low", "unrelated"]},

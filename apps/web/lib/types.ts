@@ -75,6 +75,7 @@ export interface AgentOutput {
   model: string;
   output: unknown;
   verifier_status: VerifierStatus;
+  verifier_notes?: unknown | null;
 }
 
 export interface SummaryReviewOutput {

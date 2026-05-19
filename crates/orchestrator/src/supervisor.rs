@@ -683,10 +683,8 @@ async fn run_review_dag_inner(
     {
         let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
         // Phase: split the citation review between LLM and verifier. The
-        // verifier owns existence + DOI/URL (real Crossref/arXiv lookups);
-        // the LLM owns relevance + missing-references prose. Merge before
-        // persisting so a single consistent citation_review JSON lands on
-        // review_agents.output.
+        // verifier owns existence + DOI/URL/provenance in verifier_notes; the
+        // LLM-owned output remains citation-use prose and must stay schema-valid.
         let output_to_persist = match *role {
             AgentRole::Citation => {
                 merge_citation_verifier_into_output(output.clone(), v_notes.as_ref())
@@ -699,6 +697,10 @@ async fn run_review_dag_inner(
             }
             _ => output.clone(),
         };
+        #[cfg(feature = "grokrxiv-verifier")]
+        if !matches!(v_status, Some(VerifierStatus::Fail)) {
+            validate_role_output_after_merge(*role, &output_to_persist, &state.agent_schemas)?;
+        }
         crate::db::insert_review_agent(
             pool,
             crate::db::ReviewAgentInsert {
@@ -800,6 +802,7 @@ async fn run_review_dag_inner(
             quorum = MIN_SPECIALIST_QUORUM,
             "specialist quorum not met; recorded major_revision gate failure"
         );
+        anyhow::bail!("{error}");
     } else {
 
     // Meta-reviewer: real synthesis node. FP6 A1: feed it ONLY the five
@@ -1125,6 +1128,31 @@ fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
     crate::review_dag::role_slug(role)
 }
 
+#[cfg(feature = "grokrxiv-verifier")]
+fn validate_role_output_after_merge(
+    role: grokrxiv_schemas::AgentRole,
+    output: &serde_json::Value,
+    schemas: &crate::state::AgentSchemaMap,
+) -> anyhow::Result<()> {
+    let Some(schema) = schemas.get(&role) else {
+        return Ok(());
+    };
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| anyhow::anyhow!("invalid schema for {role:?}: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(output)
+        .map(|e| e.to_string())
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "post-merge schema validation failed for {role:?}: {}",
+            errors.join("; ")
+        )
+    }
+}
+
 fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) -> String {
     use grokrxiv_schemas::AgentRole;
     let task = match role {
@@ -1188,16 +1216,15 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
                      existence proof in a field where Coq tooling does not yet cover the \
                      theory). When applying this gate, cite the specific specialist findings \
                      in `summary` and add the missing artifacts to `weaknesses`.\n\n\
-                     VERIFIED-FACT WEIGHTING. Specialist outputs now carry merged ground \
-                     truth from deterministic verifiers: `citation_review.entries[*].exists / \
-                     resolved_doi / resolved_url` come from real Crossref + arXiv lookups; \
-                     `reproducibility_review.concerns[]` entries describing 'Verifier could \
-                     not reach …' or 'GitHub repository … is marked archived' came from \
-                     HTTP HEAD + GitHub API calls; `novelty_review.related_work[]` entries \
-                     tagged `relation: candidate_neighbor` came from Semantic Scholar. Treat \
-                     these fields as authoritative — do not contradict them. The specialists' \
-                     `relevance` / `confidence` / `recommendation` fields remain LLM \
-                     judgments; weight them against the verified facts when they conflict.",
+                     VERIFIED-FACT WEIGHTING. Deterministic verifier facts are stored in \
+                     each specialist row's `verifier_notes`, not in LLM-authored fields. \
+                     For citation, `verifier_notes.citation.notes.entries[*].status` is \
+                     authoritative: `resolved` and `unresolved` are definitive, \
+                     `transient_unknown` means the external service failed and must not \
+                     be treated as a fake citation, and `malformed` means the identifier \
+                     shape was invalid. Reproducibility reachability and novelty retrieval \
+                     facts are also verifier-side provenance. Do not convert unknown or \
+                     verifier-only facts into LLM judgments.",
                 );
             }
             _ => {}
@@ -1206,44 +1233,15 @@ fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) ->
     s
 }
 
-/// Pre-populate `novelty_review.related_work[]` with the verified prior-art
-/// candidates from Semantic Scholar. Entries already produced by the LLM are
-/// preserved; we append the verifier candidates that the LLM didn't already
-/// cite (matched by case-insensitive title prefix).
+/// Novelty retrieval facts are verifier-side provenance, not LLM-authored
+/// `novelty_review.related_work[]` entries. Keep the specialist output exactly
+/// as the schema-valid model emitted it; deterministic related-paper candidates
+/// remain in prompts / verifier notes rather than being persisted as synthetic
+/// specialist judgments.
 fn merge_novelty_facts_into_output(
-    mut output: serde_json::Value,
-    facts: &crate::agents::specialist_facts::NoveltyFacts,
+    output: serde_json::Value,
+    _facts: &crate::agents::specialist_facts::NoveltyFacts,
 ) -> serde_json::Value {
-    let Some(obj) = output.as_object_mut() else {
-        return output;
-    };
-    let related = obj
-        .entry("related_work".to_string())
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let Some(arr) = related.as_array_mut() else {
-        return output;
-    };
-    let existing_titles: std::collections::HashSet<String> = arr
-        .iter()
-        .filter_map(|v| v.get("title").and_then(|t| t.as_str()))
-        .map(|s| s.to_ascii_lowercase().chars().take(80).collect::<String>())
-        .collect();
-    for p in &facts.related_papers {
-        let title_key: String = p.title.to_ascii_lowercase().chars().take(80).collect();
-        if existing_titles.contains(&title_key) {
-            continue;
-        }
-        arr.push(serde_json::json!({
-            "title": p.title,
-            "year": p.year,
-            "venue": p.source,
-            "url": p.url,
-            "doi": p.doi,
-            "arxiv_id": p.arxiv_id,
-            "relation": "candidate_neighbor",
-            "notes": p.abstract_snippet,
-        }));
-    }
     output
 }
 
@@ -1271,10 +1269,17 @@ fn merge_reproducibility_facts_into_output(
         if u.reachable {
             continue;
         }
+        if concern_mentions(concerns_arr, &u.url) {
+            continue;
+        }
         let area = match u.kind {
             UrlKind::Code => "code",
             UrlKind::Dataset => "data",
             UrlKind::Other => "other",
+        };
+        let severity = match u.kind {
+            UrlKind::Code | UrlKind::Dataset => "major",
+            UrlKind::Other => "minor",
         };
         let status = u
             .status
@@ -1283,11 +1288,16 @@ fn merge_reproducibility_facts_into_output(
         concerns_arr.push(serde_json::json!({
             "area": area,
             "description": format!("Verifier could not reach `{}` (status={})", u.url, status),
-            "severity": "major",
+            "severity": severity,
         }));
     }
     for r in &facts.github_repos {
         if matches!(r.archived, Some(true)) {
+            let repo = format!("{}/{}", r.owner, r.repo);
+            let repo_needle = format!("GitHub repository `{repo}`");
+            if concern_mentions(concerns_arr, &repo_needle) {
+                continue;
+            }
             concerns_arr.push(serde_json::json!({
                 "area": "code",
                 "description": format!(
@@ -1301,62 +1311,26 @@ fn merge_reproducibility_facts_into_output(
     output
 }
 
-/// Overlay the verifier's per-entry resolution (`exists`, `resolved_doi`,
-/// `resolved_url`) onto the LLM specialist's `citation_review.entries[*]`.
-/// The LLM's `relevance` / `notes` / `explanation` / `summary` /
-/// `missing_references` are preserved. The match is by index (the spec
-/// requires both arrays in bibliography order); when the LLM array is shorter
-/// the extra verifier rows are appended so no validation work is lost.
+fn concern_mentions(concerns: &[serde_json::Value], needle: &str) -> bool {
+    concerns.iter().any(|concern| {
+        concern
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(|description| description.contains(needle))
+            .unwrap_or(false)
+    })
+}
+
+/// Keep verifier-owned citation resolution out of the LLM-authored citation
+/// review JSON. Public/API consumers read definitive existence, DOI, URL, and
+/// unknown/malformed status from `review_agents.verifier_notes`; the specialist
+/// output remains a schema-valid citation-use review.
 fn merge_citation_verifier_into_output(
-    mut output: serde_json::Value,
-    v_notes: Option<&serde_json::Value>,
+    output: serde_json::Value,
+    _v_notes: Option<&serde_json::Value>,
 ) -> serde_json::Value {
-    let Some(v_entries) = v_notes
-        .and_then(|n| n.get("entries"))
-        .and_then(|e| e.as_array())
-    else {
+    if output.get("error").is_some() {
         return output;
-    };
-    let Some(entries) = output.get_mut("entries").and_then(|e| e.as_array_mut()) else {
-        return output;
-    };
-    for (i, v_entry) in v_entries.iter().enumerate() {
-        let exists = v_entry
-            .get("exists")
-            .cloned()
-            .unwrap_or(serde_json::Value::Bool(false));
-        let resolved_doi = v_entry
-            .get("resolved_doi")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let resolved_url = v_entry
-            .get("resolved_url")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        if let Some(out_entry) = entries.get_mut(i).and_then(|v| v.as_object_mut()) {
-            out_entry.insert("exists".into(), exists);
-            out_entry.insert("resolved_doi".into(), resolved_doi);
-            out_entry.insert("resolved_url".into(), resolved_url);
-        } else {
-            // Verifier saw more entries than the LLM emitted — synthesize a
-            // minimal citation_review entry so the verified data isn't lost.
-            // Schema requires citation/relevance/notes/explanation; fill with
-            // verifier-sourced defaults.
-            let raw = v_entry
-                .get("raw")
-                .and_then(|r| r.as_str())
-                .unwrap_or("")
-                .to_string();
-            entries.push(serde_json::json!({
-                "citation": { "key": format!("[{}]", i + 1), "raw": raw, "title": null, "authors": [] },
-                "exists": exists,
-                "resolved_doi": resolved_doi,
-                "resolved_url": resolved_url,
-                "relevance": "medium",
-                "notes": null,
-                "explanation": "Entry resolved by verifier; LLM specialist did not include it in its review output.",
-            }));
-        }
     }
     output
 }
@@ -1674,7 +1648,8 @@ fn build_specialist_prompt(
              from the extracted in-text contexts (`high`/`medium`/`low`/`unrelated`), \
              write `explanation` describing where and why it's cited, and \
              leave `exists`/`resolved_doi`/`resolved_url` at their defaults \
-             (`false`/`null`) since the verifier will overlay ground truth. \
+             (`null`/`null`/`null`) since verifier provenance in \
+             `verifier_notes` is authoritative. \
              If the bibliography block says entries were omitted, do not invent \
              entries for the omitted references; the verifier and render pipeline \
              preserve the full bibliography separately. \
@@ -3090,12 +3065,12 @@ mod tests {
     }
 
     #[test]
-    fn merge_citation_verifier_into_output_overlays_per_entry() {
+    fn merge_citation_verifier_into_output_keeps_verifier_facts_out_of_llm_output() {
         let llm_output = serde_json::json!({
             "entries": [
                 {
                     "citation": { "key": "[1]", "raw": "Foo et al.", "title": null, "authors": [] },
-                    "exists": false,
+                    "exists": null,
                     "resolved_doi": null,
                     "resolved_url": null,
                     "relevance": "high",
@@ -3104,7 +3079,7 @@ mod tests {
                 },
                 {
                     "citation": { "key": "[2]", "raw": "Bar et al.", "title": null, "authors": [] },
-                    "exists": false,
+                    "exists": null,
                     "resolved_doi": null,
                     "resolved_url": null,
                     "relevance": "medium",
@@ -3121,23 +3096,66 @@ mod tests {
             "unresolved": ["Bar et al."],
             "entries": [
                 { "raw": "Foo et al.", "exists": true,  "resolved_doi": "10.1/foo", "resolved_url": "https://doi.org/10.1/foo", "source": "crossref" },
-                { "raw": "Bar et al.", "exists": false, "resolved_doi": null,       "resolved_url": null,                       "source": "none" }
+                { "raw": "Bar et al.", "exists": false, "resolved_doi": null,       "resolved_url": null,                       "source": "none" },
+                { "raw": "Baz et al.", "exists": true,  "resolved_doi": "10.1/baz", "resolved_url": "https://doi.org/10.1/baz", "source": "crossref" }
             ]
         });
         let merged = merge_citation_verifier_into_output(llm_output, Some(&v_notes));
         let entries = merged.get("entries").unwrap().as_array().unwrap();
-        // Entry 0: verifier marks resolved.
-        assert_eq!(entries[0]["exists"], serde_json::Value::Bool(true));
-        assert_eq!(entries[0]["resolved_doi"], "10.1/foo");
-        assert_eq!(entries[0]["resolved_url"], "https://doi.org/10.1/foo");
-        // LLM prose preserved.
+        // Verifier facts stay in verifier_notes; they are not rewritten into
+        // LLM-owned citation review fields or appended as synthetic entries.
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["exists"], serde_json::Value::Null);
+        assert_eq!(entries[0]["resolved_doi"], serde_json::Value::Null);
+        assert_eq!(entries[0]["resolved_url"], serde_json::Value::Null);
         assert_eq!(entries[0]["relevance"], "high");
         assert_eq!(entries[0]["notes"], "Used in Section 3");
-        // Entry 1: still unresolved.
-        assert_eq!(entries[1]["exists"], serde_json::Value::Bool(false));
-        assert_eq!(entries[1]["resolved_doi"], serde_json::Value::Null);
-        // Summary intact.
         assert_eq!(merged["summary"], "LLM prose stays.");
+    }
+
+    #[test]
+    fn merge_citation_verifier_skips_error_outputs() {
+        let llm_output = serde_json::json!({
+            "error": "citation reviewer failed"
+        });
+        let v_notes = serde_json::json!({
+            "entries": [
+                { "raw": "Foo et al.", "exists": true, "resolved_doi": "10.1/foo", "resolved_url": "https://doi.org/10.1/foo", "source": "crossref" }
+            ]
+        });
+
+        let merged = merge_citation_verifier_into_output(llm_output.clone(), Some(&v_notes));
+
+        assert_eq!(merged, llm_output);
+    }
+
+    #[test]
+    fn merge_novelty_facts_does_not_append_schema_invalid_candidates() {
+        let llm_output = serde_json::json!({
+            "novelty_score": 0.7,
+            "related_work": [],
+            "missing_prior_art": [],
+            "verdict": "significant",
+            "confidence": 0.8
+        });
+        let facts = crate::agents::specialist_facts::NoveltyFacts {
+            related_papers: vec![crate::agents::specialist_facts::RelatedPaper {
+                title: "Nearby Work".into(),
+                abstract_snippet: Some("A nearby result.".into()),
+                year: Some(2025),
+                primary_author: Some("Ada".into()),
+                source: "Semantic Scholar".into(),
+                source_id: "s2:nearby".into(),
+                url: Some("https://example.com/paper".into()),
+                doi: Some("10.1/example".into()),
+                arxiv_id: Some("2605.00001".into()),
+            }],
+            retrieval_error: String::new(),
+        };
+
+        let merged = merge_novelty_facts_into_output(llm_output.clone(), &facts);
+
+        assert_eq!(merged, llm_output);
     }
 
     #[test]
@@ -3217,6 +3235,55 @@ mod tests {
             .collect();
         assert_eq!(archived.len(), 1);
         assert_eq!(archived[0]["severity"], "minor");
+    }
+
+    #[test]
+    fn merge_reproducibility_facts_dedupes_urls_and_marks_other_minor() {
+        use crate::agents::specialist_facts::{ReproducibilityFacts, UrlCheck, UrlKind};
+        let llm = serde_json::json!({
+            "code_availability": "not_applicable",
+            "code_url": null,
+            "data_availability": "not_applicable",
+            "data_url": null,
+            "environment": null,
+            "concerns": [{
+                "area": "other",
+                "description": "Verifier could not reach `https://example.com/dead` (status=404)",
+                "severity": "minor"
+            }],
+            "reproducibility_score": 0.6,
+            "confidence": 0.7
+        });
+        let facts = ReproducibilityFacts {
+            urls_checked: vec![
+                UrlCheck {
+                    url: "https://example.com/dead".into(),
+                    reachable: false,
+                    status: Some(404),
+                    final_url: None,
+                    kind: UrlKind::Other,
+                },
+                UrlCheck {
+                    url: "https://example.com/new-dead".into(),
+                    reachable: false,
+                    status: Some(404),
+                    final_url: None,
+                    kind: UrlKind::Other,
+                },
+            ],
+            github_repos: vec![],
+        };
+
+        let merged = merge_reproducibility_facts_into_output(llm, &facts);
+        let concerns = merged["concerns"].as_array().unwrap();
+
+        assert_eq!(concerns.len(), 2);
+        assert_eq!(concerns[1]["area"], "other");
+        assert_eq!(concerns[1]["severity"], "minor");
+        assert!(concerns[1]["description"]
+            .as_str()
+            .unwrap()
+            .contains("new-dead"));
     }
 
     #[test]

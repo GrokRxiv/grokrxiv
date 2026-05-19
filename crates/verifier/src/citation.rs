@@ -2,8 +2,8 @@
 //!
 //! Every citation gets a real existence check:
 //!   - `Citation.doi`        → `GET {crossref_base}/{doi}` (metadata only).
-//!   - `Citation.arxiv_id`   → batched `GET {arxiv_base}?id_list=ID1,ID2,...`,
-//!                             a single Atom response covers up to 100 ids.
+//!   - `Citation.arxiv_id`   → batched `GET {arxiv_base}?id_list=ID1,ID2,...`
+//!                             with explicit `max_results` for each page.
 //!   - Plain refs (no DOI, no arxiv_id) → crossref free-text bibliographic
 //!                             query against `Citation.raw`; the top hit
 //!                             counts as resolved when its score crosses the
@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use grokrxiv_schemas::{VerifierResult, VerifierStatus};
 use parking_lot::Mutex;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{Verifier, VerifierContext};
@@ -29,6 +29,89 @@ const FAIL_FRACTION: f32 = 0.30;
 /// resolved. Crossref's score ranges roughly 0-200 for a top hit; ~60 is the
 /// rule-of-thumb floor where the result is meaningfully relevant.
 const BIBLIOGRAPHIC_MATCH_SCORE_MIN: f64 = 60.0;
+const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CitationLookupStatus {
+    Resolved,
+    Unresolved,
+    TransientUnknown,
+    Malformed,
+}
+
+impl CitationLookupStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Unresolved => "unresolved",
+            Self::TransientUnknown => "transient_unknown",
+            Self::Malformed => "malformed",
+        }
+    }
+
+    fn exists_value(self) -> serde_json::Value {
+        match self {
+            Self::Resolved => serde_json::Value::Bool(true),
+            Self::Unresolved | Self::Malformed => serde_json::Value::Bool(false),
+            Self::TransientUnknown => serde_json::Value::Null,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CitationLookup {
+    status: CitationLookupStatus,
+    resolved_doi: Option<String>,
+    resolved_url: Option<String>,
+    source: &'static str,
+    reason: Option<String>,
+}
+
+impl CitationLookup {
+    fn resolved(
+        source: &'static str,
+        resolved_doi: Option<String>,
+        resolved_url: Option<String>,
+    ) -> Self {
+        Self {
+            status: CitationLookupStatus::Resolved,
+            resolved_doi,
+            resolved_url,
+            source,
+            reason: None,
+        }
+    }
+
+    fn unresolved(source: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            status: CitationLookupStatus::Unresolved,
+            resolved_doi: None,
+            resolved_url: None,
+            source,
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn unknown(source: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            status: CitationLookupStatus::TransientUnknown,
+            resolved_doi: None,
+            resolved_url: None,
+            source,
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn malformed(source: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            status: CitationLookupStatus::Malformed,
+            resolved_doi: None,
+            resolved_url: None,
+            source,
+            reason: Some(reason.into()),
+        }
+    }
+}
 
 /// Citation verifier. Caches results across verify() calls within the process.
 pub struct CitationVerifier {
@@ -36,10 +119,9 @@ pub struct CitationVerifier {
     crossref_base: String,
     /// Base URL for arXiv id-list metadata queries (Atom feed).
     arxiv_base: String,
-    cache: Arc<Mutex<HashMap<String, bool>>>,
-    /// Resolved bibliographic queries: key = `raw` string, value = the DOI
-    /// crossref returned if the score was high enough.
-    biblio_cache: Arc<Mutex<HashMap<String, Option<String>>>>,
+    cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
+    /// Resolved bibliographic queries keyed by raw reference string.
+    biblio_cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
 }
 
 impl Default for CitationVerifier {
@@ -81,100 +163,158 @@ impl CitationVerifier {
         }
     }
 
-    async fn resolve_doi(&self, http: &reqwest::Client, doi: &str) -> bool {
-        let url = format!("{}/{doi}", self.crossref_base);
-        if let Some(v) = self.cache.lock().get(&url) {
-            return *v;
+    async fn resolve_doi(&self, http: &reqwest::Client, doi: &str) -> CitationLookup {
+        let doi = doi.trim();
+        if doi.is_empty() {
+            return CitationLookup::malformed("crossref", "empty DOI");
         }
-        let ok = match http.get(&url).send().await {
-            Ok(r) => r.status().is_success(),
-            Err(_) => false,
+        let url = format!("{}/{doi}", self.crossref_base);
+        if let Some(v) = self.cache.lock().get(&url).cloned() {
+            return v;
+        }
+        let lookup = match send_with_retry(http, &url).await {
+            HttpLookup::Ok(body_status) if body_status.is_success() => CitationLookup::resolved(
+                "crossref",
+                Some(doi.to_string()),
+                Some(format!("https://doi.org/{doi}")),
+            ),
+            HttpLookup::Ok(status) if matches!(status.as_u16(), 400 | 404 | 410 | 422) => {
+                CitationLookup::unresolved("crossref", format!("crossref status {status}"))
+            }
+            HttpLookup::Ok(status) => {
+                CitationLookup::unknown("crossref", format!("crossref status {status}"))
+            }
+            HttpLookup::Err(err) => CitationLookup::unknown("crossref", err),
         };
-        self.cache.lock().insert(url, ok);
-        ok
+        if lookup.status != CitationLookupStatus::TransientUnknown {
+            self.cache.lock().insert(url, lookup.clone());
+        }
+        lookup
     }
 
     /// Batched arXiv existence check. Calls `{arxiv_base}?id_list=id1,id2,...`
-    /// once and returns the set of ids the server responded with. arXiv
+    /// with explicit page sizes and returns one lookup result per requested
+    /// id. arXiv
     /// returns an Atom feed; we parse it permissively by scanning for the
     /// `<id>http(s)://arxiv.org/abs/{id}</id>` lines.
-    async fn resolve_arxiv_ids(&self, http: &reqwest::Client, ids: &[String]) -> HashSet<String> {
+    async fn resolve_arxiv_ids(
+        &self,
+        http: &reqwest::Client,
+        ids: &[String],
+    ) -> HashMap<String, CitationLookup> {
         if ids.is_empty() {
-            return HashSet::new();
+            return HashMap::new();
         }
         // De-dup + filter for in-cache + shape-validate before hitting the wire.
         let mut to_query: Vec<String> = Vec::new();
-        let mut resolved: HashSet<String> = HashSet::new();
+        let mut out: HashMap<String, CitationLookup> = HashMap::new();
         for id in ids {
             let cache_key = format!("arxiv::{id}");
-            if let Some(true) = self.cache.lock().get(&cache_key).copied() {
-                resolved.insert(id.clone());
-                continue;
-            }
-            if let Some(false) = self.cache.lock().get(&cache_key).copied() {
+            if let Some(cached) = self.cache.lock().get(&cache_key).cloned() {
+                out.insert(id.clone(), cached);
                 continue;
             }
             if !Self::arxiv_id_well_formed(id) {
-                self.cache.lock().insert(cache_key, false);
+                let malformed = CitationLookup::malformed("arxiv", "malformed arXiv id");
+                self.cache.lock().insert(cache_key, malformed.clone());
+                out.insert(id.clone(), malformed);
                 continue;
             }
             to_query.push(strip_version(id).to_string());
         }
         if to_query.is_empty() {
-            return resolved;
+            return out;
         }
-        let url = format!("{}?id_list={}", self.arxiv_base, to_query.join(","));
-        let body = match http.get(&url).send().await {
-            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
-            _ => String::new(),
-        };
-        // The Atom response contains one `<entry>` per id that resolved. We
-        // scan for `<id>http(s)://arxiv.org/abs/{id}` substrings — robust to
-        // namespace prefix differences and avoids pulling in an XML parser.
-        for q in &to_query {
-            let needle_https = format!("arxiv.org/abs/{q}");
-            let cache_key = format!("arxiv::{q}");
-            if body.contains(&needle_https) {
-                self.cache.lock().insert(cache_key, true);
-                resolved.insert(q.clone());
-            } else {
-                self.cache.lock().insert(cache_key, false);
+
+        to_query.sort();
+        to_query.dedup();
+        for chunk in to_query.chunks(ARXIV_ID_LIST_CHUNK_SIZE) {
+            let id_list = url_form_encode(&chunk.join(","));
+            let url = format!(
+                "{}?id_list={id_list}&start=0&max_results={}",
+                self.arxiv_base,
+                chunk.len()
+            );
+            let response = send_text_with_retry(http, &url).await;
+            match response {
+                TextLookup::Ok(body) => {
+                    for q in chunk {
+                        let needle_https = format!("arxiv.org/abs/{q}");
+                        let lookup = if body.contains(&needle_https) {
+                            CitationLookup::resolved(
+                                "arxiv",
+                                None,
+                                Some(format!("https://arxiv.org/abs/{q}")),
+                            )
+                        } else {
+                            CitationLookup::unresolved("arxiv", "not present in arXiv response")
+                        };
+                        self.cache
+                            .lock()
+                            .insert(format!("arxiv::{q}"), lookup.clone());
+                        out.insert(q.clone(), lookup);
+                    }
+                }
+                TextLookup::Transient(reason) => {
+                    for q in chunk {
+                        out.insert(q.clone(), CitationLookup::unknown("arxiv", reason.clone()));
+                    }
+                }
             }
         }
         // Also accept the versioned variants (`{id}v2`) when the caller asked
         // for one — arXiv resolves them to the same underlying entry.
         for original in ids {
-            if resolved.contains(strip_version(original)) {
-                resolved.insert(original.clone());
+            if out.contains_key(original) {
+                continue;
+            }
+            if let Some(lookup) = out.get(strip_version(original)).cloned() {
+                out.insert(original.clone(), lookup);
             }
         }
-        resolved
+        out
     }
 
     /// Free-text crossref bibliographic lookup for refs that carry neither a
     /// DOI nor an arxiv_id. Returns the resolved DOI when crossref's top hit
     /// scores above `BIBLIOGRAPHIC_MATCH_SCORE_MIN`. Cached by `raw` string.
-    async fn resolve_bibliographic(&self, http: &reqwest::Client, raw: &str) -> Option<String> {
+    async fn resolve_bibliographic(&self, http: &reqwest::Client, raw: &str) -> CitationLookup {
         if raw.trim().is_empty() {
-            return None;
+            return CitationLookup::malformed("crossref_bibliographic", "empty bibliographic text");
         }
-        if let Some(v) = self.biblio_cache.lock().get(raw) {
-            return v.clone();
+        if let Some(v) = self.biblio_cache.lock().get(raw).cloned() {
+            return v;
         }
         let url = format!("{}?rows=1&query.bibliographic=", self.crossref_base);
         let encoded = url_form_encode(raw);
         let full = format!("{url}{encoded}");
-        let resolved = match http.get(&full).send().await {
-            Ok(r) if r.status().is_success() => r
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| top_doi_if_scored(&v, BIBLIOGRAPHIC_MATCH_SCORE_MIN)),
-            _ => None,
+        let resolved = match send_json_with_retry(http, &full).await {
+            JsonLookup::Ok(v) => {
+                if let Some(doi) = top_doi_if_scored(&v, BIBLIOGRAPHIC_MATCH_SCORE_MIN) {
+                    CitationLookup::resolved(
+                        "crossref_bibliographic",
+                        Some(doi.clone()),
+                        Some(format!("https://doi.org/{doi}")),
+                    )
+                } else {
+                    CitationLookup::unresolved(
+                        "crossref_bibliographic",
+                        "no bibliographic match above score threshold",
+                    )
+                }
+            }
+            JsonLookup::Unresolved(reason) => {
+                CitationLookup::unresolved("crossref_bibliographic", reason)
+            }
+            JsonLookup::Transient(reason) => {
+                CitationLookup::unknown("crossref_bibliographic", reason)
+            }
         };
-        self.biblio_cache
-            .lock()
-            .insert(raw.to_string(), resolved.clone());
+        if resolved.status != CitationLookupStatus::TransientUnknown {
+            self.biblio_cache
+                .lock()
+                .insert(raw.to_string(), resolved.clone());
+        }
         resolved
     }
 
@@ -250,48 +390,58 @@ impl Verifier for CitationVerifier {
         // output before persisting.
         let mut total: u32 = 0;
         let mut unresolved: Vec<String> = Vec::new();
+        let mut unknown: Vec<String> = Vec::new();
+        let mut malformed: Vec<String> = Vec::new();
         let mut resolved_via_biblio: u32 = 0;
         let mut entries: Vec<serde_json::Value> = Vec::with_capacity(ctx.paper.bibliography.len());
         for c in &ctx.paper.bibliography {
             total += 1;
-            let mut resolved_doi: Option<String> = None;
-            let mut resolved_url: Option<String> = None;
-            let mut source: Option<&'static str> = None;
+            let mut lookup: Option<CitationLookup> = None;
 
             if let Some(doi) = &c.doi {
-                if self.resolve_doi(ctx.http, doi).await {
-                    resolved_doi = Some(doi.clone());
-                    resolved_url = Some(format!("https://doi.org/{doi}"));
-                    source = Some("crossref");
-                }
+                lookup = Some(self.resolve_doi(ctx.http, doi).await);
             }
-            if source.is_none() {
+            if !matches!(
+                lookup.as_ref().map(|l| l.status),
+                Some(CitationLookupStatus::Resolved)
+            ) {
                 if let Some(arxiv_id) = &c.arxiv_id {
-                    if arxiv_resolved.contains(arxiv_id) {
-                        let canonical = strip_version(arxiv_id);
-                        resolved_url = Some(format!("https://arxiv.org/abs/{canonical}"));
-                        source = Some("arxiv");
+                    if let Some(arxiv_lookup) = arxiv_resolved.get(arxiv_id).cloned() {
+                        if lookup.is_none()
+                            || matches!(
+                                arxiv_lookup.status,
+                                CitationLookupStatus::Resolved
+                                    | CitationLookupStatus::TransientUnknown
+                            )
+                        {
+                            lookup = Some(arxiv_lookup);
+                        }
                     }
                 }
             }
-            if source.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
-                if let Some(doi) = self.resolve_bibliographic(ctx.http, &c.raw).await {
-                    resolved_doi = Some(doi.clone());
-                    resolved_url = Some(format!("https://doi.org/{doi}"));
-                    source = Some("crossref_bibliographic");
+            if lookup.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
+                let biblio_lookup = self.resolve_bibliographic(ctx.http, &c.raw).await;
+                if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
                     resolved_via_biblio += 1;
                 }
+                lookup = Some(biblio_lookup);
             }
-            let exists = source.is_some();
-            if !exists {
-                unresolved.push(c.raw.clone());
+            let lookup = lookup
+                .unwrap_or_else(|| CitationLookup::unresolved("none", "no resolvable identifier"));
+            match lookup.status {
+                CitationLookupStatus::Resolved => {}
+                CitationLookupStatus::Unresolved => unresolved.push(c.raw.clone()),
+                CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
+                CitationLookupStatus::Malformed => malformed.push(c.raw.clone()),
             }
             entries.push(json!({
                 "raw": c.raw,
-                "exists": exists,
-                "resolved_doi": resolved_doi,
-                "resolved_url": resolved_url,
-                "source": source.unwrap_or("none"),
+                "exists": lookup.status.exists_value(),
+                "status": lookup.status.as_str(),
+                "resolved_doi": lookup.resolved_doi,
+                "resolved_url": lookup.resolved_url,
+                "source": lookup.source,
+                "reason": lookup.reason,
             }));
         }
 
@@ -301,8 +451,14 @@ impl Verifier for CitationVerifier {
                 notes: json!({ "checked": 0, "entries": [] }),
             };
         }
-        let frac = unresolved.len() as f32 / total as f32;
-        let status = if unresolved.is_empty() {
+        let definitive_total = total.saturating_sub(unknown.len() as u32);
+        let definitive_bad = unresolved.len() + malformed.len();
+        let frac = if definitive_total == 0 {
+            0.0
+        } else {
+            definitive_bad as f32 / definitive_total as f32
+        };
+        let status = if definitive_bad == 0 && unknown.is_empty() {
             VerifierStatus::Pass
         } else if frac > FAIL_FRACTION {
             VerifierStatus::Fail
@@ -314,12 +470,127 @@ impl Verifier for CitationVerifier {
             notes: json!({
                 "checked": total,
                 "unresolved": unresolved,
+                "unknown": unknown,
+                "malformed": malformed,
                 "unresolved_fraction": frac,
                 "resolved_via_bibliographic_query": resolved_via_biblio,
                 "entries": entries,
             }),
         }
     }
+}
+
+enum HttpLookup {
+    Ok(reqwest::StatusCode),
+    Err(String),
+}
+
+enum TextLookup {
+    Ok(String),
+    Transient(String),
+}
+
+enum JsonLookup {
+    Ok(serde_json::Value),
+    Unresolved(String),
+    Transient(String),
+}
+
+async fn send_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        match http.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if is_transient_status(status) && attempt == 0 {
+                    last_err = Some(format!("status {status}"));
+                    continue;
+                }
+                return HttpLookup::Ok(status);
+            }
+            Err(err) => {
+                last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+        }
+    }
+    HttpLookup::Err(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        match http.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return match response.text().await {
+                        Ok(body) => TextLookup::Ok(body),
+                        Err(err) => TextLookup::Transient(err.to_string()),
+                    };
+                }
+                if is_transient_status(status) && attempt == 0 {
+                    last_err = Some(format!("status {status}"));
+                    continue;
+                }
+                return if is_definitive_missing_status(status) {
+                    TextLookup::Ok(String::new())
+                } else {
+                    TextLookup::Transient(format!("status {status}"))
+                };
+            }
+            Err(err) => {
+                last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+        }
+    }
+    TextLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        match http.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return match response.json::<serde_json::Value>().await {
+                        Ok(body) => JsonLookup::Ok(body),
+                        Err(err) => JsonLookup::Transient(err.to_string()),
+                    };
+                }
+                if is_transient_status(status) && attempt == 0 {
+                    last_err = Some(format!("status {status}"));
+                    continue;
+                }
+                return if is_definitive_missing_status(status) {
+                    JsonLookup::Unresolved(format!("status {status}"))
+                } else {
+                    JsonLookup::Transient(format!("status {status}"))
+                };
+            }
+            Err(err) => {
+                last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+        }
+    }
+    JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn is_definitive_missing_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 404 | 410 | 422)
 }
 
 /// Strip a trailing `vN` arXiv version suffix. `2401.12345v2` → `2401.12345`.
@@ -623,5 +894,85 @@ mod tests {
         };
         let r = v.verify(&json!({}), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Pass));
+    }
+
+    #[tokio::test]
+    async fn transient_crossref_errors_are_unknown_not_unresolved() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works/10.transient/doi"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bases(format!("{}/works", server.uri()));
+        let paper = paper_with(vec![Citation {
+            raw: "Temporarily unavailable".into(),
+            doi: Some("10.transient/doi".into()),
+            arxiv_id: None,
+            title: None,
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Warn), "{:?}", r);
+        assert_eq!(r.notes["unresolved"].as_array().unwrap().len(), 0);
+        assert_eq!(r.notes["unknown"].as_array().unwrap().len(), 1);
+        assert_eq!(r.notes["unresolved_fraction"], 0.0);
+        assert_eq!(r.notes["entries"][0]["status"], "transient_unknown");
+        assert_eq!(r.notes["entries"][0]["exists"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn arxiv_lookup_sets_explicit_max_results_for_more_than_default_page() {
+        let server = MockServer::start().await;
+        let ids: Vec<String> = (0..12).map(|i| format!("2605.{:05}", i)).collect();
+        let atom = ids
+            .iter()
+            .map(|id| format!("<entry><id>http://arxiv.org/abs/{id}</id></entry>"))
+            .collect::<String>();
+        Mock::given(method("GET"))
+            .and(path("/api/query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!(r#"<?xml version="1.0"?><feed>{atom}</feed>"#)),
+            )
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_all_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+        );
+        let paper = paper_with(
+            ids.iter()
+                .map(|id| Citation {
+                    raw: id.clone(),
+                    doi: None,
+                    arxiv_id: Some(id.clone()),
+                    title: None,
+                })
+                .collect(),
+        );
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let query = requests[0].url.query().unwrap_or("");
+        assert!(query.contains("max_results=12"), "{query}");
+        assert!(query.contains("id_list=2605.00000%2C2605.00001"), "{query}");
     }
 }

@@ -17,6 +17,7 @@ import { MathText } from "@/components/math-text";
 import { ReviewToc } from "@/components/review-toc";
 import { JsonLd } from "@/components/json-ld";
 import {
+  displayFieldForPaper,
   SourceDetails,
   SourceLink,
   sourceInfoForPaper,
@@ -121,6 +122,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
   const { review, paper, rejection } = data;
 
   const source = sourceInfoForPaper(paper);
+  const field = displayFieldForPaper(paper);
   const feedbackCommentUrl =
     review.gate_failure_comment_url ?? review.github_comment_url ?? null;
   const bibtex = buildBibtex(paper, review, id);
@@ -192,8 +194,8 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
               <AutomatedGateBadge
                 recommendation={review.meta_review?.recommendation}
               />
-              {paper.field ? (
-                <Badge variant="outline">{paper.field}</Badge>
+              {field ? (
+                <Badge variant="outline">{field}</Badge>
               ) : null}
             </div>
             <MathText

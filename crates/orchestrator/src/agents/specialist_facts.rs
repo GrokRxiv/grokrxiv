@@ -11,6 +11,7 @@
 //! and surface as empty / error-flagged facts so the LLM falls back to its
 //! today-behavior rather than failing the DAG.
 
+use futures::stream::{self, StreamExt};
 use grokrxiv_schemas::PaperExtract;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -86,20 +87,29 @@ pub async fn gather_reproducibility_facts(
     // Bound how many we touch per paper. Most papers have <10 URLs; cap defends
     // against pathological extraction that surfaces hundreds.
     const MAX_URLS: usize = 50;
-    let mut checks: Vec<UrlCheck> = Vec::new();
-    let mut repos: Vec<GithubRepoFact> = Vec::new();
+    const URL_CHECK_CONCURRENCY: usize = 8;
+    let checks: Vec<UrlCheck> = stream::iter(urls.into_iter().take(MAX_URLS))
+        .map(|(url, kind)| async move { head_check(http, &url, kind).await })
+        .buffer_unordered(URL_CHECK_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut repo_targets: Vec<(String, String)> = Vec::new();
     let mut seen_repos: HashSet<(String, String)> = HashSet::new();
-    for (url, kind) in urls.iter().take(MAX_URLS) {
-        let check = head_check(http, url, *kind).await;
+    for check in &checks {
         if check.reachable {
-            if let Some((owner, repo)) = parse_github_url(url) {
+            if let Some((owner, repo)) = parse_github_url(&check.url) {
                 if seen_repos.insert((owner.clone(), repo.clone())) {
-                    repos.push(github_repo_metadata(http, &owner, &repo).await);
+                    repo_targets.push((owner, repo));
                 }
             }
         }
-        checks.push(check);
     }
+    let repos: Vec<GithubRepoFact> = stream::iter(repo_targets)
+        .map(|(owner, repo)| async move { github_repo_metadata(http, &owner, &repo).await })
+        .buffer_unordered(URL_CHECK_CONCURRENCY)
+        .collect()
+        .await;
     ReproducibilityFacts {
         urls_checked: checks,
         github_repos: repos,

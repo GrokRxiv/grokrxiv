@@ -14,13 +14,15 @@ import type {
 export function AgentReviewDetails({
   role,
   output,
+  verifierNotes,
 }: {
   role: AgentRole;
   output: unknown;
+  verifierNotes?: unknown | null;
 }) {
   return (
     <div className="flex flex-col gap-4 pb-4">
-      {renderRoleDetails(role, output)}
+      {renderRoleDetails(role, output, verifierNotes)}
       <details className="rounded-md border border-[color:var(--color-border)] bg-slate-950/35 p-3">
         <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-slate-300">
           Debug JSON
@@ -29,11 +31,25 @@ export function AgentReviewDetails({
           {JSON.stringify(output, null, 2)}
         </pre>
       </details>
+      {verifierNotes ? (
+        <details className="rounded-md border border-[color:var(--color-border)] bg-slate-950/35 p-3">
+          <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-slate-300">
+            Verifier provenance
+          </summary>
+          <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950/70 p-3 text-xs text-slate-100">
+            {JSON.stringify(verifierNotes, null, 2)}
+          </pre>
+        </details>
+      ) : null}
     </div>
   );
 }
 
-function renderRoleDetails(role: AgentRole, output: unknown) {
+function renderRoleDetails(
+  role: AgentRole,
+  output: unknown,
+  verifierNotes?: unknown | null,
+) {
   switch (role) {
     case "summary":
       return <SummaryDetails review={parseSummary(output)} />;
@@ -44,7 +60,12 @@ function renderRoleDetails(role: AgentRole, output: unknown) {
     case "reproducibility":
       return <ReproducibilityDetails review={parseReproducibility(output)} />;
     case "citation":
-      return <CitationDetails review={parseCitation(output)} />;
+      return (
+        <CitationDetails
+          review={parseCitation(output)}
+          verifierNotes={verifierNotes}
+        />
+      );
     case "meta_reviewer":
       return <MetaReviewerDetails review={parseMetaReviewer(output)} />;
   }
@@ -204,7 +225,14 @@ function ReproducibilityDetails({
   );
 }
 
-function CitationDetails({ review }: { review: CitationReviewOutput }) {
+function CitationDetails({
+  review,
+  verifierNotes,
+}: {
+  review: CitationReviewOutput;
+  verifierNotes?: unknown | null;
+}) {
+  const verifierEntries = citationVerifierEntries(verifierNotes);
   return (
     <div className="flex flex-col gap-4">
       <MetricGrid
@@ -214,46 +242,87 @@ function CitationDetails({ review }: { review: CitationReviewOutput }) {
         ]}
       />
       <MissingReferenceList
-        title="Missing references"
+        title="Suggested missing prior art"
         items={review.missing_references}
       />
       <div className="flex flex-col gap-3">
         <SectionTitle>Entries</SectionTitle>
         {review.entries.length > 0 ? (
-          review.entries.map((entry, index) => (
-            <div
-              key={`${entry.citation?.key ?? "citation"}-${index}`}
-              className="rounded-md border border-[color:var(--color-border)] bg-slate-950/25 p-4"
-            >
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <StatusBadge
-                  value={
-                    entry.exists === null
-                      ? null
-                      : entry.exists
-                        ? "exists"
-                        : "missing"
-                  }
+          review.entries.map((entry, index) => {
+            const verifierEntry = verifierEntries[index] ?? null;
+            return (
+              <div
+                key={`${entry.citation?.key ?? "citation"}-${index}`}
+                className="rounded-md border border-[color:var(--color-border)] bg-slate-950/25 p-4"
+              >
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <StatusBadge
+                    value={citationStatusLabel(entry, verifierEntry)}
+                  />
+                  <StatusBadge value={entry.relevance} />
+                </div>
+                <Field
+                  label="Citation"
+                  value={formatCitation(entry.citation)}
+                  strong
                 />
-                <StatusBadge value={entry.relevance} />
+                <Field
+                  label="Resolved DOI"
+                  value={verifierEntry?.resolved_doi ?? entry.resolved_doi}
+                />
+                <Field
+                  label="Resolved URL"
+                  value={verifierEntry?.resolved_url ?? entry.resolved_url}
+                />
+                <Field label="Notes" value={entry.notes} />
+                <Field label="Explanation" value={entry.explanation} />
               </div>
-              <Field
-                label="Citation"
-                value={formatCitation(entry.citation)}
-                strong
-              />
-              <Field label="Resolved DOI" value={entry.resolved_doi} />
-              <Field label="Resolved URL" value={entry.resolved_url} />
-              <Field label="Notes" value={entry.notes} />
-              <Field label="Explanation" value={entry.explanation} />
-            </div>
-          ))
+            );
+          })
         ) : (
           <EmptyState>No citation entries provided.</EmptyState>
         )}
       </div>
     </div>
   );
+}
+
+type CitationVerifierEntry = {
+  status: string | null;
+  resolved_doi: string | null;
+  resolved_url: string | null;
+};
+
+function citationVerifierEntries(
+  verifierNotes: unknown,
+): CitationVerifierEntry[] {
+  const root = asRecord(verifierNotes);
+  const citation = recordField(root, "citation");
+  const notes = citation ? recordField(citation, "notes") : null;
+  return recordArrayField(notes ?? {}, "entries").map((entry) => ({
+    status: stringField(entry, "status"),
+    resolved_doi: stringField(entry, "resolved_doi"),
+    resolved_url: stringField(entry, "resolved_url"),
+  }));
+}
+
+function citationStatusLabel(
+  entry: CitationReviewOutput["entries"][number],
+  verifierEntry: CitationVerifierEntry | null,
+): string | null {
+  switch (verifierEntry?.status) {
+    case "resolved":
+      return "verified";
+    case "unresolved":
+      return "missing";
+    case "transient_unknown":
+      return "unverified";
+    case "malformed":
+      return "malformed";
+  }
+  if (entry.exists === true) return "verified";
+  if (entry.exists === false) return "missing";
+  return "unverified";
 }
 
 function MetaReviewerDetails({ review }: { review: MetaReview }) {

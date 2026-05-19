@@ -51,7 +51,11 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
             </div>
           </AccordionTrigger>
           <AccordionContent>
-            <AgentReviewDetails role={agent.role} output={agent.output} />
+            <AgentReviewDetails
+              role={agent.role}
+              output={agent.output}
+              verifierNotes={agent.verifier_notes}
+            />
           </AccordionContent>
         </AccordionItem>
       ))}

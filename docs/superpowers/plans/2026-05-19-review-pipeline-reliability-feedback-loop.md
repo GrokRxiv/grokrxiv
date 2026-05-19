@@ -20,6 +20,28 @@
 - Therefore the advertised “push fixes to this PR branch” loop is not reliable until revision PRs include a real editable source snapshot or target the original source repository.
 - Current gate semantics are split across `supervisor.rs`, `cli.rs`, and `routes/webhook.rs`; `minor_revision` is rejected by `approve` but treated as pass in the webhook feedback comment. That inconsistency must be removed before live trust testing.
 
+## Current Run Addendum: Citation Trust + Agent Teams
+
+This pass also fixes the citation/provenance issues found in the Rust audit before any full live review run. The source of truth is: LLM specialists write role judgments; deterministic verifiers write provenance; the public site must not collapse verifier unknowns into “fake citation” claims.
+
+**Acceptance assumptions:**
+
+- CLI-only review/publish testing: `grokrxiv ... --runner cli --extractor cli`.
+- Direct provider API fallback remains disabled unless an explicit premium/API profile is selected.
+- Citation verifier transient errors are `transient_unknown`/warn, not fake citations/fail.
+- Publication remains human-gated; do not auto-merge publication PRs in this pass.
+- Live validation target after unit checks: `https://arxiv.org/abs/2602.17480`.
+
+**Implementation teams:**
+
+- **Team A — Citation Verifier Integrity:** classify citation lookups as `resolved`, `unresolved`, `transient_unknown`, or `malformed`; retry transient 429/5xx/timeouts once; explicitly page/chunk arXiv `id_list` queries; keep unknowns out of the fail fraction.
+- **Team B — Typed Merge + Provenance:** stop mutating schema-valid specialist JSON with verifier-only facts after validation; keep citation and novelty verifier facts in provenance fields; rerun schema validation after any remaining merge.
+- **Team C — Citation Fallback + Gate Policy:** remove schema-shaped citation fallback output that looks verified without external checks; terminally fail/withdraw quorum failures instead of leaving misleading moderation rows.
+- **Team D — Public API + Web Provenance:** include `verifier_notes` in public review detail APIs; render citation states as verified, missing, malformed, or unverified; rename LLM-only missing-reference claims to suggested missing prior art.
+- **Team E — Local/Git Paper Metadata:** show inferred subject category for local PDF/TeX/Git papers from persisted `source_metadata.adapter.inferred_subjects` when `papers.field` is null, so review cards do not show `—`.
+- **Team F — CLI JSON Robustness:** tolerate provider CLI replies that wrap otherwise valid JSON in prose or fenced code blocks; extract the last schema-valid JSON object before declaring the role failed.
+- **Team G — Validation Runner:** run focused Rust unit tests, web typecheck/build checks, then a CLI-native full review smoke. If the live model/provider layer is unstable, report that separately from deterministic pipeline failures.
+
 ## File Map
 
 - Create `crates/orchestrator/src/review_gate.rs`: typed review-gate verdicts, recommendation policy, specialist verifier policy, GitHub feedback body inputs.

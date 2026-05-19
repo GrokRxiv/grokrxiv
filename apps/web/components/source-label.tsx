@@ -51,6 +51,16 @@ export function sourceInfoForPaper(paper: Paper): SourceInfo {
   };
 }
 
+export function displayFieldForPaper(paper: Paper): string | null {
+  const explicit = paper.field?.trim();
+  if (explicit) return explicit;
+
+  const inferred = inferredSubjectField(paper.source_metadata);
+  if (inferred) return inferred;
+
+  return inferSubjectFieldFromPaperText(paper);
+}
+
 export function SourceBadge({ paper }: { paper: Paper }) {
   const source = sourceInfoForPaper(paper);
   return (
@@ -127,6 +137,78 @@ function humanizeSourceKind(kind: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ") || "Paper source";
+}
+
+function inferredSubjectField(
+  metadata: Record<string, unknown> | null | undefined,
+): string | null {
+  const direct = fieldFromInferredSubject(metadata?.inferred_subjects);
+  if (direct) return direct;
+
+  const adapter =
+    metadata && typeof metadata.adapter === "object" && metadata.adapter !== null
+      ? (metadata.adapter as Record<string, unknown>)
+      : null;
+  return fieldFromInferredSubject(adapter?.inferred_subjects);
+}
+
+function fieldFromInferredSubject(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const field = (value as Record<string, unknown>).field;
+  return typeof field === "string" && field.trim() ? field.trim() : null;
+}
+
+function inferSubjectFieldFromPaperText(paper: Paper): string | null {
+  const context = [
+    paper.source_id,
+    paper.source_kind,
+    paper.title,
+    paper.abstract,
+    metadataText(paper.source_metadata),
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join("\n")
+    .toLowerCase();
+
+  if (
+    context.includes("information-theory") ||
+    context.includes("information theory") ||
+    context.includes("information-theoretic")
+  ) {
+    return "cs.IT";
+  }
+  if (
+    context.includes("directed type theory") ||
+    context.includes("type theory") ||
+    context.includes("homotopy type theory") ||
+    context.includes("logic")
+  ) {
+    return "cs.LO";
+  }
+  if (
+    context.includes("yoneda") ||
+    context.includes("category-theoretic") ||
+    context.includes("category theoretic") ||
+    context.includes("categorical")
+  ) {
+    return "math.CT";
+  }
+  if (context.includes("quantum information") || context.includes("quantum error")) {
+    return "quant-ph";
+  }
+  if (context.includes("spacetime") || context.includes("thermodynamic")) {
+    return "physics.gen-ph";
+  }
+  return null;
+}
+
+function metadataText(metadata: Record<string, unknown> | null | undefined): string | null {
+  if (!metadata) return null;
+  try {
+    return JSON.stringify(metadata);
+  } catch {
+    return null;
+  }
 }
 
 function publicSafeUri(uri: string | null | undefined): string | null {

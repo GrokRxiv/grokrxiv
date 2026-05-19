@@ -22,7 +22,7 @@ export async function GET(
   const supabase = await createSupabaseServerClient();
 
   const select =
-    "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status)";
+    "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status, verifier_notes)";
 
   const asUuid = UuidParam.safeParse(id);
   if (asUuid.success) {

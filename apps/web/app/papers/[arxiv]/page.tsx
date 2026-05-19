@@ -7,7 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { MathText } from "@/components/math-text";
-import { SourceBadge, SourceLink } from "@/components/source-label";
+import {
+  displayFieldForPaper,
+  SourceBadge,
+  SourceLink,
+} from "@/components/source-label";
 import { getPaperByArxivIdAnon } from "@/lib/supabase/anon";
 import { PUBLIC_REVIEW_STATUSES } from "@/lib/types";
 
@@ -53,6 +57,7 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
   const data = await loadPaper(arxiv);
   if (!data) notFound();
   const { paper, reviews } = data;
+  const field = displayFieldForPaper(paper);
   const publicReviews = reviews.filter((r) =>
     PUBLIC_REVIEW_STATUSES.includes(r.status),
   );
@@ -61,7 +66,7 @@ async function PaperBody({ params }: { params: Promise<Params> }) {
     <>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {paper.field ? <Badge variant="outline">{paper.field}</Badge> : null}
+          {field ? <Badge variant="outline">{field}</Badge> : null}
           <SourceBadge paper={paper} />
         </div>
         <MathText

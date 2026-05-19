@@ -1,4 +1,5 @@
 import { ImageResponse } from "next/og";
+import { displayFieldForPaper } from "@/components/source-label";
 import { getPaperByIdAnon, getReviewByIdAnon } from "@/lib/supabase/anon";
 
 export const alt = "GrokRxiv review";
@@ -17,7 +18,7 @@ export default async function OgImage({
     const paper = await getPaperByIdAnon(review.paper_id);
     if (paper) {
       title = paper.title;
-      field = paper.field ?? "arXiv";
+      field = displayFieldForPaper(paper) ?? "Paper";
     }
   }
 
