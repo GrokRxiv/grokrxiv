@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # GrokRxiv local-stack preflight.
 #
-# Verifies that everything `just smoke` and the M1 driver need is up before
-# we burn time running the actual tests. Each check is one short line; any
-# failure exits non-zero with a single actionable message.
+# Verifies that the local stack, database, and configured review runners are
+# reachable before running the slower smoke tests.
 #
 # Usage:   bash scripts/preflight.sh
 # Or:      just preflight

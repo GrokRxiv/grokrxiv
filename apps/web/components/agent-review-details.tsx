@@ -7,6 +7,9 @@ import type {
   MissingReferenceOutput,
   NoveltyReviewOutput,
   ReproducibilityReviewOutput,
+  RevisionTarget,
+  RevisionTargetKind,
+  RevisionTargetStatus,
   SummaryReviewOutput,
   TechnicalReviewOutput,
 } from "@/lib/types";
@@ -234,14 +237,17 @@ function CitationDetails({
 }) {
   const verifierEntries = citationVerifierEntries(verifierNotes);
   const verifierIndex = citationVerifierIndex(verifierEntries);
+  const coverage = citationVerifierCoverage(verifierNotes);
   return (
     <div className="flex flex-col gap-4">
       <MetricGrid
         items={[
           ["Summary", review.summary],
           ["Confidence", formatNumber(review.confidence)],
+          ["External citation checks", coverage.label],
         ]}
       />
+      {coverage.reason ? <Field label="Citation coverage note" value={coverage.reason} /> : null}
       <MissingReferenceList
         title="Suggested missing prior art"
         items={review.missing_references}
@@ -315,12 +321,46 @@ type CitationVerifierEntry = {
   url: string | null;
 };
 
+type CitationVerifierCoverage = {
+  checked: number | null;
+  label: string;
+  reason: string | null;
+};
+
+function citationVerifierCoverage(
+  verifierNotes: unknown,
+): CitationVerifierCoverage {
+  const notes = citationVerifierNotes(verifierNotes);
+  const checked = notes ? numberField(notes, "checked") : null;
+  const coverageStatus = notes ? stringField(notes, "coverage_status") : null;
+  const reason = notes ? stringField(notes, "reason") : null;
+  if (checked === 0 || coverageStatus === "not_checked") {
+    return {
+      checked: checked ?? 0,
+      label: "Not externally checked",
+      reason:
+        reason ??
+        "No extracted bibliography entries were available for external citation verification.",
+    };
+  }
+  if (checked !== null) {
+    return {
+      checked,
+      label: `${checked} reference${checked === 1 ? "" : "s"} checked`,
+      reason,
+    };
+  }
+  return {
+    checked: null,
+    label: "Verifier provenance unavailable",
+    reason,
+  };
+}
+
 function citationVerifierEntries(
   verifierNotes: unknown,
 ): CitationVerifierEntry[] {
-  const root = asRecord(verifierNotes);
-  const citation = recordField(root, "citation");
-  const notes = citation ? recordField(citation, "notes") : null;
+  const notes = citationVerifierNotes(verifierNotes);
   return recordArrayField(notes ?? {}, "entries").map((entry) => ({
     raw: stringField(entry, "raw"),
     status: stringField(entry, "status"),
@@ -334,6 +374,14 @@ function citationVerifierEntries(
     arxiv_id: stringField(entry, "arxiv_id"),
     url: stringField(entry, "url"),
   }));
+}
+
+function citationVerifierNotes(
+  verifierNotes: unknown,
+): Record<string, unknown> | null {
+  const root = asRecord(verifierNotes);
+  const citation = recordField(root, "citation");
+  return citation ? recordField(citation, "notes") : root;
 }
 
 type CitationVerifierIndex = Map<string, CitationVerifierEntry>;
@@ -471,6 +519,11 @@ function MetaReviewerDetails({ review }: { review: MetaReview }) {
         title="Weaknesses"
         items={review.weaknesses}
         empty="No weaknesses provided."
+      />
+      <ListBlock
+        title="Revision Targets"
+        items={(review.revision_targets ?? []).map(formatRevisionTarget)}
+        empty="No revision targets provided."
       />
       <ListBlock
         title="Questions"
@@ -703,9 +756,36 @@ function parseMetaReviewer(value: unknown): MetaReview {
     strengths: stringArrayField(record, "strengths"),
     weaknesses: stringArrayField(record, "weaknesses"),
     questions: stringArrayField(record, "questions"),
+    revision_targets: recordArrayField(record, "revision_targets").map(
+      parseRevisionTarget,
+    ),
     recommendation: metaRecommendation(record),
     confidence: numberField(record, "confidence") ?? 0,
   };
+}
+
+function parseRevisionTarget(record: Record<string, unknown>): RevisionTarget {
+  return {
+    id: stringField(record, "id") ?? "",
+    weakness_index: numberField(record, "weakness_index") ?? 0,
+    source_role: agentRoleField(record, "source_role"),
+    target_kind: revisionTargetKind(record),
+    source_path: stringField(record, "source_path"),
+    locator: stringField(record, "locator"),
+    evidence: stringField(record, "evidence"),
+    required_update: stringField(record, "required_update") ?? "",
+    verification_check: stringField(record, "verification_check") ?? "",
+    status: revisionTargetStatus(record),
+  };
+}
+
+function formatRevisionTarget(target: RevisionTarget): string {
+  const path = target.source_path ? ` ${target.source_path}` : "";
+  const locator = target.locator ? ` at ${target.locator}` : "";
+  const check = target.verification_check
+    ? ` Check: ${target.verification_check}`
+    : "";
+  return `[${target.status}] ${target.target_kind}${path}${locator}: ${target.required_update}${check}`;
 }
 
 function parseMissingReference(
@@ -805,6 +885,58 @@ function metaRecommendation(
     return value;
   }
   return "major_revision";
+}
+
+function agentRoleField(
+  record: Record<string, unknown>,
+  key: string,
+): AgentRole | null {
+  const value = stringField(record, key);
+  if (
+    value === "summary" ||
+    value === "technical_correctness" ||
+    value === "novelty" ||
+    value === "reproducibility" ||
+    value === "citation" ||
+    value === "meta_reviewer"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function revisionTargetKind(
+  record: Record<string, unknown>,
+): RevisionTargetKind {
+  const value = stringField(record, "target_kind");
+  if (
+    value === "paper_tex" ||
+    value === "paper_pdf" ||
+    value === "code" ||
+    value === "data" ||
+    value === "bibliography" ||
+    value === "review_text" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return "unknown";
+}
+
+function revisionTargetStatus(
+  record: Record<string, unknown>,
+): RevisionTargetStatus {
+  const value = stringField(record, "status");
+  if (
+    value === "open" ||
+    value === "addressed" ||
+    value === "still_open" ||
+    value === "superseded" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return "unknown";
 }
 
 function formatNumber(value: number | null): string | null {

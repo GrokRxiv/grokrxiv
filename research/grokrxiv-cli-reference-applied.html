@@ -441,7 +441,8 @@ review input, comments, or paper/extraction changes.</p>
 <p>Open the publication PR on <code>GrokRxiv/grokrxiv-reviews</code>. This does not merge or
 publish the review; a human merge plus the GitHub webhook performs the
 <code>published</code> transition. Prints <code>pr_url=…</code>. With <code>--json</code>, returns
-<code>{review_id, pr_url, status}</code>. Without <code>GITHUB_TOKEN</code>, the PR is simulated.</p>
+<code>{review_id, pr_url, status}</code>. Without <code>GITHUB_TOKEN</code>, the command fails closed
+instead of writing simulated PR state.</p>
 <h4 id="grokrxiv-publish-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-publish-review_id---json">#</a><code>grokrxiv publish &#x3C;REVIEW_ID> [--json]</code></h4>
 <p>Publish a review by merging its open publication PR. The GitHub webhook then
 flips the review to <code>published</code> and revalidates the public site. <code>merge</code> is
@@ -508,7 +509,7 @@ wiring lands.</p>
 </ul>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-19T21:56:09.586Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-20T07:47:39.045Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

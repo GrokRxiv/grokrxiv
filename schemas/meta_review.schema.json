@@ -19,6 +19,62 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "revision_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "weakness_index": { "type": "integer", "minimum": 0 },
+          "source_role": {
+            "type": ["string", "null"],
+            "enum": [
+              "summary",
+              "technical_correctness",
+              "novelty",
+              "reproducibility",
+              "citation",
+              "meta_reviewer",
+              null
+            ]
+          },
+          "target_kind": {
+            "type": "string",
+            "enum": [
+              "paper_tex",
+              "paper_pdf",
+              "code",
+              "data",
+              "bibliography",
+              "review_text",
+              "unknown"
+            ]
+          },
+          "source_path": { "type": ["string", "null"] },
+          "locator": { "type": ["string", "null"] },
+          "evidence": { "type": ["string", "null"] },
+          "required_update": { "type": "string" },
+          "verification_check": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["open", "addressed", "still_open", "superseded", "unknown"]
+          }
+        },
+        "required": [
+          "id",
+          "weakness_index",
+          "source_role",
+          "target_kind",
+          "source_path",
+          "locator",
+          "evidence",
+          "required_update",
+          "verification_check",
+          "status"
+        ]
+      }
+    },
     "recommendation": {
       "type": "string",
       "enum": ["accept", "minor_revision", "major_revision", "reject"]

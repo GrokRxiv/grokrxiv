@@ -32,6 +32,22 @@ export type Recommendation =
 
 export type VerifierStatus = "pass" | "warn" | "fail";
 
+export type RevisionTargetKind =
+  | "paper_tex"
+  | "paper_pdf"
+  | "code"
+  | "data"
+  | "bibliography"
+  | "review_text"
+  | "unknown";
+
+export type RevisionTargetStatus =
+  | "open"
+  | "addressed"
+  | "still_open"
+  | "superseded"
+  | "unknown";
+
 export type AgentRole =
   | "summary"
   | "technical_correctness"
@@ -66,8 +82,22 @@ export interface MetaReview {
   strengths: string[];
   weaknesses: string[];
   questions: string[];
+  revision_targets?: RevisionTarget[];
   recommendation: Recommendation;
   confidence: number;
+}
+
+export interface RevisionTarget {
+  id: string;
+  weakness_index: number;
+  source_role: AgentRole | null;
+  target_kind: RevisionTargetKind;
+  source_path: string | null;
+  locator: string | null;
+  evidence: string | null;
+  required_update: string;
+  verification_check: string;
+  status: RevisionTargetStatus;
 }
 
 export interface AgentOutput {

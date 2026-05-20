@@ -36,9 +36,10 @@ pub fn gate_failure_from_meta(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
+    let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
     let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Questions\n\n{questions}"
+        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
     );
     GateFailureArtifact {
         gate: "meta_reviewer_recommendation".to_string(),
@@ -49,7 +50,7 @@ pub fn gate_failure_from_meta(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions(review_id),
+        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
     }
 }
 
@@ -69,9 +70,10 @@ pub(crate) fn gate_failure_from_publication_gate(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
+    let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
     let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Questions\n\n{questions}"
+        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
     );
     GateFailureArtifact {
         gate: "publication_gate".to_string(),
@@ -82,16 +84,25 @@ pub(crate) fn gate_failure_from_publication_gate(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions(review_id),
+        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
     }
 }
 
 /// Instructions shown in the public review details and GitHub feedback.
 pub fn correction_loop_instructions(review_id: Uuid) -> String {
+    correction_loop_instructions_with_targets(review_id, "- None recorded.")
+}
+
+fn correction_loop_instructions_with_targets(review_id: Uuid, revision_targets: &str) -> String {
     let public_url =
         std::env::var("GROKRXIV_PUBLIC_URL").unwrap_or_else(|_| "https://grokrxiv.org".into());
+    let target_block = if revision_targets.trim() == "- None recorded." {
+        String::new()
+    } else {
+        format!("## Targeted Revisions\n\n{revision_targets}\n\n")
+    };
     format!(
-        "## How to Resubmit Corrections\n\n\
+        "{target_block}## How to Resubmit Corrections\n\n\
          1. Apply the requested fixes to the paper source on this PR branch.\n\
          2. Commit and push the correction back to GitHub:\n\n\
          ```bash\n\
@@ -119,6 +130,8 @@ pub fn gate_failure_comment_body(
         "## GrokRxiv Automated Review Gate: Failed\n\n\
          Latest review: {public_url}/reviews/{review_id}\n\n\
          Recommendation: `{recommendation}`\n\n\
+         Agent output verification and publication gating are separate checks. \
+         A verifier pass or warning means the reviewer JSON was usable; it does not mean the paper was accepted.\n\n\
          {}\n\n\
          {}\n\n\
          {}",
@@ -134,6 +147,8 @@ pub fn gate_pass_comment_body(review_id: Uuid, recommendation: &str) -> String {
         "## GrokRxiv Automated Review Gate: Passed\n\n\
          Latest review: {public_url}/reviews/{review_id}\n\n\
          Recommendation: `{recommendation}`\n\n\
+         Agent output verification and publication gating are separate checks. \
+         This pass means the publication gate accepted the latest automated review.\n\n\
          The latest correction commit passed the automated review gate. No further automated corrections are required for this gate."
     )
 }
@@ -249,5 +264,21 @@ mod tests {
             failure.summary,
             "Automated review gate failed: Meta-review recommendation is `major_revision`, not `accept`."
         );
+    }
+
+    #[test]
+    fn gate_failure_comment_separates_verifier_from_acceptance() {
+        let failure = GateFailureArtifact {
+            gate: "publication_gate".to_string(),
+            severity: "high".to_string(),
+            summary: "Automated review gate failed: major revision.".to_string(),
+            details_md: "## Gate Result\n\nneeds revision".to_string(),
+            action_required_md: "## How to Resubmit Corrections\n\npush fixes".to_string(),
+        };
+        let body = gate_failure_comment_body(Uuid::nil(), "major_revision", &failure);
+        assert!(
+            body.contains("Agent output verification and publication gating are separate checks")
+        );
+        assert!(body.contains("does not mean the paper was accepted"));
     }
 }

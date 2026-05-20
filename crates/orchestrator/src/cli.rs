@@ -50,7 +50,7 @@ pub struct Cli {
 
     /// Whether agents should run in `review_only` mode (default) or
     /// `review_and_revise` mode (emit a `revision_artifact` alongside the
-    /// usual review output). RPT2 Track F.
+    /// usual review output).
     #[arg(long, value_enum, global = true, default_value_t = AgentMode::ReviewOnly, hide = true)]
     pub mode: AgentMode,
 
@@ -60,7 +60,6 @@ pub struct Cli {
     #[arg(long, value_enum, global = true, default_value_t = RevisionTarget::PaperLatex, hide = true)]
     pub revision_target: RevisionTarget,
 
-    // ---------- RPT2 Track I global runner/sandbox/cost/profile flags ----------
     /// Default runner backend for all roles.
     #[arg(long, value_enum, global = true)]
     pub runner: Option<AgentRunnerKind>,
@@ -117,27 +116,22 @@ pub struct Cli {
     /// `config show` flag: print provider secrets in cleartext.
     #[arg(long, global = true, hide = true)]
     pub show_secrets: bool,
-    /// Track 8a: dump the rendered prompt for each role to
+    /// Dump the rendered prompt for each role to
     /// `./debug-prompts/<arxiv_id>/<role>.md` after the review finishes.
-    /// Exports `GROKRXIV_DEBUG_PROMPT_DIR` for the supervisor; the supervisor
-    /// writes one file per role per paper. The directory is printed at the
-    /// end of the run.
     #[arg(long, global = true, hide = true)]
     pub debug_prompt: bool,
     /// Emit structured tracing diagnostics to stderr. By default foreground CLI
     /// runs show only human-readable status lines and final output.
     #[arg(long, global = true)]
     pub debug_logs: bool,
-    /// RPT3 Wave-3 Team-F: skip selected extraction stages. Comma-separated
-    /// names from `{vlm, macros, equations, theorems, citations}`. Each
-    /// skipped stage produces a `status: "skipped"` entry in
-    /// `extraction_report.json`. Exported as `GROKRXIV_INGEST_SKIP_STAGES`.
+    /// Skip selected extraction stages. Comma-separated names from
+    /// `{vlm, macros, equations, theorems, citations}`. Each skipped stage
+    /// produces a `status: "skipped"` entry in `extraction_report.json`.
     #[arg(long, global = true, value_name = "STAGES", hide = true)]
     pub skip_stages: Option<String>,
-    /// RPT3 Wave-3 Team-F: skip Tier-2 (Supabase) writes even when
-    /// `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set. Tier-1 (the
-    /// local grokrxiv-data clone) is still written. Exported as
-    /// `GROKRXIV_DRY_RUN_STORAGE=1`.
+    /// Skip Supabase storage writes even when `SUPABASE_URL` and
+    /// `SUPABASE_SERVICE_ROLE_KEY` are set. The local grokrxiv-data clone is
+    /// still written.
     #[arg(long, global = true, hide = true)]
     pub dry_run_storage: bool,
 }
@@ -218,6 +212,13 @@ pub enum Command {
     /// One-shot equivalent of the daily scheduler tick.
     #[command(hide = true)]
     IngestDaily,
+
+    /// Create and run scheduled arXiv review batches.
+    Batch {
+        /// Batch operation to run.
+        #[command(subcommand)]
+        command: BatchCommand,
+    },
 
     // ---------- review lifecycle ----------
     /// List reviews or papers.
@@ -315,6 +316,12 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Refresh derived review metadata without rerunning agents.
+    #[command(name = "refresh-review", hide = true)]
+    RefreshReview {
+        /// UUID of the review to refresh.
+        review_id: Uuid,
+    },
 
     // ---------- moderation (admin) ----------
     /// Merge the reviewed publication PR and publish/revalidate the web output.
@@ -366,7 +373,19 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Mark a review rejected; status stays `awaiting_moderation`.
+    /// Close a review: hide it from web and close the linked GitHub PR.
+    #[command(visible_alias = "remove-review")]
+    Close {
+        /// UUID of the review to close.
+        review_id: Uuid,
+        /// Human-readable reason recorded on the withdrawal row.
+        #[arg(long)]
+        reason: String,
+        /// Leave the linked GitHub PR untouched.
+        #[arg(long)]
+        keep_github_pr: bool,
+    },
+    /// Mark a review rejected and publish the rejection rationale.
     Reject {
         /// UUID of the review to reject.
         review_id: Uuid,
@@ -407,15 +426,83 @@ pub enum Command {
         /// UUID of the review to open in the browser.
         review_id: Uuid,
     },
-    /// Stream the jobs table tail.
+    /// Inspect queued, running, completed, and failed jobs.
+    Jobs {
+        /// Jobs operation to run.
+        #[command(subcommand)]
+        command: JobsCommand,
+    },
+    /// Deprecated alias for `jobs list`.
     #[command(hide = true)]
     TailJobs {
-        /// Optional `kind` filter (e.g. `Ingest`, `Review`).
+        /// Optional `kind` filter (e.g. `ingest`, `review`).
         #[arg(long)]
         kind: Option<String>,
         /// Optional `state` filter (e.g. `running`, `failed`).
         #[arg(long)]
         state: Option<String>,
+    },
+}
+
+/// Subcommands for scheduled review batches.
+#[derive(Debug, Subcommand)]
+pub enum BatchCommand {
+    /// Create a batch from an arXiv category/month listing.
+    Create {
+        /// arXiv OAI-PMH set, e.g. `math`, `cs`, or `quant-ph`.
+        #[arg(long)]
+        category: String,
+        /// Month to review, in `YYYY-MM` form.
+        #[arg(long)]
+        month: String,
+        /// Maximum number of papers scheduled per day.
+        #[arg(long, default_value_t = 30)]
+        daily_limit: u32,
+        /// Open the GitHub review PR after each completed review.
+        #[arg(long)]
+        auto_pr: bool,
+        /// First scheduled day. Defaults to the first day of `--month`.
+        #[arg(long)]
+        start_date: Option<chrono::NaiveDate>,
+    },
+    /// Run due items for a batch.
+    Run {
+        /// UUID returned by `batch create`.
+        batch_id: Uuid,
+        /// Treat this date as "today" when selecting due items.
+        #[arg(long)]
+        today: Option<chrono::NaiveDate>,
+        /// Maximum number of due items to run in this invocation.
+        #[arg(long)]
+        limit: Option<u32>,
+    },
+    /// Show batch progress and next due items.
+    Status {
+        /// UUID returned by `batch create`.
+        batch_id: Uuid,
+    },
+    /// List recent batches.
+    List {
+        /// Maximum batches to return.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+}
+
+/// Subcommands for job inspection.
+#[derive(Debug, Subcommand)]
+pub enum JobsCommand {
+    /// List jobs with optional kind/state filters.
+    List {
+        /// Optional `kind` filter (e.g. `ingest`, `review`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Optional `state` filter (e.g. `queued`, `running`, `failed`).
+        #[arg(long)]
+        state: Option<String>,
+        /// Maximum rows to return.
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
     },
 }
 
@@ -522,10 +609,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             None
         }
     };
-    // RPT2 G follow-up: export the resolved per-role runner/model choices into
-    // env vars the supervisor/state read while composing the agent registry.
-    // This is how `--runner cli`, `--runner-for ...`, and `--model-for ...`
-    // actually override the YAML fields at runtime.
+    // Export resolved per-role runner/model choices into the env vars the
+    // supervisor reads while composing the agent registry.
     if let Some(rt) = runtime_cfg.as_ref() {
         // Always export `default_runner` so the supervisor can pick up the
         // CLI's `--runner` flag (the resolved RuntimeConfig already merges
@@ -562,9 +647,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let dry_run = cli.dry_run;
     let debug_prompt = cli.debug_prompt;
 
-    // Track 8a: when `--debug-prompt` is set, export the directory the
-    // supervisor will dump rendered prompts to. Resolved before the env is
-    // forked off into spawned tasks. Default is `./debug-prompts`.
+    // When prompt debugging is enabled, export the directory the supervisor
+    // uses for rendered prompt snapshots before any review tasks are spawned.
     let debug_prompt_dir: Option<std::path::PathBuf> = if debug_prompt {
         let dir = std::path::PathBuf::from("debug-prompts");
         std::env::set_var("GROKRXIV_DEBUG_PROMPT_DIR", &dir);
@@ -574,9 +658,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
-    // RPT3 Wave-3 Team-F: forward `--no-cache` / `--skip-stages` /
-    // `--dry-run-storage` to the staged ingest orchestrator via env vars.
-    // (The supervisor reads these in `ingest_options_from_env`.)
+    // Forward CLI runtime toggles to the staged ingest orchestrator.
     let no_cache_resolved = runtime_cfg
         .as_ref()
         .map(|rt| rt.no_cache)
@@ -608,6 +690,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::ReviewExtracted { .. }
             | Command::IngestRange { .. }
             | Command::IngestDaily
+            | Command::Batch {
+                command: BatchCommand::Run { .. },
+            }
     );
 
     if dry_run {
@@ -654,6 +739,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             no_review,
         } => ingest_range(from, to, categories, no_review).await,
         Command::IngestDaily => ingest_daily().await,
+        Command::Batch { command } => batch_command(command, dry_run, json).await,
         Command::List { what } => list(what).await,
         Command::Show { review_id, json } => show(review_id, json).await,
         Command::Review {
@@ -696,6 +782,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             format,
             out,
         } => render(review_id, format, out).await,
+        Command::RefreshReview { review_id } => refresh_review(review_id, json).await,
         Command::Approve { review_id, force } => approve(review_id, force, json).await,
         Command::RequestRevisions { review_id, notes } => {
             request_revisions(review_id, notes.as_deref(), json).await
@@ -706,6 +793,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => feedback_loop_smoke(review_id, max_wait_secs, json).await,
         Command::Publish { review_id, force } => approve(review_id, force, json).await,
         Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
+        Command::Close {
+            review_id,
+            reason,
+            keep_github_pr,
+        } => close_review(review_id, &reason, keep_github_pr, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
         Command::Withdraw { review_id, reason } => withdraw(review_id, &reason).await,
@@ -714,7 +806,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             rationale_md,
         } => correct(review_id, &rationale_md).await,
         Command::Open { review_id } => open_review(review_id),
-        Command::TailJobs { kind, state } => tail_jobs(kind, state).await,
+        Command::Jobs { command } => jobs_command(command, json).await,
+        Command::TailJobs { kind, state } => {
+            jobs_command(
+                JobsCommand::List {
+                    kind,
+                    state,
+                    limit: 20,
+                },
+                json,
+            )
+            .await
+        }
     };
 
     if let Some(dir) = debug_prompt_dir.as_ref() {
@@ -867,7 +970,7 @@ fn print_config(
 }
 
 async fn migrate() -> anyhow::Result<()> {
-    eprintln!("`migrate` is not yet wired (use `bash infra/supabase/setup.sh`). See task #11.");
+    eprintln!("`migrate` is handled by `bash infra/supabase/setup.sh` in this checkout.");
     Ok(())
 }
 
@@ -893,7 +996,7 @@ async fn ingest_many(arxiv_ids: &[String], auto_moderate: bool, json: bool) -> a
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
 
     if arxiv_ids.len() <= 1 {
-        // Single-paper path stays direct so the M1 smoke output shape is unchanged.
+        // Single-paper output is kept stable for shell smoke checks.
         for id in arxiv_ids {
             emit_pipeline_header("ingest", id);
             let review_id =
@@ -921,10 +1024,8 @@ async fn ingest_many(arxiv_ids: &[String], auto_moderate: bool, json: bool) -> a
         return Ok(());
     }
 
-    // Parallel path — fan out, then collect. arXiv fetches are serialised
-    // through the in-process semaphore in `grokrxiv_ingest::download`; the
-    // DAGs run concurrently. This is the "ingest in parallel" path the
-    // RPT1 multi-paper test exercises.
+    // Fan out review DAGs while arXiv fetches remain serialized through the
+    // ingest crate's rate limiter.
     use futures::stream::{FuturesUnordered, StreamExt};
     let mut futures = FuturesUnordered::new();
     for id in arxiv_ids {
@@ -1427,6 +1528,464 @@ async fn ingest_daily() -> anyhow::Result<()> {
     ingest_range(yesterday, today, None, false).await
 }
 
+async fn batch_command(command: BatchCommand, dry_run: bool, json: bool) -> anyhow::Result<()> {
+    match command {
+        BatchCommand::Create {
+            category,
+            month,
+            daily_limit,
+            auto_pr,
+            start_date,
+        } => {
+            batch_create(
+                &category,
+                &month,
+                daily_limit,
+                auto_pr,
+                start_date,
+                dry_run,
+                json,
+            )
+            .await
+        }
+        BatchCommand::Run {
+            batch_id,
+            today,
+            limit,
+        } => batch_run(batch_id, today, limit, dry_run, json).await,
+        BatchCommand::Status { batch_id } => batch_status(batch_id, json).await,
+        BatchCommand::List { limit } => batch_list(limit, json).await,
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn batch_create(
+    category: &str,
+    month: &str,
+    daily_limit: u32,
+    auto_pr: bool,
+    start_date: Option<chrono::NaiveDate>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    if daily_limit == 0 {
+        anyhow::bail!("batch create: --daily-limit must be greater than zero");
+    }
+    let (from, until) = crate::batch::parse_month_range(month)?;
+    let today = chrono::Utc::now().date_naive();
+    if from > today {
+        anyhow::bail!("batch create: month `{month}` starts in the future");
+    }
+    let until = until.min(today);
+    let start_date = start_date.unwrap_or(from);
+    let daily_limit_usize = daily_limit as usize;
+    let config = super::Config::from_env();
+    crate::cli_status::emit(format!(
+        "batch create: fetching arXiv OAI listing category={category} from={from} until={until}"
+    ));
+    let records =
+        grokrxiv_ingest::fetch_listing(&[category], from, until, &config.arxiv_user_agent).await?;
+    let options = crate::batch::BatchCreateOptions {
+        category: category.to_string(),
+        from,
+        until,
+        daily_limit: daily_limit_usize,
+        auto_pr,
+        start_date,
+    };
+    let result = if dry_run {
+        crate::batch::preview_batch(&options, &records)
+    } else {
+        let state = super::AppState::from_config(config).await?;
+        let pool = state
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("batch create: DATABASE_URL not configured"))?;
+        crate::batch::create_batch(pool, &options, &records).await?
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let batch_id = result
+            .batch_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "<dry-run>".to_string());
+        println!(
+            "batch_id={batch_id} category={} from={} until={} discovered={} daily_limit={} scheduled_days={} auto_pr={}",
+            result.category,
+            result.from,
+            result.until,
+            result.discovered,
+            result.daily_limit,
+            result.scheduled_days,
+            result.auto_pr
+        );
+        for item in result.first_items {
+            println!(
+                "  {:>4} {} {} {}",
+                item.position + 1,
+                item.scheduled_for,
+                item.arxiv_id,
+                truncate(&item.title, 80)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-ingest"))]
+async fn batch_create(
+    category: &str,
+    month: &str,
+    daily_limit: u32,
+    auto_pr: bool,
+    start_date: Option<chrono::NaiveDate>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let _ = (
+        category,
+        month,
+        daily_limit,
+        auto_pr,
+        start_date,
+        dry_run,
+        json,
+    );
+    anyhow::bail!("batch create requires --features full (grokrxiv-ingest)")
+}
+
+#[derive(Debug, Serialize)]
+struct BatchRunOutput {
+    batch_id: Uuid,
+    today: chrono::NaiveDate,
+    dry_run: bool,
+    items: Vec<BatchRunItemOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchRunItemOutput {
+    item_id: Uuid,
+    arxiv_id: String,
+    state: String,
+    paper_id: Option<Uuid>,
+    review_id: Option<Uuid>,
+    pr_url: Option<String>,
+    error: Option<String>,
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn batch_run(
+    batch_id: Uuid,
+    today: Option<chrono::NaiveDate>,
+    limit: Option<u32>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let today = today.unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("batch run: DATABASE_URL not configured"))?;
+    let batch = crate::batch::load_batch(pool, batch_id).await?;
+    let limit = limit.unwrap_or(batch.daily_limit as u32).max(1) as i64;
+
+    if dry_run {
+        let due = crate::batch::due_batch_items(pool, batch_id, today, limit).await?;
+        let output = BatchRunOutput {
+            batch_id,
+            today,
+            dry_run: true,
+            items: due
+                .into_iter()
+                .map(|item| BatchRunItemOutput {
+                    item_id: item.id,
+                    arxiv_id: item.arxiv_id,
+                    state: "due".to_string(),
+                    paper_id: item.paper_id,
+                    review_id: item.review_id,
+                    pr_url: item.pr_url,
+                    error: item.error,
+                })
+                .collect(),
+        };
+        print_batch_run_output(&output, json)?;
+        return Ok(());
+    }
+
+    let supervisor = super::supervisor::Supervisor::spawn(state.clone());
+    let due = crate::batch::claim_due_batch_items(pool, batch_id, today, limit).await?;
+    let mut outputs = Vec::with_capacity(due.len());
+    let mut failures = Vec::new();
+
+    for item in due {
+        crate::cli_status::emit(format!(
+            "batch {batch_id}: reviewing {} ({}/{})",
+            item.arxiv_id,
+            item.position + 1,
+            batch.daily_limit
+        ));
+        let mut paper_id = None;
+        let mut review_id = None;
+        let mut job_id = None;
+        let mut pr_url = None;
+        let mut state_label = "reviewed".to_string();
+
+        let result = async {
+            let new_review_id =
+                super::supervisor::run_one_paper_blocking(&supervisor, &state, &item.arxiv_id)
+                    .await?;
+            review_id = Some(new_review_id);
+            paper_id = paper_id_for_review(pool, new_review_id).await.ok();
+            if let Some(id) = paper_id {
+                job_id = crate::batch::latest_review_job_for_paper(pool, id).await?;
+            }
+            if batch.auto_pr {
+                let pr = open_review_pr_for_gate(&state, new_review_id, json, false).await?;
+                pr_url = Some(pr.pr_url);
+                state_label = "pr_open".to_string();
+            }
+            crate::batch::mark_item_succeeded(
+                pool,
+                item.id,
+                paper_id,
+                new_review_id,
+                job_id,
+                pr_url.as_deref(),
+            )
+            .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => outputs.push(BatchRunItemOutput {
+                item_id: item.id,
+                arxiv_id: item.arxiv_id,
+                state: state_label,
+                paper_id,
+                review_id,
+                pr_url,
+                error: None,
+            }),
+            Err(e) => {
+                let error = e.to_string();
+                let _ = crate::batch::mark_item_failed(
+                    pool, item.id, paper_id, review_id, job_id, &error,
+                )
+                .await;
+                failures.push(format!("{}: {error}", item.arxiv_id));
+                outputs.push(BatchRunItemOutput {
+                    item_id: item.id,
+                    arxiv_id: item.arxiv_id,
+                    state: "failed".to_string(),
+                    paper_id,
+                    review_id,
+                    pr_url,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    let output = BatchRunOutput {
+        batch_id,
+        today,
+        dry_run: false,
+        items: outputs,
+    };
+    print_batch_run_output(&output, json)?;
+    supervisor.shutdown();
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "batch run failed for {} item(s): {}",
+            failures.len(),
+            failures.join(" | ")
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-ingest"))]
+async fn batch_run(
+    batch_id: Uuid,
+    today: Option<chrono::NaiveDate>,
+    limit: Option<u32>,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let _ = (batch_id, today, limit, dry_run, json);
+    anyhow::bail!("batch run requires --features full (grokrxiv-ingest)")
+}
+
+fn print_batch_run_output(output: &BatchRunOutput, json: bool) -> anyhow::Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(output)?);
+    } else if output.items.is_empty() {
+        println!("batch_id={} due=0", output.batch_id);
+    } else {
+        println!(
+            "batch_id={} today={} dry_run={} items={}",
+            output.batch_id,
+            output.today,
+            output.dry_run,
+            output.items.len()
+        );
+        for item in &output.items {
+            let review = item
+                .review_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let pr = item.pr_url.as_deref().unwrap_or("-");
+            println!(
+                "  {} {:12} review_id={} pr_url={}",
+                item.arxiv_id, item.state, review, pr
+            );
+            if let Some(error) = item.error.as_deref() {
+                eprintln!("    error: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn batch_status(batch_id: Uuid, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("batch status: DATABASE_URL not configured"))?;
+    let status = crate::batch::load_batch_status(pool, batch_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        print_batch_status(&status);
+    }
+    Ok(())
+}
+
+async fn batch_list(limit: u32, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("batch list: DATABASE_URL not configured"))?;
+    let rows = crate::batch::list_batches(pool, limit as i64).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else if rows.is_empty() {
+        println!("(no batches)");
+    } else {
+        println!(
+            "{:36}  {:8}  {:10}  {:10}  {:8}  counts",
+            "id", "state", "from", "until", "auto_pr"
+        );
+        for status in rows {
+            println!(
+                "{}  {:8}  {}  {}  {:8}  {}",
+                status.batch.id,
+                status.batch.state,
+                status.batch.from,
+                status.batch.until,
+                status.batch.auto_pr,
+                format_batch_counts(&status.counts)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_batch_status(status: &crate::batch::BatchStatus) {
+    println!(
+        "batch_id={} state={} category={} from={} until={} daily_limit={} auto_pr={} counts={}",
+        status.batch.id,
+        status.batch.state,
+        status.batch.category,
+        status.batch.from,
+        status.batch.until,
+        status.batch.daily_limit,
+        status.batch.auto_pr,
+        format_batch_counts(&status.counts)
+    );
+    if status.next_items.is_empty() {
+        println!("next_items=0");
+    } else {
+        println!("next_items:");
+        for item in &status.next_items {
+            println!(
+                "  {:>4} {} {:10} {} {}",
+                item.position + 1,
+                item.scheduled_for,
+                item.state,
+                item.arxiv_id,
+                truncate(&item.title, 72)
+            );
+        }
+    }
+}
+
+fn format_batch_counts(counts: &std::collections::BTreeMap<String, i64>) -> String {
+    if counts.is_empty() {
+        return "empty".to_string();
+    }
+    counts
+        .iter()
+        .map(|(state, count)| format!("{state}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+async fn jobs_command(command: JobsCommand, json: bool) -> anyhow::Result<()> {
+    match command {
+        JobsCommand::List { kind, state, limit } => {
+            let config = super::Config::from_env();
+            let state_obj = super::AppState::from_config(config).await?;
+            let pool = state_obj
+                .db
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("jobs list: DATABASE_URL not configured"))?;
+            let kind = normalize_job_filter(kind);
+            let state = normalize_job_filter(state);
+            let rows =
+                crate::batch::list_jobs(pool, kind.as_deref(), state.as_deref(), limit as i64)
+                    .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else if rows.is_empty() {
+                println!("(no jobs)");
+            } else {
+                println!(
+                    "{:36}  {:8}  {:8}  {:7}  ref_id/error",
+                    "id", "kind", "state", "attempt"
+                );
+                for row in rows {
+                    let detail = row
+                        .error
+                        .as_deref()
+                        .map(|s| truncate(s, 80))
+                        .or_else(|| row.ref_id.map(|id| id.to_string()))
+                        .unwrap_or_else(|| "-".to_string());
+                    println!(
+                        "{}  {:8}  {:8}  {:7}  {}",
+                        row.id, row.kind, row.state, row.attempt, detail
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn normalize_job_filter(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+}
+
 async fn list(what: ListKind) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
@@ -1604,15 +2163,23 @@ async fn show(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             }
         }
         if let Some(summary) = citation_summary.as_ref() {
-            println!(
-                "citations   = checked={} not_resolved={} needs_review={} unknown={} malformed={} fail_fraction={:.3}",
-                summary.checked,
-                summary.unresolved,
-                summary.unverified,
-                summary.unknown,
-                summary.malformed,
-                summary.unresolved_fraction,
-            );
+            if summary.checked == 0 {
+                let coverage = summary.coverage_status.as_deref().unwrap_or("not_checked");
+                println!("citations   = {coverage} (checked=0)");
+                if let Some(reason) = summary.reason.as_deref() {
+                    println!("citation_reason = {}", truncate(reason, 220));
+                }
+            } else {
+                println!(
+                    "citations   = checked={} not_resolved={} needs_review={} unknown={} malformed={} fail_fraction={:.3}",
+                    summary.checked,
+                    summary.unresolved,
+                    summary.unverified,
+                    summary.unknown,
+                    summary.malformed,
+                    summary.unresolved_fraction,
+                );
+            }
             if !summary.evidence.is_empty() {
                 println!("citation checks needing review:");
                 for item in &summary.evidence {
@@ -2471,6 +3038,8 @@ async fn load_publication_gate_context(
 struct CitationVerifierSummary {
     verifier_status: Option<String>,
     checked: u64,
+    coverage_status: Option<String>,
+    reason: Option<String>,
     unresolved: u64,
     unverified: u64,
     unknown: u64,
@@ -2482,6 +3051,16 @@ struct CitationVerifierSummary {
 
 impl CitationVerifierSummary {
     fn to_markdown(&self) -> String {
+        if self.checked == 0 {
+            return format!(
+                "**Citation verifier:** not externally checked (checked=0). {}\n\n\
+                 Full evidence is in `{}`.",
+                self.reason.as_deref().unwrap_or(
+                    "No extracted bibliography entries were available for citation resolution."
+                ),
+                self.artifact_hint,
+            );
+        }
         let mut out = format!(
             "**Citation verifier:** checked={}, not_resolved={}, needs_review={}, unknown={}, malformed={}, fail_fraction={:.3}.\n\n\
              Full evidence is in `{}`.",
@@ -2815,6 +3394,14 @@ async fn citation_verifier_summary(
         .get("checked")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let coverage_status = citation_notes
+        .get("coverage_status")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let reason = citation_notes
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let entry_items: Vec<CitationEvidenceItem> = citation_notes
         .get("entries")
         .and_then(|v| v.as_array())
@@ -2900,6 +3487,8 @@ async fn citation_verifier_summary(
     Some(CitationVerifierSummary {
         verifier_status,
         checked,
+        coverage_status,
+        reason,
         unresolved,
         unverified,
         unknown,
@@ -2986,6 +3575,312 @@ async fn render(
     {
         let _ = (review_id, format, out);
         anyhow::bail!("render requires --features full (grokrxiv-render)")
+    }
+}
+
+async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("refresh-review: DATABASE_URL not configured"))?;
+
+    let citation_rows_repaired = repair_zero_checked_citation_agents(pool, review_id).await?;
+    let row: Option<(
+        Uuid,
+        Option<serde_json::Value>,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select r.paper_id, r.meta_review, r.github_pr_url, coalesce(p.source_kind, 'arxiv'), \
+                p.source_id, p.arxiv_id, p.source_metadata \
+         from reviews r join papers p on p.id = r.paper_id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((_, Some(meta_review), github_pr_url, source_kind, source_id, arxiv_id, metadata)) =
+        row
+    else {
+        anyhow::bail!("refresh-review: review {review_id} not found or missing meta_review");
+    };
+
+    let agent_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "select distinct on (role) role, output \
+         from review_agents \
+         where review_id = $1 and role <> 'meta_reviewer' \
+         order by role, created_at desc",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    if agent_rows.is_empty() {
+        anyhow::bail!("refresh-review: no specialist review_agents rows for {review_id}");
+    }
+    let specialists = serde_json::Value::Object(
+        agent_rows
+            .into_iter()
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+    );
+    let meta_input = serde_json::json!({ "specialists": specialists });
+    let source_hint =
+        refresh_revision_source_path_hint(&source_kind, source_id.as_deref(), &arxiv_id, &metadata);
+    let enriched = crate::revision_targets::enrich_meta_review(
+        meta_review.clone(),
+        &meta_input,
+        source_hint.as_deref(),
+    );
+    let meta_review_updated = enriched != meta_review;
+    if meta_review_updated {
+        crate::db::set_review_meta_review(pool, review_id, &enriched).await?;
+    }
+
+    let artifacts_refreshed = refresh_rendered_artifacts(&state, review_id).await?;
+    revalidate_best_effort(&state, review_id).await;
+    let github_feedback =
+        refresh_gate_feedback_comment(&state, pool, review_id, github_pr_url.as_deref()).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "review_id": review_id,
+                "citation_rows_repaired": citation_rows_repaired,
+                "meta_review_updated": meta_review_updated,
+                "artifacts_refreshed": artifacts_refreshed,
+                "github_feedback": github_feedback,
+            })
+        );
+    } else {
+        println!(
+            "refreshed={review_id} citation_rows_repaired={citation_rows_repaired} meta_review_updated={meta_review_updated} artifacts_refreshed={artifacts_refreshed} github_feedback={github_feedback}"
+        );
+    }
+    Ok(())
+}
+
+async fn repair_zero_checked_citation_agents(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> anyhow::Result<u64> {
+    let rows: Vec<(Uuid, Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
+        "select id, verifier_status, verifier_notes from review_agents where review_id = $1 and role = 'citation'",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    let mut repaired = 0u64;
+    for (agent_id, verifier_status, notes) in rows {
+        let Some(notes) = notes else {
+            continue;
+        };
+        if citation_checked_count(&notes) != Some(0) {
+            continue;
+        }
+        if verifier_status.as_deref() == Some("fail")
+            && citation_coverage_status(&notes).as_deref() == Some("not_checked")
+        {
+            continue;
+        }
+        let notes = annotate_zero_checked_citation_notes(notes);
+        sqlx::query(
+            "update review_agents set verifier_status = 'fail', verifier_notes = $2 where id = $1",
+        )
+        .bind(agent_id)
+        .bind(notes)
+        .execute(pool)
+        .await?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+fn citation_checked_count(notes: &serde_json::Value) -> Option<u64> {
+    notes
+        .get("citation")
+        .and_then(|v| v.get("notes"))
+        .or(Some(notes))
+        .and_then(|v| v.get("checked"))
+        .and_then(|v| v.as_u64())
+}
+
+fn citation_coverage_status(notes: &serde_json::Value) -> Option<String> {
+    notes
+        .get("citation")
+        .and_then(|v| v.get("notes"))
+        .or(Some(notes))
+        .and_then(|v| v.get("coverage_status"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn annotate_zero_checked_citation_notes(mut notes: serde_json::Value) -> serde_json::Value {
+    if let Some(citation) = notes
+        .get_mut("citation")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        citation.insert("status".to_string(), serde_json::json!("fail"));
+        let notes_value = citation
+            .entry("notes".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        annotate_citation_notes_object(notes_value);
+    } else {
+        annotate_citation_notes_object(&mut notes);
+    }
+    notes
+}
+
+fn annotate_citation_notes_object(notes: &mut serde_json::Value) {
+    let Some(obj) = notes.as_object_mut() else {
+        return;
+    };
+    obj.insert("checked".to_string(), serde_json::json!(0));
+    obj.insert(
+        "coverage_status".to_string(),
+        serde_json::json!("not_checked"),
+    );
+    obj.insert(
+        "reason".to_string(),
+        serde_json::json!(
+            "No extracted bibliography entries were available for external citation verification."
+        ),
+    );
+    obj.entry("entries".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+}
+
+fn refresh_revision_source_path_hint(
+    source_kind: &str,
+    source_id: Option<&str>,
+    arxiv_id: &str,
+    metadata: &serde_json::Value,
+) -> Option<String> {
+    if let Some(path) = metadata
+        .get("correction_source_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(path.to_string());
+    }
+    let stable_source_id = source_id.unwrap_or(arxiv_id);
+    let adapter = metadata.get("adapter").unwrap_or(&serde_json::Value::Null);
+    match source_kind {
+        "git_repo" => adapter
+            .get("paper_path")
+            .and_then(|v| v.as_str())
+            .map(Path::new)
+            .map(|path| correction_repo_path(stable_source_id, path)),
+        "local_file" => adapter
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(Path::new)
+            .map(|path| correction_repo_path(stable_source_id, path)),
+        "arxiv" => Some(correction_repo_path(
+            stable_source_id,
+            Path::new("paper.tex"),
+        )),
+        _ => None,
+    }
+}
+
+async fn refresh_rendered_artifacts(
+    state: &super::AppState,
+    review_id: Uuid,
+) -> anyhow::Result<bool> {
+    #[cfg(feature = "grokrxiv-render")]
+    {
+        super::supervisor::render_to_disk(state, review_id).await?;
+        Ok(true)
+    }
+    #[cfg(not(feature = "grokrxiv-render"))]
+    {
+        let _ = (state, review_id);
+        Ok(false)
+    }
+}
+
+async fn refresh_gate_feedback_comment(
+    state: &super::AppState,
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    github_pr_url: Option<&str>,
+) -> anyhow::Result<String> {
+    let Some(github_pr_url) = github_pr_url else {
+        return Ok("none".to_string());
+    };
+    let plan = match review_pr_close_plan(Some(github_pr_url)) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return Ok("skipped".to_string()),
+        Err(e) => {
+            tracing::warn!(%review_id, err = %e, "refresh-review: invalid GitHub PR URL");
+            return Ok("skipped_invalid_pr_url".to_string());
+        }
+    };
+    let (meta_review, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let body = if publication_gate.verdict == crate::review_gate::GateVerdict::Pass {
+        crate::github_feedback::gate_pass_comment_body(review_id, &publication_gate.recommendation)
+    } else {
+        let failure = crate::github_feedback::gate_failure_from_publication_gate(
+            review_id,
+            &publication_gate,
+            meta_review.as_ref(),
+        );
+        crate::github_feedback::gate_failure_comment_body(
+            review_id,
+            &publication_gate.recommendation,
+            &failure,
+        )
+    };
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    {
+        let pr_number = i64::try_from(plan.pr_number)
+            .map_err(|_| anyhow::anyhow!("PR number does not fit i64: {}", plan.pr_number))?;
+        match crate::github_feedback::post_or_update_gate_feedback_comment(
+            state,
+            &plan.owner,
+            &plan.repo,
+            pr_number,
+            &format!("review-{review_id}"),
+            &body,
+        )
+        .await
+        {
+            Ok(Some(comment)) => {
+                if let Ok(comment_id) = i64::try_from(comment.comment_id) {
+                    let _ = crate::db::attach_gate_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                    let _ = crate::db::update_github_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                }
+                Ok("updated".to_string())
+            }
+            Ok(None) => Ok("skipped_no_token".to_string()),
+            Err(e) => {
+                tracing::warn!(%review_id, err = %e, "refresh-review: GitHub feedback comment failed");
+                Ok("failed".to_string())
+            }
+        }
+    }
+    #[cfg(not(feature = "grokrxiv-publisher"))]
+    {
+        let _ = (state, pool, plan, body);
+        Ok("skipped_no_publisher_feature".to_string())
     }
 }
 
@@ -3154,7 +4049,7 @@ async fn open_publication_pr_impl(
         None => {}
     }
 
-    // Read on-disk artifacts produced by the M1 run.
+    // Attach rendered artifacts from the completed review run.
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
     let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
@@ -3250,7 +4145,7 @@ async fn open_publication_pr_impl(
     let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
     let _ = crate::db::set_review_github_pr_url(pool, review_id, &pr_url).await;
 
-    // FP-RPT3c C2 — close any superseded PR for this paper.
+    // Keep at most one active review PR per paper.
     close_superseded_pr_if_any_cli(pool, &publisher, &admin, paper_id, &pr_url).await;
 
     // Phase 1: revalidate the public site so the "In Review" badge lands
@@ -4514,6 +5409,140 @@ async fn html_review_cmd(review_id: Option<Uuid>, all: bool, json: bool) -> anyh
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ReviewPrClosePlan {
+    pr_url: String,
+    owner: String,
+    repo: String,
+    pr_number: u64,
+}
+
+fn review_pr_close_plan(github_pr_url: Option<&str>) -> anyhow::Result<Option<ReviewPrClosePlan>> {
+    let Some(pr_url) = github_pr_url else {
+        return Ok(None);
+    };
+    if pr_url.contains("SIMULATED-") {
+        return Ok(None);
+    }
+    let Some((owner, repo, pr_number)) = parse_github_pr_url(pr_url) else {
+        anyhow::bail!("github_pr_url is not a GitHub PR URL: {pr_url}");
+    };
+    Ok(Some(ReviewPrClosePlan {
+        pr_url: pr_url.to_string(),
+        owner,
+        repo,
+        pr_number,
+    }))
+}
+
+async fn close_review(
+    review_id: Uuid,
+    reason: &str,
+    keep_github_pr: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    use grokrxiv_schemas::ReviewStatus;
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("close: DATABASE_URL not configured"))?;
+
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("select status, github_pr_url from reviews where id = $1")
+            .bind(review_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("close: review lookup failed: {e}"))?;
+    let Some((previous_status, github_pr_url)) = row else {
+        anyhow::bail!("close: no review row for {review_id}");
+    };
+
+    let close_plan = if keep_github_pr {
+        None
+    } else {
+        review_pr_close_plan(github_pr_url.as_deref())?
+    };
+    if let Some(plan) = close_plan.as_ref() {
+        close_review_github_pr(plan, review_id, reason).await?;
+    }
+
+    if previous_status != "withdrawn" {
+        let moderator = moderator_handle();
+        crate::db::insert_correction(pool, review_id, "withdrawal", reason, &moderator).await?;
+        let n =
+            crate::db::set_review_status(pool, review_id, ReviewStatus::Withdrawn, None).await?;
+        if n == 0 {
+            anyhow::bail!("close: failed to transition review {review_id} to status=withdrawn");
+        }
+    }
+
+    revalidate_best_effort(&state, review_id).await;
+    let github_pr_action = if keep_github_pr {
+        "kept"
+    } else if close_plan.is_some() {
+        "closed"
+    } else if github_pr_url.is_some() {
+        "skipped"
+    } else {
+        "none"
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "review_id": review_id,
+                "previous_status": previous_status,
+                "status": "withdrawn",
+                "github_pr_url": github_pr_url,
+                "github_pr_action": github_pr_action,
+            })
+        );
+    } else {
+        println!(
+            "closed={review_id} previous_status={previous_status} status=withdrawn github_pr={github_pr_action}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn close_review_github_pr(
+    plan: &ReviewPrClosePlan,
+    review_id: Uuid,
+    reason: &str,
+) -> anyhow::Result<()> {
+    use grokrxiv_publisher::{AdminCaller, GithubPublisher};
+
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to close GitHub PR"))?;
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let publisher = GithubPublisher::new(client, plan.owner.clone(), plan.repo.clone());
+    let admin = AdminCaller::from_admin_endpoint();
+    let comment = format!("Closed by `grokrxiv close {review_id}`.\n\nReason:\n\n{reason}");
+    publisher
+        .close_pr_with_comment(&admin, plan.pr_number, &comment)
+        .await
+        .map_err(|e| anyhow::anyhow!("close GitHub PR {}: {e:#}", plan.pr_url))?;
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-publisher"))]
+async fn close_review_github_pr(
+    _plan: &ReviewPrClosePlan,
+    review_id: Uuid,
+    _reason: &str,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "close <{review_id}> requires --features full (grokrxiv-publisher) to close GitHub PR"
+    )
+}
+
 /// `grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
 /// public terminal state. Writes `moderation_queue` like before but ALSO:
 ///   - inserts a `rejections` row with the reason as `rationale_md`,
@@ -4724,14 +5753,6 @@ fn open_review(review_id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn tail_jobs(kind: Option<String>, state: Option<String>) -> anyhow::Result<()> {
-    eprintln!(
-        "tail jobs (kind={:?}, state={:?}): wiring against jobs table — task #15.",
-        kind, state
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4760,13 +5781,16 @@ mod tests {
             "review",
             "extract",
             "review-extracted",
+            "batch",
             "list",
             "show",
             "approve",
             "request-revisions",
+            "close",
             "reject",
             "request-changes",
             "open",
+            "jobs",
         ] {
             assert!(
                 help.contains(visible),
@@ -4938,6 +5962,83 @@ mod tests {
         match parsed.command {
             Command::Extract { arxiv_ids } => assert_eq!(arxiv_ids, vec!["2605.00561"]),
             other => panic!("expected extract command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_batch_and_jobs_commands() {
+        let batch = Cli::try_parse_from([
+            "grokrxiv",
+            "--json",
+            "batch",
+            "create",
+            "--category",
+            "math",
+            "--month",
+            "2026-05",
+            "--daily-limit",
+            "30",
+            "--auto-pr",
+        ])
+        .expect("batch create should parse");
+        assert!(batch.json);
+        match batch.command {
+            Command::Batch {
+                command:
+                    BatchCommand::Create {
+                        category,
+                        month,
+                        daily_limit,
+                        auto_pr,
+                        ..
+                    },
+            } => {
+                assert_eq!(category, "math");
+                assert_eq!(month, "2026-05");
+                assert_eq!(daily_limit, 30);
+                assert!(auto_pr);
+            }
+            other => panic!("expected batch create, got {other:?}"),
+        }
+
+        let batch_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+        let run = Cli::try_parse_from([
+            "grokrxiv",
+            "batch",
+            "run",
+            &batch_id.to_string(),
+            "--limit",
+            "5",
+        ])
+        .expect("batch run should parse");
+        match run.command {
+            Command::Batch {
+                command:
+                    BatchCommand::Run {
+                        batch_id: parsed,
+                        limit,
+                        ..
+                    },
+            } => {
+                assert_eq!(parsed, batch_id);
+                assert_eq!(limit, Some(5));
+            }
+            other => panic!("expected batch run, got {other:?}"),
+        }
+
+        let jobs = Cli::try_parse_from([
+            "grokrxiv", "--json", "jobs", "list", "--kind", "review", "--state", "running",
+        ])
+        .expect("jobs list should parse");
+        assert!(jobs.json);
+        match jobs.command {
+            Command::Jobs {
+                command: JobsCommand::List { kind, state, .. },
+            } => {
+                assert_eq!(kind.as_deref(), Some("review"));
+                assert_eq!(state.as_deref(), Some("running"));
+            }
+            other => panic!("expected jobs list, got {other:?}"),
         }
     }
 
@@ -5251,6 +6352,60 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
         assert!(help.contains("Merge the reviewed publication PR"));
         assert!(help.contains("publish"));
         assert!(!help.contains("does not merge or publish"));
+    }
+
+    #[test]
+    fn close_help_describes_web_and_github_effects() {
+        let mut cmd = Cli::command();
+        let close = cmd
+            .find_subcommand_mut("close")
+            .expect("close subcommand exists");
+        let mut help = Vec::new();
+        close.write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+
+        assert!(help.contains("hide it from web"));
+        assert!(help.contains("close the linked GitHub PR"));
+        assert!(help.contains("--keep-github-pr"));
+    }
+
+    #[test]
+    fn review_pr_close_plan_rejects_non_github_urls() {
+        let plan =
+            review_pr_close_plan(Some("https://github.com/GrokRxiv/grokrxiv-reviews/pull/42"))
+                .expect("valid GitHub PR URL")
+                .expect("close plan");
+        assert_eq!(plan.owner, "GrokRxiv");
+        assert_eq!(plan.repo, "grokrxiv-reviews");
+        assert_eq!(plan.pr_number, 42);
+
+        assert!(review_pr_close_plan(Some("SIMULATED-123"))
+            .expect("simulated PR URL is skipped")
+            .is_none());
+        assert!(review_pr_close_plan(Some("https://example.com/not-a-pr")).is_err());
+    }
+
+    #[test]
+    fn citation_summary_zero_checked_is_not_reviewed() {
+        let summary = CitationVerifierSummary {
+            verifier_status: Some("fail".to_string()),
+            checked: 0,
+            coverage_status: Some("not_checked".to_string()),
+            reason: Some(
+                "No extracted bibliography entries were available for external citation verification."
+                    .to_string(),
+            ),
+            unresolved: 0,
+            unverified: 0,
+            unknown: 0,
+            malformed: 0,
+            unresolved_fraction: 0.0,
+            evidence: vec![],
+            artifact_hint: "artifacts/review-id/bundle.zip agents/citation.json".to_string(),
+        };
+        let markdown = summary.to_markdown();
+        assert!(markdown.contains("not externally checked"));
+        assert!(!markdown.contains("fail_fraction=0.000"));
     }
 
     #[test]

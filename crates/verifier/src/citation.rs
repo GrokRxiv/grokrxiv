@@ -542,8 +542,13 @@ impl Verifier for CitationVerifier {
 
         if total == 0 {
             return VerifierResult {
-                status: VerifierStatus::Pass,
-                notes: json!({ "checked": 0, "entries": [] }),
+                status: VerifierStatus::Fail,
+                notes: json!({
+                    "checked": 0,
+                    "coverage_status": "not_checked",
+                    "reason": "No extracted bibliography entries were available for external citation verification.",
+                    "entries": [],
+                }),
             };
         }
         let definitive_total = total
@@ -870,7 +875,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_citations_passes() {
+    async fn no_citations_fail_as_not_checked() {
         let v = CitationVerifier::new();
         let paper = paper_with(vec![]);
         let http = reqwest::Client::new();
@@ -879,7 +884,9 @@ mod tests {
             http: &http,
         };
         let r = v.verify(&json!({}), &ctx).await;
-        assert!(matches!(r.status, VerifierStatus::Pass));
+        assert!(matches!(r.status, VerifierStatus::Fail));
+        assert_eq!(r.notes["checked"], 0);
+        assert_eq!(r.notes["coverage_status"], "not_checked");
     }
 
     #[tokio::test]

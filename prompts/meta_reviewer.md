@@ -15,6 +15,9 @@ Rules of engagement:
   Each item is one sentence, concrete, evidence-backed.
 - `questions` are the open questions an author should be asked to address in
   revision.
+- `revision_targets`, when present, map concrete weaknesses to manuscript,
+  code, data, bibliography, or review-text updates. Use source locators from
+  specialist findings instead of inventing new file names.
 - `recommendation` ∈ `accept | minor_revision | major_revision | reject`.
   Default to `minor_revision` if the specialists are split between accept and
   major revision and no critical errors were found.

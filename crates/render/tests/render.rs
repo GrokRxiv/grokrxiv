@@ -47,6 +47,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
         ],
         weaknesses: vec!["Limited empirical scope".into()],
         questions: vec!["How does this extend to non-equilibrium regimes?".into()],
+        revision_targets: vec![],
         recommendation: Recommendation::MinorRevision,
         confidence: 0.82,
     };

@@ -267,10 +267,79 @@ pub struct MetaReview {
     pub weaknesses: Vec<String>,
     /// Questions for the authors.
     pub questions: Vec<String>,
+    /// Targeted source or review locations that should be revised before the
+    /// next correction-loop review can pass.
+    #[serde(default)]
+    pub revision_targets: Vec<RevisionTarget>,
     /// Final recommendation.
     pub recommendation: Recommendation,
     /// 0.0..=1.0 confidence in the recommendation.
     pub confidence: f32,
+}
+
+/// A specific paper, code, data, bibliography, or review target tied to one
+/// meta-review weakness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(JsonSchema))]
+pub struct RevisionTarget {
+    /// Stable target identifier within this meta-review.
+    pub id: String,
+    /// Zero-based index of the corresponding `weaknesses` entry.
+    pub weakness_index: u32,
+    /// Specialist role whose output supplied the target, if known.
+    pub source_role: Option<AgentRole>,
+    /// Kind of artifact or text that should be updated.
+    pub target_kind: RevisionTargetKind,
+    /// Best-known file or repo path for the target, when available.
+    pub source_path: Option<String>,
+    /// Equation label, section name, table id, citation key, or code path.
+    pub locator: Option<String>,
+    /// Source evidence explaining why this target was opened.
+    pub evidence: Option<String>,
+    /// Required author update.
+    pub required_update: String,
+    /// Check a later automated re-review should perform.
+    pub verification_check: String,
+    /// Correction-loop status for this target.
+    pub status: RevisionTargetStatus,
+}
+
+/// Artifact class for a revision target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionTargetKind {
+    /// LaTeX manuscript source.
+    PaperTex,
+    /// PDF-only manuscript.
+    PaperPdf,
+    /// Source code, scripts, configuration, seeds, or checkpoints.
+    Code,
+    /// Data access, datasets, or restricted data-source documentation.
+    Data,
+    /// Bibliography or related-work/citation context.
+    Bibliography,
+    /// Public review text that should be corrected.
+    ReviewText,
+    /// Target could not be classified.
+    Unknown,
+}
+
+/// Correction-loop status for a revision target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionTargetStatus {
+    /// Target remains to be addressed.
+    Open,
+    /// A later re-review no longer reports the target.
+    Addressed,
+    /// A later re-review still reports the target.
+    StillOpen,
+    /// Target was replaced by a newer target.
+    Superseded,
+    /// Status is unavailable or could not be inferred.
+    Unknown,
 }
 
 /// Reviewer recommendation, modeled after typical conference reviews.

@@ -2,7 +2,10 @@
 //! stub. The public disclaimer is suppressed in the rendered document — it
 //! lives only on the web app's `/legal` page.
 
-use grokrxiv_schemas::{MetaReview, PaperExtract, Recommendation};
+use grokrxiv_schemas::{
+    MetaReview, PaperExtract, Recommendation, RevisionTarget, RevisionTargetKind,
+    RevisionTargetStatus,
+};
 
 use crate::AgentRecord;
 
@@ -70,6 +73,10 @@ pub fn render_latex(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentReco
 
     bullet_section(&mut out, "Strengths", &meta.strengths);
     bullet_section(&mut out, "Weaknesses", &meta.weaknesses);
+    let revision_targets = revision_target_lines(&meta.revision_targets);
+    if !revision_targets.is_empty() {
+        bullet_section(&mut out, "Revision Targets", &revision_targets);
+    }
     bullet_section(&mut out, "Open Questions", &meta.questions);
 
     out.push_str("\\section*{Per-Agent Reviews}\n");
@@ -144,6 +151,56 @@ fn recommendation_label(r: Recommendation) -> &'static str {
         Recommendation::MinorRevision => "Minor revision",
         Recommendation::MajorRevision => "Major revision",
         Recommendation::Reject => "Reject",
+    }
+}
+
+fn revision_target_lines(targets: &[RevisionTarget]) -> Vec<String> {
+    targets
+        .iter()
+        .map(|target| {
+            let mut line = format!(
+                "[{}] {}",
+                revision_target_status(target.status),
+                revision_target_kind(target.target_kind)
+            );
+            if let Some(path) = target
+                .source_path
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                line.push_str(&format!(" `{path}`"));
+            }
+            if let Some(locator) = target.locator.as_deref().filter(|s| !s.trim().is_empty()) {
+                line.push_str(&format!(" at `{locator}`"));
+            }
+            line.push_str(&format!(": {}", target.required_update));
+            if !target.verification_check.trim().is_empty() {
+                line.push_str(&format!(" Check: {}", target.verification_check));
+            }
+            line
+        })
+        .collect()
+}
+
+fn revision_target_kind(kind: RevisionTargetKind) -> &'static str {
+    match kind {
+        RevisionTargetKind::PaperTex => "paper_tex",
+        RevisionTargetKind::PaperPdf => "paper_pdf",
+        RevisionTargetKind::Code => "code",
+        RevisionTargetKind::Data => "data",
+        RevisionTargetKind::Bibliography => "bibliography",
+        RevisionTargetKind::ReviewText => "review_text",
+        RevisionTargetKind::Unknown => "unknown",
+    }
+}
+
+fn revision_target_status(status: RevisionTargetStatus) -> &'static str {
+    match status {
+        RevisionTargetStatus::Open => "open",
+        RevisionTargetStatus::Addressed => "addressed",
+        RevisionTargetStatus::StillOpen => "still_open",
+        RevisionTargetStatus::Superseded => "superseded",
+        RevisionTargetStatus::Unknown => "unknown",
     }
 }
 

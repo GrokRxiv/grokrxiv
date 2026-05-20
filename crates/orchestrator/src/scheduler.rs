@@ -4,9 +4,8 @@
 //! `backfill_from..today`; thereafter it fires once per UTC day at
 //! `daily_at_utc` and enqueues a `from = yesterday, until = today` ingest.
 //!
-//! The actual fetch is performed by the sibling ingest crate via the
-//! (forthcoming) `grokrxiv_ingest::fetch_listing` function. This module only
-//! handles cadence + range computation.
+//! The actual fetch is performed by the sibling ingest crate. This module
+//! handles cadence, range computation, and supervisor enqueueing.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -26,19 +25,13 @@ const BACKFILL_CHUNK_DAYS: u32 = 7;
 const BACKFILL_CHUNK_PAUSE: Duration = Duration::from_millis(100);
 const LISTING_MAX_ATTEMPTS: usize = 4;
 
-/// Default arXiv categories to ingest at MVP — the three active groups that
-/// match the arXiv subject dropdown's CS + Math + Physics selections. The
-/// sibling ingest crate exposes the canonical lists; we mirror just the active
-/// set here so the orchestrator compiles standalone.
+/// Default arXiv categories to ingest: CS, Math, and Physics-cluster OAI sets.
 ///
 /// Switching on the other five groups (q-bio, q-fin, stat, eess, econ) is a
 /// one-line `INGEST_CATEGORIES` env change at deploy time.
 pub const DEFAULT_ACTIVE_CATEGORIES: &[&str] = &[
-    // Computer Science
-    "cs",   // Mathematics
-    "math", // Physics (arXiv splits this across multiple OAI sets)
-    "physics", "astro-ph", "cond-mat", "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th", "nucl-ex",
-    "nucl-th", "quant-ph", "nlin",
+    "cs", "math", "physics", "astro-ph", "cond-mat", "gr-qc", "hep-ex", "hep-lat", "hep-ph",
+    "hep-th", "nucl-ex", "nucl-th", "quant-ph", "nlin",
 ];
 
 /// Deprecated alias retained so older imports keep compiling. Prefer
@@ -69,10 +62,7 @@ impl Default for SchedulerConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            // Metadata-only backfill: ingest 2025 + 2026-to-date into `papers`.
             backfill_from: NaiveDate::from_ymd_opt(2025, 1, 1).expect("valid date"),
-            // Cost guardrail: auto-review every paper submitted on or after
-            // May 1, 2026 in the active categories (the M2 "all of May" goal).
             auto_review_from: NaiveDate::from_ymd_opt(2026, 5, 1).expect("valid date"),
             daily_at_utc: NaiveTime::from_hms_opt(2, 0, 0).expect("valid time"),
             user_agent: "GrokRxiv/0.1 (mailto:mlong168@gmail.com)".to_string(),
@@ -406,7 +396,6 @@ mod tests {
             cfg.backfill_from,
             NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()
         );
-        // M2 goal: auto-review every May 2026 paper in the active categories.
         assert_eq!(
             cfg.auto_review_from,
             NaiveDate::from_ymd_opt(2026, 5, 1).unwrap()

@@ -70,6 +70,23 @@
     </ul>
   </section>
 
+{%- if meta.revision_targets %}
+  <section>
+    <h2>Revision Targets</h2>
+    <ul>
+      {% for target in meta.revision_targets %}
+      <li>
+        [{{ target.status }}] <strong>{{ target.target_kind }}</strong>
+        {% if target.source_path %}<code>{{ target.source_path }}</code>{% endif %}
+        {% if target.locator %} at <code>{{ target.locator }}</code>{% endif %}:
+        {{ target.required_update }}
+        {% if target.verification_check %}<span class="muted">Check: {{ target.verification_check }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+{%- endif %}
+
   <section>
     <h2>Open Questions</h2>
     <ul>
@@ -96,6 +113,19 @@
         <ul>
           {% for w in agent.meta_review.weaknesses %}<li>{{ w }}</li>{% endfor %}
         </ul>
+        {%- if agent.meta_review.revision_targets %}
+        <h3>Revision Targets</h3>
+        <ul>
+          {% for target in agent.meta_review.revision_targets %}
+          <li>
+            [{{ target.status }}] <strong>{{ target.target_kind }}</strong>
+            {% if target.source_path %}<code>{{ target.source_path }}</code>{% endif %}
+            {% if target.locator %} at <code>{{ target.locator }}</code>{% endif %}:
+            {{ target.required_update }}
+          </li>
+          {% endfor %}
+        </ul>
+        {%- endif %}
         <h3>Questions</h3>
         <ul>
           {% for q in agent.meta_review.questions %}<li>{{ q }}</li>{% endfor %}

@@ -83,15 +83,22 @@ const VERIFIER_LABEL: Record<VerifierStatus, string> = {
   fail: "Fail",
 };
 
-export function VerifierStatusBadge({ status }: { status: VerifierStatus }) {
+export function VerifierStatusBadge({
+  status,
+  label,
+}: {
+  status: VerifierStatus;
+  label?: string;
+}) {
+  const displayLabel = label ?? VERIFIER_LABEL[status];
   return (
     <Badge
       variant={VERIFIER_VARIANT[status]}
       className="inline-flex items-center gap-1.5"
-      aria-label={`Verifier: ${VERIFIER_LABEL[status]}`}
+      aria-label={`Verifier: ${displayLabel}`}
     >
       {VERIFIER_ICON[status]}
-      <span>{VERIFIER_LABEL[status]}</span>
+      <span>{displayLabel}</span>
     </Badge>
   );
 }
