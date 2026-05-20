@@ -3144,8 +3144,11 @@ async fn run_agent_with_supervisor_timeout(
     input: crate::agents::AgentInput,
 ) -> anyhow::Result<crate::agents::AgentRun> {
     let role = input.role;
-    let timeout_secs = agent.spec().timeout_secs.max(1);
-    let timeout_duration = Duration::from_secs(timeout_secs as u64);
+    let spec = agent.spec();
+    let timeout_secs = u64::from(spec.timeout_secs.max(1))
+        .saturating_mul(u64::from(spec.max_retries).saturating_add(1))
+        .max(1);
+    let timeout_duration = Duration::from_secs(timeout_secs);
     tokio::time::timeout(timeout_duration, agent.run(runner, input))
         .await
         .map_err(|_| {
@@ -3173,6 +3176,38 @@ mod tests {
             _input: &crate::agents::AgentInput,
         ) -> anyhow::Result<crate::agents::AgentRun> {
             tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(crate::agents::AgentRun {
+                role: spec.role,
+                runner: crate::agents::AgentRunnerKind::Cli,
+                model: spec.model.clone(),
+                output: serde_json::json!({}),
+                verifier_status: None,
+                verifier_notes: None,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms: 0,
+                cache_hit: false,
+                sandbox_ref: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    struct SlowCompletesRunner;
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[async_trait::async_trait]
+    impl crate::agents::AgentRunner for SlowCompletesRunner {
+        fn name(&self) -> &'static str {
+            "slow-completes"
+        }
+
+        async fn run(
+            &self,
+            spec: &crate::agents::AgentSpec,
+            _input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
             Ok(crate::agents::AgentRun {
                 role: spec.role,
                 runner: crate::agents::AgentRunnerKind::Cli,
@@ -3229,6 +3264,43 @@ mod tests {
             err.to_string().contains("timed out"),
             "expected timeout error, got: {err:#}"
         );
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[tokio::test]
+    async fn supervisor_timeout_allows_configured_retry_budget() {
+        use crate::agents::{
+            AgentInput, AgentRunnerKind, AgentSpec, ConfiguredAgent, SandboxPolicy,
+        };
+        use grokrxiv_schemas::AgentRole;
+        use std::sync::Arc;
+
+        let spec = AgentSpec {
+            role: AgentRole::Citation,
+            runner: AgentRunnerKind::Cli,
+            sandbox: SandboxPolicy::None,
+            provider: "gemini".to_string(),
+            model: "fake-model".to_string(),
+            schema: std::sync::Arc::new(serde_json::json!({ "type": "object" })),
+            max_retries: 1,
+            timeout_secs: 1,
+        };
+        let input = AgentInput {
+            paper_id: Uuid::nil(),
+            review_id: Uuid::nil(),
+            role: AgentRole::Citation,
+            content_hash_material: serde_json::json!({}),
+            artifact: serde_json::json!({}),
+            system_prompt: "system".to_string(),
+            user_prompt: "user".to_string(),
+            source_bundle_path: None,
+        };
+        let agent = Arc::new(ConfiguredAgent::new(spec));
+        let runner = Arc::new(SlowCompletesRunner);
+
+        run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input)
+            .await
+            .expect("supervisor timeout should include configured retry budget");
     }
 
     #[tokio::test]
