@@ -4,7 +4,9 @@
 //! Critical checks (DB URL + at least one configured review runner) set the
 //! exit code to 1.
 
+use crate::agents::AgentRunnerKind;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -171,6 +173,18 @@ impl DoctorReport {
         ]
         .iter()
         .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
+        let required_cli_fail = [
+            &self.cli_runners.claude,
+            &self.cli_runners.codex,
+            &self.cli_runners.gemini,
+        ]
+        .iter()
+        .any(|c| {
+            c.as_ref().is_some_and(|check| {
+                check.status == CheckStatus::Fail
+                    && check.message.contains("required by configured CLI role")
+            })
+        });
         let any_cloud_ok = [
             &self.cloud_runners.vercel_open_agents,
             &self.cloud_runners.e2b,
@@ -181,6 +195,7 @@ impl DoctorReport {
             .iter()
             .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
         db_fail
+            || required_cli_fail
             || (require_review_runner
                 && !(any_api_ok || any_cli_ok || any_cloud_ok || any_local_ok))
     }
@@ -347,6 +362,7 @@ struct CliRunnerCheckConfig {
     path: OsString,
     home: PathBuf,
     require_auth: bool,
+    required_bins: BTreeSet<String>,
 }
 
 impl CliRunnerCheckConfig {
@@ -367,6 +383,11 @@ impl CliRunnerCheckConfig {
             path,
             home,
             require_auth: env_truthy("GROKRXIV_REQUIRE_CLI_AUTH") || cli_selected,
+            required_bins: required_cli_binaries_for_agents_dir(&review_agents_dir_from_env())
+                .unwrap_or_else(|e| {
+                    tracing::warn!(err = %e, "doctor: could not load configured CLI runner requirements");
+                    BTreeSet::new()
+                }),
         }
     }
 }
@@ -377,7 +398,11 @@ fn check_cli_runners_with(report: &mut DoctorReport, config: &CliRunnerCheckConf
         ("codex", &mut report.cli_runners.codex),
         ("gemini", &mut report.cli_runners.gemini),
     ] {
-        *slot = Some(match which_in_path(name, &config.path) {
+        let binary = cli_binary_for_cli_name(name);
+        let required = config.require_auth
+            || config.required_bins.contains(name)
+            || config.required_bins.contains(&binary);
+        *slot = Some(match binary_available_in_path(&binary, &config.path) {
             Some(p) => match cli_auth_status(name, &config.home) {
                 Some(auth) => CheckResult::ok(format!("found {p}; auth {auth}")),
                 None if config.require_auth => CheckResult::fail(format!(
@@ -386,8 +411,10 @@ fn check_cli_runners_with(report: &mut DoctorReport, config: &CliRunnerCheckConf
                 )),
                 None => CheckResult::ok(format!("found {p}; auth not checked")),
             },
-            None if config.require_auth => CheckResult::fail(format!("`{name}` not on PATH")),
-            None => CheckResult::skipped(format!("`{name}` not on PATH")),
+            None if required => CheckResult::fail(format!(
+                "`{binary}` not on PATH (required by configured CLI role)"
+            )),
+            None => CheckResult::skipped(format!("`{binary}` not on PATH")),
         });
     }
 }
@@ -400,6 +427,80 @@ fn which_in_path(bin: &str, path: &OsString) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve the review-agent YAML directory using the same default as `AppState`.
+pub(crate) fn review_agents_dir_from_env() -> PathBuf {
+    std::env::var("GROKRXIV_AGENTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("agents")
+        })
+}
+
+/// Return local CLI binaries required by `runner: cli` review-agent YAML.
+pub(crate) fn required_cli_binaries_for_agents_dir(
+    agents_dir: &Path,
+) -> anyhow::Result<BTreeSet<String>> {
+    const REVIEW_AGENT_FILES: &[&str] = &[
+        "summary.yaml",
+        "technical_correctness.yaml",
+        "novelty.yaml",
+        "reproducibility.yaml",
+        "citation.yaml",
+        "meta_reviewer.yaml",
+    ];
+
+    #[derive(serde::Deserialize)]
+    struct ReviewAgentCliConfig {
+        provider: String,
+        #[serde(default)]
+        runner: Option<AgentRunnerKind>,
+    }
+
+    let mut required = BTreeSet::new();
+    for filename in REVIEW_AGENT_FILES {
+        let path = agents_dir.join(filename);
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+        let cfg: ReviewAgentCliConfig = serde_yaml::from_str(&raw)
+            .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?;
+        if cfg.runner.unwrap_or_default() == AgentRunnerKind::Cli {
+            required.insert(cli_binary_for_provider(&cfg.provider)?);
+        }
+    }
+    Ok(required)
+}
+
+/// Map a review-agent provider tag to the local CLI binary it uses.
+pub(crate) fn cli_binary_for_provider(provider: &str) -> anyhow::Result<String> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" | "anthropic" => Ok(cli_binary_for_cli_name("claude")),
+        "openai" | "codex" => Ok(cli_binary_for_cli_name("codex")),
+        "gemini" | "google" => Ok(cli_binary_for_cli_name("gemini")),
+        other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
+    }
+}
+
+fn cli_binary_for_cli_name(name: &str) -> String {
+    match name {
+        "claude" => std::env::var("GROKRXIV_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
+        "codex" => std::env::var("GROKRXIV_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()),
+        "gemini" => std::env::var("GROKRXIV_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()),
+        other => other.to_string(),
+    }
+}
+
+/// Return where a binary resolves, supporting absolute/relative override paths.
+pub(crate) fn binary_available_in_path(bin: &str, path: &OsString) -> Option<String> {
+    let candidate = Path::new(bin);
+    if candidate.is_absolute() || bin.contains(std::path::MAIN_SEPARATOR) {
+        return candidate.is_file().then(|| candidate.display().to_string());
+    }
+    which_in_path(bin, path)
 }
 
 fn cli_auth_status(name: &str, home: &Path) -> Option<&'static str> {
@@ -491,7 +592,7 @@ async fn check_local_inference(report: &mut DoctorReport) {
 fn check_publisher(report: &mut DoctorReport) {
     report.publisher = Some(match nonblank_env("GITHUB_TOKEN") {
         Some(_) => CheckResult::ok("GITHUB_TOKEN set (PR opens will be live)"),
-        None => CheckResult::skipped("GITHUB_TOKEN unset (approve will simulate PRs)"),
+        None => CheckResult::fail("GITHUB_TOKEN unset (approve requires a live PR token)"),
     });
 }
 
@@ -789,6 +890,18 @@ mod tests {
     }
 
     #[test]
+    fn doctor_treats_configured_cli_binary_failure_as_critical() {
+        let mut report = DoctorReport::new("test");
+        report.database_url = Some(CheckResult::ok("db"));
+        report.api_runners.openai = Some(CheckResult::ok("OPENAI_API_KEY set"));
+        report.cli_runners.claude = Some(CheckResult::fail(
+            "`claude` not on PATH (required by configured CLI role)",
+        ));
+
+        assert!(report.has_critical_failure_with_runner_requirement(true));
+    }
+
+    #[test]
     fn doctor_extraction_agents_honor_configured_agents_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let extraction = tmp.path().join("extraction");
@@ -830,6 +943,7 @@ mod tests {
             path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
             home: tmp.path().join("home"),
             require_auth: true,
+            required_bins: BTreeSet::new(),
         };
         let mut report = DoctorReport::new("test");
 
@@ -866,6 +980,7 @@ mod tests {
             path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
             home,
             require_auth: true,
+            required_bins: BTreeSet::new(),
         };
         let mut report = DoctorReport::new("test");
 
@@ -882,6 +997,34 @@ mod tests {
         assert_eq!(
             report.cli_runners.gemini.as_ref().map(|c| c.status),
             Some(CheckStatus::Ok)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runner_check_fails_only_configured_missing_cli_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CliRunnerCheckConfig {
+            path: std::ffi::OsString::new(),
+            home: tmp.path().join("home"),
+            require_auth: false,
+            required_bins: BTreeSet::from(["claude".to_string()]),
+        };
+        let mut report = DoctorReport::new("test");
+
+        check_cli_runners_with(&mut report, &config);
+
+        assert_eq!(
+            report.cli_runners.claude.as_ref().map(|c| c.status),
+            Some(CheckStatus::Fail)
+        );
+        assert_eq!(
+            report.cli_runners.codex.as_ref().map(|c| c.status),
+            Some(CheckStatus::Skipped)
+        );
+        assert_eq!(
+            report.cli_runners.gemini.as_ref().map(|c| c.status),
+            Some(CheckStatus::Skipped)
         );
     }
 

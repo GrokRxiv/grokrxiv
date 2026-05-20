@@ -88,7 +88,7 @@ pub async fn github(
         .and_then(Value::as_str)
         .unwrap_or_default();
     if action == "synchronize" {
-        return handle_pull_request_synchronize(state, &payload, delivery_id.as_deref())
+        return ack_and_spawn_pull_request_synchronize(state, payload, delivery_id.as_deref())
             .await
             .into_response();
     }
@@ -114,43 +114,163 @@ pub async fn github(
         return (StatusCode::OK, Json(json!({ "ignored": true }))).into_response();
     }
 
-    // Correlate to a review_id from the PR body marker.
+    // Correlate to a review_id from hard-to-lose PR metadata first, with the
+    // legacy body marker retained as a fallback.
     let review_id_opt = payload
         .get("pull_request")
-        .and_then(|pr| pr.get("body"))
-        .and_then(Value::as_str)
-        .and_then(extract_review_id_from_body);
+        .and_then(extract_review_id_from_pull_request);
 
     let Some(review_id) = review_id_opt else {
-        tracing::warn!("merge webhook: pr body missing grokrxiv-review-id marker");
+        tracing::warn!("merge webhook: pr metadata missing grokrxiv-review-id marker");
         return (
             StatusCode::OK,
             Json(json!({ "ignored": true, "branch": branch })),
         )
             .into_response();
     };
+    let Some(_) = state.db.as_ref() else {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "reason": "DATABASE_URL not configured" })),
+        )
+            .into_response();
+    };
 
-    let updated = match finalize_published_review(&state, review_id).await {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(err = %e, review_id = %review_id, "merge webhook: publish finalizer failed");
-            false
+    match record_github_delivery(
+        &state,
+        "github_pr_merged_received",
+        Some(review_id),
+        None,
+        &payload,
+        delivery_id.as_deref(),
+    )
+    .await
+    {
+        Ok(DeliveryRecord::Recorded) | Ok(DeliveryRecord::UnrecordedStateless) => {}
+        Ok(DeliveryRecord::Duplicate) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ignored": true, "reason": "duplicate delivery" })),
+            )
+                .into_response();
         }
-    };
-
-    if !updated {
-        return (
-            StatusCode::OK,
-            Json(json!({ "ignored": true, "branch": branch })),
-        )
-            .into_response();
+        Err(e) => {
+            tracing::error!(err = %e, review_id = %review_id, "merge webhook: delivery record failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "could not record delivery" })),
+            )
+                .into_response();
+        }
     }
+
+    spawn_publish_finalizer(state, review_id, branch.to_string());
 
     (
         StatusCode::OK,
-        Json(json!({ "ok": true, "review_id": review_id, "branch": branch })),
+        Json(json!({ "accepted": true, "review_id": review_id, "branch": branch })),
     )
         .into_response()
+}
+
+enum DeliveryRecord {
+    Recorded,
+    Duplicate,
+    UnrecordedStateless,
+}
+
+async fn record_github_delivery(
+    state: &AppState,
+    event_type: &str,
+    review_id: Option<Uuid>,
+    paper_id: Option<Uuid>,
+    payload: &Value,
+    delivery_id: Option<&str>,
+) -> anyhow::Result<DeliveryRecord> {
+    let Some(pool) = state.db.as_ref() else {
+        return Ok(DeliveryRecord::UnrecordedStateless);
+    };
+    match crate::db::insert_review_event(
+        pool,
+        review_id,
+        paper_id,
+        event_type,
+        "github",
+        payload,
+        delivery_id,
+    )
+    .await?
+    {
+        Some(_) => Ok(DeliveryRecord::Recorded),
+        None => Ok(DeliveryRecord::Duplicate),
+    }
+}
+
+async fn ack_and_spawn_pull_request_synchronize(
+    state: AppState,
+    payload: Value,
+    delivery_id: Option<&str>,
+) -> (StatusCode, Json<Value>) {
+    let Some(_) = state.db.as_ref() else {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ignored": true, "reason": "DATABASE_URL not configured" })),
+        );
+    };
+    match record_github_delivery(
+        &state,
+        "github_pr_synchronize_received",
+        None,
+        None,
+        &payload,
+        delivery_id,
+    )
+    .await
+    {
+        Ok(DeliveryRecord::Recorded) | Ok(DeliveryRecord::UnrecordedStateless) => {}
+        Ok(DeliveryRecord::Duplicate) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ignored": true, "reason": "duplicate delivery" })),
+            );
+        }
+        Err(e) => {
+            tracing::error!(err = %e, "synchronize webhook: delivery record failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "could not record delivery" })),
+            );
+        }
+    }
+
+    let state_for_task = state.clone();
+    tokio::spawn(async move {
+        let (status, _) = handle_pull_request_synchronize(state_for_task, &payload, None).await;
+        if !status.is_success() {
+            tracing::warn!(status = %status, "synchronize webhook: async processing did not finish cleanly");
+        }
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({ "accepted": true, "event": "pull_request.synchronize" })),
+    )
+}
+
+fn spawn_publish_finalizer(state: AppState, review_id: Uuid, branch: String) {
+    tokio::spawn(async move {
+        match finalize_published_review(&state, review_id).await {
+            Ok(true) => {
+                tracing::info!(%review_id, branch, "merge webhook: publish finalizer completed");
+            }
+            Ok(false) => {
+                tracing::info!(%review_id, branch, "merge webhook: publish finalizer made no update");
+            }
+            Err(e) => {
+                tracing::error!(err = %e, %review_id, branch, "merge webhook: publish finalizer failed");
+            }
+        }
+    });
 }
 
 async fn handle_pull_request_synchronize(
@@ -164,14 +284,12 @@ async fn handle_pull_request_synchronize(
             Json(json!({ "ignored": true, "reason": "DATABASE_URL not configured" })),
         );
     };
-    let pr_body = payload
-        .get("pull_request")
-        .and_then(|pr| pr.get("body"))
-        .and_then(Value::as_str);
-    let review_id = pr_body.and_then(extract_review_id_from_body);
+    let pr = payload.get("pull_request");
+    let pr_body = pr.and_then(|pr| pr.get("body")).and_then(Value::as_str);
+    let review_id = pr.and_then(extract_review_id_from_pull_request);
     let correction_source_path = pr_body.and_then(extract_correction_source_path_from_body);
     let Some(prior_review_id) = review_id else {
-        tracing::warn!("synchronize webhook: pr body missing grokrxiv-review-id marker");
+        tracing::warn!("synchronize webhook: pr metadata missing grokrxiv-review-id marker");
         return (
             StatusCode::OK,
             Json(json!({ "ignored": true, "reason": "missing review marker" })),
@@ -843,17 +961,50 @@ fn is_valid_review_branch(branch: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
+fn extract_review_id_from_pull_request(pr: &Value) -> Option<uuid::Uuid> {
+    pr.get("title")
+        .and_then(Value::as_str)
+        .and_then(extract_review_id_from_marker_text)
+        .or_else(|| pr.get("labels").and_then(extract_review_id_from_labels))
+        .or_else(|| {
+            pr.get("body")
+                .and_then(Value::as_str)
+                .and_then(extract_review_id_from_body)
+        })
+}
+
+fn extract_review_id_from_labels(labels: &Value) -> Option<uuid::Uuid> {
+    labels.as_array()?.iter().find_map(|label| {
+        label
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(extract_review_id_from_marker_text)
+    })
+}
+
 fn extract_review_id_from_body(body: &str) -> Option<uuid::Uuid> {
     // The publisher embeds `grokrxiv-review-id: <uuid>` somewhere in the PR
     // body so we can correlate the merge back to a review row.
     for line in body.lines() {
-        if let Some(rest) = line.trim().strip_prefix("grokrxiv-review-id:") {
-            if let Ok(id) = rest.trim().parse::<uuid::Uuid>() {
-                return Some(id);
-            }
+        if let Some(id) = extract_review_id_from_marker_text(line.trim()) {
+            return Some(id);
         }
     }
     None
+}
+
+fn extract_review_id_from_marker_text(text: &str) -> Option<uuid::Uuid> {
+    let marker = "grokrxiv-review-id:";
+    let idx = text.find(marker)?;
+    let rest = text[idx + marker.len()..].trim_start();
+    let candidate: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+        .collect();
+    if candidate.is_empty() {
+        return None;
+    }
+    candidate.parse::<uuid::Uuid>().ok()
 }
 
 fn extract_correction_source_path_from_body(body: &str) -> Option<&str> {
@@ -921,6 +1072,34 @@ mod tests {
         let body = "Closes #42\n\ngrokrxiv-review-id: 11111111-1111-1111-1111-111111111111\n";
         let id = extract_review_id_from_body(body).unwrap();
         assert_eq!(id.to_string(), "11111111-1111-1111-1111-111111111111");
+    }
+
+    #[test]
+    fn correlates_review_id_from_pr_title_before_body() {
+        let title_id = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let body_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let pr = serde_json::json!({
+            "title": format!("Review: Some paper [grokrxiv-review-id:{title_id}]"),
+            "body": format!("grokrxiv-review-id: {body_id}"),
+            "labels": [],
+        });
+
+        assert_eq!(extract_review_id_from_pull_request(&pr), Some(title_id));
+    }
+
+    #[test]
+    fn correlates_review_id_from_pr_label_before_body() {
+        let label_id = uuid::Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+        let body_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let pr = serde_json::json!({
+            "title": "Review: Some paper",
+            "body": format!("grokrxiv-review-id: {body_id}"),
+            "labels": [
+                { "name": format!("grokrxiv-review-id:{label_id}") }
+            ],
+        });
+
+        assert_eq!(extract_review_id_from_pull_request(&pr), Some(label_id));
     }
 
     #[test]

@@ -40,6 +40,46 @@ pub use providers::openai::OpenAIProvider;
 #[cfg(feature = "vllm")]
 pub use providers::vllm::VllmProvider;
 
+/// Resolve GrokRxiv's per-request output-token cap for a provider/model pair.
+///
+/// This is deliberately table-driven: unknown future model IDs fall back to a
+/// conservative provider-safe cap instead of substring-matching a family name
+/// that may not share the same API limit.
+pub fn max_output_tokens_for(provider: &str, model: &str) -> u32 {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" | "anthropic" => anthropic_output_cap(model.trim()),
+        "gemini" | "google" => gemini_output_cap(model.trim()),
+        "openai" => openai_output_cap(model.trim()),
+        "vllm" => 16_000,
+        _ => 16_000,
+    }
+}
+
+fn anthropic_output_cap(model: &str) -> u32 {
+    match model {
+        "claude-haiku-4-5-20251001" => 8_000,
+        "claude-sonnet-4-6" | "claude-opus-4-7" => 32_000,
+        _ => 8_000,
+    }
+}
+
+fn gemini_output_cap(model: &str) -> u32 {
+    match model {
+        "gemini-2.5-flash"
+        | "gemini-2.5-pro"
+        | "gemini-3-flash-preview"
+        | "gemini-3-pro-preview" => 32_000,
+        _ => 16_000,
+    }
+}
+
+fn openai_output_cap(model: &str) -> u32 {
+    match model {
+        "gpt-5" | "gpt-5.5" | "o1" | "o1-mini" => 32_000,
+        _ => 16_000,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -520,5 +560,33 @@ mod tests {
         // QuotaExceeded is NOT retryable. RateLimited IS.
         assert!(LLMError::RateLimited(None).is_retryable());
         assert!(!LLMError::QuotaExceeded("x".into()).is_retryable());
+    }
+
+    #[test]
+    fn output_token_caps_are_provider_model_table_driven() {
+        assert_eq!(
+            max_output_tokens_for("claude", "claude-haiku-4-5-20251001"),
+            8_000
+        );
+        assert_eq!(max_output_tokens_for("claude", "claude-opus-4-7"), 32_000);
+        assert_eq!(
+            max_output_tokens_for("gemini", "gemini-3-flash-preview"),
+            32_000
+        );
+        assert_eq!(max_output_tokens_for("openai", "gpt-5.5"), 32_000);
+    }
+
+    #[test]
+    fn output_token_caps_do_not_match_unknown_models_by_substring() {
+        assert_eq!(
+            max_output_tokens_for("claude", "future-opus-compatible"),
+            8_000,
+            "unknown Anthropic models should use the provider-safe cap, not match `opus` by substring"
+        );
+        assert_eq!(
+            max_output_tokens_for("openai", "not-gpt-but-contains-gpt"),
+            16_000,
+            "unknown OpenAI models should use the provider-safe cap, not match `gpt` by substring"
+        );
     }
 }

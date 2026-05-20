@@ -3,7 +3,7 @@
 //! The default backend for every role at RPT2 ship time. Wraps the existing
 //! `LLMProvider` trait from `crates/llm-adapter`. Track A lifts the body of
 //! the legacy `supervisor.rs::call_with_schema` helper into `ApiRunner::run`
-//! so the supervisor can delegate via `ReviewAgent::run`.
+//! so the supervisor can delegate via a configured role binding.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,17 +11,18 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use grokrxiv_llm_adapter::{
-    ChatRequest, ContentPart, LLMProvider, Message as LlmMessage, ResponseFormat, Role,
-    ToolChatRequest,
+    max_output_tokens_for, ChatRequest, ContentPart, LLMProvider, Message as LlmMessage,
+    ResponseFormat, Role, ToolChatRequest,
 };
 use tracing::warn;
 
 use crate::agents::extraction::ToolCtx;
 use crate::agents::traits::AgentRunner;
 use crate::agents::types::{
-    AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, ToolCompletion, ToolSpec,
+    AgentInput, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, Message, ToolCompletion,
+    ToolSpec,
 };
-use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
+use crate::runtime_config::direct_provider_api_allowed_from_env;
 
 /// Holds a registry of `LLMProvider` impls keyed by name (`"claude"`,
 /// `"openai"`, `"gemini"`, `"deepseek"`, etc.). The runner dispatches to the
@@ -38,10 +39,7 @@ impl ApiRunner {
 }
 
 fn provider_api_allowed() -> bool {
-    matches!(
-        std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    )
+    direct_provider_api_allowed_from_env()
 }
 
 fn ensure_provider_api_allowed(context: &str, spec: &AgentSpec) -> anyhow::Result<()> {
@@ -79,28 +77,26 @@ impl AgentRunner for ApiRunner {
         let system = input.system_prompt.clone();
         let prompt = input.user_prompt.clone();
 
-        let make_req = |user_prompt: String, schema: serde_json::Value| ChatRequest {
-            system: Some(system.clone()),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                content: vec![ContentPart::Text(user_prompt)],
-            }],
-            model: model.clone(),
-            // Output cap that fits a 33-reference citation review (~16K
-            // tokens) without truncation, but stays under each provider's
-            // per-model hard cap. claude-haiku-4-5 caps at 8192, opus at 32K,
-            // gemini-2.5-flash at 65K, gpt-5 at 128K. We pick per-model so
-            // citation (which uses flash) gets the headroom it needs while
-            // smaller-output roles (summary on haiku) don't 400 on overshoot.
-            max_tokens: max_tokens_for_model(&model),
-            temperature: 0.2,
-            response_format: ResponseFormat::JsonSchema(schema),
-            cache_system: true,
+        let make_req = |system_prompt: String, user_prompt: String, schema: AgentSchema| {
+            ChatRequest {
+                system: Some(system_prompt),
+                messages: vec![LlmMessage {
+                    role: Role::User,
+                    content: vec![ContentPart::Text(user_prompt)],
+                }],
+                model: model.clone(),
+                // Keep provider/model output caps in llm-adapter so this
+                // runner does not guess limits from model-name substrings.
+                max_tokens: max_output_tokens_for(&spec.provider, &model),
+                temperature: 0.2,
+                response_format: ResponseFormat::JsonSchema(schema.as_ref().clone()),
+                cache_system: true,
+            }
         };
 
         let started = Instant::now();
         let resp = provider
-            .complete(make_req(prompt.clone(), schema.clone()))
+            .complete(make_req(system.clone(), prompt.clone(), schema.clone()))
             .await
             .map_err(|e| {
                 // Always include the provider name + model + role so the
@@ -131,20 +127,16 @@ impl AgentRunner for ApiRunner {
             );
         }
 
-        let (output, usage) = match parse_strict_json(&resp.text) {
+        let (output, usage) = match parse_and_validate(&resp.text, schema.as_ref()) {
             Ok(v) => (v, resp.usage),
             Err(first_err) => {
                 // Single corrective retry: tell the model its prior output failed
-                // schema validation and ask for strict JSON. No `{"raw": ...}`
-                // fallback — if the retry also fails the caller surfaces a hard
-                // error and the verifier records the parse error in
-                // `verifier_notes.parse_error`.
-                let corrective = format!(
-                    "{prompt}\n\nYour previous output did not validate against the schema; \
-                     return strict JSON only, with no surrounding prose, code fences, or commentary."
-                );
+                // parse/schema validation, classify the failure mode, and
+                // mutate the system prompt. No `{"raw": ...}` fallback — if
+                // the retry also fails the caller surfaces a hard error.
+                let corrective_system = corrective_system_prompt(&system, &first_err);
                 let retry = provider
-                    .complete(make_req(corrective, schema.clone()))
+                    .complete(make_req(corrective_system, prompt.clone(), schema.clone()))
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(
@@ -169,7 +161,7 @@ impl AgentRunner for ApiRunner {
                         "provider returned empty text body on corrective retry"
                     );
                 }
-                match parse_strict_json(&retry.text) {
+                match parse_and_validate(&retry.text, schema.as_ref()) {
                     Ok(v) => (v, retry.usage),
                     Err(e) => {
                         warn!(
@@ -236,7 +228,7 @@ impl AgentRunner for ApiRunner {
             // gemini's hidden-thinking step used to starve the response. With
             // thinkingBudget=0 the cap above is honoured; still per-model so
             // we don't overshoot a haiku request.
-            max_tokens: max_tokens_for_model(&model_name),
+            max_tokens: max_output_tokens_for(&spec.provider, &model_name),
             temperature: 0.2,
         };
         provider.complete_with_tools(req).await.map_err(|e| {
@@ -250,45 +242,113 @@ impl AgentRunner for ApiRunner {
     }
 }
 
-/// Per-model output-token cap. Each provider rejects requests whose
-/// `max_tokens` exceeds the model's published output limit (e.g. Anthropic
-/// 400s "max_tokens > 8192" on haiku). Pick the largest legal value so any
-/// schema fits.
-fn max_tokens_for_model(model: &str) -> u32 {
-    // Anthropic: haiku-4-5 caps at 8192, sonnet at 64000, opus at 32000.
-    if model.contains("haiku") {
-        return 8_000;
+/// Try strict JSON parse; on failure, strip ```json fences and retry; on
+/// failure again, return a classified error. Never returns `{"raw": ...}`.
+fn parse_and_validate(
+    s: &str,
+    schema: &serde_json::Value,
+) -> Result<serde_json::Value, OutputValidationError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(OutputValidationError::new(
+            OutputFailureKind::Empty,
+            "provider returned an empty response body",
+        ));
     }
-    if model.contains("sonnet") {
-        return 32_000;
-    }
-    if model.contains("opus") {
-        return 32_000;
-    }
-    // Gemini 2.5 (flash + pro): 65536 output tokens.
-    if model.contains("gemini") {
-        return 32_000;
-    }
-    // gpt-5 and friends: 128000 output tokens.
-    if model.contains("gpt") {
-        return 32_000;
-    }
-    // Safe default that every modern provider accepts.
-    16_000
+    let stripped = strip_fences(trimmed);
+    let parsed = serde_json::from_str::<serde_json::Value>(stripped).map_err(|e| {
+        let kind = if looks_like_prose_wrapped_json(trimmed) {
+            OutputFailureKind::ProseWrappedJson
+        } else {
+            OutputFailureKind::InvalidJson
+        };
+        OutputValidationError::new(kind, format!("not valid JSON: {e}"))
+    })?;
+    validate_parsed(parsed, schema)
 }
 
-/// Try strict JSON parse; on failure, strip ```json fences and retry; on
-/// failure again, return `Err`. Never returns `{"raw": ...}`.
-fn parse_strict_json(s: &str) -> anyhow::Result<serde_json::Value> {
-    let trimmed = s.trim();
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(v) => Ok(v),
-        Err(_) => {
-            let stripped = strip_fences(trimmed);
-            serde_json::from_str::<serde_json::Value>(stripped)
-                .map_err(|e| anyhow::anyhow!("not valid JSON: {e}"))
+#[derive(Debug)]
+struct OutputValidationError {
+    kind: OutputFailureKind,
+    detail: String,
+}
+
+impl OutputValidationError {
+    fn new(kind: OutputFailureKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
         }
     }
+}
+
+impl std::fmt::Display for OutputValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for OutputValidationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFailureKind {
+    Empty,
+    ProseWrappedJson,
+    InvalidJson,
+    SchemaValidation,
+}
+
+impl OutputFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty response",
+            Self::ProseWrappedJson => "prose-wrapped JSON",
+            Self::InvalidJson => "invalid JSON",
+            Self::SchemaValidation => "schema validation failed",
+        }
+    }
+}
+
+fn corrective_system_prompt(original: &str, failure: &OutputValidationError) -> String {
+    format!(
+        "{original}\n\nCORRECTIVE RETRY: The previous response failed because {failure}. \
+         Return exactly one JSON object that validates against the supplied JSON schema. \
+         Do not include prose, markdown fences, code blocks, comments, or commentary."
+    )
+}
+
+fn validate_parsed(
+    parsed: serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<serde_json::Value, OutputValidationError> {
+    if schema.is_null()
+        || (schema.is_object() && schema.as_object().map(|m| m.is_empty()).unwrap_or(false))
+    {
+        return Ok(parsed);
+    }
+
+    let validator = jsonschema::validator_for(schema).map_err(|e| {
+        OutputValidationError::new(
+            OutputFailureKind::SchemaValidation,
+            format!("invalid role schema: {e}"),
+        )
+    })?;
+    let errors: Vec<String> = validator
+        .iter_errors(&parsed)
+        .map(|e| e.to_string())
+        .collect();
+    if !errors.is_empty() {
+        return Err(OutputValidationError::new(
+            OutputFailureKind::SchemaValidation,
+            errors.join("; "),
+        ));
+    }
+    Ok(parsed)
+}
+
+fn looks_like_prose_wrapped_json(s: &str) -> bool {
+    let trimmed = s.trim_start();
+    !trimmed.starts_with('{') && trimmed.contains('{') && trimmed.contains('}')
 }
 
 fn strip_fences(s: &str) -> &str {
@@ -304,13 +364,16 @@ fn strip_fences(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
     use grokrxiv_llm_adapter::{
-        ClaudeProvider, GeminiProvider, OpenAIProvider, ProviderConfig, Role as LlmRole,
-        ToolContent, ToolMessage, ToolSpec,
+        ChatResponse, ClaudeProvider, FinishReason, GeminiProvider, OpenAIProvider, ProviderConfig,
+        Role as LlmRole, ToolContent, ToolMessage, ToolSpec, Usage,
     };
     use grokrxiv_schemas::AgentRole;
     use serde_json::json;
+    use std::collections::VecDeque;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use wiremock::matchers::{body_json_schema, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -380,6 +443,82 @@ mod tests {
             semantic_ast: None,
             arxiv_id: "2401.00001v1",
             http: std::sync::Arc::new(reqwest::Client::new()),
+        }
+    }
+
+    fn agent_input() -> AgentInput {
+        AgentInput {
+            paper_id: uuid::Uuid::new_v4(),
+            review_id: uuid::Uuid::new_v4(),
+            role: AgentRole::Summary,
+            content_hash_material: json!({ "paper": "x" }),
+            artifact: json!({ "paper": "x" }),
+            system_prompt: "Base system prompt.".to_string(),
+            user_prompt: "Review this paper.".to_string(),
+            source_bundle_path: None,
+        }
+    }
+
+    fn required_tldr_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "required": ["tldr"],
+            "additionalProperties": false,
+            "properties": {
+                "tldr": { "type": "string" }
+            }
+        })
+    }
+
+    fn response(text: &str) -> ChatResponse {
+        ChatResponse {
+            text: text.to_string(),
+            finish_reason: FinishReason::Stop,
+            usage: Usage {
+                tokens_in: 3,
+                tokens_out: 4,
+                cache_hits: 0,
+            },
+            raw: json!({ "text": text }),
+        }
+    }
+
+    struct RecordingProvider {
+        responses: Mutex<VecDeque<ChatResponse>>,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl RecordingProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for RecordingProvider {
+        async fn complete(
+            &self,
+            req: ChatRequest,
+        ) -> Result<ChatResponse, grokrxiv_llm_adapter::LLMError> {
+            self.requests.lock().unwrap().push(req);
+            self.responses.lock().unwrap().pop_front().ok_or_else(|| {
+                grokrxiv_llm_adapter::LLMError::Provider("no response queued".into())
+            })
+        }
+
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn context_window(&self) -> usize {
+            128_000
         }
     }
 
@@ -590,6 +729,77 @@ mod tests {
         assert!(
             msg.contains("--extractor api"),
             "error should name the explicit opt-in: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn corrective_retry_changes_system_prompt_for_prose_wrapped_json() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(Some("1"));
+        let provider = Arc::new(RecordingProvider::new(vec![
+            response("Here is the JSON:\n{\"tldr\":\"bad shape\"}"),
+            response("{\"tldr\":\"fixed\"}"),
+        ]));
+        let mut providers: HashMap<String, Arc<dyn LLMProvider>> = HashMap::new();
+        providers.insert("recording".into(), provider.clone());
+        let runner = ApiRunner::new(providers);
+        let mut spec = spec("recording", "gpt-5.5");
+        spec.schema = required_tldr_schema().into();
+
+        let run = runner
+            .run(&spec, &agent_input())
+            .await
+            .expect("corrective retry should recover");
+
+        assert_eq!(run.output["tldr"], "fixed");
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].system.as_deref(), Some("Base system prompt."));
+        assert_ne!(
+            requests[0].system, requests[1].system,
+            "corrective retry must mutate the system prompt, not repeat the same prompt shape"
+        );
+        assert!(
+            requests[1]
+                .system
+                .as_deref()
+                .unwrap_or_default()
+                .contains("prose"),
+            "retry prompt should classify prose-wrapped JSON: {:?}",
+            requests[1].system
+        );
+    }
+
+    #[tokio::test]
+    async fn corrective_retry_changes_system_prompt_for_schema_failure() {
+        let _lock = API_ENV_TEST_LOCK.lock().await;
+        let _env = ProviderApiEnvGuard::set(Some("1"));
+        let provider = Arc::new(RecordingProvider::new(vec![
+            response("{\"wrong\":7}"),
+            response("{\"tldr\":\"fixed\"}"),
+        ]));
+        let mut providers: HashMap<String, Arc<dyn LLMProvider>> = HashMap::new();
+        providers.insert("recording".into(), provider.clone());
+        let runner = ApiRunner::new(providers);
+        let mut spec = spec("recording", "gpt-5.5");
+        spec.schema = required_tldr_schema().into();
+
+        runner
+            .run(&spec, &agent_input())
+            .await
+            .expect("corrective retry should recover");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(requests[0].system, requests[1].system);
+        assert!(
+            requests[1]
+                .system
+                .as_deref()
+                .unwrap_or_default()
+                .contains("schema validation failed"),
+            "retry prompt should classify schema validation failure: {:?}",
+            requests[1].system
         );
     }
 

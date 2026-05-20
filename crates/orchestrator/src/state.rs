@@ -1,6 +1,7 @@
 //! Shared `AppState` injected into every axum handler.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
@@ -9,24 +10,22 @@ use sqlx::PgPool;
 
 use crate::agents::runners::api::ApiRunner;
 use crate::agents::{
-    build_agent, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent, SandboxPolicy,
-    ToolPolicy,
+    build_agent, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec, ConfiguredAgent,
+    SandboxPolicy,
 };
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
-use crate::runtime_config::{model_override_for_role, ALLOW_PROVIDER_API_ENV};
+use crate::runtime_config::{direct_provider_api_allowed_from_env, model_override_for_role};
 
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
-/// Per-agent provider and model routing table.
-pub type RoleRouting = HashMap<grokrxiv_schemas::AgentRole, (Arc<dyn LLMProvider>, String)>;
-/// Per-role `ReviewAgent` registry, keyed by review role.
-pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<dyn ReviewAgent>>;
+/// Per-role configured-agent registry, keyed by review role.
+pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<ConfiguredAgent>>;
 /// Per-kind `AgentRunner` registry, keyed by runner backend.
 pub type RunnerRegistry = HashMap<AgentRunnerKind, Arc<dyn AgentRunner>>;
 /// Role-specific JSON schema documents.
 #[cfg(feature = "grokrxiv-verifier")]
-pub type AgentSchemaMap = HashMap<grokrxiv_schemas::AgentRole, serde_json::Value>;
+pub type AgentSchemaMap = HashMap<grokrxiv_schemas::AgentRole, AgentSchema>;
 /// Role-specific verifier ladders.
 #[cfg(feature = "grokrxiv-verifier")]
 pub type VerifierMap = HashMap<grokrxiv_schemas::AgentRole, grokrxiv_verifier::VerifierLadder>;
@@ -55,7 +54,7 @@ impl ProviderRegistry {
     /// Additional providers (OpenAI / Gemini / vLLM) are registered when their
     /// respective env vars are present.
     pub fn from_env() -> Option<Self> {
-        if std::env::var(ALLOW_PROVIDER_API_ENV).ok().as_deref() == Some("0") {
+        if !direct_provider_api_allowed_from_env() {
             return None;
         }
         let cfg = ProviderConfig::from_env();
@@ -118,16 +117,8 @@ pub struct AppState {
     /// schema. Replaces the previous single permissive-object ladder.
     #[cfg(feature = "grokrxiv-verifier")]
     pub verifiers: Arc<VerifierMap>,
-    /// Legacy per-role `(provider, model)` routing for direct API paths.
-    /// CLI review/extraction runs use `agents` + `runners` instead and do not
-    /// need provider API keys.
-    pub role_routing: Arc<RoleRouting>,
-    /// Per-role `ReviewAgent` instances built from `agents/*.yaml`. Populated
-    /// alongside `role_routing` so the supervisor can delegate to
-    /// `agent.run(&runner, input)` instead of calling the provider directly.
-    /// Empty when no provider registry is available (e.g. `from_env` returned
-    /// `None`); in that case the supervisor falls back to constructing an agent
-    /// on the fly from the passed-in provider.
+    /// Per-role configured agents built from `agents/*.yaml`. This is the
+    /// single role registry for review dispatch.
     pub agents: Arc<AgentRegistry>,
     /// Per-`AgentRunnerKind` runner backends. RPT2 Track A registers only the
     /// `ApiRunner`; CLI/cloud/local-inference are filled by other tracks.
@@ -161,24 +152,26 @@ impl AppState {
         #[cfg(feature = "grokrxiv-verifier")]
         let (agent_schemas, verifiers) = build_agent_schemas_and_verifiers();
 
-        let fallback_model = config.preview_model.clone();
         let role_yaml = load_role_configs();
-        let role_routing = Arc::new(build_role_routing(&providers, &fallback_model, &role_yaml));
+        validate_role_configs(&role_yaml)?;
+        validate_required_cli_runners(&role_yaml)?;
 
         // Build the runner registry. API can be empty in CLI-only setups;
         // CLI/cloud/local-inference are still registered and fail only when
         // invoked without their own prerequisites.
-        let provider_map_by_string: HashMap<String, Arc<dyn LLMProvider>> = match &providers {
-            Some(reg) => reg
-                .by_name
-                .iter()
-                .map(|(k, v)| ((*k).to_string(), v.clone()))
-                .collect(),
-            None => HashMap::new(),
-        };
-        let api_runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(provider_map_by_string));
         let mut runners_map: RunnerRegistry = HashMap::new();
-        runners_map.insert(AgentRunnerKind::Api, api_runner);
+        if direct_provider_api_allowed_from_env() {
+            let provider_map_by_string: HashMap<String, Arc<dyn LLMProvider>> = match &providers {
+                Some(reg) => reg
+                    .by_name
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect(),
+                None => HashMap::new(),
+            };
+            let api_runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(provider_map_by_string));
+            runners_map.insert(AgentRunnerKind::Api, api_runner);
+        }
         // RPT2 G follow-up: register the other 3 runner kinds so the supervisor's
         // `--runner cli` / `--runner cloud` / `--runner local_inference` flag
         // can route through them at runtime. Each constructs cheaply; they only
@@ -198,10 +191,8 @@ impl AppState {
         );
         let runners = Arc::new(runners_map);
 
-        // Build the per-role `ReviewAgent` registry from the YAML configs +
-        // the in-memory schemas. Only populated when the verifier feature is
-        // on (so schemas exist). The registry is independent of direct API
-        // providers so `--runner cli` can execute without provider API keys.
+        // Build the single per-role configured-agent registry from YAML and
+        // in-memory schemas.
         let agents = {
             #[cfg(feature = "grokrxiv-verifier")]
             {
@@ -223,7 +214,6 @@ impl AppState {
             agent_schemas,
             #[cfg(feature = "grokrxiv-verifier")]
             verifiers,
-            role_routing,
             agents,
             runners,
         })
@@ -269,15 +259,18 @@ const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
     ),
 ];
 
-/// Read each `agents/<role>.yaml` once. The result is consumed by both
-/// `build_role_routing` (legacy provider+model map) and `build_agent_registry`
-/// (new `ReviewAgent` map).
+/// Read each `agents/<role>.yaml` once for the configured-agent registry.
 fn load_role_configs() -> RoleYamlMap {
-    // Resolve `agents/` relative to the workspace root. In a container the
-    // binary's cwd is the repo root; in dev `cargo run` also runs from there.
+    // Resolve the default relative to this crate, not process cwd. Some tests
+    // deliberately chdir into temp directories before constructing AppState.
     let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("agents")
+        });
 
     let mut out: RoleYamlMap = HashMap::new();
     for (role, filename) in ROLE_FILES {
@@ -290,7 +283,7 @@ fn load_role_configs() -> RoleYamlMap {
                         role = ?role,
                         path = %path.display(),
                         err = %e,
-                        "could not parse agent yaml; falling back to default provider/model"
+                        "could not parse agent yaml; startup validation will fail"
                     );
                     None
                 }
@@ -300,7 +293,7 @@ fn load_role_configs() -> RoleYamlMap {
                     role = ?role,
                     path = %path.display(),
                     err = %e,
-                    "agent yaml missing; falling back to default provider/model"
+                    "agent yaml missing; startup validation will fail"
                 );
                 None
             }
@@ -310,60 +303,65 @@ fn load_role_configs() -> RoleYamlMap {
     out
 }
 
-/// Build the per-role `(provider, model)` map for legacy direct API routing.
-/// CLI-only runs intentionally leave this empty so missing provider API keys
-/// do not look like fallback-to-Claude API traffic.
-fn build_role_routing(
-    providers: &Option<ProviderRegistry>,
-    fallback_model: &str,
-    role_yaml: &RoleYamlMap,
-) -> RoleRouting {
-    let mut out: RoleRouting = HashMap::new();
-    if std::env::var(ALLOW_PROVIDER_API_ENV).ok().as_deref() == Some("0") {
-        return out;
+fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
+    let missing: Vec<String> = ROLE_FILES
+        .iter()
+        .filter_map(|(role, filename)| match role_yaml.get(role) {
+            Some(Some(_)) => None,
+            _ => Some(format!("{role:?} ({filename})")),
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "agent role YAML is missing or malformed for {}; refusing to start with permissive schemas",
+            missing.join(", ")
+        )
     }
-
-    // No providers at all means /preview will error anyway; routing is empty.
-    let Some(registry) = providers else {
-        return out;
-    };
-
-    for (role, _filename) in ROLE_FILES {
-        let Some(routing) = role_yaml.get(role).and_then(|c| c.as_ref()) else {
-            out.insert(
-                *role,
-                (registry.default.clone(), fallback_model.to_string()),
-            );
-            continue;
-        };
-        let declared_provider = routing.provider.as_str();
-        match registry.by_name.get(declared_provider) {
-            Some(p) => {
-                let model = model_override_for_role(*role).unwrap_or_else(|| routing.model.clone());
-                out.insert(*role, (p.clone(), model));
-            }
-            None => {
-                tracing::warn!(
-                    role = ?role,
-                    declared = %declared_provider,
-                    declared_model = %routing.model,
-                    "missing API key; falling back to claude"
-                );
-                out.insert(
-                    *role,
-                    (registry.default.clone(), fallback_model.to_string()),
-                );
-            }
-        }
-    }
-    out
 }
 
-/// Build the per-role `ReviewAgent` registry from the YAML configs and the
-/// in-memory per-role JSON schemas. Roles whose YAML is missing or malformed
-/// are skipped; the supervisor will detect the gap and fall back to an
-/// on-the-fly agent for those roles. Runtime flags/env select the actual
-/// runner, so CLI/cloud/local-inference paths do not depend on provider APIs.
+fn validate_required_cli_runners(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
+    validate_required_cli_runners_with_path(
+        role_yaml,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
+}
+
+fn validate_required_cli_runners_with_path(
+    role_yaml: &RoleYamlMap,
+    path: &OsString,
+) -> anyhow::Result<()> {
+    let required = required_cli_bins(role_yaml)?;
+    let missing: Vec<String> = required
+        .into_iter()
+        .filter(|bin| crate::doctor::binary_available_in_path(bin, path).is_none())
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "configured CLI runner binaries are missing from PATH: {}",
+            missing.join(", ")
+        )
+    }
+}
+
+fn required_cli_bins(role_yaml: &RoleYamlMap) -> anyhow::Result<BTreeSet<String>> {
+    let mut bins = BTreeSet::new();
+    for cfg in role_yaml.values().filter_map(|cfg| cfg.as_ref()) {
+        if cfg.runner.unwrap_or_default() == AgentRunnerKind::Cli {
+            bins.insert(crate::doctor::cli_binary_for_provider(&cfg.provider)?);
+        }
+    }
+    Ok(bins)
+}
+
+/// Build the per-role configured-agent registry from the YAML configs and the
+/// in-memory per-role JSON schemas. Startup validation already rejected
+/// missing/malformed YAML, so this registry is the complete role source of
+/// truth. Runtime flags/env select the actual runner, so
+/// CLI/cloud/local-inference paths do not depend on provider APIs.
 #[cfg(feature = "grokrxiv-verifier")]
 fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();
@@ -374,20 +372,18 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
         let schema = schemas
             .get(role)
             .cloned()
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+            .expect("role schema loaded for configured role");
         let spec = AgentSpec {
             role: *role,
             runner: cfg.runner.unwrap_or_default(),
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: cfg.provider.clone(),
             model: model_override_for_role(*role).unwrap_or_else(|| cfg.model.clone()),
             schema,
-            tool_policy: ToolPolicy::default(),
             max_retries: cfg.max_retries.unwrap_or(2),
             timeout_secs: cfg.timeout_secs.unwrap_or(180),
         };
-        out.insert(*role, Arc::from(build_agent(spec)));
+        out.insert(*role, Arc::new(build_agent(spec)));
     }
     out
 }
@@ -429,19 +425,22 @@ fn build_agent_schemas_and_verifiers() -> (Arc<AgentSchemaMap>, Arc<VerifierMap>
         serde_json::from_str(include_str!("../../../schemas/meta_review.schema.json"))
             .expect("meta_review schema");
 
-    let mut schemas: HashMap<AgentRole, serde_json::Value> = HashMap::new();
-    schemas.insert(AgentRole::Summary, summary);
-    schemas.insert(AgentRole::TechnicalCorrectness, technical);
-    schemas.insert(AgentRole::Novelty, novelty);
-    schemas.insert(AgentRole::Reproducibility, reproducibility);
-    schemas.insert(AgentRole::Citation, citation);
-    schemas.insert(AgentRole::MetaReviewer, meta);
+    let mut schemas: HashMap<AgentRole, AgentSchema> = HashMap::new();
+    schemas.insert(AgentRole::Summary, Arc::new(summary));
+    schemas.insert(AgentRole::TechnicalCorrectness, Arc::new(technical));
+    schemas.insert(AgentRole::Novelty, Arc::new(novelty));
+    schemas.insert(AgentRole::Reproducibility, Arc::new(reproducibility));
+    schemas.insert(AgentRole::Citation, Arc::new(citation));
+    schemas.insert(AgentRole::MetaReviewer, Arc::new(meta));
 
     let mut ladders: HashMap<AgentRole, grokrxiv_verifier::VerifierLadder> = HashMap::new();
     for (role, schema) in &schemas {
         ladders.insert(
             *role,
-            grokrxiv_verifier::VerifierLadder::standard_for_role(*role, Some(schema.clone())),
+            grokrxiv_verifier::VerifierLadder::standard_for_role(
+                *role,
+                Some(schema.as_ref().clone()),
+            ),
         );
     }
 
@@ -481,6 +480,7 @@ fn inline_citation_ref(
 #[cfg(all(test, feature = "grokrxiv-verifier"))]
 mod tests {
     use super::*;
+    use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
     use grokrxiv_schemas::AgentRole;
 
     struct EnvVarGuard {
@@ -529,11 +529,16 @@ mod tests {
             }),
         );
         let mut schemas = AgentSchemaMap::new();
-        schemas.insert(AgentRole::Summary, serde_json::json!({ "type": "object" }));
+        let schema = Arc::new(serde_json::json!({ "type": "object" }));
+        schemas.insert(AgentRole::Summary, schema.clone());
         let registry = build_agent_registry(&role_yaml, &Arc::new(schemas));
         let agent = registry.get(&AgentRole::Summary).expect("summary agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
+        assert!(
+            Arc::ptr_eq(&agent.spec().schema, &schema),
+            "agent registry should share schema Arcs instead of cloning large Values"
+        );
     }
 
     #[test]
@@ -559,6 +564,48 @@ mod tests {
             ProviderRegistry::from_env().is_none(),
             "blank provider keys are not usable API credentials"
         );
+    }
+
+    #[test]
+    fn configured_cli_role_requires_binary_at_startup() {
+        let _bin = EnvVarGuard::unset("GROKRXIV_CLAUDE_BIN".to_string());
+        let mut role_yaml = RoleYamlMap::new();
+        role_yaml.insert(
+            AgentRole::Summary,
+            Some(AgentRouting {
+                provider: "claude".to_string(),
+                model: "claude-haiku-4-5-20251001".to_string(),
+                runner: Some(AgentRunnerKind::Cli),
+                max_retries: Some(2),
+                timeout_secs: Some(90),
+            }),
+        );
+
+        let err = validate_required_cli_runners_with_path(&role_yaml, &std::ffi::OsString::new())
+            .expect_err("missing configured CLI binary should refuse startup");
+
+        assert!(
+            err.to_string().contains("claude"),
+            "error should name missing binary, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn api_role_does_not_require_cli_binary_at_startup() {
+        let mut role_yaml = RoleYamlMap::new();
+        role_yaml.insert(
+            AgentRole::Summary,
+            Some(AgentRouting {
+                provider: "claude".to_string(),
+                model: "claude-haiku-4-5-20251001".to_string(),
+                runner: Some(AgentRunnerKind::Api),
+                max_retries: Some(2),
+                timeout_secs: Some(90),
+            }),
+        );
+
+        validate_required_cli_runners_with_path(&role_yaml, &std::ffi::OsString::new())
+            .expect("API roles should not require local CLI binaries");
     }
 
     #[tokio::test]
@@ -600,5 +647,41 @@ mod tests {
 
         assert!(!summary_names.contains(&"citation".to_string()));
         assert!(citation_names.contains(&"citation".to_string()));
+    }
+
+    fn write_api_role_configs(dir: &std::path::Path) {
+        for (_role, filename) in ROLE_FILES {
+            std::fs::write(
+                dir.join(filename),
+                "provider: claude\nmodel: claude-haiku-4-5-20251001\nrunner: api\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn state_does_not_register_api_runner_when_direct_api_is_disabled() {
+        let _allow = EnvVarGuard::set(ALLOW_PROVIDER_API_ENV.to_string(), "0");
+        let tmp = tempfile::tempdir().unwrap();
+        write_api_role_configs(tmp.path());
+        let _agents_dir = EnvVarGuard::set(
+            "GROKRXIV_AGENTS_DIR".to_string(),
+            tmp.path().to_str().unwrap(),
+        );
+        let mut config = Config::from_env();
+        config.database_url = None;
+
+        let state = AppState::from_config(config)
+            .await
+            .expect("state should still boot for CLI-only runtime");
+
+        assert!(
+            state.providers.is_none(),
+            "provider registry should not be built when direct provider API is disabled"
+        );
+        assert!(
+            !state.runners.contains_key(&AgentRunnerKind::Api),
+            "state should not register an API runner that is guaranteed to fail under the API guard"
+        );
     }
 }

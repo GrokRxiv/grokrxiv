@@ -19,7 +19,7 @@ use crate::agents::types::{AgentInput, AgentRun, AgentSpec};
 /// - per-run workdir → `/workspace:rw` (input.json mounted RO; output.json
 ///   expected back here)
 ///
-/// Network: `--network=none` by default; per-role override via `spec.tool_policy`.
+/// Network: `--network=none` by default.
 /// Resource limits: `--memory=4g --cpus=2` defaults; configurable later.
 /// Platform: auto-detected (`linux/arm64` on Mac, `linux/amd64` elsewhere) via
 /// `std::env::consts::ARCH`.

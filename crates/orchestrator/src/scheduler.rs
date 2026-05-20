@@ -22,6 +22,10 @@ use grokrxiv_schemas::JobKind;
 
 use crate::supervisor::WorkItem;
 
+const BACKFILL_CHUNK_DAYS: u32 = 7;
+const BACKFILL_CHUNK_PAUSE: Duration = Duration::from_millis(100);
+const LISTING_MAX_ATTEMPTS: usize = 4;
+
 /// Default arXiv categories to ingest at MVP — the three active groups that
 /// match the arXiv subject dropdown's CS + Math + Physics selections. The
 /// sibling ingest crate exposes the canonical lists; we mirror just the active
@@ -133,6 +137,43 @@ fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(s, "%H:%M").ok()
 }
 
+fn chunk_range_by_days(
+    from: NaiveDate,
+    until: NaiveDate,
+    chunk_days: u32,
+) -> Vec<(NaiveDate, NaiveDate)> {
+    if from > until {
+        return Vec::new();
+    }
+    let chunk_days = chunk_days.max(1);
+    let mut chunks = Vec::new();
+    let mut start = from;
+    loop {
+        let end = start
+            .checked_add_days(chrono::Days::new((chunk_days - 1).into()))
+            .unwrap_or(until)
+            .min(until);
+        chunks.push((start, end));
+        if end >= until {
+            break;
+        }
+        let Some(next) = end.succ_opt() else {
+            break;
+        };
+        start = next;
+    }
+    chunks
+}
+
+fn listing_retry_delay(attempt: usize) -> Duration {
+    match attempt {
+        0 => Duration::from_secs(0),
+        1 => Duration::from_secs(30),
+        2 => Duration::from_secs(120),
+        _ => Duration::from_secs(300),
+    }
+}
+
 /// Payload for a ranged ingest job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestRange {
@@ -163,23 +204,15 @@ impl Scheduler {
                 "scheduler starting",
             );
 
-            // Startup backfill: discover papers in the range and enqueue one
-            // single-paper ingest item per arXiv id. The supervisor worker
-            // expects `{ arxiv_id, submitted_date?, auto_review }`, not an
-            // opaque date range payload.
-            let today = Utc::now().date_naive();
-            let backfill = IngestRange {
-                from: cfg.backfill_from,
-                until: today,
-                categories: cfg.categories.clone(),
-            };
-            enqueue_ingest_range(&supervisor_tx, &cfg, &backfill).await;
-            tracing::info!(
-                from = %backfill.from,
-                until = %backfill.until,
-                "enqueued startup backfill ingest"
-            );
+            // Startup backfill can span many months. Run it in a sibling task
+            // so boot can proceed to the daily loop immediately.
+            let backfill_tx = supervisor_tx.clone();
+            let backfill_cfg = cfg.clone();
+            tokio::spawn(async move {
+                run_startup_backfill(backfill_tx, backfill_cfg).await;
+            });
 
+            let mut retry_daily_from: Option<NaiveDate> = None;
             loop {
                 let now = Utc::now();
                 let next = next_fire_at(now, cfg.daily_at_utc);
@@ -189,17 +222,83 @@ impl Scheduler {
                 tokio::time::sleep(sleep).await;
 
                 let until = Utc::now().date_naive();
-                let from = until.pred_opt().unwrap_or(until);
+                let from = retry_daily_from.unwrap_or_else(|| until.pred_opt().unwrap_or(until));
                 let daily = IngestRange {
                     from,
                     until,
                     categories: cfg.categories.clone(),
                 };
-                enqueue_ingest_range(&supervisor_tx, &cfg, &daily).await;
-                tracing::info!(from = %from, until = %until, "daily ingest fired");
+                if enqueue_ingest_range_with_retries(&supervisor_tx, &cfg, &daily).await {
+                    retry_daily_from = None;
+                    tracing::info!(from = %from, until = %until, "daily ingest fired");
+                } else {
+                    retry_daily_from = Some(from);
+                    tracing::warn!(
+                        from = %from,
+                        until = %until,
+                        "daily ingest failed after retries; retaining range for next tick"
+                    );
+                }
             }
         })
     }
+}
+
+async fn run_startup_backfill(supervisor_tx: mpsc::Sender<WorkItem>, cfg: SchedulerConfig) {
+    let today = Utc::now().date_naive();
+    for (from, until) in chunk_range_by_days(cfg.backfill_from, today, BACKFILL_CHUNK_DAYS) {
+        let chunk = IngestRange {
+            from,
+            until,
+            categories: cfg.categories.clone(),
+        };
+        while !enqueue_ingest_range_with_retries(&supervisor_tx, &cfg, &chunk).await {
+            tracing::warn!(
+                from = %from,
+                until = %until,
+                "startup backfill chunk failed after retries; retrying same chunk"
+            );
+            tokio::time::sleep(listing_retry_delay(LISTING_MAX_ATTEMPTS)).await;
+        }
+        tracing::info!(from = %from, until = %until, "enqueued startup backfill chunk");
+        tokio::time::sleep(BACKFILL_CHUNK_PAUSE).await;
+    }
+}
+
+async fn enqueue_ingest_range_with_retries(
+    supervisor_tx: &mpsc::Sender<WorkItem>,
+    cfg: &SchedulerConfig,
+    range: &IngestRange,
+) -> bool {
+    for attempt in 0..LISTING_MAX_ATTEMPTS {
+        let delay = listing_retry_delay(attempt);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        match enqueue_ingest_range(supervisor_tx, cfg, range).await {
+            Ok(count) => {
+                tracing::info!(
+                    from = %range.from,
+                    until = %range.until,
+                    count,
+                    attempt = attempt + 1,
+                    "scheduler listing range enqueued"
+                );
+                return true;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    from = %range.from,
+                    until = %range.until,
+                    attempt = attempt + 1,
+                    max_attempts = LISTING_MAX_ATTEMPTS,
+                    err = %e,
+                    "scheduler listing range failed"
+                );
+            }
+        }
+    }
+    false
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -207,36 +306,19 @@ async fn enqueue_ingest_range(
     supervisor_tx: &mpsc::Sender<WorkItem>,
     cfg: &SchedulerConfig,
     range: &IngestRange,
-) {
+) -> anyhow::Result<usize> {
     let categories: Vec<&str> = range.categories.iter().map(String::as_str).collect();
-    match grokrxiv_ingest::fetch_listing(&categories, range.from, range.until, &cfg.user_agent)
-        .await
-    {
-        Ok(records) => {
-            let count = records.len();
-            for meta in records {
-                let item = ingest_work_item_from_listing_record(&meta, cfg.auto_review_from);
-                if let Err(e) = supervisor_tx.send(item).await {
-                    tracing::warn!(err = %e, "scheduler could not enqueue discovered ingest item");
-                    break;
-                }
-            }
-            tracing::info!(
-                from = %range.from,
-                until = %range.until,
-                count,
-                "enqueued discovered arXiv papers"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                from = %range.from,
-                until = %range.until,
-                err = %e,
-                "could not fetch arXiv listing for scheduler range"
-            );
-        }
+    let records =
+        grokrxiv_ingest::fetch_listing(&categories, range.from, range.until, &cfg.user_agent)
+            .await?;
+    let count = records.len();
+    for meta in records {
+        let item = ingest_work_item_from_listing_record(&meta, cfg.auto_review_from);
+        supervisor_tx.send(item).await.map_err(|e| {
+            anyhow::anyhow!("scheduler could not enqueue discovered ingest item: {e}")
+        })?;
     }
+    Ok(count)
 }
 
 #[cfg(not(feature = "grokrxiv-ingest"))]
@@ -244,8 +326,8 @@ async fn enqueue_ingest_range(
     supervisor_tx: &mpsc::Sender<WorkItem>,
     _cfg: &SchedulerConfig,
     range: &IngestRange,
-) {
-    let _ = supervisor_tx
+) -> anyhow::Result<usize> {
+    supervisor_tx
         .send(WorkItem {
             job_id: Uuid::new_v4(),
             kind: JobKind::Ingest,
@@ -257,7 +339,9 @@ async fn enqueue_ingest_range(
             }),
             attempt: 0,
         })
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("scheduler could not enqueue fallback ingest range: {e}"))?;
+    Ok(1)
 }
 
 /// Convert one OAI listing record into the single-paper work item the supervisor
@@ -386,6 +470,42 @@ mod tests {
         let t = NaiveTime::from_hms_opt(2, 0, 0).unwrap();
         let next = next_fire_at(now, t);
         assert_eq!(next, ts(2026, 5, 14, 2, 0));
+    }
+
+    #[test]
+    fn chunk_range_by_days_covers_inclusive_range_without_overlap() {
+        let from = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let until = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+
+        let chunks = chunk_range_by_days(from, until, 3);
+
+        let expected = vec![
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 5, 3).unwrap(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 4).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 5, 6).unwrap(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 7).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 5, 9).unwrap(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 5, 10).unwrap(),
+            ),
+        ];
+        assert_eq!(chunks, expected);
+    }
+
+    #[test]
+    fn listing_retry_delay_backs_off_and_caps() {
+        assert_eq!(listing_retry_delay(0), Duration::from_secs(0));
+        assert_eq!(listing_retry_delay(1), Duration::from_secs(30));
+        assert_eq!(listing_retry_delay(2), Duration::from_secs(120));
+        assert_eq!(listing_retry_delay(99), Duration::from_secs(300));
     }
 
     #[test]

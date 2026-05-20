@@ -16,8 +16,7 @@
 //! Output schema: `schemas/html_quality_review.schema.json`.
 
 use crate::agents::{
-    runners::cli::CliRunner, AgentInput, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec,
-    SandboxPolicy, ToolPolicy,
+    runners::cli::CliRunner, AgentInput, AgentRunner, AgentRunnerKind, AgentSpec, SandboxPolicy,
 };
 use crate::state::AppState;
 use anyhow::{Context, Result};
@@ -88,11 +87,9 @@ pub async fn clean_pr_text(
         role: AgentRole::MetaReviewer,
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
-        mode: AgentMode::ReviewOnly,
         provider: "openai".to_string(),
         model: model.clone(),
-        schema,
-        tool_policy: ToolPolicy::default(),
+        schema: std::sync::Arc::new(schema),
         max_retries: 1,
         timeout_secs,
     };
@@ -223,11 +220,9 @@ pub async fn review_and_fix_html(
         role: AgentRole::MetaReviewer, // closest existing role; not persisted to review_agents
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
-        mode: AgentMode::ReviewOnly,
         provider: "openai".to_string(),
         model: model.clone(),
-        schema,
-        tool_policy: ToolPolicy::default(),
+        schema: std::sync::Arc::new(schema),
         max_retries: 1,
         timeout_secs,
     };

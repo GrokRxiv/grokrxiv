@@ -5,7 +5,7 @@
 //! - [`SandboxPolicy`]: orthogonal isolation policy applied to a runner.
 //! - [`AgentMode`]: review-only vs revision-capable.
 //! - [`RevisionTarget`]: when revising, what to patch.
-//! - [`AgentSpec`]: per-role config (provider, model, runner, sandbox, ...).
+//! - [`AgentSpec`]: per-role config (provider, model, runner, schema, ...).
 //! - [`AgentInput`]: the payload a runner receives.
 //! - [`AgentRun`]: structured output from a single runner execution.
 //!
@@ -28,6 +28,9 @@ pub use grokrxiv_llm_adapter::{
 /// identical to [`grokrxiv_llm_adapter::ToolMessage`]; this alias keeps the
 /// orchestrator's call sites tidy.
 pub type Message = ToolMessage;
+
+/// Shared JSON schema document for an agent role.
+pub type AgentSchema = Arc<serde_json::Value>;
 
 use crate::agents::extraction::ToolRegistry;
 
@@ -182,14 +185,6 @@ impl Default for RevisionTarget {
     }
 }
 
-/// Tool-permission policy (Phase 4+ scope). Empty in RPT2; expanded later.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolPolicy {
-    /// Names of tools the agent may use (e.g. `read`, `grep`, `bash`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allow: Vec<String>,
-}
-
 /// Per-role configuration assembled from `agents/<role>.yaml` plus any TOML
 /// profile overrides and CLI flag overrides.
 #[derive(Debug, Clone)]
@@ -200,8 +195,6 @@ pub struct AgentSpec {
     pub runner: AgentRunnerKind,
     /// Isolation policy applied to the runner.
     pub sandbox: SandboxPolicy,
-    /// Review-only or review-and-revise.
-    pub mode: AgentMode,
     /// Provider name from `agents/*.yaml` (`claude` / `openai` / `gemini` /
     /// `deepseek` / etc.). Used by `ApiRunner` to dispatch to an `LLMProvider`
     /// and by `CliRunner` to pick a binary.
@@ -209,9 +202,7 @@ pub struct AgentSpec {
     /// Model identifier (e.g. `claude-opus-4-7`, `qwen2.5:32b-instruct-q4_K_M`).
     pub model: String,
     /// Compiled output JSON schema this role must satisfy.
-    pub schema: serde_json::Value,
-    /// Tool permissions (Phase 4+).
-    pub tool_policy: ToolPolicy,
+    pub schema: AgentSchema,
     /// Maximum corrective retries on parse/validation failure. Default 2.
     pub max_retries: u8,
     /// Hard timeout for a single runner call.
@@ -226,11 +217,9 @@ impl AgentSpec {
             role,
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider,
             model,
-            schema: serde_json::json!({}),
-            tool_policy: ToolPolicy::default(),
+            schema: Arc::new(serde_json::json!({})),
             max_retries: 2,
             timeout_secs: 180,
         }
@@ -299,6 +288,7 @@ impl AgentRun {
     /// the runner call.
     pub fn from_cache(
         role: AgentRole,
+        runner: AgentRunnerKind,
         model: String,
         output: serde_json::Value,
         tokens_in: Option<i32>,
@@ -306,7 +296,7 @@ impl AgentRun {
     ) -> Self {
         Self {
             role,
-            runner: AgentRunnerKind::Api,
+            runner,
             model,
             output,
             verifier_status: None,

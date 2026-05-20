@@ -182,7 +182,8 @@ Pretty-print a review (paper, agents, verifier status, optional PR URL).
 Open the publication PR on `GrokRxiv/grokrxiv-reviews`. This does not merge or
 publish the review; a human merge plus the GitHub webhook performs the
 `published` transition. Prints `pr_url=…`. With `--json`, returns
-`{review_id, pr_url, status}`. Without `GITHUB_TOKEN`, the PR is simulated.
+`{review_id, pr_url, status}`. Without `GITHUB_TOKEN`, the command fails closed
+instead of writing simulated PR state.
 
 #### `grokrxiv publish <REVIEW_ID> [--json]`
 Publish a review by merging its open publication PR. The GitHub webhook then

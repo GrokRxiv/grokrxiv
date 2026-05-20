@@ -7,11 +7,14 @@
 //! `/admin/reviews/:id/approve` endpoint which calls
 //! [`Supervisor::publish_after_approval`].
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use grokrxiv_schemas::JobKind;
 use serde_json::json;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::cli_status::StatusMark;
@@ -52,33 +55,78 @@ pub const MAX_RETRIES: u32 = 3;
 /// hallucination".
 pub const MIN_SPECIALIST_QUORUM: usize = crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM;
 
+const DEFAULT_SUPERVISOR_QUEUE_CAPACITY: usize = 4096;
+const MIN_SUPERVISOR_QUEUE_CAPACITY: usize = 128;
+const DEFAULT_SUPERVISOR_WORKER_LIMIT: usize = 64;
+const MAX_SUPERVISOR_WORKER_LIMIT: usize = 1024;
+
 /// In-memory supervisor handle.
 #[derive(Clone)]
 pub struct Supervisor {
     tx: mpsc::Sender<WorkItem>,
+    shutdown_tx: watch::Sender<bool>,
+    publish_inflight: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl Supervisor {
     /// Spawn the supervisor task and return a handle for enqueueing work.
     pub fn spawn(state: AppState) -> Self {
-        let (tx, mut rx) = mpsc::channel::<WorkItem>(128);
-        let me = Self { tx: tx.clone() };
+        let queue_capacity = supervisor_queue_capacity();
+        let worker_limit = supervisor_worker_limit();
+        let (tx, mut rx) = mpsc::channel::<WorkItem>(queue_capacity);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let publish_inflight = Arc::new(Mutex::new(HashSet::new()));
+        let me = Self {
+            tx: tx.clone(),
+            shutdown_tx,
+            publish_inflight: publish_inflight.clone(),
+        };
         let state2 = state;
         tokio::spawn(async move {
-            while let Some(item) = rx.recv().await {
-                let state = state2.clone();
-                let retry_tx = tx.clone();
-                tokio::spawn(async move {
-                    let result = run_item(&state, &item, &retry_tx).await;
-                    if let Err(e) = result {
-                        tracing::error!(
-                            job_id = %item.job_id,
-                            attempt = item.attempt,
-                            err = %e,
-                            "job failed"
-                        );
+            tracing::info!(queue_capacity, worker_limit, "supervisor started");
+            let mut tasks = JoinSet::new();
+            loop {
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            tracing::info!("supervisor shutdown requested; closing work queue");
+                            rx.close();
+                            break;
+                        }
                     }
-                });
+                    Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+                        if let Err(e) = result {
+                            tracing::error!(err = %e, "supervisor worker task panicked");
+                        }
+                    }
+                    Some(item) = rx.recv(), if tasks.len() < worker_limit => {
+                        let state = state2.clone();
+                        let retry_tx = tx.clone();
+                        let publish_inflight = publish_inflight.clone();
+                        tasks.spawn(async move {
+                            let result = run_item(&state, &item, &retry_tx).await;
+                            if matches!(item.kind, JobKind::Publish) {
+                                if let Some(review_id) = item.ref_id {
+                                    publish_inflight.lock().unwrap().remove(&review_id);
+                                }
+                            }
+                            if let Err(e) = result {
+                                tracing::error!(
+                                    job_id = %item.job_id,
+                                    attempt = item.attempt,
+                                    err = %e,
+                                    "job failed"
+                                );
+                            }
+                        });
+                    }
+                    else => break,
+                }
+            }
+            while let Some(result) = tasks.join_next().await {
+                if let Err(e) = result {
+                    tracing::error!(err = %e, "supervisor worker task panicked during drain");
+                }
             }
         });
         me
@@ -86,6 +134,9 @@ impl Supervisor {
 
     /// Enqueue a unit of work.
     pub async fn enqueue(&self, item: WorkItem) -> anyhow::Result<()> {
+        if *self.shutdown_tx.borrow() {
+            anyhow::bail!("supervisor is shutting down");
+        }
         self.tx
             .send(item)
             .await
@@ -98,9 +149,24 @@ impl Supervisor {
         self.tx.clone()
     }
 
+    /// Stop accepting new work and let already-spawned worker tasks finish.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+
     /// Hook called by the admin approval endpoint to start the publish step
     /// after a moderator approves a private review.
     pub async fn publish_after_approval(&self, review_id: Uuid) -> anyhow::Result<()> {
+        {
+            let mut inflight = self.publish_inflight.lock().unwrap();
+            if !inflight.insert(review_id) {
+                tracing::info!(
+                    %review_id,
+                    "publish_after_approval: publish job already in flight"
+                );
+                return Ok(());
+            }
+        }
         let job = WorkItem {
             job_id: Uuid::new_v4(),
             kind: JobKind::Publish,
@@ -108,8 +174,188 @@ impl Supervisor {
             payload: serde_json::Value::Null,
             attempt: 0,
         };
-        self.enqueue(job).await
+        let result = self.enqueue(job).await;
+        if result.is_err() {
+            self.publish_inflight.lock().unwrap().remove(&review_id);
+        }
+        result
     }
+}
+
+fn supervisor_queue_capacity() -> usize {
+    supervisor_queue_capacity_from(
+        std::env::var("GROKRXIV_SUPERVISOR_QUEUE_CAPACITY")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn supervisor_queue_capacity_from(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_SUPERVISOR_QUEUE_CAPACITY)
+        .max(MIN_SUPERVISOR_QUEUE_CAPACITY)
+}
+
+fn supervisor_worker_limit() -> usize {
+    supervisor_worker_limit_from(std::env::var("GROKRXIV_SUPERVISOR_WORKERS").ok().as_deref())
+}
+
+fn supervisor_worker_limit_from(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_SUPERVISOR_WORKER_LIMIT)
+        .clamp(1, MAX_SUPERVISOR_WORKER_LIMIT)
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+/// Spawn a background reconciler that repairs `pr_open` reviews whose GitHub PR
+/// was merged but whose webhook delivery was missed.
+pub fn spawn_publish_reconcile(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(e) = reconcile_published_reviews_once(&state).await {
+                tracing::warn!(err = %format!("{e:#}"), "publish reconcile failed");
+            }
+        }
+    })
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn reconcile_published_reviews_once(state: &AppState) -> anyhow::Result<()> {
+    let Some(pool) = state.db.as_ref() else {
+        return Ok(());
+    };
+    let token = match std::env::var("GITHUB_TOKEN") {
+        Ok(token) => token,
+        Err(_) => {
+            tracing::warn!("publish reconcile skipped: GITHUB_TOKEN not set");
+            return Ok(());
+        }
+    };
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let reviews = crate::db::list_pr_open_reviews_with_urls(pool, 100).await?;
+    let lookup = GithubPublishPrLookup { client };
+    let finalizer = StatePublishFinalizer { state };
+    let stats = reconcile_published_reviews_with(reviews, &lookup, &finalizer).await;
+    tracing::info!(
+        checked = stats.checked,
+        finalized = stats.finalized,
+        skipped_malformed = stats.skipped_malformed,
+        lookup_errors = stats.lookup_errors,
+        finalize_errors = stats.finalize_errors,
+        "publish reconcile pass complete"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PublishReconcileStats {
+    checked: usize,
+    finalized: usize,
+    skipped_malformed: usize,
+    lookup_errors: usize,
+    finalize_errors: usize,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+trait PublishPrLookup: Send + Sync {
+    async fn is_pr_merged(&self, owner: &str, repo: &str, number: u64) -> anyhow::Result<bool>;
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+trait PublishFinalizer: Send + Sync {
+    async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool>;
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+struct GithubPublishPrLookup {
+    client: octocrab::Octocrab,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+impl PublishPrLookup for GithubPublishPrLookup {
+    async fn is_pr_merged(&self, owner: &str, repo: &str, number: u64) -> anyhow::Result<bool> {
+        let pr = self.client.pulls(owner, repo).get(number).await?;
+        Ok(pr.merged_at.is_some())
+    }
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+struct StatePublishFinalizer<'a> {
+    state: &'a AppState,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+impl PublishFinalizer for StatePublishFinalizer<'_> {
+    async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool> {
+        crate::routes::webhook::finalize_published_review(self.state, review_id).await
+    }
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn reconcile_published_reviews_with<L, F>(
+    reviews: Vec<(Uuid, String)>,
+    lookup: &L,
+    finalizer: &F,
+) -> PublishReconcileStats
+where
+    L: PublishPrLookup,
+    F: PublishFinalizer,
+{
+    let mut stats = PublishReconcileStats::default();
+    for (review_id, pr_url) in reviews {
+        let Some((owner, repo, number)) = parse_github_pr_url(&pr_url) else {
+            stats.skipped_malformed += 1;
+            tracing::warn!(%review_id, %pr_url, "publish reconcile skipped malformed PR URL");
+            continue;
+        };
+        stats.checked += 1;
+        match lookup.is_pr_merged(&owner, &repo, number).await {
+            Ok(true) => match finalizer.finalize(review_id).await {
+                Ok(true) => stats.finalized += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    stats.finalize_errors += 1;
+                    tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile finalizer failed");
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                stats.lookup_errors += 1;
+                tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile could not read PR");
+            }
+        }
+    }
+    stats
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn parse_github_pr_url(url: &str) -> Option<(String, String, u64)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number = parts
+        .next()?
+        .split(|c| matches!(c, '?' | '#' | '/'))
+        .next()?
+        .parse()
+        .ok()?;
+    Some((owner, repo, number))
 }
 
 /// Drive a single paper through ingest + review synchronously and return the
@@ -226,7 +472,12 @@ pub async fn run_review_for_paper_blocking(
     state: &AppState,
     paper_id: Uuid,
 ) -> anyhow::Result<Uuid> {
-    run_review_for_paper_full(state, paper_id).await
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let job_id = crate::db::create_job(pool, JobKind::Review, Some(paper_id)).await?;
+    run_review_for_paper_with_job_tracking(state, paper_id, job_id).await
 }
 
 /// Drive the review DAG for a paper row using a caller-supplied extract.
@@ -243,7 +494,8 @@ pub async fn run_review_for_extract_blocking(
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
-    run_review_dag_from_state(state, pool, paper_id, extract).await
+    let job_id = crate::db::create_job(pool, JobKind::Review, Some(paper_id)).await?;
+    run_review_for_extract_with_job_tracking(state, pool, paper_id, extract, job_id).await
 }
 
 /// Real typed DAG for a single paper.
@@ -328,6 +580,104 @@ fn review_cache_disabled() -> bool {
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_for_paper_with_job_tracking(
+    state: &AppState,
+    paper_id: Uuid,
+    job_id: Uuid,
+) -> anyhow::Result<Uuid> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let mut attempt = 0;
+    loop {
+        crate::db::mark_running(pool, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark review job running: {e}"))?;
+        match run_review_for_paper_full(state, paper_id).await {
+            Ok(review_id) => {
+                crate::db::mark_done(pool, job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark review job done: {e}"))?;
+                return Ok(review_id);
+            }
+            Err(e) if attempt + 1 < MAX_RETRIES && is_retryable(&e) => {
+                attempt += 1;
+                let delay = exp_backoff(attempt);
+                tracing::warn!(
+                    %job_id,
+                    %paper_id,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    err = %format!("{e:#}"),
+                    "blocking review failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                crate::db::mark_failed(pool, job_id, &error)
+                    .await
+                    .map_err(|mark_err| {
+                        anyhow::anyhow!(
+                            "mark review job failed: {mark_err}; original error: {error}"
+                        )
+                    })?;
+                return Err(e);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_for_extract_with_job_tracking(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+    job_id: Uuid,
+) -> anyhow::Result<Uuid> {
+    let mut attempt = 0;
+    loop {
+        crate::db::mark_running(pool, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark review job running: {e}"))?;
+        match run_review_dag_from_state(state, pool, paper_id, extract.clone()).await {
+            Ok(review_id) => {
+                crate::db::mark_done(pool, job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark review job done: {e}"))?;
+                return Ok(review_id);
+            }
+            Err(e) if attempt + 1 < MAX_RETRIES && is_retryable(&e) => {
+                attempt += 1;
+                let delay = exp_backoff(attempt);
+                tracing::warn!(
+                    %job_id,
+                    %paper_id,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    err = %format!("{e:#}"),
+                    "blocking extract review failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                crate::db::mark_failed(pool, job_id, &error)
+                    .await
+                    .map_err(|mark_err| {
+                        anyhow::anyhow!(
+                            "mark review job failed: {mark_err}; original error: {error}"
+                        )
+                    })?;
+                return Err(e);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
 fn specialist_review_concurrency_limit(roles: &[grokrxiv_schemas::AgentRole]) -> usize {
     use crate::agents::AgentRunnerKind;
 
@@ -361,8 +711,8 @@ async fn run_review_dag_inner(
 ) -> anyhow::Result<Uuid> {
     use crate::agents::runners::api::ApiRunner;
     use crate::agents::{
-        build_agent, AgentInput, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent,
-        SandboxPolicy, ToolPolicy,
+        build_agent, AgentInput, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec,
+        ConfiguredAgent, SandboxPolicy,
     };
     use grokrxiv_schemas::{AgentRole, MetaReview, VerifierStatus};
     use serde_json::json;
@@ -370,16 +720,17 @@ async fn run_review_dag_inner(
 
     let default_model = state.config.preview_model.clone();
 
-    // Resolve the `ReviewAgent` + `AgentRunner` pair for a role. Prefers the
-    // boot-time registry built from `agents/*.yaml`; falls back to the active
-    // review runner only when a role config is missing. API fallback needs a
-    // provider, but CLI fallback can run through local subscriptions.
+    // Resolve the configured agent + runner pair for a role. Prefers the
+    // boot-time registry built from `agents/*.yaml`; falls back only for
+    // builds where the verifier-backed registry is unavailable. API fallback
+    // needs a provider, but CLI fallback can run through local subscriptions.
     let make_fallback = |role: AgentRole,
-                         schema: serde_json::Value|
+                         schema: AgentSchema|
      -> anyhow::Result<(
-        Arc<dyn ReviewAgent>,
+        Arc<ConfiguredAgent>,
         Arc<dyn AgentRunner>,
         String,
+        AgentRunnerKind,
     )> {
         let runner_kind = review_runner_override_for(role).unwrap_or(AgentRunnerKind::Cli);
         let model = crate::runtime_config::model_override_for_role(role)
@@ -388,15 +739,13 @@ async fn run_review_dag_inner(
             role,
             runner: runner_kind,
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: model.clone(),
             schema,
-            tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 180,
         };
-        let agent: Arc<dyn ReviewAgent> = Arc::from(build_agent(spec));
+        let agent = Arc::new(build_agent(spec));
         let runner = if runner_kind == AgentRunnerKind::Api {
             let Some(provider) = provider.as_ref() else {
                 anyhow::bail!(
@@ -416,26 +765,30 @@ async fn run_review_dag_inner(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?
         };
-        Ok((agent, runner, model))
+        Ok((agent, runner, model, runner_kind))
     };
 
-    let resolve_agent =
-        |role: AgentRole| -> anyhow::Result<(Arc<dyn ReviewAgent>, Arc<dyn AgentRunner>, String)> {
-            if let Some(agent) = state.agents.get(&role) {
-                let model = agent.spec().model.clone();
-                // Runtime override beats YAML's runner: field for this run.
-                let runner_kind = review_runner_override_for(role).unwrap_or(agent.spec().runner);
-                if let Some(runner) = state.runners.get(&runner_kind) {
-                    return Ok((agent.clone(), runner.clone(), model));
-                }
+    let resolve_agent = |role: AgentRole| -> anyhow::Result<(
+        Arc<ConfiguredAgent>,
+        Arc<dyn AgentRunner>,
+        String,
+        AgentRunnerKind,
+    )> {
+        if let Some(agent) = state.agents.get(&role) {
+            let model = agent.spec().model.clone();
+            // Runtime override beats YAML's runner: field for this run.
+            let runner_kind = review_runner_override_for(role).unwrap_or(agent.spec().runner);
+            if let Some(runner) = state.runners.get(&runner_kind) {
+                return Ok((agent.clone(), runner.clone(), model, runner_kind));
             }
-            let schema = state
-                .agent_schemas
-                .get(&role)
-                .cloned()
-                .unwrap_or_else(|| json!({ "type": "object" }));
-            make_fallback(role, schema)
-        };
+        }
+        let schema = state
+            .agent_schemas
+            .get(&role)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing schema for role {role:?}"))?;
+        make_fallback(role, schema)
+    };
 
     // Pre-create the review row. `models_used` records the per-role model so
     // the moderation UI + the m1-pipeline `distinct model` assertion can show
@@ -583,13 +936,12 @@ async fn run_review_dag_inner(
             dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
         }
         let system = role_system_prompt(role, extract_arc.field.as_deref());
-        let (agent, runner, role_model) = resolve_agent(role)?;
+        let (agent, runner, role_model, role_runner) = resolve_agent(role)?;
         let sem = sem.clone();
         let pool_cloned = pool.clone();
         let cache_hash = specialist_content_hash.clone();
         let specialist_input_cloned = specialist_input.clone();
-        let role_model_for_task = role_model.clone();
-        handles.push((role, role_model, tokio::spawn(async move {
+        handles.push((role, role_model, role_runner, tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
             crate::cli_status::emit_detail(role_status_label(role), StatusMark::Run, "starting");
 
@@ -614,6 +966,7 @@ async fn run_review_dag_inner(
                             Some(hit.tokens_out.unwrap_or(0) as i32),
                             0i32,
                             hit.model,
+                            hit.runner,
                             true,
                         ));
                     }
@@ -643,14 +996,16 @@ async fn run_review_dag_inner(
                 user_prompt: prompt,
                 source_bundle_path: None,
             };
-            let run = agent.run(&*runner, input).await?;
+            let run =
+                run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input).await?;
             anyhow::Ok((
                 role,
                 run.output,
                 run.tokens_in,
                 run.tokens_out,
                 run.latency_ms,
-                role_model_for_task,
+                run.model,
+                run.runner,
                 false,
             ))
         })));
@@ -663,9 +1018,10 @@ async fn run_review_dag_inner(
         Option<i32>,
         i32,
         String, // model actually used
+        AgentRunnerKind,
         bool,   // cache hit
     )> = Vec::with_capacity(specialist_roles.len());
-    for (role, role_model, h) in handles {
+    for (role, role_model, role_runner, h) in handles {
         match h.await {
             Ok(Ok(result)) => specialist_results.push(result),
             Ok(Err(e)) => {
@@ -684,6 +1040,7 @@ async fn run_review_dag_inner(
                     None,
                     0i32,
                     role_model,
+                    role_runner,
                     false,
                 ));
             }
@@ -703,6 +1060,7 @@ async fn run_review_dag_inner(
                     None,
                     0i32,
                     role_model,
+                    role_runner,
                     false,
                 ));
             }
@@ -718,7 +1076,7 @@ async fn run_review_dag_inner(
     // below can refuse to run meta_reviewer on degenerate input.
     let mut specialist_verifier_status: Vec<(AgentRole, Option<VerifierStatus>)> =
         Vec::with_capacity(specialist_results.len());
-    for (role, output, tokens_in, tokens_out, latency_ms, used_model, cache_hit) in
+    for (role, output, tokens_in, tokens_out, latency_ms, used_model, used_runner, cache_hit) in
         &specialist_results
     {
         let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
@@ -746,6 +1104,7 @@ async fn run_review_dag_inner(
             crate::db::ReviewAgentInsert {
                 review_id,
                 role: *role,
+                runner: *used_runner,
                 model: used_model,
                 output: output_to_persist,
                 verifier_status: v_status,
@@ -768,6 +1127,7 @@ async fn run_review_dag_inner(
                 output,
                 "pass",
                 used_model,
+                *used_runner,
                 *tokens_in,
                 *tokens_out,
             )
@@ -853,7 +1213,7 @@ async fn run_review_dag_inner(
     // the meta-reviewer's schema never required a `paper_extract` field. This
     // drops meta input from ~62K tokens to ~10K.
     let mut specialists_map = serde_json::Map::new();
-    for (role, output, _ti, _to, _lat, _model, _cache_hit) in &specialist_results {
+    for (role, output, _ti, _to, _lat, _model, _runner, _cache_hit) in &specialist_results {
         specialists_map.insert(role_slug(*role).to_string(), output.clone());
     }
     let meta_input = json!({
@@ -870,7 +1230,8 @@ async fn run_review_dag_inner(
     }
     let meta_system = role_system_prompt(AgentRole::MetaReviewer, extract_arc.field.as_deref());
 
-    let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer)?;
+    let (meta_agent, meta_runner, meta_model_used, meta_runner_used) =
+        resolve_agent(AgentRole::MetaReviewer)?;
     crate::cli_status::emit_detail("meta reviewer", StatusMark::Run, "synthesis");
 
     // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
@@ -880,7 +1241,14 @@ async fn run_review_dag_inner(
     let meta_content_hash =
         sha256_hex(&serde_json::to_vec(&meta_input).unwrap_or_default());
     let mut meta_from_cache = false;
-    let (meta_value, meta_tokens_in, meta_tokens_out, meta_latency_ms, meta_model_recorded) =
+    let (
+        meta_value,
+        meta_tokens_in,
+        meta_tokens_out,
+        meta_latency_ms,
+        meta_model_recorded,
+        meta_runner_recorded,
+    ) =
         match if skip_review_cache {
             Ok(None)
         } else {
@@ -901,6 +1269,7 @@ async fn run_review_dag_inner(
                     Some(hit.tokens_out.unwrap_or(0) as i32),
                     0i32,
                     hit.model,
+                    hit.runner,
                 )
             }
             _ => {
@@ -928,13 +1297,20 @@ async fn run_review_dag_inner(
                     user_prompt: meta_prompt,
                     source_bundle_path: None,
                 };
-                match meta_agent.run(&*meta_runner, meta_agent_input).await {
+                match run_agent_with_supervisor_timeout(
+                    meta_agent.as_ref(),
+                    meta_runner.as_ref(),
+                    meta_agent_input,
+                )
+                .await
+                {
                     Ok(run) => (
                         run.output,
                         run.tokens_in,
                         run.tokens_out,
                         run.latency_ms,
-                        meta_model_used.clone(),
+                        run.model,
+                        run.runner,
                     ),
                     Err(e) => {
                         let error = format!("{e:#}");
@@ -950,6 +1326,7 @@ async fn run_review_dag_inner(
                             None,
                             0i32,
                             meta_model_used.clone(),
+                            meta_runner_used,
                         )
                     }
                 }
@@ -963,6 +1340,7 @@ async fn run_review_dag_inner(
         crate::db::ReviewAgentInsert {
             review_id,
             role: AgentRole::MetaReviewer,
+            runner: meta_runner_recorded,
             model: &meta_model_recorded,
             output: meta_value.clone(),
             verifier_status: meta_v_status,
@@ -989,6 +1367,7 @@ async fn run_review_dag_inner(
             &meta_value,
             "pass",
             &meta_model_recorded,
+            meta_runner_recorded,
             meta_tokens_in,
             meta_tokens_out,
         )
@@ -2238,7 +2617,9 @@ async fn run_item(
     supervisor_tx: &mpsc::Sender<WorkItem>,
 ) -> anyhow::Result<()> {
     if let Some(pool) = state.db.as_ref() {
-        let _ = crate::db::mark_running(pool, item.job_id).await;
+        crate::db::mark_running(pool, item.job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark job running: {e}"))?;
     }
     let outcome = match item.kind {
         JobKind::Ingest => run_ingest(state, item, supervisor_tx).await,
@@ -2250,7 +2631,9 @@ async fn run_item(
     match outcome {
         Ok(()) => {
             if let Some(pool) = state.db.as_ref() {
-                let _ = crate::db::mark_done(pool, item.job_id).await;
+                crate::db::mark_done(pool, item.job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark job done: {e}"))?;
             }
             Ok(())
         }
@@ -2272,7 +2655,12 @@ async fn run_item(
                 Ok(())
             } else {
                 if let Some(pool) = state.db.as_ref() {
-                    let _ = crate::db::mark_failed(pool, item.job_id, &e.to_string()).await;
+                    let error = e.to_string();
+                    crate::db::mark_failed(pool, item.job_id, &error)
+                        .await
+                        .map_err(|mark_err| {
+                            anyhow::anyhow!("mark job failed: {mark_err}; original error: {error}")
+                        })?;
                 }
                 Err(e)
             }
@@ -2510,6 +2898,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let crate::db::PublishReviewRow {
         review_id: _review_row_id,
+        status,
+        github_pr_url,
         arxiv_id,
         title,
         field,
@@ -2518,6 +2908,15 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         source_kind,
         source_id,
     } = row;
+    if let Some(existing) = real_pr_url(github_pr_url.as_deref()) {
+        tracing::info!(
+            %review_id,
+            status = %status,
+            pr_url = %existing,
+            "publish idempotency: review already has a real PR URL"
+        );
+        return Ok(());
+    }
     let source_ref =
         crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
     let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
@@ -2545,21 +2944,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         );
     }
 
-    let Some(token) = std::env::var("GITHUB_TOKEN").ok() else {
-        // Local-only flows: simulate so the supervisor doesn't crash. The CLI
-        // `approve` command logs the same line; we just persist the simulated
-        // PR URL so downstream `published` transitions still have something
-        // to point at.
-        tracing::warn!(%review_id, "GITHUB_TOKEN unset; simulating publish");
-        let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-        let (owner, repo) = review_repo_for_visibility(&visibility);
-        let simulated = format!(
-            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
-            &review_id.simple().to_string()[..8]
-        );
-        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
-        return Ok(());
-    };
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to open review PR"))?;
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
@@ -2600,6 +2986,11 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     // FP-RPT3c C2 — close any superseded PR for this paper.
     close_superseded_pr_if_any(pool, &publisher, &admin, paper_id, &pr_url).await;
     Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn real_pr_url(url: Option<&str>) -> Option<&str> {
+    url.filter(|value| !value.contains("SIMULATED-") && parse_github_pr_url(value).is_some())
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
@@ -2746,12 +3137,291 @@ fn exp_backoff(attempt: u32) -> Duration {
     Duration::from_millis(std::cmp::min(base, 30_000))
 }
 
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_agent_with_supervisor_timeout(
+    agent: &crate::agents::ConfiguredAgent,
+    runner: &dyn crate::agents::AgentRunner,
+    input: crate::agents::AgentInput,
+) -> anyhow::Result<crate::agents::AgentRun> {
+    let role = input.role;
+    let timeout_secs = agent.spec().timeout_secs.max(1);
+    let timeout_duration = Duration::from_secs(timeout_secs as u64);
+    tokio::time::timeout(timeout_duration, agent.run(runner, input))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("agent {role:?} timed out after {timeout_secs}s at supervisor level")
+        })?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    struct NeverCompletesRunner;
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[async_trait::async_trait]
+    impl crate::agents::AgentRunner for NeverCompletesRunner {
+        fn name(&self) -> &'static str {
+            "never-completes"
+        }
+
+        async fn run(
+            &self,
+            spec: &crate::agents::AgentSpec,
+            _input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(crate::agents::AgentRun {
+                role: spec.role,
+                runner: crate::agents::AgentRunnerKind::Cli,
+                model: spec.model.clone(),
+                output: serde_json::json!({}),
+                verifier_status: None,
+                verifier_notes: None,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms: 0,
+                cache_hit: false,
+                sandbox_ref: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[tokio::test]
+    async fn supervisor_times_out_wedged_agent_execution() {
+        use crate::agents::{
+            AgentInput, AgentRunnerKind, AgentSpec, ConfiguredAgent, SandboxPolicy,
+        };
+        use grokrxiv_schemas::AgentRole;
+        use std::sync::Arc;
+
+        let spec = AgentSpec {
+            role: AgentRole::Summary,
+            runner: AgentRunnerKind::Cli,
+            sandbox: SandboxPolicy::None,
+            provider: "claude".to_string(),
+            model: "fake-model".to_string(),
+            schema: std::sync::Arc::new(serde_json::json!({ "type": "object" })),
+            max_retries: 0,
+            timeout_secs: 1,
+        };
+        let input = AgentInput {
+            paper_id: Uuid::nil(),
+            review_id: Uuid::nil(),
+            role: AgentRole::Summary,
+            content_hash_material: serde_json::json!({}),
+            artifact: serde_json::json!({}),
+            system_prompt: "system".to_string(),
+            user_prompt: "user".to_string(),
+            source_bundle_path: None,
+        };
+        let agent = Arc::new(ConfiguredAgent::new(spec));
+        let runner = Arc::new(NeverCompletesRunner);
+
+        let err = run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input)
+            .await
+            .expect_err("wedged runner should time out at supervisor level");
+
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected timeout error, got: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_after_approval_deduplicates_inflight_review() {
+        let (tx, mut rx) = mpsc::channel::<WorkItem>(4);
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let supervisor = Supervisor {
+            tx,
+            shutdown_tx,
+            publish_inflight: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+
+        supervisor
+            .publish_after_approval(review_id)
+            .await
+            .expect("first publish enqueue");
+        supervisor
+            .publish_after_approval(review_id)
+            .await
+            .expect("duplicate publish enqueue should be a no-op");
+
+        let first = rx.recv().await.expect("one publish work item queued");
+        assert_eq!(first.kind, JobKind::Publish);
+        assert_eq!(first.ref_id, Some(review_id));
+        assert!(
+            rx.try_recv().is_err(),
+            "duplicate approval must not enqueue a second publish job"
+        );
+    }
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    #[test]
+    fn publish_pr_url_filter_requires_real_github_pr() {
+        let real = "https://github.com/GrokRxiv/grokrxiv-reviews/pull/123";
+        assert_eq!(real_pr_url(Some(real)), Some(real));
+        assert_eq!(
+            real_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-123"
+            )),
+            None
+        );
+        assert_eq!(real_pr_url(Some("https://example.com/foo/pull/123")), None);
+        assert_eq!(
+            real_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/pull/not-a-number"
+            )),
+            None
+        );
+    }
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    #[tokio::test]
+    async fn reconcile_published_reviews_with_fakes_skips_bad_urls_and_continues_on_errors() {
+        use std::collections::{HashMap, HashSet};
+        use std::sync::{Arc, Mutex};
+
+        struct FakeLookup {
+            merged: HashMap<u64, anyhow::Result<bool>>,
+        }
+
+        #[async_trait::async_trait]
+        impl PublishPrLookup for FakeLookup {
+            async fn is_pr_merged(
+                &self,
+                _owner: &str,
+                _repo: &str,
+                number: u64,
+            ) -> anyhow::Result<bool> {
+                match self.merged.get(&number) {
+                    Some(Ok(value)) => Ok(*value),
+                    Some(Err(e)) => Err(anyhow::anyhow!("{e}")),
+                    None => Ok(false),
+                }
+            }
+        }
+
+        struct FakeFinalizer {
+            fail: HashSet<Uuid>,
+            calls: Arc<Mutex<Vec<Uuid>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl PublishFinalizer for FakeFinalizer {
+            async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool> {
+                self.calls.lock().unwrap().push(review_id);
+                if self.fail.contains(&review_id) {
+                    anyhow::bail!("finalize failed");
+                }
+                Ok(true)
+            }
+        }
+
+        let merged_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let open_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let malformed_id = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+        let lookup_error_id = Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+        let finalize_error_id = Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let lookup = FakeLookup {
+            merged: HashMap::from([
+                (1, Ok(true)),
+                (2, Ok(false)),
+                (3, Err(anyhow::anyhow!("lookup failed"))),
+                (4, Ok(true)),
+            ]),
+        };
+        let finalizer = FakeFinalizer {
+            fail: HashSet::from([finalize_error_id]),
+            calls: calls.clone(),
+        };
+
+        let stats = reconcile_published_reviews_with(
+            vec![
+                (
+                    merged_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/1".to_string(),
+                ),
+                (
+                    open_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/2".to_string(),
+                ),
+                (
+                    malformed_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-3".to_string(),
+                ),
+                (
+                    lookup_error_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/3".to_string(),
+                ),
+                (
+                    finalize_error_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/4".to_string(),
+                ),
+            ],
+            &lookup,
+            &finalizer,
+        )
+        .await;
+
+        assert_eq!(
+            stats,
+            PublishReconcileStats {
+                checked: 4,
+                finalized: 1,
+                skipped_malformed: 1,
+                lookup_errors: 1,
+                finalize_errors: 1,
+            }
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![merged_id, finalize_error_id]);
+    }
+
     #[test]
     fn backoff_caps_at_30s() {
         assert!(exp_backoff(10) <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn supervisor_queue_capacity_defaults_above_old_tiny_channel() {
+        assert!(supervisor_queue_capacity_from(None) >= 4096);
+        assert_eq!(supervisor_queue_capacity_from(Some("16")), 128);
+    }
+
+    #[test]
+    fn supervisor_worker_limit_is_bounded_and_configurable() {
+        assert!(supervisor_worker_limit_from(None) >= 1);
+        assert_eq!(supervisor_worker_limit_from(Some("0")), 1);
+        assert_eq!(supervisor_worker_limit_from(Some("7")), 7);
+    }
+
+    #[tokio::test]
+    async fn supervisor_rejects_enqueue_after_shutdown() {
+        let mut config = crate::Config::from_env();
+        config.database_url = None;
+        let state = crate::AppState::from_config(config)
+            .await
+            .expect("AppState builds without a database url");
+        let supervisor = Supervisor::spawn(state);
+        supervisor.shutdown();
+
+        let err = supervisor
+            .enqueue(WorkItem {
+                job_id: Uuid::new_v4(),
+                kind: JobKind::Ingest,
+                ref_id: None,
+                payload: serde_json::Value::Null,
+                attempt: 0,
+            })
+            .await
+            .expect_err("shutdown supervisor should reject new work");
+
+        assert!(err.to_string().contains("shutting down"));
     }
 
     /// RPT2 Track F: the revision_artifact schema parses and validates the

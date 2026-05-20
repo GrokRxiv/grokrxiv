@@ -129,7 +129,7 @@ impl CloudRunner {
             "provider": spec.provider,
             "system_prompt": input.system_prompt,
             "user_prompt": user_prompt,
-            "schema": spec.schema,
+            "schema": spec.schema.as_ref(),
         })
     }
 
@@ -396,7 +396,7 @@ mod tests {
             "claude-opus-4-7".into(),
         );
         spec.runner = AgentRunnerKind::Cloud;
-        spec.schema = json!({ "type": "object" });
+        spec.schema = std::sync::Arc::new(json!({ "type": "object" }));
         spec.timeout_secs = 5; // keep tests bounded
         spec
     }

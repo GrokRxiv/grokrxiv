@@ -20,6 +20,14 @@ use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 /// backend for review or extraction.
 pub const ALLOW_PROVIDER_API_ENV: &str = "GROKRXIV_ALLOW_PROVIDER_API";
 
+/// Central env interpretation for direct provider API access.
+pub fn direct_provider_api_allowed_from_env() -> bool {
+    matches!(
+        std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    )
+}
+
 /// Prefix for internal, already-resolved model overrides exported by the CLI
 /// before `AppState` builds the per-role agent registry.
 pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "GROKRXIV_MODEL_OVERRIDE_";

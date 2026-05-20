@@ -124,7 +124,7 @@ settings.
 
 | Env                          | Notes |
 |------------------------------|-------|
-| `GITHUB_TOKEN`               | PAT used by `grokrxiv approve`. Absent → simulated PR |
+| `GITHUB_TOKEN`               | PAT used by `grokrxiv approve`; required for live PR creation |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
 | `GROKRXIV_REVIEWS_REPO`      | Backward-compatible public repo alias; default `grokrxiv-reviews` |
 | `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |

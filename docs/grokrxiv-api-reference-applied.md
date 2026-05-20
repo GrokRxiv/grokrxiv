@@ -50,10 +50,9 @@ Body:
 }
 ```
 
-Response (202): `{"job_id": "...", "status": "queued", "note": "..."}`.
-
-> RPT2: this is a *stub* enqueue. The full async dispatch to the supervisor
-> is a Track I follow-up. Use `grokrxiv review` for the synchronous path.
+Response (501): `{"error": "...", "status": "not_implemented", "source": "..."}`
+until the endpoint is backed by real supervisor dispatch. Use `grokrxiv review`
+for the synchronous path.
 
 ### `POST /api/v1/reviews/:id/approve`
 
