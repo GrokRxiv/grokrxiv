@@ -4846,6 +4846,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn real_existing_pr_url_accepts_only_real_github_pull_urls() {
+        let real = "https://github.com/GrokRxiv/grokrxiv-reviews/pull/123";
+        assert_eq!(real_existing_pr_url(Some(real)), Some(real));
+        assert_eq!(
+            real_existing_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-123"
+            )),
+            None
+        );
+        assert_eq!(
+            real_existing_pr_url(Some("https://github.com/GrokRxiv/grokrxiv-reviews/issues/123")),
+            None
+        );
+        assert_eq!(
+            real_existing_pr_url(Some("https://example.com/GrokRxiv/grokrxiv-reviews/pull/123")),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn publish_dry_run_returns_before_db_or_github() {
         let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();

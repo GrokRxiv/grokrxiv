@@ -7,6 +7,8 @@
 //! `/admin/reviews/:id/approve` endpoint which calls
 //! [`Supervisor::publish_after_approval`].
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use grokrxiv_schemas::JobKind;
@@ -63,6 +65,7 @@ const MAX_SUPERVISOR_WORKER_LIMIT: usize = 1024;
 pub struct Supervisor {
     tx: mpsc::Sender<WorkItem>,
     shutdown_tx: watch::Sender<bool>,
+    publish_inflight: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl Supervisor {
@@ -72,9 +75,11 @@ impl Supervisor {
         let worker_limit = supervisor_worker_limit();
         let (tx, mut rx) = mpsc::channel::<WorkItem>(queue_capacity);
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let publish_inflight = Arc::new(Mutex::new(HashSet::new()));
         let me = Self {
             tx: tx.clone(),
             shutdown_tx,
+            publish_inflight: publish_inflight.clone(),
         };
         let state2 = state;
         tokio::spawn(async move {
@@ -97,8 +102,14 @@ impl Supervisor {
                     Some(item) = rx.recv(), if tasks.len() < worker_limit => {
                         let state = state2.clone();
                         let retry_tx = tx.clone();
+                        let publish_inflight = publish_inflight.clone();
                         tasks.spawn(async move {
                             let result = run_item(&state, &item, &retry_tx).await;
+                            if matches!(item.kind, JobKind::Publish) {
+                                if let Some(review_id) = item.ref_id {
+                                    publish_inflight.lock().unwrap().remove(&review_id);
+                                }
+                            }
                             if let Err(e) = result {
                                 tracing::error!(
                                     job_id = %item.job_id,
@@ -146,6 +157,16 @@ impl Supervisor {
     /// Hook called by the admin approval endpoint to start the publish step
     /// after a moderator approves a private review.
     pub async fn publish_after_approval(&self, review_id: Uuid) -> anyhow::Result<()> {
+        {
+            let mut inflight = self.publish_inflight.lock().unwrap();
+            if !inflight.insert(review_id) {
+                tracing::info!(
+                    %review_id,
+                    "publish_after_approval: publish job already in flight"
+                );
+                return Ok(());
+            }
+        }
         let job = WorkItem {
             job_id: Uuid::new_v4(),
             kind: JobKind::Publish,
@@ -153,7 +174,11 @@ impl Supervisor {
             payload: serde_json::Value::Null,
             attempt: 0,
         };
-        self.enqueue(job).await
+        let result = self.enqueue(job).await;
+        if result.is_err() {
+            self.publish_inflight.lock().unwrap().remove(&review_id);
+        }
+        result
     }
 }
 
@@ -184,17 +209,18 @@ fn supervisor_worker_limit_from(raw: Option<&str>) -> usize {
 #[cfg(feature = "grokrxiv-publisher")]
 /// Spawn a background reconciler that repairs `pr_open` reviews whose GitHub PR
 /// was merged but whose webhook delivery was missed.
-pub fn spawn_publish_reconcile(state: AppState) {
+pub fn spawn_publish_reconcile(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
         loop {
             interval.tick().await;
             if let Err(e) = reconcile_published_reviews_once(&state).await {
                 tracing::warn!(err = %format!("{e:#}"), "publish reconcile failed");
             }
         }
-    });
+    })
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
@@ -214,26 +240,104 @@ async fn reconcile_published_reviews_once(state: &AppState) -> anyhow::Result<()
         .build()
         .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
     let reviews = crate::db::list_pr_open_reviews_with_urls(pool, 100).await?;
+    let lookup = GithubPublishPrLookup { client };
+    let finalizer = StatePublishFinalizer { state };
+    let stats = reconcile_published_reviews_with(reviews, &lookup, &finalizer).await;
+    tracing::info!(
+        checked = stats.checked,
+        finalized = stats.finalized,
+        skipped_malformed = stats.skipped_malformed,
+        lookup_errors = stats.lookup_errors,
+        finalize_errors = stats.finalize_errors,
+        "publish reconcile pass complete"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PublishReconcileStats {
+    checked: usize,
+    finalized: usize,
+    skipped_malformed: usize,
+    lookup_errors: usize,
+    finalize_errors: usize,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+trait PublishPrLookup: Send + Sync {
+    async fn is_pr_merged(&self, owner: &str, repo: &str, number: u64) -> anyhow::Result<bool>;
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+trait PublishFinalizer: Send + Sync {
+    async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool>;
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+struct GithubPublishPrLookup {
+    client: octocrab::Octocrab,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+impl PublishPrLookup for GithubPublishPrLookup {
+    async fn is_pr_merged(&self, owner: &str, repo: &str, number: u64) -> anyhow::Result<bool> {
+        let pr = self.client.pulls(owner, repo).get(number).await?;
+        Ok(pr.merged_at.is_some())
+    }
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+struct StatePublishFinalizer<'a> {
+    state: &'a AppState,
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+#[async_trait::async_trait]
+impl PublishFinalizer for StatePublishFinalizer<'_> {
+    async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool> {
+        crate::routes::webhook::finalize_published_review(self.state, review_id).await
+    }
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn reconcile_published_reviews_with<L, F>(
+    reviews: Vec<(Uuid, String)>,
+    lookup: &L,
+    finalizer: &F,
+) -> PublishReconcileStats
+where
+    L: PublishPrLookup,
+    F: PublishFinalizer,
+{
+    let mut stats = PublishReconcileStats::default();
     for (review_id, pr_url) in reviews {
         let Some((owner, repo, number)) = parse_github_pr_url(&pr_url) else {
+            stats.skipped_malformed += 1;
             tracing::warn!(%review_id, %pr_url, "publish reconcile skipped malformed PR URL");
             continue;
         };
-        match client.pulls(&owner, &repo).get(number).await {
-            Ok(pr) if pr.merged_at.is_some() => {
-                if let Err(e) =
-                    crate::routes::webhook::finalize_published_review(state, review_id).await
-                {
+        stats.checked += 1;
+        match lookup.is_pr_merged(&owner, &repo, number).await {
+            Ok(true) => match finalizer.finalize(review_id).await {
+                Ok(true) => stats.finalized += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    stats.finalize_errors += 1;
                     tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile finalizer failed");
                 }
-            }
-            Ok(_) => {}
+            },
+            Ok(false) => {}
             Err(e) => {
+                stats.lookup_errors += 1;
                 tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile could not read PR");
             }
         }
     }
-    Ok(())
+    stats
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
@@ -2879,8 +2983,9 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "grokrxiv-publisher")]
 fn real_pr_url(url: Option<&str>) -> Option<&str> {
-    url.filter(|value| !value.contains("SIMULATED-") && value.contains("/pull/"))
+    url.filter(|value| !value.contains("SIMULATED-") && parse_github_pr_url(value).is_some())
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
@@ -3030,6 +3135,158 @@ fn exp_backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn publish_after_approval_deduplicates_inflight_review() {
+        let (tx, mut rx) = mpsc::channel::<WorkItem>(4);
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let supervisor = Supervisor {
+            tx,
+            shutdown_tx,
+            publish_inflight: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
+
+        supervisor
+            .publish_after_approval(review_id)
+            .await
+            .expect("first publish enqueue");
+        supervisor
+            .publish_after_approval(review_id)
+            .await
+            .expect("duplicate publish enqueue should be a no-op");
+
+        let first = rx.recv().await.expect("one publish work item queued");
+        assert_eq!(first.kind, JobKind::Publish);
+        assert_eq!(first.ref_id, Some(review_id));
+        assert!(
+            rx.try_recv().is_err(),
+            "duplicate approval must not enqueue a second publish job"
+        );
+    }
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    #[test]
+    fn publish_pr_url_filter_requires_real_github_pr() {
+        let real = "https://github.com/GrokRxiv/grokrxiv-reviews/pull/123";
+        assert_eq!(real_pr_url(Some(real)), Some(real));
+        assert_eq!(
+            real_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-123"
+            )),
+            None
+        );
+        assert_eq!(real_pr_url(Some("https://example.com/foo/pull/123")), None);
+        assert_eq!(
+            real_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/pull/not-a-number"
+            )),
+            None
+        );
+    }
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    #[tokio::test]
+    async fn reconcile_published_reviews_with_fakes_skips_bad_urls_and_continues_on_errors() {
+        use std::collections::{HashMap, HashSet};
+        use std::sync::{Arc, Mutex};
+
+        struct FakeLookup {
+            merged: HashMap<u64, anyhow::Result<bool>>,
+        }
+
+        #[async_trait::async_trait]
+        impl PublishPrLookup for FakeLookup {
+            async fn is_pr_merged(
+                &self,
+                _owner: &str,
+                _repo: &str,
+                number: u64,
+            ) -> anyhow::Result<bool> {
+                match self.merged.get(&number) {
+                    Some(Ok(value)) => Ok(*value),
+                    Some(Err(e)) => Err(anyhow::anyhow!("{e}")),
+                    None => Ok(false),
+                }
+            }
+        }
+
+        struct FakeFinalizer {
+            fail: HashSet<Uuid>,
+            calls: Arc<Mutex<Vec<Uuid>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl PublishFinalizer for FakeFinalizer {
+            async fn finalize(&self, review_id: Uuid) -> anyhow::Result<bool> {
+                self.calls.lock().unwrap().push(review_id);
+                if self.fail.contains(&review_id) {
+                    anyhow::bail!("finalize failed");
+                }
+                Ok(true)
+            }
+        }
+
+        let merged_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let open_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let malformed_id = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+        let lookup_error_id = Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+        let finalize_error_id = Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let lookup = FakeLookup {
+            merged: HashMap::from([
+                (1, Ok(true)),
+                (2, Ok(false)),
+                (3, Err(anyhow::anyhow!("lookup failed"))),
+                (4, Ok(true)),
+            ]),
+        };
+        let finalizer = FakeFinalizer {
+            fail: HashSet::from([finalize_error_id]),
+            calls: calls.clone(),
+        };
+
+        let stats = reconcile_published_reviews_with(
+            vec![
+                (
+                    merged_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/1".to_string(),
+                ),
+                (
+                    open_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/2".to_string(),
+                ),
+                (
+                    malformed_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/SIMULATED-3".to_string(),
+                ),
+                (
+                    lookup_error_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/3".to_string(),
+                ),
+                (
+                    finalize_error_id,
+                    "https://github.com/GrokRxiv/grokrxiv-reviews/pull/4".to_string(),
+                ),
+            ],
+            &lookup,
+            &finalizer,
+        )
+        .await;
+
+        assert_eq!(
+            stats,
+            PublishReconcileStats {
+                checked: 4,
+                finalized: 1,
+                skipped_malformed: 1,
+                lookup_errors: 1,
+                finalize_errors: 1,
+            }
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![merged_id, finalize_error_id]);
+    }
+
     #[test]
     fn backoff_caps_at_30s() {
         assert!(exp_backoff(10) <= Duration::from_secs(30));
