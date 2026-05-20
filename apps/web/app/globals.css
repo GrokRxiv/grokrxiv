@@ -57,10 +57,8 @@
   }
 }
 
-/* Review page typography.
-   We don't load @tailwindcss/typography, so style the markdown body
-   explicitly. Anything wrapped in `.prose-review` gets paper-style headings,
-   spacing, code blocks, etc. Use `.not-prose` on a child to opt out. */
+/* Markdown bodies rendered from review content. Use `.not-prose` on a child to
+   opt out of these inherited text styles. */
 .prose-review {
   color: var(--color-foreground);
   font-size: 1rem;
@@ -81,7 +79,6 @@
   line-height: 1.2;
   margin-top: 2rem;
   margin-bottom: 1rem;
-  letter-spacing: -0.02em;
 }
 
 .prose-review h2 {

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 import { cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
 import { MarkdownBody } from "@/components/markdown-body";
 import { MathText } from "@/components/math-text";
 import { ReviewToc } from "@/components/review-toc";
+import { RevisionTargetList } from "@/components/revision-target-card";
 import { JsonLd } from "@/components/json-ld";
 import {
   displayFieldForPaper,
@@ -28,12 +29,11 @@ import {
   getRejectionByReviewIdAnon,
 } from "@/lib/supabase/anon";
 import { CANONICAL_URL } from "@/lib/env";
-import { buildTocFromMarkdown } from "@/lib/toc";
 import {
   PUBLIC_REVIEW_STATUSES,
+  type MetaReview,
   type Paper,
   type Review,
-  type RevisionTarget,
 } from "@/lib/types";
 
 type Params = { id: string };
@@ -127,6 +127,10 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
   const feedbackCommentUrl =
     review.gate_failure_comment_url ?? review.github_comment_url ?? null;
   const bibtex = buildBibtex(paper, review, id);
+  const feedbackRevisionTargets = revisionTargetsForDisplay(review.meta_review);
+  const gateInstructionsMd = stripRevisionTargetsSection(
+    review.gate_failure_instructions ?? "",
+  );
 
   const reviewUrl = `${CANONICAL_URL}/reviews/${id}`;
   const articleId = source.uri ?? reviewUrl;
@@ -177,12 +181,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
     ],
   };
 
-  const metaReviewMd = buildMetaReviewMarkdown(review);
-  const tocItems = [
-    { id: "meta-review", text: "Overall review", level: 2 as const },
-    ...buildTocFromMarkdown(metaReviewMd),
-    { id: "review-details", text: "Review details", level: 2 as const },
-  ];
+  const tocItems = buildReviewToc(review.meta_review);
 
   return (
     <>
@@ -255,11 +254,24 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
                 Review feedback
               </h2>
               {review.gate_failure_reason ? (
-                <p className="text-sm text-red-50">{review.gate_failure_reason}</p>
+                <p className="text-sm text-red-50">
+                  {review.gate_failure_reason}
+                </p>
               ) : null}
-              {review.gate_failure_instructions ? (
+              {feedbackRevisionTargets.length > 0 ? (
+                <div className="flex flex-col gap-3">
+                  <h3 className="text-base font-semibold text-red-50">
+                    Targeted revisions
+                  </h3>
+                  <RevisionTargetList
+                    targets={feedbackRevisionTargets}
+                    compact
+                  />
+                </div>
+              ) : null}
+              {gateInstructionsMd ? (
                 <div className="prose-review prose-invert text-red-50">
-                  <MarkdownBody>{review.gate_failure_instructions}</MarkdownBody>
+                  <MarkdownBody>{gateInstructionsMd}</MarkdownBody>
                 </div>
               ) : null}
               {rejection ? (
@@ -289,9 +301,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
             >
               Overall review
             </h2>
-            <div className="prose-review">
-              <MetaReviewBody markdown={metaReviewMd} />
-            </div>
+            <MetaReviewBody review={review.meta_review} />
           </section>
 
           <Separator />
@@ -368,117 +378,163 @@ function ReviewSkeleton() {
   );
 }
 
-function buildMetaReviewMarkdown(review: Review): string {
-  const mr = review.meta_review;
-  if (!mr) return "No meta review yet.";
-  const revisionTargets = (mr.revision_targets ?? [])
-    .filter((target) => target.required_update?.trim())
-    .map(formatRevisionTargetMarkdown);
+function buildReviewToc(metaReview: MetaReview) {
   return [
-    mr.summary,
-    "",
-    "## Strengths",
-    ...mr.strengths.map((s) => `- ${s}`),
-    "",
-    "## Weaknesses",
-    ...mr.weaknesses.map((s) => `- ${s}`),
-    "",
-    ...(revisionTargets.length
-      ? ["## Revision Targets", ...revisionTargets, ""]
+    { id: "meta-review", text: "Overall review", level: 2 as const },
+    { id: "strengths", text: "Strengths", level: 3 as const },
+    { id: "weaknesses", text: "Weaknesses", level: 3 as const },
+    ...(metaReview.revision_targets?.length
+      ? [{ id: "revision-targets", text: "Revision targets", level: 3 as const }]
       : []),
-    "## Questions",
-    ...mr.questions.map((s) => `- ${s}`),
-    "",
-    "## Recommendation",
-    "",
-    `**${mr.recommendation}** (confidence ${mr.confidence.toFixed(2)})`,
-  ].join("\n");
+    { id: "questions", text: "Questions", level: 3 as const },
+    { id: "recommendation", text: "Recommendation", level: 3 as const },
+    { id: "review-details", text: "Review details", level: 2 as const },
+  ];
 }
 
-function formatRevisionTargetMarkdown(target: RevisionTarget): string {
-  const evidence =
-    target.evidence && target.evidence !== target.required_update
-      ? `\n  - Evidence: ${target.evidence}`
-      : "";
-  const verification = target.verification_check
-    ? `\n  - Verification: ${target.verification_check}`
-    : "";
-  return [
-    `- ${targetCheckbox(target.status)} **${targetHeading(target)}**${targetStatusSuffix(target.status)}`,
-    `  - Location: ${targetLocation(target)}`,
-    `${evidence}`,
-    `  - Required change: ${target.required_update}`,
-    `${verification}`,
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
+function MetaReviewBody({ review }: { review: MetaReview }) {
+  const summaryParagraphs = readableParagraphs(review.summary);
+  const revisionTargets = revisionTargetsForDisplay(review);
+
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="max-w-[76ch] rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-4 md:p-5">
+        <div className="space-y-4 text-base leading-8 text-[color:var(--color-foreground)] md:text-[1.05rem] md:leading-9">
+          {summaryParagraphs.map((paragraph, index) => (
+            <MathText as="p" key={`${paragraph.slice(0, 32)}-${index}`}>
+              {paragraph}
+            </MathText>
+          ))}
+        </div>
+      </div>
+
+      <MetaReviewSection id="strengths" title="Strengths">
+        <ReviewList items={review.strengths} empty="No strengths provided." />
+      </MetaReviewSection>
+
+      <MetaReviewSection id="weaknesses" title="Weaknesses">
+        <ReviewList items={review.weaknesses} empty="No weaknesses provided." />
+      </MetaReviewSection>
+
+      {revisionTargets.length > 0 ? (
+        <MetaReviewSection id="revision-targets" title="Revision targets">
+          <RevisionTargetList targets={revisionTargets} />
+        </MetaReviewSection>
+      ) : null}
+
+      <MetaReviewSection id="questions" title="Questions">
+        <ReviewList
+          items={review.questions}
+          empty="No open questions provided."
+        />
+      </MetaReviewSection>
+
+      <MetaReviewSection id="recommendation" title="Recommendation">
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-4">
+          <Badge
+            variant="outline"
+            className="border-[color:var(--color-border)] text-[color:var(--color-foreground)]"
+          >
+            {review.recommendation}
+          </Badge>
+          <span className="text-sm text-[color:var(--color-muted-foreground)]">
+            Confidence {review.confidence.toFixed(2)}
+          </span>
+        </div>
+      </MetaReviewSection>
+    </div>
+  );
 }
 
-function targetCheckbox(status: RevisionTarget["status"]): string {
-  return status === "addressed" ? "[x]" : "[ ]";
+function revisionTargetsForDisplay(review: MetaReview) {
+  return (review.revision_targets ?? []).filter((target) =>
+    target.required_update.trim(),
+  );
 }
 
-function targetStatusSuffix(status: RevisionTarget["status"]): string {
-  return status === "open" ? "" : ` _(${status})_`;
+function stripRevisionTargetsSection(markdown: string): string {
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((line) =>
+    /^##\s+Targeted Revisions\s*$/i.test(line.trim()),
+  );
+  if (start < 0) return markdown.trim();
+
+  const end = lines.findIndex(
+    (line, index) => index > start && /^##\s+/.test(line.trim()),
+  );
+  return [...lines.slice(0, start), ...(end < 0 ? [] : lines.slice(end))]
+    .join("\n")
+    .trim();
 }
 
-function targetHeading(target: RevisionTarget): string {
-  const locator = target.locator ?? "";
-  switch (target.target_kind) {
-    case "data":
-      return locator.includes("data availability")
-        ? "Data availability and restricted inputs"
-        : `Data target: ${shortText(locator || target.required_update, 80)}`;
-    case "code":
-      if (locator.includes("compute")) return "Compute reproducibility";
-      if (locator.includes("configuration")) return "Experiment configuration";
-      if (locator.includes("evaluation")) return "Evaluation pipeline";
-      if (locator.includes("entrypoints")) return "Code release and entrypoints";
-      if (locator.includes("SAC hyperparameters")) {
-        return "SAC hyperparameters and reward scaling";
-      }
-      return locator
-        ? `Code/reproducibility target: ${shortText(locator, 80)}`
-        : "Code/reproducibility artifacts";
-    case "bibliography":
-      return `Bibliography: ${shortText(locator || target.required_update, 96)}`;
-    case "paper_tex":
-    case "paper_pdf":
-      return `Manuscript: ${shortText(locator || target.required_update, 96)}`;
-    case "review_text":
-      return "Review text correction";
-    default:
-      return `Revision target: ${shortText(target.required_update, 96)}`;
+function MetaReviewSection({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section id={id} className="flex scroll-mt-20 flex-col gap-3">
+      <h3 className="text-lg font-semibold text-[color:var(--color-foreground)]">
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function ReviewList({ items, empty }: { items: string[]; empty: string }) {
+  if (items.length === 0) {
+    return (
+      <p className="text-sm text-[color:var(--color-muted-foreground)]">
+        {empty}
+      </p>
+    );
   }
+
+  return (
+    <ul className="grid gap-3">
+      {items.map((item, index) => (
+        <li
+          key={`${item.slice(0, 32)}-${index}`}
+          className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-4 text-sm leading-7 text-[color:var(--color-foreground)] md:text-base"
+        >
+          <MathText as="span">{item}</MathText>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-function targetLocation(target: RevisionTarget): string {
-  if (target.source_path && target.locator) {
-    return `\`${target.source_path}\` at \`${target.locator}\``;
-  }
-  if (target.source_path) return `\`${target.source_path}\``;
-  if (target.locator && target.target_kind === "data") {
-    return `data/reproducibility artifacts: \`${target.locator}\``;
-  }
-  if (target.locator && target.target_kind === "code") {
-    return `code/reproducibility artifacts: \`${target.locator}\``;
-  }
-  if (target.locator && target.target_kind === "bibliography") {
-    return `bibliography entry: \`${shortText(target.locator, 120)}\``;
-  }
-  if (target.locator) return `\`${target.locator}\``;
-  if (target.target_kind === "data") return "data/reproducibility artifacts";
-  if (target.target_kind === "code") return "code/reproducibility artifacts";
-  if (target.target_kind === "bibliography") return "bibliography";
-  return "review artifact";
+function readableParagraphs(text: string): string[] {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return paragraphs.flatMap(splitLongParagraph);
 }
 
-function shortText(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 3)}...`;
-}
+function splitLongParagraph(paragraph: string): string[] {
+  const maxChars = 520;
+  if (paragraph.length <= maxChars) return [paragraph];
 
-function MetaReviewBody({ markdown }: { markdown: string }) {
-  return <MarkdownBody>{markdown}</MarkdownBody>;
+  const chunks: string[] = [];
+  const sentences = paragraph.split(/(?<=[.!?])\s+(?=[A-Z0-9])/);
+  let current = "";
+  for (const sentence of sentences) {
+    const next = current ? `${current} ${sentence}` : sentence;
+    if (next.length > maxChars && current) {
+      chunks.push(current);
+      current = sentence;
+    } else {
+      current = next;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 function hasGateFailure(review: Review): boolean {

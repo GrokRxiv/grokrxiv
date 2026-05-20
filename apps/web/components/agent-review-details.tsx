@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { RevisionTargetList } from "@/components/revision-target-card";
 import type {
   AgentRole,
   CitationReferenceOutput,
@@ -520,11 +521,13 @@ function MetaReviewerDetails({ review }: { review: MetaReview }) {
         items={review.weaknesses}
         empty="No weaknesses provided."
       />
-      <ListBlock
-        title="Revision Targets"
-        items={(review.revision_targets ?? []).map(formatRevisionTarget)}
-        empty="No revision targets provided."
-      />
+      <div className="flex flex-col gap-2">
+        <SectionTitle>Revision Targets</SectionTitle>
+        <RevisionTargetList
+          targets={review.revision_targets ?? []}
+          compact
+        />
+      </div>
       <ListBlock
         title="Questions"
         items={review.questions}
@@ -777,15 +780,6 @@ function parseRevisionTarget(record: Record<string, unknown>): RevisionTarget {
     verification_check: stringField(record, "verification_check") ?? "",
     status: revisionTargetStatus(record),
   };
-}
-
-function formatRevisionTarget(target: RevisionTarget): string {
-  const path = target.source_path ? ` ${target.source_path}` : "";
-  const locator = target.locator ? ` at ${target.locator}` : "";
-  const check = target.verification_check
-    ? ` Check: ${target.verification_check}`
-    : "";
-  return `[${target.status}] ${target.target_kind}${path}${locator}: ${target.required_update}${check}`;
 }
 
 function parseMissingReference(
