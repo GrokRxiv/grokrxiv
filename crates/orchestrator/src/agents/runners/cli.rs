@@ -234,7 +234,7 @@ impl AgentRunner for CliRunner {
         // 4. Extract and validate JSON. On parse OR schema-validation failure,
         //    one-shot corrective retry.
         let extracted = extract_json_text(&spec.provider, &raw_stdout);
-        let parsed = match parse_and_validate(&extracted, &spec.schema) {
+        let parsed = match parse_and_validate(&extracted, spec.schema.as_ref()) {
             Ok(v) => v,
             Err(first_err) => {
                 let corrective = format!(
@@ -244,7 +244,7 @@ impl AgentRunner for CliRunner {
                      Do not include prose, markdown fences, or extra properties.\n\n\
                      Schema:\n{schema}\n\n\
                      Original task:\n{prompt}",
-                    schema = serde_json::to_string(&spec.schema).unwrap_or_default(),
+                    schema = serde_json::to_string(spec.schema.as_ref()).unwrap_or_default(),
                     prompt = prompt,
                 );
                 let mut built2 = build_command(self, spec, &corrective)?;
@@ -259,20 +259,20 @@ impl AgentRunner for CliRunner {
                     };
                 cleanup_schema_path(&built2.schema_path);
                 let extracted2 = extract_json_text(&spec.provider, &raw2);
-                match parse_and_validate(&extracted2, &spec.schema) {
+                match parse_and_validate(&extracted2, spec.schema.as_ref()) {
                     Ok(v) => v,
                     Err(second_err) => {
                         if let Some(repaired) = repair_review_output(
                             spec.role,
                             &extracted2,
-                            &spec.schema,
+                            spec.schema.as_ref(),
                             &input.artifact,
                         )
                         .or_else(|| {
                             repair_review_output(
                                 spec.role,
                                 &extracted,
-                                &spec.schema,
+                                spec.schema.as_ref(),
                                 &input.artifact,
                             )
                         }) {
@@ -415,7 +415,7 @@ fn prepare_review_workdir(
         .tempdir()
         .map_err(|e| anyhow::anyhow!("create review CLI workdir: {e}"))?;
     write_json_file(&dir.path().join("review_input.json"), &input.artifact)?;
-    write_json_file(&dir.path().join("schema.json"), &spec.schema)?;
+    write_json_file(&dir.path().join("schema.json"), spec.schema.as_ref())?;
     std::fs::write(dir.path().join("prompt.md"), &input.user_prompt)
         .map_err(|e| anyhow::anyhow!("write prompt.md: {e}"))?;
     std::fs::write(dir.path().join("system.md"), &input.system_prompt)
@@ -796,7 +796,7 @@ fn build_command(
             // final positional arg. Long prompts: codex handles multi-line
             // strings fine, and we are bounded by the OS argv limit only on
             // truly enormous inputs (>1MB on macOS / >2MB on Linux).
-            let path = write_codex_schema(role_slug, &spec.schema)?;
+            let path = write_codex_schema(role_slug, spec.schema.as_ref())?;
             let args = vec![
                 "exec".to_string(),
                 "--skip-git-repo-check".to_string(),
@@ -2011,7 +2011,7 @@ mod tests {
         let mut s =
             AgentSpec::api_default(AgentRole::Summary, provider.to_string(), model.to_string());
         s.runner = AgentRunnerKind::Cli;
-        s.schema = serde_json::json!({});
+        s.schema = std::sync::Arc::new(serde_json::json!({}));
         s
     }
 

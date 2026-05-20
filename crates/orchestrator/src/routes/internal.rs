@@ -41,9 +41,7 @@ pub struct ReviewRequest {
 }
 
 /// Fail-closed handler for `POST /internal/v1/review`.
-pub async fn review_post(
-    Json(body): Json<ReviewRequest>,
-) -> (StatusCode, Json<serde_json::Value>) {
+pub async fn review_post(Json(body): Json<ReviewRequest>) -> (StatusCode, Json<serde_json::Value>) {
     tracing::warn!(source = %body.source, "internal/v1/review: dispatch not implemented");
     (
         StatusCode::NOT_IMPLEMENTED,

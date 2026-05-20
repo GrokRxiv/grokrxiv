@@ -24,8 +24,8 @@ pub use review_agents::{
 };
 pub use traits::{AgentRunner, ReviewAgent};
 pub use types::{
-    AgentInput, AgentMode, AgentRun, AgentRunnerKind, AgentSpec, RevisionTarget, RoleSpecMap,
-    SandboxPolicy, ToolPolicy,
+    AgentInput, AgentMode, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, RevisionTarget,
+    RoleSpecMap, SandboxPolicy, ToolPolicy,
 };
 
 #[cfg(test)]
@@ -68,7 +68,7 @@ mod tests {
             mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: "fake-model".to_string(),
-            schema: json!({ "type": "object" }),
+            schema: std::sync::Arc::new(json!({ "type": "object" })),
             tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 30,
@@ -125,5 +125,21 @@ mod tests {
         assert_eq!(run.latency_ms, canned.latency_ms);
         assert!(!run.cache_hit);
         assert!(run.sandbox_ref.is_none());
+    }
+
+    #[test]
+    fn cache_hit_run_preserves_original_runner() {
+        let run = AgentRun::from_cache(
+            AgentRole::Summary,
+            AgentRunnerKind::Cli,
+            "claude-sonnet-4".to_string(),
+            json!({ "tldr": "cached" }),
+            Some(11),
+            Some(7),
+        );
+
+        assert_eq!(run.runner, AgentRunnerKind::Cli);
+        assert_eq!(run.model, "claude-sonnet-4");
+        assert!(run.cache_hit);
     }
 }

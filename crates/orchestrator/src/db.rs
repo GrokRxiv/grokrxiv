@@ -10,6 +10,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::agents::AgentRunnerKind;
 use grokrxiv_schemas::{AgentRole, JobKind, JobState, PaperExtract, ReviewStatus, VerifierStatus};
 
 /// Insert a new row into `jobs` and return its id.
@@ -164,6 +165,16 @@ fn agent_role_from_db_str(s: &str) -> Option<AgentRole> {
         "reproducibility" => Some(AgentRole::Reproducibility),
         "citation" => Some(AgentRole::Citation),
         "meta_reviewer" => Some(AgentRole::MetaReviewer),
+        _ => None,
+    }
+}
+
+pub(crate) fn agent_runner_from_db_str(s: &str) -> Option<AgentRunnerKind> {
+    match s {
+        "api" => Some(AgentRunnerKind::Api),
+        "cli" => Some(AgentRunnerKind::Cli),
+        "cloud" => Some(AgentRunnerKind::Cloud),
+        "local_inference" => Some(AgentRunnerKind::LocalInference),
         _ => None,
     }
 }
@@ -457,6 +468,8 @@ pub struct ReviewAgentInsert<'a> {
     pub review_id: Uuid,
     /// Agent role.
     pub role: AgentRole,
+    /// Runner backend that actually executed this role.
+    pub runner: AgentRunnerKind,
     /// Model id used for the call.
     pub model: &'a str,
     /// Typed output artifact produced by the agent.
@@ -481,16 +494,18 @@ pub struct ReviewAgentInsert<'a> {
 pub async fn insert_review_agent(pool: &PgPool, row: ReviewAgentInsert<'_>) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
     let role_str = serde_plain(&row.role);
+    let runner_str = serde_plain(&row.runner);
     let vstatus = row.verifier_status.as_ref().map(serde_plain);
     sqlx::query(
         "insert into review_agents \
-           (id, review_id, role, model, output, verifier_status, \
+           (id, review_id, role, runner, model, output, verifier_status, \
             verifier_notes, tokens_in, tokens_out, latency_ms) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(row.review_id)
     .bind(role_str)
+    .bind(runner_str)
     .bind(row.model)
     .bind(row.output)
     .bind(vstatus)
@@ -548,6 +563,8 @@ pub struct CachedOutput {
     pub verifier_status: String,
     /// Model id that produced the cached output.
     pub model: String,
+    /// Runner backend that produced the cached output.
+    pub runner: AgentRunnerKind,
     /// Prompt tokens the original call consumed.
     pub tokens_in: Option<i32>,
     /// Completion tokens the original call produced.
@@ -563,8 +580,8 @@ pub async fn lookup_cache(
     content_hash: &str,
 ) -> sqlx::Result<Option<CachedOutput>> {
     let role_str = serde_plain(&role);
-    let row: Option<(Value, String, String, Option<i32>, Option<i32>)> = sqlx::query_as(
-        "select output, verifier_status, model, tokens_in, tokens_out \
+    let row: Option<(Value, String, String, String, Option<i32>, Option<i32>)> = sqlx::query_as(
+        "select output, verifier_status, model, runner, tokens_in, tokens_out \
          from review_cache \
          where paper_id = $1 and role = $2 and content_hash = $3 \
            and expires_at > now() \
@@ -576,10 +593,11 @@ pub async fn lookup_cache(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(output, verifier_status, model, tokens_in, tokens_out)| CachedOutput {
+        |(output, verifier_status, model, runner, tokens_in, tokens_out)| CachedOutput {
             output,
             verifier_status,
             model,
+            runner: agent_runner_from_db_str(&runner).unwrap_or(AgentRunnerKind::Api),
             tokens_in,
             tokens_out,
         },
@@ -597,18 +615,21 @@ pub async fn insert_cache(
     output: &Value,
     verifier_status: &str,
     model: &str,
+    runner: AgentRunnerKind,
     tokens_in: Option<i32>,
     tokens_out: Option<i32>,
 ) -> sqlx::Result<()> {
     let role_str = serde_plain(&role);
+    let runner_str = serde_plain(&runner);
     sqlx::query(
         "insert into review_cache \
-           (paper_id, role, content_hash, output, verifier_status, model, tokens_in, tokens_out) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8) \
+           (paper_id, role, content_hash, output, verifier_status, model, runner, tokens_in, tokens_out) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          on conflict (paper_id, role, content_hash) do update set \
            output = excluded.output, \
            verifier_status = excluded.verifier_status, \
            model = excluded.model, \
+           runner = excluded.runner, \
            tokens_in = excluded.tokens_in, \
            tokens_out = excluded.tokens_out, \
            created_at = now(), \
@@ -620,6 +641,7 @@ pub async fn insert_cache(
     .bind(output)
     .bind(verifier_status)
     .bind(model)
+    .bind(runner_str)
     .bind(tokens_in)
     .bind(tokens_out)
     .execute(pool)
@@ -1571,6 +1593,27 @@ mod tests {
         );
         assert_eq!(review_status_from_db_str("half_published"), None);
         assert_eq!(verifier_status_from_db_str("maybe"), None);
+    }
+
+    #[test]
+    fn agent_runner_decoders_round_trip_known_values_and_reject_unknowns() {
+        assert_eq!(
+            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::Api)),
+            Some(AgentRunnerKind::Api)
+        );
+        assert_eq!(
+            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::Cli)),
+            Some(AgentRunnerKind::Cli)
+        );
+        assert_eq!(
+            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::Cloud)),
+            Some(AgentRunnerKind::Cloud)
+        );
+        assert_eq!(
+            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::LocalInference)),
+            Some(AgentRunnerKind::LocalInference)
+        );
+        assert_eq!(agent_runner_from_db_str("api_fallback"), None);
     }
 
     /// FP-RPT3b B6: when a fresh review supersedes a prior active review,

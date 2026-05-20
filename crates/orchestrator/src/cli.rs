@@ -3417,8 +3417,9 @@ async fn request_revisions_impl(
          failure.summary,
     );
 
-    let token = std::env::var("GITHUB_TOKEN")
-        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to open revision-needed PR"))?;
+    let token = std::env::var("GITHUB_TOKEN").map_err(|_| {
+        anyhow::anyhow!("GITHUB_TOKEN not set; required to open revision-needed PR")
+    })?;
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
