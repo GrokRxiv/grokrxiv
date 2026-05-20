@@ -106,12 +106,12 @@ pub(crate) fn extract_citation_sites(body: &str) -> Vec<Value> {
 }
 
 fn parse_cite_key(s: &str) -> String {
-    // BibTeX-style keys: alphanumerics + `_` `-` `:` `.` `/`. Stop at the
+    // BibTeX-style keys: alphanumerics + `_` `-` `:` `.` `/` `+`. Stop at the
     // first character outside that set so trailing punctuation in the
     // markdown doesn't leak into the key.
     let mut end = 0usize;
     for (idx, ch) in s.char_indices() {
-        if ch.is_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.' | '/') {
+        if ch.is_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.' | '/' | '+') {
             end = idx + ch.len_utf8();
         } else {
             break;
@@ -614,6 +614,14 @@ mod tests {
         assert_eq!(sites.len(), 3);
         let keys: Vec<&str> = sites.iter().map(|s| s["key"].as_str().unwrap()).collect();
         assert_eq!(keys, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn list_citation_sites_preserves_plus_in_keys() {
+        let body = "See [@HofmannMorris+2023] for the compact group reference.\n";
+        let sites = extract_citation_sites(body);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0]["key"], "HofmannMorris+2023");
     }
 
     #[test]

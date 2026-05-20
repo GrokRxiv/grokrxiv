@@ -784,7 +784,7 @@ fn citation_key_from_raw(raw: &str) -> Option<String> {
             && key.len() <= 96
             && key
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'))
         {
             return Some(key.to_string());
         }
@@ -989,6 +989,14 @@ mod tests {
         assert!(CitationVerifier::arxiv_id_well_formed("math.AG/0301001"));
         assert!(!CitationVerifier::arxiv_id_well_formed("not-an-arxiv-id"));
         assert!(!CitationVerifier::arxiv_id_well_formed("2605.12"));
+    }
+
+    #[test]
+    fn citation_key_from_raw_preserves_plus() {
+        assert_eq!(
+            citation_key_from_raw("HofmannMorris+2023: The Structure of Compact Groups").as_deref(),
+            Some("HofmannMorris+2023")
+        );
     }
 
     #[tokio::test]

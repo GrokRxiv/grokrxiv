@@ -11,11 +11,32 @@ fn html_quality_disabled() -> bool {
     )
 }
 
+fn render_extract_from_input(
+    specialist_input: &serde_json::Value,
+    arxiv_id: String,
+    title: String,
+    abstract_: Option<String>,
+    field: Option<String>,
+) -> grokrxiv_schemas::PaperExtract {
+    serde_json::from_value::<grokrxiv_schemas::PaperExtract>(specialist_input.clone())
+        .unwrap_or_else(|_| grokrxiv_schemas::PaperExtract {
+            arxiv_id,
+            title,
+            authors: Vec::new(),
+            abstract_: abstract_.unwrap_or_default(),
+            field,
+            sections: Vec::new(),
+            figures: Vec::new(),
+            bibliography: Vec::new(),
+            source_format: None,
+        })
+}
+
 /// Render persisted review state into HTML, Markdown, LaTeX, and ZIP artifacts.
 #[cfg(feature = "grokrxiv-render")]
 pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result<()> {
     use grokrxiv_render::AgentRecord;
-    use grokrxiv_schemas::{MetaReview, PaperExtract, Section, VerifierResult, VerifierStatus};
+    use grokrxiv_schemas::{MetaReview, VerifierResult, VerifierStatus};
 
     let pool = state
         .db
@@ -97,19 +118,13 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
         }
     }
 
-    // The renderer only needs a minimal extract when persisted section and
-    // bibliography bodies are unavailable.
-    let extract = PaperExtract {
-        arxiv_id: arxiv_id.clone(),
-        title: title.clone(),
-        authors: Vec::new(),
-        abstract_: abstract_.unwrap_or_default(),
+    let extract = render_extract_from_input(
+        &specialist_input,
+        arxiv_id.clone(),
+        title.clone(),
+        abstract_,
         field,
-        sections: Vec::<Section>::new(),
-        figures: Vec::new(),
-        bibliography: Vec::new(),
-        source_format: None,
-    };
+    );
 
     let html = grokrxiv_render::render_html(&meta, &extract, &agents)
         .map_err(|e| anyhow::anyhow!("render_html: {e}"))?;
@@ -147,6 +162,44 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_extract_from_input;
+    use serde_json::json;
+
+    #[test]
+    fn render_extract_uses_review_input_bibliography() {
+        let input = json!({
+            "arxiv_id": "2512.03648",
+            "title": "Condensed Group Cohomology",
+            "authors": [],
+            "abstract": "abs",
+            "field": "math.AT",
+            "sections": [],
+            "figures": [],
+            "bibliography": [{
+                "raw": "Bhatt2013ThePT: The Pro-etale topology for schemes",
+                "doi": "10.24033/ast.960",
+                "arxiv_id": null,
+                "title": "The Pro-etale topology for schemes"
+            }],
+            "source_format": "tex"
+        });
+        let extract = render_extract_from_input(
+            &input,
+            "fallback".to_string(),
+            "fallback title".to_string(),
+            None,
+            None,
+        );
+        assert_eq!(extract.bibliography.len(), 1);
+        assert_eq!(
+            extract.bibliography[0].doi.as_deref(),
+            Some("10.24033/ast.960")
+        );
+    }
 }
 
 #[cfg(feature = "grokrxiv-render")]

@@ -14,7 +14,7 @@
 //!    errors, keep the pandoc Markdown.
 //! 5. Parse the resulting Markdown into title / abstract / sections.
 //!    Bibliography is harvested from `\bibitem` blocks in the original TeX
-//!    plus any `.bib` files in the bundle.
+//!    plus any `.bib` / biblatex `.bbl` files in the bundle.
 //!
 //! Env knobs:
 //! - `GROKRXIV_PANDOC_BIN`             (default `pandoc`)
@@ -24,7 +24,7 @@
 //! - `GROKRXIV_TEX_ENABLE_LATEXML=1`   opt into LaTeXML semantic AST
 //! - `GROKRXIV_TEX_DISABLE_LATEXML=1`  force skip LaTeXML
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -127,7 +127,7 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
 // ---------------------------------------------------------------------------
 
 /// Decode the raw bytes returned by arXiv's `e-print` endpoint into a
-/// `{relpath → contents}` map of `.tex` and `.bib` files.
+/// `{relpath → contents}` map of `.tex`, `.bib`, and `.bbl` files.
 fn unpack(bytes: &Bytes) -> Result<HashMap<String, String>> {
     if let Ok(map) = try_targz(bytes) {
         if !map.is_empty() {
@@ -183,7 +183,7 @@ fn extract_text_files<R: Read>(archive: &mut Archive<R>) -> Result<HashMap<Strin
         let path = entry.path().context("entry path")?.to_path_buf();
         let rel = path.to_string_lossy().to_string();
         let lower = rel.to_lowercase();
-        if !(lower.ends_with(".tex") || lower.ends_with(".bib")) {
+        if !(lower.ends_with(".tex") || lower.ends_with(".bib") || lower.ends_with(".bbl")) {
             continue;
         }
         let mut text = String::new();
@@ -688,7 +688,13 @@ fn collect_bibliography(raw_main: &str, files: &HashMap<String, String>) -> Vec<
         }
         out.extend(parse_bibfile(contents));
     }
-    out
+    for (name, contents) in files {
+        if !name.to_lowercase().ends_with(".bbl") {
+            continue;
+        }
+        out.extend(parse_bblfile(contents));
+    }
+    dedupe_citations(out)
 }
 
 fn parse_bibitems(src: &str) -> Vec<Citation> {
@@ -749,6 +755,121 @@ fn parse_bibfile(src: &str) -> Vec<Citation> {
             arxiv_id,
             title: title.or(Some(key)),
         });
+    }
+    out
+}
+
+fn parse_bblfile(src: &str) -> Vec<Citation> {
+    let re =
+        Regex::new(r"(?s)\\entry\{([^}]+)\}\{[^}]*\}\{[^}]*\}\{[^}]*\}(.*?)\\endentry").unwrap();
+    let mut out = Vec::new();
+    for c in re.captures_iter(src) {
+        let key = c.get(1).map(|m| m.as_str()).unwrap_or_default().trim();
+        if key.is_empty() {
+            continue;
+        }
+        let body = c.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let title = extract_bbl_field(body, "title");
+        let year = extract_bbl_field(body, "year");
+        let doi = extract_bbl_verb(body, "doi")
+            .or_else(|| extract_bbl_field(body, "doi"))
+            .and_then(|value| sniff_identifiers(&value).0.or(Some(value)));
+        let arxiv_id = extract_bbl_verb(body, "eprint")
+            .or_else(|| extract_bbl_field(body, "eprint"))
+            .and_then(|value| sniff_identifiers(&value).1.or(Some(value)))
+            .filter(|value| looks_like_arxiv_id(value));
+        let mut parts = Vec::new();
+        if let Some(title) = title.as_deref() {
+            parts.push(title.to_string());
+        }
+        if let Some(year) = year.as_deref() {
+            parts.push(year.to_string());
+        }
+        if let Some(doi) = doi.as_deref() {
+            parts.push(format!("doi:{doi}"));
+        }
+        if let Some(arxiv_id) = arxiv_id.as_deref() {
+            parts.push(format!("arXiv:{arxiv_id}"));
+        }
+        let raw = if parts.is_empty() {
+            key.to_string()
+        } else {
+            format!("{key}: {}", parts.join(", "))
+        };
+        out.push(Citation {
+            raw,
+            doi,
+            arxiv_id,
+            title: title.or_else(|| Some(key.to_string())),
+        });
+    }
+    out
+}
+
+fn extract_bbl_field(body: &str, field: &str) -> Option<String> {
+    let needle = format!("\\field{{{field}}}{{");
+    let start = body.find(&needle)? + needle.len();
+    parse_balanced_braced_content(body, start).map(|value| sanitize_bbl_value(&value))
+}
+
+fn extract_bbl_verb(body: &str, field: &str) -> Option<String> {
+    let pattern = format!(
+        r"(?s)\\verb\{{{}\}}\s*\\verb\s+([^\r\n]+)",
+        regex::escape(field)
+    );
+    let re = Regex::new(&pattern).ok()?;
+    re.captures(body)
+        .and_then(|c| c.get(1).map(|m| sanitize_bbl_value(m.as_str())))
+}
+
+fn parse_balanced_braced_content(input: &str, start: usize) -> Option<String> {
+    let mut depth = 1usize;
+    for (rel, ch) in input[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(input[start..start + rel].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn sanitize_bbl_value(value: &str) -> String {
+    let mut cleaned = sanitize_inline(value);
+    loop {
+        let trimmed = cleaned.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('{') && trimmed.ends_with('}') {
+            cleaned = trimmed[1..trimmed.len() - 1].trim().to_string();
+            continue;
+        }
+        break;
+    }
+    cleaned
+}
+
+fn looks_like_arxiv_id(value: &str) -> bool {
+    Regex::new(r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$")
+        .unwrap()
+        .is_match(value)
+}
+
+fn dedupe_citations(citations: Vec<Citation>) -> Vec<Citation> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(citations.len());
+    for citation in citations {
+        let key = citation
+            .raw
+            .split_once(':')
+            .map(|(key, _)| key.trim().to_string())
+            .unwrap_or_else(|| citation.raw.clone());
+        if seen.insert(key) {
+            out.push(citation);
+        }
     }
     out
 }
@@ -898,6 +1019,19 @@ mod tests {
         let main = extract_main_tex_source(&bundle).expect("main tex source");
         assert_eq!(main.path, "paper/main.tex");
         assert!(main.contents.contains("\\title{Main Paper}"));
+    }
+
+    #[test]
+    fn unpack_preserves_biblatex_bbl_files() {
+        let bundle = make_targz(&[
+            (
+                "main.tex",
+                "\\documentclass{article}\n\\begin{document}\n\\printbibliography\n\\end{document}\n",
+            ),
+            ("main.bbl", "\\entry{key}{article}{}{}\\endentry\n"),
+        ]);
+        let files = unpack(&bundle).expect("unpack");
+        assert!(files.contains_key("main.bbl"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1190,5 +1324,38 @@ See~\cite{foo}.
         assert_eq!(cites.len(), 1);
         assert_eq!(cites[0].title.as_deref(), Some("A Paper"));
         assert_eq!(cites[0].doi.as_deref(), Some("10.1000/xyz"));
+    }
+
+    #[test]
+    fn bibliography_parses_biblatex_bbl_file() {
+        let bbl = r#"
+\entry{Bhatt2013ThePT}{article}{}{}
+  \field{title}{The Pro-étale topology for schemes}
+  \field{year}{2013}
+  \verb{doi}
+  \verb 10.24033/ast.960
+  \endverb
+\endentry
+\entry{barwick2019pyknoticobjectsibasic}{misc}{}{}
+  \field{title}{Pyknotic objects, I. Basic notions}
+  \field{year}{2019}
+  \verb{eprint}
+  \verb 1904.09966
+  \endverb
+\endentry
+"#;
+        let files = HashMap::from([("paper.bbl".to_string(), bbl.to_string())]);
+        let cites = collect_bibliography(r"\printbibliography", &files);
+        assert_eq!(cites.len(), 2);
+        assert_eq!(
+            cites[0].title.as_deref(),
+            Some("The Pro-étale topology for schemes")
+        );
+        assert_eq!(cites[0].doi.as_deref(), Some("10.24033/ast.960"));
+        assert_eq!(
+            cites[1].title.as_deref(),
+            Some("Pyknotic objects, I. Basic notions")
+        );
+        assert_eq!(cites[1].arxiv_id.as_deref(), Some("1904.09966"));
     }
 }
