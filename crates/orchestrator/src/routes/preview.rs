@@ -382,7 +382,7 @@ async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::
         mode: AgentMode::ReviewOnly,
         provider,
         model: model.clone(),
-        schema: schema.clone(),
+        schema: std::sync::Arc::new(schema.clone()),
         tool_policy: ToolPolicy::default(),
         max_retries: 1,
         timeout_secs: preview_timeout_secs(),

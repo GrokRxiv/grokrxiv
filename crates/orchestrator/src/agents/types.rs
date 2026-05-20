@@ -29,6 +29,9 @@ pub use grokrxiv_llm_adapter::{
 /// orchestrator's call sites tidy.
 pub type Message = ToolMessage;
 
+/// Shared JSON schema document for an agent role.
+pub type AgentSchema = Arc<serde_json::Value>;
+
 use crate::agents::extraction::ToolRegistry;
 
 /// Context handed to the tool-call loop. Borrows the workdir, paper extract,
@@ -209,7 +212,7 @@ pub struct AgentSpec {
     /// Model identifier (e.g. `claude-opus-4-7`, `qwen2.5:32b-instruct-q4_K_M`).
     pub model: String,
     /// Compiled output JSON schema this role must satisfy.
-    pub schema: serde_json::Value,
+    pub schema: AgentSchema,
     /// Tool permissions (Phase 4+).
     pub tool_policy: ToolPolicy,
     /// Maximum corrective retries on parse/validation failure. Default 2.
@@ -229,7 +232,7 @@ impl AgentSpec {
             mode: AgentMode::ReviewOnly,
             provider,
             model,
-            schema: serde_json::json!({}),
+            schema: Arc::new(serde_json::json!({})),
             tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 180,
@@ -299,6 +302,7 @@ impl AgentRun {
     /// the runner call.
     pub fn from_cache(
         role: AgentRole,
+        runner: AgentRunnerKind,
         model: String,
         output: serde_json::Value,
         tokens_in: Option<i32>,
@@ -306,7 +310,7 @@ impl AgentRun {
     ) -> Self {
         Self {
             role,
-            runner: AgentRunnerKind::Api,
+            runner,
             model,
             output,
             verifier_status: None,

@@ -166,10 +166,10 @@ mod render_agent_tests {
             mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: "claude-haiku-4-5-20251001".to_string(),
-            schema: serde_json::json!({
+            schema: std::sync::Arc::new(serde_json::json!({
                 "type": "object",
                 "required": ["html", "md", "tex", "has_math", "macros_used", "section_count"]
-            }),
+            })),
             tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 90,
