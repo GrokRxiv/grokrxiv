@@ -1,7 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { CloudUpload, FileText, Loader2, CheckCircle2 } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CloudUpload,
+  FileText,
+  Loader2,
+  XCircle,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { SampleResponse } from "@/lib/types";
@@ -180,55 +189,155 @@ function DoneView({
   result: SampleResponse;
   onReset: () => void;
 }) {
-  // Decode the base64 zip once on mount and turn it into a Blob URL so the
-  // browser handles the download as a real file instead of a data: URL (which
-  // some browsers truncate at megabyte scale).
-  const bundleUrl = React.useMemo(() => {
+  const [downloadError, setDownloadError] = React.useState<string | null>(null);
+  const tone = sampleTone(result.meta_review.recommendation);
+  const StatusIcon = tone.icon;
+
+  const handleDownload = React.useCallback(() => {
     try {
       const bin = atob(result.bundle_b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       const blob = new Blob([bytes], { type: "application/zip" });
-      return URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `grokrxiv-sample-${result.sample_review_id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setDownloadError(null);
     } catch {
-      return "";
+      setDownloadError("Could not prepare the review bundle for download.");
     }
-  }, [result.bundle_b64]);
-
-  React.useEffect(() => {
-    return () => {
-      if (bundleUrl) URL.revokeObjectURL(bundleUrl);
-    };
-  }, [bundleUrl]);
+  }, [result.bundle_b64, result.sample_review_id]);
 
   return (
-    <div className="flex w-full max-w-3xl flex-col items-stretch gap-4">
-      <div className="flex items-center justify-center gap-2">
-        <CheckCircle2 className="h-6 w-6 text-emerald-500" />
-        <h3 className="text-lg font-semibold">Sample ready</h3>
+    <div className="flex w-full max-w-4xl flex-col items-stretch gap-5 text-left">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <StatusIcon className={cn("h-6 w-6", tone.iconClass)} />
+          <h3 className="text-lg font-semibold">{tone.heading}</h3>
+          <Badge variant={tone.badgeVariant}>{tone.label}</Badge>
+        </div>
+        <p className="max-w-2xl text-sm leading-6 text-[color:var(--color-muted-foreground)]">
+          {result.meta_review.summary}
+        </p>
       </div>
-      <p className="mx-auto max-w-2xl text-sm text-[color:var(--color-muted-foreground)]">
-        {result.meta_review.summary}
-      </p>
-      <iframe
-        title="Sample review preview"
-        srcDoc={result.html}
-        sandbox="allow-same-origin"
-        className="aspect-[4/5] min-h-[320px] w-full rounded-md border border-[color:var(--color-border)] bg-white sm:aspect-auto sm:h-[480px]"
-      />
+
+      <div className="grid gap-3 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-background)]/40 p-4 sm:grid-cols-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--color-muted-foreground)]">
+            Recommendation
+          </p>
+          <p className="mt-1 text-base font-semibold">{tone.label}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--color-muted-foreground)]">
+            Confidence
+          </p>
+          <p className="mt-1 text-base font-semibold">
+            {formatConfidence(result.meta_review.confidence)}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <ReviewList title="Strengths" items={result.meta_review.strengths} />
+        <ReviewList title="Weaknesses" items={result.meta_review.weaknesses} />
+        <ReviewList title="Questions" items={result.meta_review.questions} />
+      </div>
+
+      {downloadError ? (
+        <p className="text-center text-sm text-[color:var(--color-destructive)]">
+          {downloadError}
+        </p>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-center gap-2">
-        <Button asChild>
-          <a
-            href={bundleUrl}
-            download={`grokrxiv-sample-${result.sample_review_id}.zip`}
-          >
-            Download sample review
-          </a>
+        <Button type="button" onClick={handleDownload}>
+          Download sample review
         </Button>
-        <Button variant="ghost" onClick={onReset}>
+        <Button type="button" variant="ghost" onClick={onReset}>
           Upload another
         </Button>
       </div>
     </div>
+  );
+}
+
+type SampleTone = {
+  heading: string;
+  label: string;
+  badgeVariant: BadgeProps["variant"];
+  icon: LucideIcon;
+  iconClass: string;
+};
+
+function sampleTone(
+  recommendation: SampleResponse["meta_review"]["recommendation"],
+): SampleTone {
+  switch (recommendation) {
+    case "accept":
+      return {
+        heading: "Sample ready",
+        label: "Accept",
+        badgeVariant: "success",
+        icon: CheckCircle2,
+        iconClass: "text-emerald-500",
+      };
+    case "minor_revision":
+      return {
+        heading: "Sample ready",
+        label: "Minor revision",
+        badgeVariant: "warn",
+        icon: AlertTriangle,
+        iconClass: "text-amber-500",
+      };
+    case "major_revision":
+      return {
+        heading: "Sample needs revision",
+        label: "Major revision",
+        badgeVariant: "warn",
+        icon: AlertTriangle,
+        iconClass: "text-amber-500",
+      };
+    case "reject":
+      return {
+        heading: "Sample recommends rejection",
+        label: "Reject",
+        badgeVariant: "destructive",
+        icon: XCircle,
+        iconClass: "text-[color:var(--color-destructive)]",
+      };
+  }
+}
+
+function formatConfidence(value: number) {
+  const bounded = Math.max(0, Math.min(1, value));
+  return `${Math.round(bounded * 100)}%`;
+}
+
+function ReviewList({ title, items }: { title: string; items: string[] }) {
+  const visible = items.filter((item) => item.trim().length > 0);
+  return (
+    <section className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-background)]/40 p-4">
+      <h4 className="text-sm font-semibold">{title}</h4>
+      {visible.length > 0 ? (
+        <ul className="mt-3 space-y-2 text-sm leading-6 text-[color:var(--color-muted-foreground)]">
+          {visible.map((item, index) => (
+            <li key={`${title}-${index}`} className="flex gap-2">
+              <span className="mt-[0.65em] h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-primary)]" />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-sm text-[color:var(--color-muted-foreground)]">
+          None noted in this sample.
+        </p>
+      )}
+    </section>
   );
 }

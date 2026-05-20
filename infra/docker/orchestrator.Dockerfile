@@ -54,6 +54,7 @@ RUN set -eux; \
       git \
       gosu \
       libssl3 \
+      ripgrep \
       tini; \
     if [ "$INSTALL_PANDOC" = "1" ]; then \
       apt-get install -y --no-install-recommends curl tar; \
@@ -73,6 +74,9 @@ RUN set -eux; \
     fi; \
     if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
       npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli; \
+      node_arch="$(node -p 'process.arch')"; \
+      mkdir -p /usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep; \
+      ln -sf /usr/bin/rg "/usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep/rg-linux-${node_arch}"; \
       npm cache clean --force; \
     fi; \
     rm -rf /var/lib/apt/lists/*; \

@@ -8,9 +8,9 @@
 //! 3. Heuristic-builds a [`PaperExtract`] from the normalized text (title from
 //!    the first non-empty line; abstract from the next paragraph; sections via
 //!    `split_sections`; bibliography via `extract_bibliography`).
-//! 4. Calls the configured Anthropic model (`PREVIEW_MODEL`, default
-//!    `claude-opus-4-7`) with a structured-output request shaped like a
-//!    [`MetaReview`].
+//! 4. Runs a single meta-review pass. The default path uses the local CLI
+//!    runner, so homepage samples do not require provider API keys. Direct
+//!    provider API preview remains opt-in through `GROKRXIV_ALLOW_PROVIDER_API=1`.
 //! 5. Renders an HTML + Markdown + LaTeX + zip bundle via `grokrxiv-render`.
 //! 6. Persists the result to the `uploads` table only (not `reviews` /
 //!    `papers`) when a DB pool is configured.
@@ -24,10 +24,12 @@ use axum::response::IntoResponse;
 use axum::Json;
 use base64::Engine;
 use grokrxiv_llm_adapter::{ChatRequest, ContentPart, Message, ResponseFormat, Role};
-use grokrxiv_schemas::{Author, FigureRef, MetaReview, PaperExtract};
+use grokrxiv_schemas::{AgentRole, Author, FigureRef, MetaReview, PaperExtract};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::agents::{AgentInput, AgentMode, AgentRunnerKind, AgentSpec, SandboxPolicy, ToolPolicy};
+use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
 use crate::state::AppState;
 
 /// Response payload for `/preview`.
@@ -127,21 +129,22 @@ pub async fn preview(State(state): State<AppState>, mut multipart: Multipart) ->
         Err(e) => {
             let msg = e.to_string();
             tracing::error!(err = %msg, "meta review failed");
-            // Classify the failure so the dropzone can render an actionable hint:
-            //   - no LLM provider configured → 503 + "set ANTHROPIC_API_KEY"
-            //   - upstream rate-limited (HTTP 429) → 503 + retry hint
-            //   - upstream timeout → 504
-            //   - anything else → 502
-            let no_provider = msg.contains("no LLM provider");
+            // Classify the failure so the dropzone can render an actionable hint.
+            // The default preview path uses local CLIs; direct provider APIs are
+            // not required unless explicitly enabled.
+            let no_cli = msg.contains("preview CLI runner unavailable")
+                || msg.contains("No such file")
+                || msg.contains("os error 2")
+                || msg.contains("unsupported provider for CliRunner")
+                || msg.contains("not on PATH");
             let rate_limited = msg.contains("rate limited") || msg.contains("429");
             let timeout = msg.contains("timeout") || msg.contains("Timeout");
 
-            let (status, hint): (StatusCode, Option<&str>) = if no_provider {
+            let (status, hint): (StatusCode, Option<&str>) = if no_cli {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Some(
-                        "Set ANTHROPIC_API_KEY in the orchestrator's environment \
-                         and restart (e.g. `just orch` or `docker compose up orchestrator`).",
+	                        "Sample preview needs the local Gemini/Codex/Claude CLI runtime in the orchestrator container. Restart the current Docker Compose stack after rebuilding the orchestrator image.",
                     ),
                 )
             } else if rate_limited {
@@ -295,6 +298,31 @@ fn pull_abstract(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 async fn run_meta_review(state: &AppState, paper: &PaperExtract) -> anyhow::Result<MetaReview> {
+    if !direct_provider_api_allowed() {
+        return run_meta_review_cli(state, paper).await;
+    }
+
+    match run_meta_review_api(state, paper).await {
+        Ok(meta) => Ok(meta),
+        Err(api_err) if state.providers.is_none() => {
+            tracing::warn!(
+                err = %api_err,
+                "preview direct API requested but no provider is configured; falling back to CLI"
+            );
+            run_meta_review_cli(state, paper).await
+        }
+        Err(api_err) => Err(api_err),
+    }
+}
+
+fn direct_provider_api_allowed() -> bool {
+    matches!(
+        std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+async fn run_meta_review_api(state: &AppState, paper: &PaperExtract) -> anyhow::Result<MetaReview> {
     let registry = state
         .providers
         .as_ref()
@@ -335,6 +363,69 @@ async fn run_meta_review(state: &AppState, paper: &PaperExtract) -> anyhow::Resu
     let meta: MetaReview = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("meta-review schema mismatch: {e}"))?;
     Ok(meta)
+}
+
+async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::Result<MetaReview> {
+    let runner = state
+        .runners
+        .get(&AgentRunnerKind::Cli)
+        .ok_or_else(|| anyhow::anyhow!("preview CLI runner unavailable"))?;
+    let provider = preview_provider();
+    let model = preview_model(state);
+    let schema = meta_review_schema();
+    let paper_json = serde_json::to_value(paper)
+        .map_err(|e| anyhow::anyhow!("serialize preview paper extract: {e}"))?;
+    let spec = AgentSpec {
+        role: AgentRole::MetaReviewer,
+        runner: AgentRunnerKind::Cli,
+        sandbox: SandboxPolicy::None,
+        mode: AgentMode::ReviewOnly,
+        provider,
+        model: model.clone(),
+        schema: schema.clone(),
+        tool_policy: ToolPolicy::default(),
+        max_retries: 1,
+        timeout_secs: preview_timeout_secs(),
+    };
+    let input = AgentInput {
+        paper_id: Uuid::new_v4(),
+        review_id: Uuid::new_v4(),
+        role: AgentRole::MetaReviewer,
+        content_hash_material: paper_json.clone(),
+        artifact: paper_json,
+        system_prompt: SYSTEM_PROMPT.to_string(),
+        user_prompt: build_preview_prompt(paper),
+        source_bundle_path: None,
+    };
+
+    let run = runner.run(&spec, &input).await?;
+    serde_json::from_value(run.output)
+        .map_err(|e| anyhow::anyhow!("preview CLI meta-review schema mismatch: {e}"))
+}
+
+fn preview_provider() -> String {
+    std::env::var("GROKRXIV_PREVIEW_PROVIDER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "gemini".to_string())
+}
+
+fn preview_model(state: &AppState) -> String {
+    std::env::var("GROKRXIV_PREVIEW_MODEL")
+        .ok()
+        .or_else(|| std::env::var("GROKRXIV_META_REVIEWER_MODEL").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| state.config.preview_model.clone())
+}
+
+fn preview_timeout_secs() -> u32 {
+    std::env::var("GROKRXIV_PREVIEW_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(120)
 }
 
 fn strip_code_fences(s: &str) -> &str {
@@ -403,8 +494,11 @@ async fn render_bundle(meta: &MetaReview, paper: &PaperExtract) -> anyhow::Resul
         model: "preview".to_string(),
         output: serde_json::to_value(meta).unwrap_or(json!({})),
         verifier: grokrxiv_schemas::VerifierResult {
-            status: grokrxiv_schemas::VerifierStatus::Pass,
-            notes: json!({ "preview": true }),
+            status: preview_verifier_status(meta.recommendation),
+            notes: json!({
+                "preview": true,
+                "recommendation": meta.recommendation,
+            }),
         },
     };
     let agents = [agent];
@@ -425,6 +519,18 @@ async fn render_bundle(meta: &MetaReview, paper: &PaperExtract) -> anyhow::Resul
     Ok(RenderedBundle { html, zip })
 }
 
+#[cfg(feature = "grokrxiv-render")]
+fn preview_verifier_status(
+    recommendation: grokrxiv_schemas::Recommendation,
+) -> grokrxiv_schemas::VerifierStatus {
+    match recommendation {
+        grokrxiv_schemas::Recommendation::Accept => grokrxiv_schemas::VerifierStatus::Pass,
+        grokrxiv_schemas::Recommendation::MinorRevision => grokrxiv_schemas::VerifierStatus::Warn,
+        grokrxiv_schemas::Recommendation::MajorRevision
+        | grokrxiv_schemas::Recommendation::Reject => grokrxiv_schemas::VerifierStatus::Fail,
+    }
+}
+
 #[cfg(not(feature = "grokrxiv-render"))]
 async fn render_bundle(meta: &MetaReview, paper: &PaperExtract) -> anyhow::Result<RenderedBundle> {
     let stub = crate::stubs::render_bundle(meta, paper).await?;
@@ -432,4 +538,76 @@ async fn render_bundle(meta: &MetaReview, paper: &PaperExtract) -> anyhow::Resul
         html: stub.html,
         zip: stub.bundle,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev.as_deref() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn preview_direct_provider_api_is_opt_in() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::set(ALLOW_PROVIDER_API_ENV, "0");
+
+        assert!(
+            !direct_provider_api_allowed(),
+            "homepage preview must not call direct provider APIs in CLI/local mode"
+        );
+    }
+
+    #[test]
+    fn preview_provider_defaults_to_gemini_cli() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::set("GROKRXIV_PREVIEW_PROVIDER", "   ");
+
+        assert_eq!(preview_provider(), "gemini");
+    }
+
+    #[cfg(feature = "grokrxiv-render")]
+    #[test]
+    fn preview_verifier_status_follows_recommendation() {
+        use grokrxiv_schemas::{Recommendation, VerifierStatus};
+
+        assert_eq!(
+            preview_verifier_status(Recommendation::Accept),
+            VerifierStatus::Pass
+        );
+        assert_eq!(
+            preview_verifier_status(Recommendation::MinorRevision),
+            VerifierStatus::Warn
+        );
+        assert_eq!(
+            preview_verifier_status(Recommendation::MajorRevision),
+            VerifierStatus::Fail
+        );
+        assert_eq!(
+            preview_verifier_status(Recommendation::Reject),
+            VerifierStatus::Fail
+        );
+    }
 }

@@ -10,9 +10,11 @@
 use std::time::Duration;
 
 use grokrxiv_schemas::JobKind;
+use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::cli_status::StatusMark;
 use crate::state::AppState;
 
 /// Single in-flight unit of work.
@@ -153,9 +155,7 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
     tracing::info!(arxiv_id, "M1: ingest start");
-    crate::cli_status::emit(format!(
-        "paper {arxiv_id}: fetching arXiv source and metadata"
-    ));
+    crate::cli_status::emit_stage(1, 6, "Fetch", StatusMark::Run, "arXiv source and metadata");
 
     // RPT3 Wave-3 Team-F: when the storage feature is on, the orchestrator's
     // staged ingest pipeline runs Stages 1–8 (acquisition → format conversion
@@ -166,9 +166,13 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
     #[cfg(feature = "grokrxiv-storage")]
     {
         let opts = ingest_options_from_env();
-        crate::cli_status::emit(format!(
-            "paper {arxiv_id}: running staged extraction pipeline"
-        ));
+        crate::cli_status::emit_stage(
+            2,
+            6,
+            "Extract",
+            StatusMark::Run,
+            "staged extraction pipeline",
+        );
         match crate::ingest_pipeline::run_ingest_pipeline(state, arxiv_id, &opts).await {
             Ok(out) => {
                 paper_id = out.paper_id;
@@ -199,9 +203,14 @@ async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyhow::Result<
         extract = pe;
     }
     tracing::info!(arxiv_id, %paper_id, "M1: paper persisted");
-    crate::cli_status::emit(format!(
-        "paper {arxiv_id}: extraction persisted as paper_id={paper_id}; starting review DAG"
-    ));
+    crate::cli_status::emit_stage(2, 6, "Extract", StatusMark::Ok, "paper artifacts persisted");
+    crate::cli_status::emit_stage(
+        3,
+        6,
+        "Review DAG",
+        StatusMark::Run,
+        "starting specialist reviewers",
+    );
 
     run_review_dag_from_state(state, pool, paper_id, extract).await
 }
@@ -451,9 +460,7 @@ async fn run_review_dag_inner(
     // request-changes / approve commands flip this row's `state`.
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     tracing::info!(%review_id, "M1: review row created");
-    crate::cli_status::emit(format!(
-        "review {review_id}: created review row; starting specialist reviewers"
-    ));
+    crate::cli_status::emit(format!("review_id={review_id}"));
 
     // Drive the DAG inside an inner async block so any error path can
     // transition the review row off the stale `awaiting_moderation` state.
@@ -479,9 +486,13 @@ async fn run_review_dag_inner(
     let min_specialist_quorum = review_dag.min_specialist_quorum();
 
     let review_concurrency = specialist_review_concurrency_limit(&specialist_roles);
-    crate::cli_status::emit(format!(
-        "review {review_id}: specialist concurrency={review_concurrency}"
-    ));
+    crate::cli_status::emit_stage(
+        3,
+        6,
+        "Review DAG",
+        StatusMark::Run,
+        &format!("{review_concurrency} specialist reviewers"),
+    );
     let sem = Arc::new(tokio::sync::Semaphore::new(review_concurrency));
     let extract_arc = Arc::new(extract);
     let specialist_input: serde_json::Value =
@@ -577,12 +588,10 @@ async fn run_review_dag_inner(
         let pool_cloned = pool.clone();
         let cache_hash = specialist_content_hash.clone();
         let specialist_input_cloned = specialist_input.clone();
-        handles.push(tokio::spawn(async move {
+        let role_model_for_task = role_model.clone();
+        handles.push((role, role_model, tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
-            crate::cli_status::emit(format!(
-                "review {review_id}: {} reviewer starting",
-                role_slug(role)
-            ));
+            crate::cli_status::emit_detail(role_status_label(role), StatusMark::Run, "starting");
 
             // FP6 A4: cache lookup before the LLM call. We only honour
             // verifier_status='pass' rows so a previously-warned/failed run
@@ -635,20 +644,16 @@ async fn run_review_dag_inner(
                 source_bundle_path: None,
             };
             let run = agent.run(&*runner, input).await?;
-            crate::cli_status::emit(format!(
-                "review {review_id}: {} reviewer completed",
-                role_slug(role)
-            ));
             anyhow::Ok((
                 role,
                 run.output,
                 run.tokens_in,
                 run.tokens_out,
                 run.latency_ms,
-                role_model,
+                role_model_for_task,
                 false,
             ))
-        }));
+        })));
     }
 
     let mut specialist_results: Vec<(
@@ -660,15 +665,50 @@ async fn run_review_dag_inner(
         String, // model actually used
         bool,   // cache hit
     )> = Vec::with_capacity(specialist_roles.len());
-    for h in handles {
-        let r = h
-            .await
-            .map_err(|e| anyhow::anyhow!("specialist join: {e}"))??;
-        specialist_results.push(r);
+    for (role, role_model, h) in handles {
+        match h.await {
+            Ok(Ok(result)) => specialist_results.push(result),
+            Ok(Err(e)) => {
+                let error = format!("{e:#}");
+                tracing::warn!(
+                    %review_id,
+                    role = role_slug(role),
+                    err = %error,
+                    "specialist reviewer failed; recording failed verifier output"
+                );
+                crate::cli_status::emit_detail(role_status_label(role), StatusMark::Fail, &error);
+                specialist_results.push((
+                    role,
+                    specialist_failure_output(role, &error),
+                    None,
+                    None,
+                    0i32,
+                    role_model,
+                    false,
+                ));
+            }
+            Err(e) => {
+                let error = format!("specialist join: {e}");
+                tracing::warn!(
+                    %review_id,
+                    role = role_slug(role),
+                    err = %error,
+                    "specialist reviewer task failed; recording failed verifier output"
+                );
+                crate::cli_status::emit_detail(role_status_label(role), StatusMark::Fail, &error);
+                specialist_results.push((
+                    role,
+                    specialist_failure_output(role, &error),
+                    None,
+                    None,
+                    0i32,
+                    role_model,
+                    false,
+                ));
+            }
+        }
     }
-    crate::cli_status::emit(format!(
-        "review {review_id}: specialist reviewers completed; running verifier ladder"
-    ));
+    crate::cli_status::emit_stage(4, 6, "Verify", StatusMark::Run, "verifier ladder");
 
     // Persist + verify each specialist's output against its role-specific
     // verifier ladder. The ladder uses the role-specific JSON schema as its
@@ -734,13 +774,11 @@ async fn run_review_dag_inner(
             .await;
         }
         specialist_verifier_status.push((*role, v_status));
-        crate::cli_status::emit(format!(
-            "review {review_id}: {} verifier={}",
-            role_slug(*role),
-            v_status
-                .map(|s| format!("{s:?}").to_ascii_lowercase())
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
+        crate::cli_status::emit_detail(
+            role_status_label(*role),
+            verifier_status_mark(v_status),
+            "",
+        );
         tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
     }
 
@@ -802,7 +840,11 @@ async fn run_review_dag_inner(
             quorum = MIN_SPECIALIST_QUORUM,
             "specialist quorum not met; recorded major_revision gate failure"
         );
-        anyhow::bail!("{error}");
+        crate::cli_status::emit_detail(
+            "meta reviewer",
+            StatusMark::Fail,
+            "specialist quorum not met",
+        );
     } else {
 
     // Meta-reviewer: real synthesis node. FP6 A1: feed it ONLY the five
@@ -829,7 +871,7 @@ async fn run_review_dag_inner(
     let meta_system = role_system_prompt(AgentRole::MetaReviewer, extract_arc.field.as_deref());
 
     let (meta_agent, meta_runner, meta_model_used) = resolve_agent(AgentRole::MetaReviewer)?;
-    crate::cli_status::emit(format!("review {review_id}: meta_reviewer starting"));
+    crate::cli_status::emit_detail("meta reviewer", StatusMark::Run, "synthesis");
 
     // FP6 A4: cache lookup for the meta-reviewer. Its content hash keys on
     // the specialists-bundle JSON it would have reasoned over, so two reviews
@@ -886,14 +928,31 @@ async fn run_review_dag_inner(
                     user_prompt: meta_prompt,
                     source_bundle_path: None,
                 };
-                let run = meta_agent.run(&*meta_runner, meta_agent_input).await?;
-                (
-                    run.output,
-                    run.tokens_in,
-                    run.tokens_out,
-                    run.latency_ms,
-                    meta_model_used.clone(),
-                )
+                match meta_agent.run(&*meta_runner, meta_agent_input).await {
+                    Ok(run) => (
+                        run.output,
+                        run.tokens_in,
+                        run.tokens_out,
+                        run.latency_ms,
+                        meta_model_used.clone(),
+                    ),
+                    Err(e) => {
+                        let error = format!("{e:#}");
+                        tracing::warn!(
+                            %review_id,
+                            err = %error,
+                            "meta reviewer failed; recording major_revision gate output"
+                        );
+                        crate::cli_status::emit_detail("meta reviewer", StatusMark::Fail, &error);
+                        (
+                            meta_failure_output(&error),
+                            None,
+                            None,
+                            0i32,
+                            meta_model_used.clone(),
+                        )
+                    }
+                }
             }
         };
 
@@ -914,12 +973,11 @@ async fn run_review_dag_inner(
         },
     )
     .await?;
-    crate::cli_status::emit(format!(
-        "review {review_id}: meta_reviewer verifier={}",
-        meta_v_status
-            .map(|s| format!("{s:?}").to_ascii_lowercase())
-            .unwrap_or_else(|| "unknown".to_string())
-    ));
+    crate::cli_status::emit_detail(
+        "meta reviewer",
+        verifier_status_mark(meta_v_status),
+        "",
+    );
 
     // FP6 A4: only cache fresh successful meta-reviews.
     if !meta_from_cache && meta_v_status == Some(VerifierStatus::Pass) {
@@ -951,12 +1009,18 @@ async fn run_review_dag_inner(
     // pipeline output (no synthetic placeholders). Storage-bucket upload is
     // M3; on-disk paths suffice for the M1 assertions.
     let _ = paper_id; // not needed by the new render path
-    crate::cli_status::emit(format!("review {review_id}: rendering artifacts"));
+    crate::cli_status::emit_stage(5, 6, "Render", StatusMark::Run, "review artifacts");
     if let Err(e) = render_to_disk(state, review_id).await {
         tracing::warn!(%review_id, err = %e, "render_to_disk failed");
-        crate::cli_status::emit(format!("review {review_id}: render warning: {e:#}"));
+        crate::cli_status::emit_stage(
+            5,
+            6,
+            "Render",
+            StatusMark::Warn,
+            &format!("review artifacts: {e:#}"),
+        );
     } else {
-        crate::cli_status::emit(format!("review {review_id}: render complete"));
+        crate::cli_status::emit_stage(5, 6, "Render", StatusMark::Ok, "review artifacts written");
     }
 
         Ok(())
@@ -976,12 +1040,18 @@ async fn run_review_dag_inner(
             None,
         )
         .await;
+        crate::cli_status::emit_stage(
+            6,
+            6,
+            "Moderation",
+            StatusMark::Fail,
+            "review withdrawn after DAG failure",
+        );
         return Err(e);
     }
 
-    crate::cli_status::emit(format!(
-        "review {review_id}: awaiting_moderation; approve opens a PR, human merge publishes"
-    ));
+    crate::cli_status::emit_stage(6, 6, "Moderation", StatusMark::Ok, "awaiting moderation");
+    crate::cli_status::emit(format!("next: grokrxiv show {review_id}"));
     Ok(review_id)
 }
 
@@ -1126,6 +1196,48 @@ async fn verify_artifact(
 
 fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
     crate::review_dag::role_slug(role)
+}
+
+fn specialist_failure_output(role: grokrxiv_schemas::AgentRole, error: &str) -> serde_json::Value {
+    json!({
+        "error": error,
+        "role": role_slug(role),
+        "status": "agent_failed",
+    })
+}
+
+fn meta_failure_output(error: &str) -> serde_json::Value {
+    json!({
+        "summary": "Automated meta-review synthesis failed before producing a normal recommendation.",
+        "strengths": [],
+        "weaknesses": [
+            format!("Meta-reviewer failed: {error}"),
+        ],
+        "questions": [
+            "Please inspect the specialist outputs and rerun automated review after the CLI provider recovers.",
+        ],
+        "recommendation": "major_revision",
+        "confidence": 1.0,
+    })
+}
+
+fn role_status_label(role: grokrxiv_schemas::AgentRole) -> &'static str {
+    match role {
+        grokrxiv_schemas::AgentRole::Summary => "summary",
+        grokrxiv_schemas::AgentRole::TechnicalCorrectness => "technical correctness",
+        grokrxiv_schemas::AgentRole::Novelty => "novelty",
+        grokrxiv_schemas::AgentRole::Reproducibility => "reproducibility",
+        grokrxiv_schemas::AgentRole::Citation => "citation",
+        grokrxiv_schemas::AgentRole::MetaReviewer => "meta reviewer",
+    }
+}
+
+fn verifier_status_mark(status: Option<grokrxiv_schemas::VerifierStatus>) -> StatusMark {
+    match status {
+        Some(grokrxiv_schemas::VerifierStatus::Pass) => StatusMark::Ok,
+        Some(grokrxiv_schemas::VerifierStatus::Warn) => StatusMark::Warn,
+        Some(grokrxiv_schemas::VerifierStatus::Fail) | None => StatusMark::Fail,
+    }
 }
 
 #[cfg(feature = "grokrxiv-verifier")]
@@ -3531,6 +3643,33 @@ mod tests {
             quorum_passes(&statuses),
             "4-of-5 should clear the quorum; meta runs on the surviving four"
         );
+    }
+
+    #[test]
+    fn specialist_failure_output_records_role_and_error() {
+        use grokrxiv_schemas::AgentRole;
+        let output = specialist_failure_output(
+            AgentRole::Citation,
+            "CliRunner timed out after 120s for role Citation",
+        );
+        assert_eq!(
+            output["error"],
+            "CliRunner timed out after 120s for role Citation"
+        );
+        assert_eq!(output["role"], "citation");
+        assert_eq!(output["status"], "agent_failed");
+    }
+
+    #[test]
+    fn meta_failure_output_is_schema_valid_major_revision() {
+        let output = meta_failure_output("`claude` exited with Some(1)");
+        assert_eq!(output["recommendation"], "major_revision");
+        assert!(output["weaknesses"][0]
+            .as_str()
+            .unwrap()
+            .contains("`claude` exited"));
+        serde_json::from_value::<grokrxiv_schemas::MetaReview>(output)
+            .expect("synthetic meta-review should deserialize");
     }
 
     /// FP-RPT3b B2: lock the structured error payload shape so the

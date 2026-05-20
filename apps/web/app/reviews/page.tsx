@@ -231,8 +231,8 @@ async function ReviewsList({
           </p>
           <p>
             Try widening the search, removing the field filter, or{" "}
-            <Link href="/#upload" className="underline underline-offset-4">
-              upload a sample PDF
+            <Link href="/#sample-review" className="underline underline-offset-4">
+              run a sample preview
             </Link>{" "}
             from the homepage.
           </p>

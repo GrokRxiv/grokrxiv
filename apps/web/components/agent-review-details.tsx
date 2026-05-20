@@ -233,6 +233,7 @@ function CitationDetails({
   verifierNotes?: unknown | null;
 }) {
   const verifierEntries = citationVerifierEntries(verifierNotes);
+  const verifierIndex = citationVerifierIndex(verifierEntries);
   return (
     <div className="flex flex-col gap-4">
       <MetricGrid
@@ -249,7 +250,7 @@ function CitationDetails({
         <SectionTitle>Entries</SectionTitle>
         {review.entries.length > 0 ? (
           review.entries.map((entry, index) => {
-            const verifierEntry = verifierEntries[index] ?? null;
+            const verifierEntry = citationVerifierEntryFor(entry, verifierIndex);
             return (
               <div
                 key={`${entry.citation?.key ?? "citation"}-${index}`}
@@ -263,8 +264,21 @@ function CitationDetails({
                 </div>
                 <Field
                   label="Citation"
-                  value={formatCitation(entry.citation)}
+                  value={
+                    verifierEntry?.title ??
+                    formatCitation(entry.citation) ??
+                    verifierEntry?.citation_key ??
+                    null
+                  }
                   strong
+                />
+                <Field
+                  label="Verifier source"
+                  value={verifierEntry?.source ?? null}
+                />
+                <Field
+                  label="Verifier note"
+                  value={readableCitationReason(verifierEntry?.reason)}
                 />
                 <Field
                   label="Resolved DOI"
@@ -288,9 +302,17 @@ function CitationDetails({
 }
 
 type CitationVerifierEntry = {
+  raw: string | null;
   status: string | null;
   resolved_doi: string | null;
   resolved_url: string | null;
+  source: string | null;
+  reason: string | null;
+  title: string | null;
+  citation_key: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  url: string | null;
 };
 
 function citationVerifierEntries(
@@ -300,29 +322,134 @@ function citationVerifierEntries(
   const citation = recordField(root, "citation");
   const notes = citation ? recordField(citation, "notes") : null;
   return recordArrayField(notes ?? {}, "entries").map((entry) => ({
+    raw: stringField(entry, "raw"),
     status: stringField(entry, "status"),
     resolved_doi: stringField(entry, "resolved_doi"),
     resolved_url: stringField(entry, "resolved_url"),
+    source: stringField(entry, "source"),
+    reason: stringField(entry, "reason"),
+    title: stringField(entry, "title"),
+    citation_key: stringField(entry, "citation_key"),
+    doi: stringField(entry, "doi"),
+    arxiv_id: stringField(entry, "arxiv_id"),
+    url: stringField(entry, "url"),
   }));
+}
+
+type CitationVerifierIndex = Map<string, CitationVerifierEntry>;
+
+function citationVerifierIndex(
+  entries: CitationVerifierEntry[],
+): CitationVerifierIndex {
+  const index = new Map<string, CitationVerifierEntry>();
+  for (const entry of entries) {
+    addCitationVerifierKey(index, "key", entry.citation_key, entry);
+    addCitationVerifierKey(index, "doi", normalizeDoi(entry.doi), entry);
+    addCitationVerifierKey(index, "doi", normalizeDoi(entry.resolved_doi), entry);
+    addCitationVerifierKey(index, "arxiv", normalizeToken(entry.arxiv_id), entry);
+    addCitationVerifierKey(index, "url", normalizeToken(entry.url), entry);
+    addCitationVerifierKey(index, "url", normalizeToken(entry.resolved_url), entry);
+    addCitationVerifierKey(index, "title", normalizeTitle(entry.title), entry);
+    addCitationVerifierKey(index, "raw", normalizeTitle(entry.raw), entry);
+  }
+  return index;
+}
+
+function citationVerifierEntryFor(
+  entry: CitationReviewOutput["entries"][number],
+  index: CitationVerifierIndex,
+): CitationVerifierEntry | null {
+  const citation = entry.citation;
+  const candidates = [
+    ["key", citation?.key],
+    ["doi", normalizeDoi(citation?.doi)],
+    ["doi", normalizeDoi(entry.resolved_doi)],
+    ["arxiv", normalizeToken(citation?.arxiv_id)],
+    ["url", normalizeToken(citation?.url)],
+    ["url", normalizeToken(entry.resolved_url)],
+    ["title", normalizeTitle(citation?.title)],
+    ["raw", normalizeTitle(citation?.raw)],
+  ] as const;
+  for (const [kind, value] of candidates) {
+    if (!value) continue;
+    const match = index.get(`${kind}:${value}`);
+    if (match) return match;
+  }
+  return null;
+}
+
+function addCitationVerifierKey(
+  index: CitationVerifierIndex,
+  kind: string,
+  value: string | null,
+  entry: CitationVerifierEntry,
+) {
+  if (!value) return;
+  const key = `${kind}:${value}`;
+  if (!index.has(key)) index.set(key, entry);
+}
+
+function normalizeDoi(value?: string | null): string | null {
+  const normalized = normalizeToken(value)
+    ?.replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
+    .replace(/^doi:/, "");
+  return normalized || null;
+}
+
+function normalizeTitle(value?: string | null): string | null {
+  return value?.toLowerCase().replace(/\\s+/g, " ").trim() || null;
+}
+
+function normalizeToken(value?: string | null): string | null {
+  return value?.toLowerCase().trim() || null;
 }
 
 function citationStatusLabel(
   entry: CitationReviewOutput["entries"][number],
   verifierEntry: CitationVerifierEntry | null,
 ): string | null {
+  if (verifierEntry?.resolved_doi || verifierEntry?.resolved_url) {
+    return "verified";
+  }
   switch (verifierEntry?.status) {
     case "resolved":
       return "verified";
     case "unresolved":
-      return "missing";
+      return "not resolved";
+    case "unverified":
+      return "needs review";
     case "transient_unknown":
-      return "unverified";
+      return "temporarily unknown";
     case "malformed":
       return "malformed";
   }
   if (entry.exists === true) return "verified";
-  if (entry.exists === false) return "missing";
+  if (entry.exists === false) return "not resolved";
   return "unverified";
+}
+
+function readableCitationReason(reason?: string | null): string | null {
+  if (!reason) return null;
+  const lower = reason.toLowerCase();
+  if (
+    lower.includes("no bibliographic match above score threshold") ||
+    lower.includes("no match above score threshold")
+  ) {
+    return "Crossref bibliographic search did not find a strong match. This needs human review; it is not proof that the reference is fake.";
+  }
+  if (lower.includes("crossref status 404") && lower.includes("doi resolver status 404")) {
+    return "The DOI was not found by Crossref or the DOI resolver.";
+  }
+  if (lower.includes("crossref status 404")) {
+    return "Crossref does not have a matching record.";
+  }
+  if (lower.includes("doi resolver status 404")) {
+    return "The DOI resolver returned 404.";
+  }
+  if (lower.includes("not present in arxiv response")) {
+    return "The arXiv API did not return this identifier.";
+  }
+  return reason;
 }
 
 function MetaReviewerDetails({ review }: { review: MetaReview }) {

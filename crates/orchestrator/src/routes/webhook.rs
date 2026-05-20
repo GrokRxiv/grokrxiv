@@ -130,24 +130,13 @@ pub async fn github(
             .into_response();
     };
 
-    // Gate the revalidate call on actually flipping a DB row to `published`.
-    let mut updated = false;
-    if let Some(pool) = state.db.as_ref() {
-        match crate::db::set_review_status(
-            pool,
-            review_id,
-            grokrxiv_schemas::ReviewStatus::Published,
-            Some(chrono::Utc::now()),
-        )
-        .await
-        {
-            Ok(rows) if rows > 0 => updated = true,
-            Ok(_) => tracing::warn!(review_id = %review_id, "merge webhook: no review row updated"),
-            Err(e) => {
-                tracing::error!(err = %e, review_id = %review_id, "merge webhook: db update failed")
-            }
+    let updated = match finalize_published_review(&state, review_id).await {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(err = %e, review_id = %review_id, "merge webhook: publish finalizer failed");
+            false
         }
-    }
+    };
 
     if !updated {
         return (
@@ -156,8 +145,6 @@ pub async fn github(
         )
             .into_response();
     }
-
-    spawn_revalidate(&state, review_id);
 
     (
         StatusCode::OK,
@@ -396,6 +383,29 @@ fn spawn_rereview_for_correction(
         {
             Ok(new_review_id) => {
                 let _ = crate::db::mark_rereview_done(pool, request_id, new_review_id).await;
+                let _ = crate::db::set_review_status(
+                    pool,
+                    new_review_id,
+                    grokrxiv_schemas::ReviewStatus::PrOpen,
+                    None,
+                )
+                .await;
+                if let Some(pr_url) = pr_url.as_deref() {
+                    let _ = crate::db::set_review_github_pr_url(pool, new_review_id, pr_url).await;
+                }
+                let _ = crate::db::upsert_github_review_thread(
+                    pool,
+                    new_review_id,
+                    paper_id,
+                    &repo_owner,
+                    &repo_name,
+                    pr_number,
+                    pr_url.as_deref(),
+                    Some(head_ref.as_str()),
+                    Some(head_sha.as_str()),
+                )
+                .await;
+                crate::routes::webhook::spawn_revalidate(&state, new_review_id);
                 let _ = crate::db::insert_review_event(
                     pool,
                     Some(new_review_id),
@@ -731,10 +741,42 @@ fn rereview_gate_comment_body_for_test(
     .0
 }
 
+pub(crate) async fn finalize_published_review(
+    state: &crate::state::AppState,
+    review_id: uuid::Uuid,
+) -> anyhow::Result<bool> {
+    let Some(pool) = state.db.as_ref() else {
+        tracing::warn!(%review_id, "publish finalizer: DATABASE_URL not configured");
+        return Ok(false);
+    };
+    let current: Option<String> = sqlx::query_scalar("select status from reviews where id = $1")
+        .bind(review_id)
+        .fetch_optional(pool)
+        .await?;
+    if matches!(current.as_deref(), Some("published")) {
+        tracing::info!(%review_id, "publish finalizer: already published");
+        return Ok(false);
+    }
+    let rows = crate::db::set_review_status(
+        pool,
+        review_id,
+        grokrxiv_schemas::ReviewStatus::Published,
+        Some(chrono::Utc::now()),
+    )
+    .await?;
+    if rows > 0 {
+        spawn_revalidate(state, review_id);
+        Ok(true)
+    } else {
+        tracing::warn!(%review_id, "publish finalizer: no review row updated");
+        Ok(false)
+    }
+}
+
 /// Fire-and-forget POST to `WEB_REVALIDATE_URL` so the Next.js ISR cache flips
 /// the affected `/reviews/<id>` and `/` pages immediately. Used by both the
-/// merge webhook (after `pr_open → published`) and `grokrxiv approve` (after
-/// `awaiting_moderation → pr_open`). Silent no-op when the env isn't
+/// merge webhook and `grokrxiv approve` after `pr_open → published`.
+/// Silent no-op when the env isn't
 /// configured — never an error path for the caller.
 pub fn spawn_revalidate(state: &crate::state::AppState, review_id: uuid::Uuid) {
     let Some(url) = state.config.web_revalidate_url.as_deref() else {

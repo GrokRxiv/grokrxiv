@@ -344,6 +344,22 @@ explicitly with <code>grokrxiv serve</code>.</p>
 <code>grokrxiv</code> sets <code>GROKRXIV_ALLOW_PROVIDER_API=0</code> internally and removes provider
 API key env vars from local CLI children. Direct provider API calls are enabled
 only by explicit API selection.</p>
+<p>Docker runs the same CLI path. The orchestrator image installs <code>claude</code>,
+<code>codex</code>, and <code>gemini</code>; compose mounts local CLI auth read-only and the
+entrypoint copies only those auth bundles into <code>/home/grokrxiv</code> at startup.
+Hosted deploys should provide the same files as runtime secrets, not baked
+image layers.</p>
+<p>On macOS, Claude Code stores the usable OAuth credential in Keychain, not just
+<code>~/.claude.json</code>. Export that one item before starting Docker:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">security</span><span style="color:#9ECBFF"> find-generic-password</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> 'Claude Code-credentials'</span><span style="color:#79B8FF"> -w</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#F97583">  ></span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span>
+<span data-line=""><span style="color:#B392F0">chmod</span><span style="color:#79B8FF"> 600</span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span></code></pre></figure>
+<p>The compose mount exposes that file read-only, and the container entrypoint
+copies it to Claude Code's Linux credentials-file locations. Do not commit or
+print this file. Codex and Gemini are file-backed on this machine; compose
+mounts only <code>~/.codex/auth.json</code>, <code>~/.gemini/oauth_creds.json</code>, and
+<code>~/.gemini/google_accounts.json</code>. The entrypoint writes a minimal Gemini OAuth
+settings file inside the container so host MCP/trust settings are not copied.</p>
 <p>Review specialists run in parallel by default. Set
 <code>GROKRXIV_REVIEW_CONCURRENCY=1</code> for serial debugging, or set another positive
 integer to cap concurrent specialist CLI/API children.</p>
@@ -371,9 +387,16 @@ view. Secrets are redacted as <code>***</code> unless <code>--show-secrets</code
 <li>legacy arXiv id, e.g. <code>math-ph/0506010</code></li>
 <li>local PDF, e.g. <code>./paper.pdf</code>              (deferred — Track I follow-up)</li>
 <li>local LaTeX, e.g. <code>./paper.tex</code>            (deferred — Track I follow-up)</li>
+<li>git repository, e.g. <code>https://github.com/org/repo --type git --paper-path paper.tex</code></li>
+<li>git corpus, e.g. <code>https://github.com/org/repo --type git --corpus --scan-root papers</code></li>
 <li><code>-</code> to read from stdin                      (deferred — Track I follow-up)</li>
 <li><code>@&#x3C;path></code> to read a newline-delimited file of sources (recurses through this list)</li>
 </ul>
+<p>For corpus review, GrokRxiv scans for <code>.tex</code> and <code>.pdf</code>, de-duplicates
+matching TeX/PDF pairs, prefers TeX, and creates one review per manuscript:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --status</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#9ECBFF">  review</span><span style="color:#9ECBFF"> https://github.com/MagnetonIO/emergent_spacetime</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#79B8FF">  --type</span><span style="color:#9ECBFF"> git</span><span style="color:#79B8FF"> --rev</span><span style="color:#9ECBFF"> main</span><span style="color:#79B8FF"> --corpus</span><span style="color:#79B8FF"> --scan-root</span><span style="color:#9ECBFF"> papers/information-theory/src</span></span></code></pre></figure>
 <p>With <code>--json</code>, after the run we emit:</p>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span></span>
 <span data-line=""><span style="color:#79B8FF">  "arxiv_id"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"2605.12484"</span><span style="color:#E1E4E8">,</span></span>
@@ -485,7 +508,7 @@ wiring lands.</p>
 </ul>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-18T23:55:09.195Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-19T21:56:09.586Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

@@ -24,8 +24,8 @@ pub struct Config {
     /// User-Agent string used when talking to arXiv. Defaults to a stable
     /// string that includes the project contact.
     pub arxiv_user_agent: String,
-    /// Anthropic model name used by the single-pass `/preview` path. Overridable
-    /// via `PREVIEW_MODEL`; defaults to `claude-opus-4-7`.
+    /// Model name used by the single-pass `/preview` path. Overridable via
+    /// `GROKRXIV_PREVIEW_MODEL` (preferred) or legacy `PREVIEW_MODEL`.
     pub preview_model: String,
     /// Scheduler tuning (categories, backfill window, auto-review cutoff). The
     /// scheduler task uses this directly; the supervisor reads
@@ -46,7 +46,9 @@ impl Config {
             revalidate_secret: env::var("REVALIDATE_SECRET").ok(),
             arxiv_user_agent: env::var("ARXIV_USER_AGENT")
                 .unwrap_or_else(|_| "GrokRxiv/0.1 (mailto:mlong168@gmail.com)".into()),
-            preview_model: env::var("PREVIEW_MODEL").unwrap_or_else(|_| "claude-opus-4-7".into()),
+            preview_model: env::var("GROKRXIV_PREVIEW_MODEL")
+                .or_else(|_| env::var("PREVIEW_MODEL"))
+                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".into()),
             scheduler: SchedulerConfig::from_env(),
         }
     }

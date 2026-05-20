@@ -35,6 +35,7 @@ const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
 enum CitationLookupStatus {
     Resolved,
     Unresolved,
+    Unverified,
     TransientUnknown,
     Malformed,
 }
@@ -44,6 +45,7 @@ impl CitationLookupStatus {
         match self {
             Self::Resolved => "resolved",
             Self::Unresolved => "unresolved",
+            Self::Unverified => "unverified",
             Self::TransientUnknown => "transient_unknown",
             Self::Malformed => "malformed",
         }
@@ -53,7 +55,7 @@ impl CitationLookupStatus {
         match self {
             Self::Resolved => serde_json::Value::Bool(true),
             Self::Unresolved | Self::Malformed => serde_json::Value::Bool(false),
-            Self::TransientUnknown => serde_json::Value::Null,
+            Self::Unverified | Self::TransientUnknown => serde_json::Value::Null,
         }
     }
 }
@@ -92,6 +94,16 @@ impl CitationLookup {
         }
     }
 
+    fn unverified(source: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            status: CitationLookupStatus::Unverified,
+            resolved_doi: None,
+            resolved_url: None,
+            source,
+            reason: Some(reason.into()),
+        }
+    }
+
     fn unknown(source: &'static str, reason: impl Into<String>) -> Self {
         Self {
             status: CitationLookupStatus::TransientUnknown,
@@ -119,6 +131,8 @@ pub struct CitationVerifier {
     crossref_base: String,
     /// Base URL for arXiv id-list metadata queries (Atom feed).
     arxiv_base: String,
+    /// Base URL for DOI resolver fallback checks.
+    doi_resolver_base: String,
     cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
     /// Resolved bibliographic queries keyed by raw reference string.
     biblio_cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
@@ -136,6 +150,7 @@ impl CitationVerifier {
         Self {
             crossref_base: "https://api.crossref.org/works".to_string(),
             arxiv_base: "https://export.arxiv.org/api/query".to_string(),
+            doi_resolver_base: "https://doi.org".to_string(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -147,6 +162,7 @@ impl CitationVerifier {
         Self {
             crossref_base: crossref_base.into(),
             arxiv_base: "https://export.arxiv.org/api/query".to_string(),
+            doi_resolver_base: "https://doi.org".to_string(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -158,6 +174,22 @@ impl CitationVerifier {
         Self {
             crossref_base: crossref_base.into(),
             arxiv_base: arxiv_base.into(),
+            doi_resolver_base: "https://doi.org".to_string(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            biblio_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Construct a verifier with Crossref, arXiv, and DOI resolver bases overridden.
+    pub fn with_all_bases_and_doi(
+        crossref_base: impl Into<String>,
+        arxiv_base: impl Into<String>,
+        doi_resolver_base: impl Into<String>,
+    ) -> Self {
+        Self {
+            crossref_base: crossref_base.into(),
+            arxiv_base: arxiv_base.into(),
+            doi_resolver_base: doi_resolver_base.into(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -179,7 +211,13 @@ impl CitationVerifier {
                 Some(format!("https://doi.org/{doi}")),
             ),
             HttpLookup::Ok(status) if matches!(status.as_u16(), 400 | 404 | 410 | 422) => {
-                CitationLookup::unresolved("crossref", format!("crossref status {status}"))
+                self.resolve_doi_resolver(
+                    http,
+                    doi,
+                    format!("crossref status {status}"),
+                    matches!(status.as_u16(), 400 | 422),
+                )
+                .await
             }
             HttpLookup::Ok(status) => {
                 CitationLookup::unknown("crossref", format!("crossref status {status}"))
@@ -188,6 +226,49 @@ impl CitationVerifier {
         };
         if lookup.status != CitationLookupStatus::TransientUnknown {
             self.cache.lock().insert(url, lookup.clone());
+        }
+        lookup
+    }
+
+    async fn resolve_doi_resolver(
+        &self,
+        http: &reqwest::Client,
+        doi: &str,
+        crossref_reason: String,
+        malformed_on_missing: bool,
+    ) -> CitationLookup {
+        let url = format!("{}/{doi}", self.doi_resolver_base.trim_end_matches('/'));
+        let cache_key = format!("doi_resolver::{url}");
+        if let Some(v) = self.cache.lock().get(&cache_key).cloned() {
+            return v;
+        }
+        let lookup = match send_doi_with_retry(http, &url).await {
+            HttpLookup::Ok(status) if status.is_success() || status.is_redirection() => {
+                CitationLookup::resolved(
+                    "doi_resolver",
+                    Some(doi.to_string()),
+                    Some(format!("https://doi.org/{doi}")),
+                )
+            }
+            HttpLookup::Ok(status) if matches!(status.as_u16(), 400 | 404 | 410 | 422) => {
+                let reason = format!("{crossref_reason}; DOI resolver status {status}");
+                if malformed_on_missing {
+                    CitationLookup::malformed("doi_resolver", reason)
+                } else {
+                    CitationLookup::unresolved("doi_resolver", reason)
+                }
+            }
+            HttpLookup::Ok(status) => CitationLookup::unknown(
+                "doi_resolver",
+                format!("{crossref_reason}; DOI resolver status {status}"),
+            ),
+            HttpLookup::Err(err) => CitationLookup::unknown(
+                "doi_resolver",
+                format!("{crossref_reason}; DOI resolver error: {err}"),
+            ),
+        };
+        if lookup.status != CitationLookupStatus::TransientUnknown {
+            self.cache.lock().insert(cache_key, lookup.clone());
         }
         lookup
     }
@@ -297,9 +378,9 @@ impl CitationVerifier {
                         Some(format!("https://doi.org/{doi}")),
                     )
                 } else {
-                    CitationLookup::unresolved(
+                    CitationLookup::unverified(
                         "crossref_bibliographic",
-                        "no bibliographic match above score threshold",
+                        "not verified by Crossref bibliographic search; no match above score threshold",
                     )
                 }
             }
@@ -390,6 +471,7 @@ impl Verifier for CitationVerifier {
         // output before persisting.
         let mut total: u32 = 0;
         let mut unresolved: Vec<String> = Vec::new();
+        let mut unverified: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         let mut malformed: Vec<String> = Vec::new();
         let mut resolved_via_biblio: u32 = 0;
@@ -431,11 +513,24 @@ impl Verifier for CitationVerifier {
             match lookup.status {
                 CitationLookupStatus::Resolved => {}
                 CitationLookupStatus::Unresolved => unresolved.push(c.raw.clone()),
+                CitationLookupStatus::Unverified => unverified.push(c.raw.clone()),
                 CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
                 CitationLookupStatus::Malformed => malformed.push(c.raw.clone()),
             }
+            let citation_key = citation_key_from_raw(&c.raw);
+            let display_title = c.title.clone().or_else(|| bib_field(&c.raw, "title"));
+            let display_year = bib_field(&c.raw, "year").or_else(|| bib_field(&c.raw, "date"));
+            let display_author = bib_field(&c.raw, "author");
+            let display_url = bib_field(&c.raw, "url");
             entries.push(json!({
                 "raw": c.raw,
+                "citation_key": citation_key,
+                "title": display_title,
+                "author": display_author,
+                "year": display_year,
+                "doi": c.doi.clone(),
+                "arxiv_id": c.arxiv_id.clone(),
+                "url": display_url,
                 "exists": lookup.status.exists_value(),
                 "status": lookup.status.as_str(),
                 "resolved_doi": lookup.resolved_doi,
@@ -451,14 +546,16 @@ impl Verifier for CitationVerifier {
                 notes: json!({ "checked": 0, "entries": [] }),
             };
         }
-        let definitive_total = total.saturating_sub(unknown.len() as u32);
+        let definitive_total = total
+            .saturating_sub(unknown.len() as u32)
+            .saturating_sub(unverified.len() as u32);
         let definitive_bad = unresolved.len() + malformed.len();
         let frac = if definitive_total == 0 {
             0.0
         } else {
             definitive_bad as f32 / definitive_total as f32
         };
-        let status = if definitive_bad == 0 && unknown.is_empty() {
+        let status = if definitive_bad == 0 && unknown.is_empty() && unverified.is_empty() {
             VerifierStatus::Pass
         } else if frac > FAIL_FRACTION {
             VerifierStatus::Fail
@@ -470,6 +567,7 @@ impl Verifier for CitationVerifier {
             notes: json!({
                 "checked": total,
                 "unresolved": unresolved,
+                "unverified": unverified,
                 "unknown": unknown,
                 "malformed": malformed,
                 "unresolved_fraction": frac,
@@ -500,6 +598,37 @@ async fn send_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..2 {
         match http.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if is_transient_status(status) && attempt == 0 {
+                    last_err = Some(format!("status {status}"));
+                    continue;
+                }
+                return HttpLookup::Ok(status);
+            }
+            Err(err) => {
+                last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+        }
+    }
+    HttpLookup::Err(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        match http
+            .get(url)
+            .header(
+                "accept",
+                "application/vnd.citationstyles.csl+json, application/json;q=0.9, */*;q=0.1",
+            )
+            .send()
+            .await
+        {
             Ok(response) => {
                 let status = response.status();
                 if is_transient_status(status) && attempt == 0 {
@@ -634,6 +763,91 @@ fn top_doi_if_scored(body: &serde_json::Value, min_score: f64) -> Option<String>
     item.get("DOI")?.as_str().map(str::to_string)
 }
 
+fn citation_key_from_raw(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        if let Some((_, after_open)) = rest.split_once('{') {
+            let key = after_open.split(',').next().unwrap_or_default().trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    if let Some((key, _)) = trimmed.split_once(':') {
+        let key = key.trim();
+        if !key.is_empty()
+            && key.len() <= 96
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Some(key.to_string());
+        }
+    }
+    None
+}
+
+fn bib_field(raw: &str, field: &str) -> Option<String> {
+    let idx = raw
+        .find(&format!("{field} ="))
+        .or_else(|| raw.find(&format!("{field}=")))?;
+    let after_equals = raw[idx..].split_once('=')?.1.trim_start();
+    let (value, _) = parse_bib_value(after_equals)?;
+    let cleaned = clean_bib_text(&value);
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn parse_bib_value(input: &str) -> Option<(String, usize)> {
+    let mut chars = input.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '{' {
+        let mut depth = 1usize;
+        let start = 1usize;
+        for (idx, ch) in chars {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some((input[start..idx].to_string(), idx + ch.len_utf8()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+    if first == '"' {
+        let start = 1usize;
+        for (idx, ch) in chars {
+            if ch == '"' {
+                return Some((input[start..idx].to_string(), idx + ch.len_utf8()));
+            }
+        }
+        return None;
+    }
+    let value = input
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((value, input.find(',').unwrap_or(input.len())))
+}
+
+fn clean_bib_text(value: &str) -> String {
+    value
+        .replace("{{", "")
+        .replace("}}", "")
+        .replace('{', "")
+        .replace('}', "")
+        .replace("\\\"", "\"")
+        .replace("\\'", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,8 +897,17 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/doi/10.bad/doi"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
 
-        let v = CitationVerifier::with_bases(format!("{}/works", server.uri()));
+        let v = CitationVerifier::with_all_bases_and_doi(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+        );
         let paper = paper_with(vec![
             Citation {
                 raw: "Good".into(),
@@ -708,6 +931,48 @@ mod tests {
         // 50% unresolved > 30% → Fail.
         assert!(matches!(r.status, VerifierStatus::Fail));
         assert_eq!(r.notes["checked"], 2);
+    }
+
+    #[tokio::test]
+    async fn doi_crossref_miss_falls_back_to_doi_resolver() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works/10.datacite/example"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/doi/10.datacite/example"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_all_bases_and_doi(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+        );
+        let paper = paper_with(vec![Citation {
+            raw: "Repository DOI".into(),
+            doi: Some("10.datacite/example".into()),
+            arxiv_id: None,
+            title: Some("Repository DOI".into()),
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext {
+            paper: &paper,
+            http: &http,
+        };
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["source"], "doi_resolver");
+        assert_eq!(
+            r.notes["entries"][0]["resolved_url"],
+            "https://doi.org/10.datacite/example"
+        );
     }
 
     #[test]
@@ -826,7 +1091,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bibliographic_query_below_threshold_stays_unresolved() {
+    async fn bibliographic_query_below_threshold_is_unverified_not_missing() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/works"))
@@ -854,14 +1119,19 @@ mod tests {
             http: &http,
         };
         let r = v.verify(&json!({}), &ctx).await;
-        // 100% unresolved → Fail.
+        // Crossref bibliographic search is not a definitive existence proof.
+        // A weak/noisy top hit should ask for human review, not mark the
+        // reference as missing or fail the gate by itself.
         assert!(
-            matches!(r.status, VerifierStatus::Fail),
+            matches!(r.status, VerifierStatus::Warn),
             "got {:?}",
             r.status
         );
         assert_eq!(r.notes["resolved_via_bibliographic_query"], 0);
-        assert_eq!(r.notes["unresolved"].as_array().unwrap().len(), 1);
+        assert_eq!(r.notes["unresolved"].as_array().unwrap().len(), 0);
+        assert_eq!(r.notes["unverified"].as_array().unwrap().len(), 1);
+        assert_eq!(r.notes["entries"][0]["status"], "unverified");
+        assert_eq!(r.notes["entries"][0]["exists"], serde_json::Value::Null);
     }
 
     #[test]

@@ -13,5 +13,5 @@ verifiers:
   - tone
   - citation_existence
 max_retries: 2
-timeout_secs: 180
+timeout_secs: 600
 escalation: human

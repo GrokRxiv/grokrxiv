@@ -249,9 +249,19 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td>User-Agent string for arXiv</td>
 </tr>
 <tr>
-<td><code>PREVIEW_MODEL</code></td>
-<td><code>claude-opus-4-7</code></td>
-<td>Default Claude model id</td>
+<td><code>GROKRXIV_PREVIEW_PROVIDER</code></td>
+<td><code>gemini</code></td>
+<td>CLI provider used by homepage sample previews</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_PREVIEW_MODEL</code></td>
+<td><code>gemini-3-flash-preview</code></td>
+<td>Model used by homepage sample previews; legacy <code>PREVIEW_MODEL</code> is still accepted by the binary</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_PREVIEW_TIMEOUT_SECS</code></td>
+<td><code>120</code></td>
+<td>Single-pass sample preview timeout</td>
 </tr>
 <tr>
 <td><code>ADMIN_TOKEN</code></td>
@@ -396,6 +406,36 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td>Meta-review synthesis model; same role as <code>--model-for meta_reviewer=...</code></td>
 </tr>
 <tr>
+<td><code>GROKRXIV_SUMMARY_TIMEOUT_SECS</code></td>
+<td><code>90</code></td>
+<td>CLI subprocess timeout for the summary role</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS</code></td>
+<td><code>600</code></td>
+<td>CLI subprocess timeout for the technical correctness role</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_NOVELTY_TIMEOUT_SECS</code></td>
+<td><code>360</code></td>
+<td>CLI subprocess timeout for the novelty role</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_REPRODUCIBILITY_TIMEOUT_SECS</code></td>
+<td><code>240</code></td>
+<td>CLI subprocess timeout for the reproducibility role</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_CITATION_TIMEOUT_SECS</code></td>
+<td><code>360</code></td>
+<td>CLI subprocess timeout for the citation role</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_META_REVIEWER_TIMEOUT_SECS</code></td>
+<td><code>300</code></td>
+<td>CLI subprocess timeout for the meta reviewer role</td>
+</tr>
+<tr>
 <td><code>GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES</code></td>
 <td><code>32</code></td>
 <td>Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data</td>
@@ -414,6 +454,16 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>GROKRXIV_DOCKER_INSTALL_PANDOC</code></td>
 <td><code>1</code></td>
 <td>docker-compose build arg. Set <code>0</code> before build to omit Pandoc from the orchestrator image</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_DOCKER_INSTALL_AGENT_CLIS</code></td>
+<td><code>1</code></td>
+<td>docker-compose build arg. Installs Claude, Codex, and Gemini CLIs into the orchestrator image</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_ORCHESTRATOR_PLATFORM</code></td>
+<td><code>linux/arm64</code></td>
+<td>Local Docker platform for orchestrator; set <code>linux/amd64</code> only when ARM is unavailable</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_TEX_ENABLE_LATEXML</code></td>
@@ -497,7 +547,7 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 </tr>
 <tr>
 <td><code>GROKRXIV_CLI_TIMEOUT_SECS</code></td>
-<td>Per-call timeout in the CLI runner</td>
+<td>Global per-call timeout in the CLI runner. Role-specific <code>GROKRXIV_&#x3C;ROLE>_TIMEOUT_SECS</code> vars take precedence</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_CITATION_REVIEW_DETERMINISTIC</code></td>
@@ -512,6 +562,17 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <p>When the resolved runtime is <code>--runner cli --extractor cli</code>, GrokRxiv removes
 provider API key env vars from child <code>claude</code> / <code>codex</code> / <code>gemini</code> processes so
 those CLIs use their own logged-in local auth instead of inherited API keys.</p>
+<p>For Docker on macOS, export Claude Code's Keychain-backed OAuth item into a
+restricted file before starting compose:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">security</span><span style="color:#9ECBFF"> find-generic-password</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> 'Claude Code-credentials'</span><span style="color:#79B8FF"> -w</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#F97583">  ></span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span>
+<span data-line=""><span style="color:#B392F0">chmod</span><span style="color:#79B8FF"> 600</span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span></code></pre></figure>
+<p>The orchestrator entrypoint copies that file into Claude Code's Linux
+credentials paths inside <code>/home/grokrxiv</code>. Codex uses <code>~/.codex/auth.json</code>.
+Gemini uses <code>~/.gemini/oauth_creds.json</code> plus
+<code>~/.gemini/google_accounts.json</code>; the entrypoint writes a minimal container
+<code>settings.json</code> selecting OAuth personal auth instead of copying host MCP/trust
+settings.</p>
 <h2 id="cloud-runner"><a class="anchor" aria-label="anchor" href="#cloud-runner">#</a>Cloud runner</h2>
 <table>
 <thead>
@@ -669,7 +730,7 @@ enabled in <code>supabase/config.toml</code>, but routes it to the local Mailpit
 container instead of Mailgun.</p>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-19T14:37:34.482Z &middot; grokrxiv</p>
+<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-20T02:20:08.644Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

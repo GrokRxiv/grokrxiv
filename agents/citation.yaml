@@ -12,5 +12,5 @@ verifiers:
   - json_schema
   - citation_existence
 max_retries: 2
-timeout_secs: 120
+timeout_secs: 360
 escalation: human

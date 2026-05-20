@@ -51,6 +51,22 @@ entrypoint copies only those auth bundles into `/home/grokrxiv` at startup.
 Hosted deploys should provide the same files as runtime secrets, not baked
 image layers.
 
+On macOS, Claude Code stores the usable OAuth credential in Keychain, not just
+`~/.claude.json`. Export that one item before starting Docker:
+
+```sh
+security find-generic-password -s 'Claude Code-credentials' -w \
+  > ~/.claude/docker-claude-code-credentials.secret
+chmod 600 ~/.claude/docker-claude-code-credentials.secret
+```
+
+The compose mount exposes that file read-only, and the container entrypoint
+copies it to Claude Code's Linux credentials-file locations. Do not commit or
+print this file. Codex and Gemini are file-backed on this machine; compose
+mounts only `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, and
+`~/.gemini/google_accounts.json`. The entrypoint writes a minimal Gemini OAuth
+settings file inside the container so host MCP/trust settings are not copied.
+
 Review specialists run in parallel by default. Set
 `GROKRXIV_REVIEW_CONCURRENCY=1` for serial debugging, or set another positive
 integer to cap concurrent specialist CLI/API children.

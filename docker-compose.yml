@@ -30,6 +30,9 @@ name: grokrxiv
 
 services:
   orchestrator:
+    # Prefer native ARM on Apple Silicon. If a dependency/image is unavailable
+    # for ARM, set GROKRXIV_ORCHESTRATOR_PLATFORM=linux/amd64.
+    platform: "${GROKRXIV_ORCHESTRATOR_PLATFORM:-linux/arm64}"
     build:
       context: .
       dockerfile: infra/docker/orchestrator.Dockerfile
@@ -49,6 +52,7 @@ services:
       GROKRXIV_DATA_REPO_PATH: "${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}"
       GROKRXIV_RUNNER: "${GROKRXIV_RUNNER:-cli}"
       GROKRXIV_EXTRACTOR: "${GROKRXIV_EXTRACTOR:-cli}"
+      GROKRXIV_DISABLE_SCHEDULER: "${GROKRXIV_DISABLE_SCHEDULER:-0}"
       GROKRXIV_ALLOW_PROVIDER_API: "${GROKRXIV_ALLOW_PROVIDER_API:-0}"
       GROKRXIV_REQUIRE_CLI_AUTH: "${GROKRXIV_REQUIRE_CLI_AUTH:-1}"
       GROKRXIV_SUMMARY_MODEL: "${GROKRXIV_SUMMARY_MODEL:-claude-haiku-4-5-20251001}"
@@ -57,6 +61,16 @@ services:
       GROKRXIV_REPRODUCIBILITY_MODEL: "${GROKRXIV_REPRODUCIBILITY_MODEL:-gpt-5.5}"
       GROKRXIV_CITATION_MODEL: "${GROKRXIV_CITATION_MODEL:-gemini-3-flash-preview}"
       GROKRXIV_META_REVIEWER_MODEL: "${GROKRXIV_META_REVIEWER_MODEL:-claude-sonnet-4-6}"
+      GROKRXIV_SUMMARY_TIMEOUT_SECS: "${GROKRXIV_SUMMARY_TIMEOUT_SECS:-90}"
+      GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS: "${GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS:-600}"
+      GROKRXIV_NOVELTY_TIMEOUT_SECS: "${GROKRXIV_NOVELTY_TIMEOUT_SECS:-360}"
+      GROKRXIV_REPRODUCIBILITY_TIMEOUT_SECS: "${GROKRXIV_REPRODUCIBILITY_TIMEOUT_SECS:-240}"
+      GROKRXIV_CITATION_TIMEOUT_SECS: "${GROKRXIV_CITATION_TIMEOUT_SECS:-360}"
+      GROKRXIV_META_REVIEWER_TIMEOUT_SECS: "${GROKRXIV_META_REVIEWER_TIMEOUT_SECS:-300}"
+      GROKRXIV_PREVIEW_PROVIDER: "${GROKRXIV_PREVIEW_PROVIDER:-gemini}"
+      GROKRXIV_PREVIEW_MODEL: "${GROKRXIV_PREVIEW_MODEL:-gemini-3-flash-preview}"
+      GROKRXIV_PREVIEW_TIMEOUT_SECS: "${GROKRXIV_PREVIEW_TIMEOUT_SECS:-120}"
+      GROKRXIV_GEMINI_AUTH_TYPE: "${GROKRXIV_GEMINI_AUTH_TYPE:-oauth-personal}"
       # Local compose must not inherit paid provider API keys from the host
       # shell. Direct provider APIs are explicit opt-in for API-backend tests.
       ANTHROPIC_API_KEY: "${GROKRXIV_DOCKER_ANTHROPIC_API_KEY:-}"
@@ -73,7 +87,6 @@ services:
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-local-dev-secret}"
       WEB_REVALIDATE_URL: "http://web:3000/api/revalidate"
       REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
-      PREVIEW_MODEL: "${PREVIEW_MODEL:-claude-opus-4-7}"
       RUST_LOG: "info,grokrxiv_orchestrator=debug"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -87,9 +100,10 @@ services:
       # Provider CLI auth is mounted read-only, copied into /home/grokrxiv at
       # container startup, and never baked into the image.
       - ${HOME}/.claude.json:/run/secrets/grokrxiv-cli-auth/.claude.json:ro
-      - ${HOME}/.claude:/run/secrets/grokrxiv-cli-auth/.claude:ro
-      - ${HOME}/.codex:/run/secrets/grokrxiv-cli-auth/.codex:ro
-      - ${HOME}/.gemini:/run/secrets/grokrxiv-cli-auth/.gemini:ro
+      - ${HOME}/.claude/docker-claude-code-credentials.secret:/run/secrets/grokrxiv-cli-auth/.claude/docker-claude-code-credentials.secret:ro
+      - ${HOME}/.codex/auth.json:/run/secrets/grokrxiv-cli-auth/.codex/auth.json:ro
+      - ${HOME}/.gemini/oauth_creds.json:/run/secrets/grokrxiv-cli-auth/.gemini/oauth_creds.json:ro
+      - ${HOME}/.gemini/google_accounts.json:/run/secrets/grokrxiv-cli-auth/.gemini/google_accounts.json:ro
     healthcheck:
       test:
         [

@@ -181,7 +181,7 @@ async function DashboardPageContent() {
           <CardContent>
             <div className="flex flex-wrap gap-2">
               <Button asChild variant="outline">
-                <Link href="/#upload">Run sample preview</Link>
+                <Link href="/#sample-review">Run sample preview</Link>
               </Button>
               <Button asChild variant="ghost">
                 <Link href="/pricing">View pricing</Link>

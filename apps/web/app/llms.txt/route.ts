@@ -13,8 +13,8 @@ export function GET() {
 - Public reviews are moderated before publication
 - HTML, Markdown, LaTeX, and zip bundle per review
 
-## Upload a paper
-- URL: ${PUBLIC_URL}/#upload
+## Try a sample review
+- URL: ${PUBLIC_URL}/#sample-review
 - Endpoint: POST ${PUBLIC_URL}/api/upload (multipart/form-data, file=...)
 
 ## Example reviews

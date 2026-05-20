@@ -23,7 +23,7 @@ const TIERS = [
       "Rate-limited preview queue",
     ],
     cta: "Try sample preview",
-    href: "/#upload",
+    href: "/#sample-review",
   },
   {
     name: "Free account",

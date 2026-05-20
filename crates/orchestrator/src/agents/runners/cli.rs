@@ -25,7 +25,7 @@ use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
-use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
+use crate::runtime_config::{role_env_suffix, ALLOW_PROVIDER_API_ENV};
 use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
 
 /// FP-RPT3b B5: structured errors returned by `CliRunner::run`. Wrapped into
@@ -439,18 +439,20 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
     format!(
-        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
-         Read and follow these files only:\n\
-         - system.md: role instruction\n\
-         - prompt.md: role-specific task\n\
-         - review_input.json: canonical JSON artifact to review\n\
-         - schema.json: required output schema\n\n\
-         Return exactly one JSON object that validates against schema.json. \
-         Do not include prose, markdown fences, or extra properties.\n\n\
-         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
-         If you use local file tools, restrict them to the current directory and these files.",
-        role = role_slug(input.role),
-    )
+	        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
+	         Read and follow these files only:\n\
+	         - system.md: role instruction\n\
+	         - prompt.md: role-specific task\n\
+	         - review_input.json: canonical JSON artifact to review\n\
+	         - schema.json: required output schema\n\n\
+	         Return exactly one JSON object that validates against schema.json. \
+	         The first byte of stdout must be `{{` and the last byte must be `}}`. \
+	         Do not include prose, markdown fences, a plan, a strategy, a confirmation question, \
+	         or extra properties.\n\n\
+	         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
+	         If you use local file tools, restrict them to the current directory and these files.",
+	        role = role_slug(input.role),
+	    )
 }
 
 fn render_tool_prompt(
@@ -509,8 +511,6 @@ fn build_tool_command(
             prompt.to_string(),
             "--model".to_string(),
             spec.model.clone(),
-            "--approval-mode".to_string(),
-            "plan".to_string(),
             "-o".to_string(),
             "json".to_string(),
         ],
@@ -722,22 +722,34 @@ fn build_api_fallback_providers(
 }
 
 /// Resolve the subprocess timeout. Priority order:
-///   1. `GROKRXIV_CLI_TIMEOUT_SECS` env var (operator override).
-///   2. `spec.timeout_secs` from `agents/<role>.yaml`.
-///   3. `DEFAULT_CLI_TIMEOUT_SECS`.
-/// The env var stays a global escape hatch but no longer silently overrides
-/// the YAML's per-role budget.
+///   1. `GROKRXIV_<ROLE>_TIMEOUT_SECS` env var.
+///   2. `GROKRXIV_CLI_TIMEOUT_SECS` env var (global operator override).
+///   3. `spec.timeout_secs` from `agents/<role>.yaml`.
+///   4. `DEFAULT_CLI_TIMEOUT_SECS`.
+/// The global env var stays available, but slow roles can now be tuned without
+/// loosening every CLI call.
 fn cli_timeout_for(spec: &AgentSpec) -> Duration {
-    if let Some(secs) = std::env::var("GROKRXIV_CLI_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
+    if let Some(secs) = timeout_env_secs(&role_timeout_env_var(spec.role)) {
+        return Duration::from_secs(secs);
+    }
+    if let Some(secs) = timeout_env_secs("GROKRXIV_CLI_TIMEOUT_SECS") {
         return Duration::from_secs(secs);
     }
     if spec.timeout_secs > 0 {
         return Duration::from_secs(spec.timeout_secs.into());
     }
     Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
+}
+
+fn timeout_env_secs(key: &str) -> Option<u64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+}
+
+fn role_timeout_env_var(role: grokrxiv_schemas::AgentRole) -> String {
+    format!("GROKRXIV_{}_TIMEOUT_SECS", role_env_suffix(role))
 }
 
 /// Compose the per-CLI command. Pure: does not spawn anything. For codex it
@@ -799,17 +811,14 @@ fn build_command(
             // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
             // model output in `{"session_id": ..., "response": "<inner>",
             // "stats": {...}}` — `extract_json_text` unwraps that wrapper
-            // before schema validation. Without `-o json` gemini emits prose,
-            // which forces every CLI Gemini call into the corrective-retry
-            // path (B3). The prompt itself carries the `/grokrxiv-review`
-            // prefix so the model knows to emit only the role-schema JSON.
+            // before schema validation. Do not add `--approval-mode plan` here:
+            // plan mode makes Gemini return a strategy/confirmation prompt
+            // instead of the schema JSON for review roles.
             let args = vec![
                 "-p".to_string(),
                 provider_prompt.clone(),
                 "--model".to_string(),
                 spec.model.clone(),
-                "--approval-mode".to_string(),
-                "plan".to_string(),
                 "-o".to_string(),
                 "json".to_string(),
             ];
@@ -2093,23 +2102,47 @@ mod tests {
     /// state changes serial (parallel test threads share process env).
     #[test]
     fn cli_timeout_for_resolution_order() {
-        // 1. env var wins over everything.
+        // 1. per-role env var wins over everything.
+        {
+            let _guard = EnvVarGuard::set(&[
+                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", "77"),
+                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+            ]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.role = AgentRole::TechnicalCorrectness;
+            spec.timeout_secs = 999;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(77));
+        }
+        // 2. invalid/blank per-role env var is ignored.
+        {
+            let _guard = EnvVarGuard::set(&[
+                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", ""),
+                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+            ]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.role = AgentRole::TechnicalCorrectness;
+            spec.timeout_secs = 999;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+        }
+        // 3. global env var wins over YAML/spec.
         {
             let _guard = EnvVarGuard::set(&[("GROKRXIV_CLI_TIMEOUT_SECS", "42")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
-        // 2. no env var → spec wins over default.
+        // 4. no env var → spec wins over default.
         {
-            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let _guard =
+                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 120;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(120));
         }
-        // 3. no env var, spec=0 → falls back to default.
+        // 5. no env var, spec=0 → falls back to default.
         {
-            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let _guard =
+                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 0;
             assert_eq!(
@@ -2128,6 +2161,13 @@ mod tests {
         let built = build_tool_command(&r, &spec, "prompt", &workdir).expect("build command");
 
         assert_eq!(built.cwd.as_deref(), Some(workdir.as_path()));
+        assert!(
+            !built
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
+            "gemini extraction tool loop must not use plan mode; it must return tool-call JSON"
+        );
     }
 
     #[test]
@@ -2302,9 +2342,10 @@ mod tests {
             "missing --model <model> pair in {args:?}"
         );
         assert!(
-            args.windows(2)
+            !args
+                .windows(2)
                 .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
-            "missing --approval-mode plan pair in {args:?}"
+            "gemini review JSON calls must not use plan mode; it causes prose strategy output: {args:?}"
         );
 
         // A7 lock-in #2: `-o json` is set so gemini emits the

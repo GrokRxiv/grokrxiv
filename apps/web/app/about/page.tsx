@@ -26,7 +26,7 @@ const STAGES = [
   {
     n: "04",
     name: "Moderate",
-    body: "A human moderator reviews the report before it becomes public. Moderators can approve, reject, or request changes.",
+    body: "Reviews can appear as In Review while moderation is underway. Moderators approve, reject, or request changes before publication.",
   },
   {
     n: "05",

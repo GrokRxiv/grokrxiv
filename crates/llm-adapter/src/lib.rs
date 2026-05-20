@@ -362,11 +362,11 @@ impl ProviderConfig {
     pub fn from_env() -> Self {
         Self {
             http: None,
-            anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
-            google_api_key: std::env::var("GOOGLE_GENERATIVE_AI_API_KEY").ok(),
-            openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
-            vllm_base_url: std::env::var("VLLM_BASE_URL").ok(),
-            vllm_api_key: std::env::var("VLLM_API_KEY").ok(),
+            anthropic_api_key: nonblank_env("ANTHROPIC_API_KEY"),
+            google_api_key: nonblank_env("GOOGLE_GENERATIVE_AI_API_KEY"),
+            openai_api_key: nonblank_env("OPENAI_API_KEY"),
+            vllm_base_url: nonblank_env("VLLM_BASE_URL"),
+            vllm_api_key: nonblank_env("VLLM_API_KEY"),
         }
     }
 
@@ -381,6 +381,13 @@ impl ProviderConfig {
             )
         })
     }
+}
+
+fn nonblank_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Build a provider by short name (`"claude" | "gemini" | "openai" | "vllm"`).
@@ -429,6 +436,22 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn provider_config_ignores_blank_env_values() {
+        let prev = std::env::var("ANTHROPIC_API_KEY").ok();
+        std::env::set_var("ANTHROPIC_API_KEY", "   ");
+        let cfg = ProviderConfig::from_env();
+        match prev {
+            Some(value) => std::env::set_var("ANTHROPIC_API_KEY", value),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+
+        assert!(
+            cfg.anthropic_api_key.is_none(),
+            "blank ANTHROPIC_API_KEY must not be treated as a usable API credential"
+        );
     }
 
     #[test]

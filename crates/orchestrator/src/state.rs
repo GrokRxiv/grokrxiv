@@ -55,24 +55,27 @@ impl ProviderRegistry {
     /// Additional providers (OpenAI / Gemini / vLLM) are registered when their
     /// respective env vars are present.
     pub fn from_env() -> Option<Self> {
+        if std::env::var(ALLOW_PROVIDER_API_ENV).ok().as_deref() == Some("0") {
+            return None;
+        }
         let cfg = ProviderConfig::from_env();
         let mut by_name: HashMap<&'static str, Arc<dyn LLMProvider>> = HashMap::new();
-        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        if nonblank_env("ANTHROPIC_API_KEY").is_some() {
             if let Ok(p) = provider_by_name("claude", &cfg) {
                 by_name.insert("claude", p);
             }
         }
-        if std::env::var("OPENAI_API_KEY").is_ok() {
+        if nonblank_env("OPENAI_API_KEY").is_some() {
             if let Ok(p) = provider_by_name("openai", &cfg) {
                 by_name.insert("openai", p);
             }
         }
-        if std::env::var("GOOGLE_GENERATIVE_AI_API_KEY").is_ok() {
+        if nonblank_env("GOOGLE_GENERATIVE_AI_API_KEY").is_some() {
             if let Ok(p) = provider_by_name("gemini", &cfg) {
                 by_name.insert("gemini", p);
             }
         }
-        if std::env::var("VLLM_BASE_URL").is_ok() {
+        if nonblank_env("VLLM_BASE_URL").is_some() {
             if let Ok(p) = provider_by_name("vllm", &cfg) {
                 by_name.insert("vllm", p);
             }
@@ -83,6 +86,13 @@ impl ProviderRegistry {
             default,
         })
     }
+}
+
+fn nonblank_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Application state shared with every handler.
@@ -484,6 +494,12 @@ mod tests {
             std::env::set_var(&key, value);
             Self { key, prev }
         }
+
+        fn unset(key: String) -> Self {
+            let prev = std::env::var(&key).ok();
+            std::env::remove_var(&key);
+            Self { key, prev }
+        }
     }
 
     impl Drop for EnvVarGuard {
@@ -518,6 +534,31 @@ mod tests {
         let agent = registry.get(&AgentRole::Summary).expect("summary agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
+    }
+
+    #[test]
+    fn provider_registry_is_disabled_when_provider_api_guard_is_zero() {
+        let _allow = EnvVarGuard::set(ALLOW_PROVIDER_API_ENV.to_string(), "0");
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY".to_string(), "test-key");
+
+        assert!(
+            ProviderRegistry::from_env().is_none(),
+            "serve/preview must not register direct provider APIs when GROKRXIV_ALLOW_PROVIDER_API=0"
+        );
+    }
+
+    #[test]
+    fn provider_registry_ignores_blank_provider_keys() {
+        let _allow = EnvVarGuard::set(ALLOW_PROVIDER_API_ENV.to_string(), "1");
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY".to_string(), "   ");
+        let _openai = EnvVarGuard::unset("OPENAI_API_KEY".to_string());
+        let _google = EnvVarGuard::unset("GOOGLE_GENERATIVE_AI_API_KEY".to_string());
+        let _vllm = EnvVarGuard::unset("VLLM_BASE_URL".to_string());
+
+        assert!(
+            ProviderRegistry::from_env().is_none(),
+            "blank provider keys are not usable API credentials"
+        );
     }
 
     #[tokio::test]
