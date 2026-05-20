@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-20
 **Scope:** Deep review of the agent review harness and orchestration layer following the 2026-05-20 Part-A remediation merge, plus a framework / foundational-harness gap analysis for research-paper reviews at scale.
-**Status:** Roadmap — not implemented.
+**Status:** Tier 1 remediation branch — behavior-preserving supervisor decomposition first; foundation refactors deferred.
 
 ---
 
@@ -28,11 +28,11 @@ It's also one merge away from being a real framework.
 
 5. **Corrective retry actually mutates the system prompt.** `corrective_system_prompt(&system, &first_err)` differentiates `OutputFailureKind::SchemaValidation` from prose-wrap. Two tests pin the behaviour (`corrective_retry_changes_system_prompt_for_prose_wrapped_json`, `…_for_schema_failure`). The "model wrote prose, retry sends same prompt, model writes prose again" loop is broken.
 
-6. **Supervisor-level timeout wraps every `agent.run`.** `run_agent_with_supervisor_timeout` (supervisor.rs:3141) hard-caps each call at `spec.timeout_secs + 30`. Wedged runners stop hoarding semaphore slots.
+6. **Supervisor-level timeout wraps every `agent.run`.** `run_agent_with_supervisor_timeout` now lives with the review flow and hard-caps each call at `spec.timeout_secs + 30`. Wedged runners stop hoarding semaphore slots.
 
 7. **CLI subprocess `kill_on_drop(true)`** plus process-group kill on timeout (`72ae2b5`). A wedged claude/codex/gemini subprocess actually dies instead of leaking.
 
-8. **Publish-after-approval idempotency via `publish_inflight: Mutex<HashSet<Uuid>>`.** Second click logs `"publish job already in flight"` and returns `Ok(())` without enqueueing. Cleanup on enqueue failure. Test at `supervisor.rs:3307`.
+8. **Publish-after-approval idempotency via `publish_inflight: Mutex<HashSet<Uuid>>`.** Second click logs `"publish job already in flight"` and returns `Ok(())` without enqueueing. Cleanup on enqueue failure.
 
 9. **PR-open reconcile loop** spawns from `serve.rs:60`, polls every 300s, walks `list_pr_open_reviews_with_urls`, queries GitHub via octocrab, calls the existing `finalize_published_review`. Reconcile stats logged per pass.
 
@@ -62,7 +62,7 @@ It's also one merge away from being a real framework.
 
 6. **The CLI smoke gate checks `verifier_status` per agent, not `gate_verdict`.** Today's smoke passes the gate ("6/6 pass") even though `gate_verdict: "fail"`. That's correct as a regression test — it's "the harness ran" not "the review's verdict was accept" — but operators reading the file might mistake `gate_verdict: fail` for a regression. Worth a one-line comment in the JSON or rename `gate_verdict` to `meta_recommendation_gate`.
 
-7. **`supervisor.rs` grew from 3,524 → 4,472 lines.** The remediation added ~950 lines net. The file is moving in the wrong direction for legibility. The split-by-concern idea from the original review (dag/prompts/merges/cache/verify modules) is more urgent now than two weeks ago.
+7. **`supervisor.rs` had become the immediate maintainability blocker.** The file mixed queue dispatch, review orchestration, prompt construction, verifier handling, fact merges, rendering, and publishing. The Tier 1 remediation is a behavior-preserving decomposition into private `supervisor/` modules, not a new DAG runtime.
 
 ---
 
@@ -86,7 +86,7 @@ These are now demonstrably framework-shaped:
 Severity-tagged. **B** = blocker for non-arXiv domains. **S** = scaling concern at >100 reviews/day.
 
 ### **B1. `AgentRole` is still a 6-variant enum in `grokrxiv_schemas`.**
-Adding `triage`, `ethics`, `statistical_methodology`, `computational_chemistry` still requires touching the enum, the migration (CHECK constraint at `init.sql:70`), `role_slug`, `role_sort_key`, `ROLE_FILES`, `parse_role_slug`, plus per-role code paths in `supervisor.rs` (system prompt, merge functions, prompt builder). The remediation kept the enum. Roles are still code, not config.
+Adding `triage`, `ethics`, `statistical_methodology`, `computational_chemistry` still requires touching the enum, the migration (CHECK constraint at `init.sql:70`), `role_slug`, `role_sort_key`, `ROLE_FILES`, `parse_role_slug`, plus per-role code paths in the supervisor modules. The remediation kept the enum. Roles are still code, not config.
 
 ### **B2. `PaperExtract` is the only `Artifact` the harness knows.**
 70+ call sites take `&PaperExtract`. `specialist_facts.rs` (821 lines, untouched today) is hard-typed against paper structure. `VerifierContext.paper: &PaperExtract`. `ExtractionContext.extract: &PaperExtract`. Switching to "review a code repo" or "review a dataset" requires a typed-trait abstraction or a wide refactor.
@@ -94,11 +94,11 @@ Adding `triage`, `ethics`, `statistical_methodology`, `computational_chemistry` 
 ### **B3. `review_dag.rs` is still decorative.**
 340 lines, zero commits today. The executor still walks `specialist_roles` manually. `ReviewDag::canonical()` is built and validated at runtime, then ignored. The whole "different review topologies per project" story needs the executor to actually drive `ReviewDag`.
 
-### **B4. `build_specialist_prompt` (~280 lines in `supervisor.rs`) is hardcoded paper-domain scaffolding.**
+### **B4. `build_specialist_prompt` is hardcoded paper-domain scaffolding.**
 "Paper title / Abstract / Section headings / Paper body / Citation contexts / Bibliography / Verified availability facts / Verified prior-art candidates / Verified structural facts." Right for arXiv, wrong for anything else. A foundation needs `RoleSpec.render_prompt(&Artifact, &Facts) -> String` per role.
 
 ### **B5. `is_code_amenable_field`, `body_budget_chars`, proof-as-code system-prompt mutation.**
-All in `supervisor.rs`, all hardcoded to arXiv field prefixes. A bio/clinical/legal/RFP review pipeline would inherit these inappropriately.
+These are now isolated in `supervisor/prompts.rs`, but they remain hardcoded to arXiv field prefixes. A bio/clinical/legal/RFP review pipeline would inherit these inappropriately until roles and prompt templates become runtime config.
 
 ### **B6. ingest crate is `arxiv_id → PaperExtract`.**
 No source-adapter trait. `crates/ingest/src/source.rs` already added local-PDF + git-repo paths (per yesterday's `2b85331` checkpoint merge), but they all converge on `PaperExtract`. A real adapter trait would let "ingest" be a registry.
@@ -135,88 +135,43 @@ There's no `tenant_id` on any table I can see. The current model assumes one ope
 
 ---
 
-## Refactor path — three moves, then you're a framework
+## Tiered remediation path
 
-These supersede the prior R1/R2/R3 with today's state as the baseline. Effort estimates are post-remediation (the supervisor is cleaner now; some of the work is already partially done).
+### **Tier 1. Behavior-preserving supervisor decomposition**
 
-### **R1. Roles become runtime config (B1 + B4 + B5 + S2 + S3 + S4).**
+This is the immediate remediation. Keep the runtime behavior stable and split the old monolithic supervisor into focused private modules:
 
-Replace the `AgentRole` enum with a runtime-loaded role registry. `RoleSpec` carries everything a role needs:
+- `supervisor/review_flow.rs` owns the current specialist -> verifier -> quorum -> meta-review -> render sequence.
+- `supervisor/prompts.rs`, `verification.rs`, and `merge_facts.rs` isolate prompt construction, verifier plumbing, and deterministic fact overlays.
+- `supervisor/rendering.rs`, `publish.rs`, and `jobs.rs` isolate artifact rendering, publish/reconcile helpers, and queue/worker dispatch.
+- `supervisor.rs` remains the public entrypoint for `Supervisor`, public wrappers, module declarations, and shared glue.
 
-```rust
-struct RoleSpec {
-  id: String,                        // "summary" | "stats_methodology" | "ethics"
-  display_name: String,
-  prompt_template: PromptTemplate,   // tera/handlebars; renders against Artifact + Facts
-  system_prompt: String,             // also templatable
-  schema: Arc<Value>,
-  verifiers: Vec<VerifierConfig>,    // declared, not hardcoded
-  facts: Vec<FactPluginRef>,         // per-role deterministic fact gathering
-  budget: CostBudget,                // per-role $cap + token cap (S2)
-  escalation: Option<EscalationRule>,// "if confidence < X, escalate to model Y" (S3)
-  profile: Option<Profile>,          // overlay (S4)
-  spec: AgentSpec,                   // provider/model/runner/timeout
-}
-```
+Do not make YAML DAG topology executable in this tier. Do not add migrations. Do not change role schemas, cache semantics, verifier semantics, publish behavior, or CLI smoke expectations.
 
-DB: `review_agents.role` becomes `text` (CHECK constraint dropped or expanded with a registry-aware migration). Supervisor's role-keyed `HashMap<AgentRole, _>` becomes `HashMap<String, RoleSpec>`. Adding a new reviewer = add `agents/<role>.yaml` + `schemas/<role>.schema.json` + `prompts/<role>.md`. No code change, no migration.
+### **Tier 2. Role and prompt registry**
 
-This also fixes the dormant `AgentRole::Render` placeholder (Render becomes one role registry entry, with its own schema, no enum collision).
+After the supervisor split is stable, move role-specific prompt/schema/fact configuration out of code. Keep this as a separate branch because it affects `AgentRole`, schema lookup, DB role constraints, prompt rendering, and cache identity.
 
-**Effort: ~10-14 days. Unlocks everything downstream.**
+Deferred work:
 
-### **R2. `PaperExtract` → `Artifact` trait (B2 + B6 + S5).**
+- Runtime string-keyed roles / `RoleSpec`.
+- Prompt templates and fact-plugin configuration.
+- Prompt-hash or schema-id cache invalidation.
+- Per-role and per-review cost ceilings.
+- Escalation and reviewer profile support.
 
-```rust
-trait Artifact: Send + Sync {
-  fn kind(&self) -> &str;                         // "arxiv_paper" | "code_repo" | ...
-  fn id(&self) -> &str;
-  fn version(&self) -> u32;                        // S5: first-class versioning
-  fn primary_text(&self) -> Option<&str>;
-  fn structured(&self) -> &Value;
-  fn metadata(&self) -> &Map<String, Value>;
-  fn fact_inputs(&self) -> FactInputs;             // urls, citations, tables — what facts plugins read
-}
-```
+### **Tier 3. Artifact, DAG, and publishing foundation**
 
-`AgentInput.artifact: Arc<dyn Artifact>`. `VerifierContext.artifact: &dyn Artifact`. `specialist_facts.rs`'s `gather_*_facts` become role-config-attached `FactPlugin` impls instead of supervisor functions.
+Only after Tier 2 has a stable role boundary should the framework move beyond `PaperExtract` and the hardcoded review flow.
 
-DB: `artifacts` table with `kind` discriminator + `version`; `papers` becomes a view (or migrate via UNION); `reviews.paper_id → artifact_id + artifact_version`. Backwards-compat view for the existing UI.
+Deferred work:
 
-Source-adapter trait (B6) falls out of this naturally: `trait SourceAdapter { fn fetch(source_ref: &SourceRef) -> Box<dyn Artifact> }`.
-
-**Effort: ~8-12 days. Unlocks domain-portability.**
-
-### **R3. DAG composition driver (B3 + S3 + S8).**
-
-Make `review_dag.rs` the supervisor's actual executor. Each `ReviewNodeKind` becomes a handler trait:
-
-```rust
-trait NodeHandler {
-  async fn run(&self, ctx: &DagCtx, deps: &[NodeOutput]) -> NodeOutput;
-}
-```
-
-DAG topology is config:
-
-```yaml
-# dags/arxiv_review.yaml
-nodes:
-  - { id: prep, kind: prepare }
-  - { id: summary, kind: specialist, role: summary, depends: [prep] }
-  - { id: tc, kind: specialist, role: technical_correctness, depends: [prep] }
-  ...
-  - { id: tiebreaker, kind: conditional_specialist,
-      role: tiebreaker, run_if: "specialists_disagree({{tc.confidence}}, {{novelty.confidence}})",
-      depends: [tc, novelty] }
-  - { id: meta, kind: meta_reviewer, min_quorum: 3, depends: [...] }
-```
-
-Different projects (or different artifact kinds) = different DAG yamls. The "review-and-revise" path becomes a DAG with an `apply_revisions` node, not a hidden enum.
-
-Shadow-review and A/B (S8) become DAG configurations: run two parallel `specialist` nodes for the same role with different specs, compare outputs.
-
-**Effort: ~5-7 days. Unlocks per-project topologies, ensembles, escalation, A/B.**
+- `ReviewArtifact` or equivalent artifact abstraction.
+- Source adapter registry for arXiv, local PDF/TeX, git repos, and future domains.
+- Executable DAG/YAML runtime using `review_dag.rs` topology as the driver.
+- Audit bundle generation.
+- Tenant/RLS model.
+- OpenReview or other publish adapters.
 
 ## Stretch (not on the critical path but valuable at scale)
 
@@ -236,20 +191,15 @@ Shadow-review and A/B (S8) become DAG configurations: run two parallel `speciali
 
 ## Recommendations on sequencing
 
-1. **Close the three sidestepped items first.** They're cheap and prevent future confusion:
-   - Add `AgentRole::Render` enum variant + migration (1 day) so the placeholder is gone.
-   - Delete Cloud + LocalInference runners + enum variants (~1 day; recoverable from git).
-   - Document the `pr_kind: revision_needed` state machine in `schemas/review_bundle_metadata.schema.json` (2 hours).
+1. **Land Tier 1 first.** The current blocker is maintainability, not missing YAML execution. A behavior-preserving supervisor split gets most of the benefit with much less risk.
 
-2. **Split `supervisor.rs` into modules.** It's 4,472 lines. The dag/prompts/merges/cache/verify split from earlier reviews now has even more cause. Pure refactor, no behavior change. ~3 days.
+2. **Keep DAG/YAML as a later runtime change.** `review_dag.rs` can remain the topology reference while `review_flow.rs` executes today's pipeline. Turning topology into an executor should happen only after the base is stable.
 
-3. **Then commit to R1 (RoleSpec)**. It's the highest-leverage foundational move and is most disruptive to land — better to do it before the codebase grows further.
+3. **Do Tier 2 before broad artifact work.** Runtime roles and prompt/fact configuration are the highest-leverage foundation boundary. They also reduce the risk of making a generic artifact abstraction around hardcoded role behavior.
 
-4. **R2 and R3 can land after R1 in either order**, but R3 is faster (~1 week vs R2's ~2 weeks).
+4. **Pick a second domain before Tier 3.** Artifact and publish abstractions should be pulled by a real consumer, not invented speculatively.
 
-5. **Pick the framework's first second domain** before doing R1+R2+R3. Without a concrete second-domain consumer the abstractions will be speculative; with one (e.g., "review my company's RFCs" or "review research-grant proposals") every refactor decision has a forcing function.
-
-6. **Add an audit-bundle stage and a per-paper cost ceiling early in the foundation work**. Both are operator-facing scale features that pay back immediately, even without R1-R3, and they constrain how the foundation is designed.
+5. **Add audit and cost controls early in foundation work.** They are useful even inside the current arXiv-only pipeline and constrain later framework interfaces.
 
 ---
 
@@ -257,7 +207,7 @@ Shadow-review and A/B (S8) become DAG configurations: run two parallel `speciali
 
 The remediation closed the bleeding. The harness is now production-shaped: bounded workers, graceful shutdown, idempotent publish, real reconcile loop, honest cost telemetry, structured corrective retries, supervisor-level timeouts, subprocess cleanup. That's most of what "at scale" needs from a single-domain operational perspective.
 
-What's left for "foundational research-paper review framework at scale" is a clean separation between *configuration* (roles, prompts, DAGs, schemas, profiles) and *executor* (the supervisor that walks any DAG over any artifact through any runner). The runner is already there. The artifact and role aren't. Three focused refactors land the framework. Pick a second domain before starting them.
+What's left for "foundational research-paper review framework at scale" is a clean separation between *configuration* (roles, prompts, DAGs, schemas, profiles) and *executor* (the supervisor that walks a review topology over an artifact through configured runners). The runner is already close. Tier 1 keeps the working product stable while making the next boundaries visible. The artifact, role registry, executable DAG, audit, cost, tenant, and publish-adapter work should follow in separate branches.
 
 ---
 
