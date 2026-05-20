@@ -316,6 +316,12 @@ pub enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Refresh derived review metadata without rerunning agents.
+    #[command(name = "refresh-review", hide = true)]
+    RefreshReview {
+        /// UUID of the review to refresh.
+        review_id: Uuid,
+    },
 
     // ---------- moderation (admin) ----------
     /// Merge the reviewed publication PR and publish/revalidate the web output.
@@ -776,6 +782,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             format,
             out,
         } => render(review_id, format, out).await,
+        Command::RefreshReview { review_id } => refresh_review(review_id, json).await,
         Command::Approve { review_id, force } => approve(review_id, force, json).await,
         Command::RequestRevisions { review_id, notes } => {
             request_revisions(review_id, notes.as_deref(), json).await
@@ -2156,15 +2163,23 @@ async fn show(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             }
         }
         if let Some(summary) = citation_summary.as_ref() {
-            println!(
-                "citations   = checked={} not_resolved={} needs_review={} unknown={} malformed={} fail_fraction={:.3}",
-                summary.checked,
-                summary.unresolved,
-                summary.unverified,
-                summary.unknown,
-                summary.malformed,
-                summary.unresolved_fraction,
-            );
+            if summary.checked == 0 {
+                let coverage = summary.coverage_status.as_deref().unwrap_or("not_checked");
+                println!("citations   = {coverage} (checked=0)");
+                if let Some(reason) = summary.reason.as_deref() {
+                    println!("citation_reason = {}", truncate(reason, 220));
+                }
+            } else {
+                println!(
+                    "citations   = checked={} not_resolved={} needs_review={} unknown={} malformed={} fail_fraction={:.3}",
+                    summary.checked,
+                    summary.unresolved,
+                    summary.unverified,
+                    summary.unknown,
+                    summary.malformed,
+                    summary.unresolved_fraction,
+                );
+            }
             if !summary.evidence.is_empty() {
                 println!("citation checks needing review:");
                 for item in &summary.evidence {
@@ -3023,6 +3038,8 @@ async fn load_publication_gate_context(
 struct CitationVerifierSummary {
     verifier_status: Option<String>,
     checked: u64,
+    coverage_status: Option<String>,
+    reason: Option<String>,
     unresolved: u64,
     unverified: u64,
     unknown: u64,
@@ -3034,6 +3051,16 @@ struct CitationVerifierSummary {
 
 impl CitationVerifierSummary {
     fn to_markdown(&self) -> String {
+        if self.checked == 0 {
+            return format!(
+                "**Citation verifier:** not externally checked (checked=0). {}\n\n\
+                 Full evidence is in `{}`.",
+                self.reason.as_deref().unwrap_or(
+                    "No extracted bibliography entries were available for citation resolution."
+                ),
+                self.artifact_hint,
+            );
+        }
         let mut out = format!(
             "**Citation verifier:** checked={}, not_resolved={}, needs_review={}, unknown={}, malformed={}, fail_fraction={:.3}.\n\n\
              Full evidence is in `{}`.",
@@ -3367,6 +3394,14 @@ async fn citation_verifier_summary(
         .get("checked")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let coverage_status = citation_notes
+        .get("coverage_status")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let reason = citation_notes
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let entry_items: Vec<CitationEvidenceItem> = citation_notes
         .get("entries")
         .and_then(|v| v.as_array())
@@ -3452,6 +3487,8 @@ async fn citation_verifier_summary(
     Some(CitationVerifierSummary {
         verifier_status,
         checked,
+        coverage_status,
+        reason,
         unresolved,
         unverified,
         unknown,
@@ -3538,6 +3575,312 @@ async fn render(
     {
         let _ = (review_id, format, out);
         anyhow::bail!("render requires --features full (grokrxiv-render)")
+    }
+}
+
+async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("refresh-review: DATABASE_URL not configured"))?;
+
+    let citation_rows_repaired = repair_zero_checked_citation_agents(pool, review_id).await?;
+    let row: Option<(
+        Uuid,
+        Option<serde_json::Value>,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select r.paper_id, r.meta_review, r.github_pr_url, coalesce(p.source_kind, 'arxiv'), \
+                p.source_id, p.arxiv_id, p.source_metadata \
+         from reviews r join papers p on p.id = r.paper_id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((_, Some(meta_review), github_pr_url, source_kind, source_id, arxiv_id, metadata)) =
+        row
+    else {
+        anyhow::bail!("refresh-review: review {review_id} not found or missing meta_review");
+    };
+
+    let agent_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "select distinct on (role) role, output \
+         from review_agents \
+         where review_id = $1 and role <> 'meta_reviewer' \
+         order by role, created_at desc",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    if agent_rows.is_empty() {
+        anyhow::bail!("refresh-review: no specialist review_agents rows for {review_id}");
+    }
+    let specialists = serde_json::Value::Object(
+        agent_rows
+            .into_iter()
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+    );
+    let meta_input = serde_json::json!({ "specialists": specialists });
+    let source_hint =
+        refresh_revision_source_path_hint(&source_kind, source_id.as_deref(), &arxiv_id, &metadata);
+    let enriched = crate::revision_targets::enrich_meta_review(
+        meta_review.clone(),
+        &meta_input,
+        source_hint.as_deref(),
+    );
+    let meta_review_updated = enriched != meta_review;
+    if meta_review_updated {
+        crate::db::set_review_meta_review(pool, review_id, &enriched).await?;
+    }
+
+    let artifacts_refreshed = refresh_rendered_artifacts(&state, review_id).await?;
+    revalidate_best_effort(&state, review_id).await;
+    let github_feedback =
+        refresh_gate_feedback_comment(&state, pool, review_id, github_pr_url.as_deref()).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "review_id": review_id,
+                "citation_rows_repaired": citation_rows_repaired,
+                "meta_review_updated": meta_review_updated,
+                "artifacts_refreshed": artifacts_refreshed,
+                "github_feedback": github_feedback,
+            })
+        );
+    } else {
+        println!(
+            "refreshed={review_id} citation_rows_repaired={citation_rows_repaired} meta_review_updated={meta_review_updated} artifacts_refreshed={artifacts_refreshed} github_feedback={github_feedback}"
+        );
+    }
+    Ok(())
+}
+
+async fn repair_zero_checked_citation_agents(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> anyhow::Result<u64> {
+    let rows: Vec<(Uuid, Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
+        "select id, verifier_status, verifier_notes from review_agents where review_id = $1 and role = 'citation'",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    let mut repaired = 0u64;
+    for (agent_id, verifier_status, notes) in rows {
+        let Some(notes) = notes else {
+            continue;
+        };
+        if citation_checked_count(&notes) != Some(0) {
+            continue;
+        }
+        if verifier_status.as_deref() == Some("fail")
+            && citation_coverage_status(&notes).as_deref() == Some("not_checked")
+        {
+            continue;
+        }
+        let notes = annotate_zero_checked_citation_notes(notes);
+        sqlx::query(
+            "update review_agents set verifier_status = 'fail', verifier_notes = $2 where id = $1",
+        )
+        .bind(agent_id)
+        .bind(notes)
+        .execute(pool)
+        .await?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+fn citation_checked_count(notes: &serde_json::Value) -> Option<u64> {
+    notes
+        .get("citation")
+        .and_then(|v| v.get("notes"))
+        .or(Some(notes))
+        .and_then(|v| v.get("checked"))
+        .and_then(|v| v.as_u64())
+}
+
+fn citation_coverage_status(notes: &serde_json::Value) -> Option<String> {
+    notes
+        .get("citation")
+        .and_then(|v| v.get("notes"))
+        .or(Some(notes))
+        .and_then(|v| v.get("coverage_status"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn annotate_zero_checked_citation_notes(mut notes: serde_json::Value) -> serde_json::Value {
+    if let Some(citation) = notes
+        .get_mut("citation")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        citation.insert("status".to_string(), serde_json::json!("fail"));
+        let notes_value = citation
+            .entry("notes".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        annotate_citation_notes_object(notes_value);
+    } else {
+        annotate_citation_notes_object(&mut notes);
+    }
+    notes
+}
+
+fn annotate_citation_notes_object(notes: &mut serde_json::Value) {
+    let Some(obj) = notes.as_object_mut() else {
+        return;
+    };
+    obj.insert("checked".to_string(), serde_json::json!(0));
+    obj.insert(
+        "coverage_status".to_string(),
+        serde_json::json!("not_checked"),
+    );
+    obj.insert(
+        "reason".to_string(),
+        serde_json::json!(
+            "No extracted bibliography entries were available for external citation verification."
+        ),
+    );
+    obj.entry("entries".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+}
+
+fn refresh_revision_source_path_hint(
+    source_kind: &str,
+    source_id: Option<&str>,
+    arxiv_id: &str,
+    metadata: &serde_json::Value,
+) -> Option<String> {
+    if let Some(path) = metadata
+        .get("correction_source_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(path.to_string());
+    }
+    let stable_source_id = source_id.unwrap_or(arxiv_id);
+    let adapter = metadata.get("adapter").unwrap_or(&serde_json::Value::Null);
+    match source_kind {
+        "git_repo" => adapter
+            .get("paper_path")
+            .and_then(|v| v.as_str())
+            .map(Path::new)
+            .map(|path| correction_repo_path(stable_source_id, path)),
+        "local_file" => adapter
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(Path::new)
+            .map(|path| correction_repo_path(stable_source_id, path)),
+        "arxiv" => Some(correction_repo_path(
+            stable_source_id,
+            Path::new("paper.tex"),
+        )),
+        _ => None,
+    }
+}
+
+async fn refresh_rendered_artifacts(
+    state: &super::AppState,
+    review_id: Uuid,
+) -> anyhow::Result<bool> {
+    #[cfg(feature = "grokrxiv-render")]
+    {
+        super::supervisor::render_to_disk(state, review_id).await?;
+        Ok(true)
+    }
+    #[cfg(not(feature = "grokrxiv-render"))]
+    {
+        let _ = (state, review_id);
+        Ok(false)
+    }
+}
+
+async fn refresh_gate_feedback_comment(
+    state: &super::AppState,
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    github_pr_url: Option<&str>,
+) -> anyhow::Result<String> {
+    let Some(github_pr_url) = github_pr_url else {
+        return Ok("none".to_string());
+    };
+    let plan = match review_pr_close_plan(Some(github_pr_url)) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return Ok("skipped".to_string()),
+        Err(e) => {
+            tracing::warn!(%review_id, err = %e, "refresh-review: invalid GitHub PR URL");
+            return Ok("skipped_invalid_pr_url".to_string());
+        }
+    };
+    let (meta_review, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let body = if publication_gate.verdict == crate::review_gate::GateVerdict::Pass {
+        crate::github_feedback::gate_pass_comment_body(review_id, &publication_gate.recommendation)
+    } else {
+        let failure = crate::github_feedback::gate_failure_from_publication_gate(
+            review_id,
+            &publication_gate,
+            meta_review.as_ref(),
+        );
+        crate::github_feedback::gate_failure_comment_body(
+            review_id,
+            &publication_gate.recommendation,
+            &failure,
+        )
+    };
+
+    #[cfg(feature = "grokrxiv-publisher")]
+    {
+        let pr_number = i64::try_from(plan.pr_number)
+            .map_err(|_| anyhow::anyhow!("PR number does not fit i64: {}", plan.pr_number))?;
+        match crate::github_feedback::post_or_update_gate_feedback_comment(
+            state,
+            &plan.owner,
+            &plan.repo,
+            pr_number,
+            &format!("review-{review_id}"),
+            &body,
+        )
+        .await
+        {
+            Ok(Some(comment)) => {
+                if let Ok(comment_id) = i64::try_from(comment.comment_id) {
+                    let _ = crate::db::attach_gate_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                    let _ = crate::db::update_github_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                }
+                Ok("updated".to_string())
+            }
+            Ok(None) => Ok("skipped_no_token".to_string()),
+            Err(e) => {
+                tracing::warn!(%review_id, err = %e, "refresh-review: GitHub feedback comment failed");
+                Ok("failed".to_string())
+            }
+        }
+    }
+    #[cfg(not(feature = "grokrxiv-publisher"))]
+    {
+        let _ = (state, pool, plan, body);
+        Ok("skipped_no_publisher_feature".to_string())
     }
 }
 
@@ -6040,6 +6383,29 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             .expect("simulated PR URL is skipped")
             .is_none());
         assert!(review_pr_close_plan(Some("https://example.com/not-a-pr")).is_err());
+    }
+
+    #[test]
+    fn citation_summary_zero_checked_is_not_reviewed() {
+        let summary = CitationVerifierSummary {
+            verifier_status: Some("fail".to_string()),
+            checked: 0,
+            coverage_status: Some("not_checked".to_string()),
+            reason: Some(
+                "No extracted bibliography entries were available for external citation verification."
+                    .to_string(),
+            ),
+            unresolved: 0,
+            unverified: 0,
+            unknown: 0,
+            malformed: 0,
+            unresolved_fraction: 0.0,
+            evidence: vec![],
+            artifact_hint: "artifacts/review-id/bundle.zip agents/citation.json".to_string(),
+        };
+        let markdown = summary.to_markdown();
+        assert!(markdown.contains("not externally checked"));
+        assert!(!markdown.contains("fail_fraction=0.000"));
     }
 
     #[test]

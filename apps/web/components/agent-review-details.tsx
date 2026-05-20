@@ -237,14 +237,17 @@ function CitationDetails({
 }) {
   const verifierEntries = citationVerifierEntries(verifierNotes);
   const verifierIndex = citationVerifierIndex(verifierEntries);
+  const coverage = citationVerifierCoverage(verifierNotes);
   return (
     <div className="flex flex-col gap-4">
       <MetricGrid
         items={[
           ["Summary", review.summary],
           ["Confidence", formatNumber(review.confidence)],
+          ["External citation checks", coverage.label],
         ]}
       />
+      {coverage.reason ? <Field label="Citation coverage note" value={coverage.reason} /> : null}
       <MissingReferenceList
         title="Suggested missing prior art"
         items={review.missing_references}
@@ -318,12 +321,46 @@ type CitationVerifierEntry = {
   url: string | null;
 };
 
+type CitationVerifierCoverage = {
+  checked: number | null;
+  label: string;
+  reason: string | null;
+};
+
+function citationVerifierCoverage(
+  verifierNotes: unknown,
+): CitationVerifierCoverage {
+  const notes = citationVerifierNotes(verifierNotes);
+  const checked = notes ? numberField(notes, "checked") : null;
+  const coverageStatus = notes ? stringField(notes, "coverage_status") : null;
+  const reason = notes ? stringField(notes, "reason") : null;
+  if (checked === 0 || coverageStatus === "not_checked") {
+    return {
+      checked: checked ?? 0,
+      label: "Not externally checked",
+      reason:
+        reason ??
+        "No extracted bibliography entries were available for external citation verification.",
+    };
+  }
+  if (checked !== null) {
+    return {
+      checked,
+      label: `${checked} reference${checked === 1 ? "" : "s"} checked`,
+      reason,
+    };
+  }
+  return {
+    checked: null,
+    label: "Verifier provenance unavailable",
+    reason,
+  };
+}
+
 function citationVerifierEntries(
   verifierNotes: unknown,
 ): CitationVerifierEntry[] {
-  const root = asRecord(verifierNotes);
-  const citation = recordField(root, "citation");
-  const notes = citation ? recordField(citation, "notes") : null;
+  const notes = citationVerifierNotes(verifierNotes);
   return recordArrayField(notes ?? {}, "entries").map((entry) => ({
     raw: stringField(entry, "raw"),
     status: stringField(entry, "status"),
@@ -337,6 +374,14 @@ function citationVerifierEntries(
     arxiv_id: stringField(entry, "arxiv_id"),
     url: stringField(entry, "url"),
   }));
+}
+
+function citationVerifierNotes(
+  verifierNotes: unknown,
+): Record<string, unknown> | null {
+  const root = asRecord(verifierNotes);
+  const citation = recordField(root, "citation");
+  return citation ? recordField(citation, "notes") : root;
 }
 
 type CitationVerifierIndex = Map<string, CitationVerifierEntry>;

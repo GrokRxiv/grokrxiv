@@ -130,6 +130,8 @@ pub fn gate_failure_comment_body(
         "## GrokRxiv Automated Review Gate: Failed\n\n\
          Latest review: {public_url}/reviews/{review_id}\n\n\
          Recommendation: `{recommendation}`\n\n\
+         Agent output verification and publication gating are separate checks. \
+         A verifier pass or warning means the reviewer JSON was usable; it does not mean the paper was accepted.\n\n\
          {}\n\n\
          {}\n\n\
          {}",
@@ -145,6 +147,8 @@ pub fn gate_pass_comment_body(review_id: Uuid, recommendation: &str) -> String {
         "## GrokRxiv Automated Review Gate: Passed\n\n\
          Latest review: {public_url}/reviews/{review_id}\n\n\
          Recommendation: `{recommendation}`\n\n\
+         Agent output verification and publication gating are separate checks. \
+         This pass means the publication gate accepted the latest automated review.\n\n\
          The latest correction commit passed the automated review gate. No further automated corrections are required for this gate."
     )
 }
@@ -260,5 +264,21 @@ mod tests {
             failure.summary,
             "Automated review gate failed: Meta-review recommendation is `major_revision`, not `accept`."
         );
+    }
+
+    #[test]
+    fn gate_failure_comment_separates_verifier_from_acceptance() {
+        let failure = GateFailureArtifact {
+            gate: "publication_gate".to_string(),
+            severity: "high".to_string(),
+            summary: "Automated review gate failed: major revision.".to_string(),
+            details_md: "## Gate Result\n\nneeds revision".to_string(),
+            action_required_md: "## How to Resubmit Corrections\n\npush fixes".to_string(),
+        };
+        let body = gate_failure_comment_body(Uuid::nil(), "major_revision", &failure);
+        assert!(
+            body.contains("Agent output verification and publication gating are separate checks")
+        );
+        assert!(body.contains("does not mean the paper was accepted"));
     }
 }

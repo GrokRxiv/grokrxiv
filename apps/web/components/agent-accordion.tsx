@@ -47,7 +47,10 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
                   {ROLE_LABEL[agent.role] ?? agent.role}
                 </span>
               </div>
-              <VerifierStatusBadge status={agent.verifier_status} />
+              <VerifierStatusBadge
+                status={displayVerifierStatus(agent).status}
+                label={displayVerifierStatus(agent).label}
+              />
             </div>
           </AccordionTrigger>
           <AccordionContent>
@@ -61,4 +64,34 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
       ))}
     </Accordion>
   );
+}
+
+function displayVerifierStatus(agent: AgentOutput): {
+  status: AgentOutput["verifier_status"];
+  label?: string;
+} {
+  if (agent.role === "citation" && citationWasNotChecked(agent.verifier_notes)) {
+    return { status: "fail", label: "Not checked" };
+  }
+  return { status: agent.verifier_status };
+}
+
+function citationWasNotChecked(verifierNotes: unknown): boolean {
+  if (!isRecord(verifierNotes)) return false;
+  const citation = recordField(verifierNotes, "citation");
+  const notes = citation ? recordField(citation, "notes") : verifierNotes;
+  if (!isRecord(notes)) return false;
+  return notes.checked === 0 || notes.coverage_status === "not_checked";
+}
+
+function recordField(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | null {
+  const value = record[key];
+  return isRecord(value) ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
