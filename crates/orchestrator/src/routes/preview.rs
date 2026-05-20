@@ -28,7 +28,7 @@ use grokrxiv_schemas::{AgentRole, Author, FigureRef, MetaReview, PaperExtract};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agents::{AgentInput, AgentMode, AgentRunnerKind, AgentSpec, SandboxPolicy, ToolPolicy};
+use crate::agents::{AgentInput, AgentRunnerKind, AgentSpec, SandboxPolicy};
 use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
 use crate::state::AppState;
 
@@ -379,11 +379,9 @@ async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::
         role: AgentRole::MetaReviewer,
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
-        mode: AgentMode::ReviewOnly,
         provider,
         model: model.clone(),
         schema: std::sync::Arc::new(schema.clone()),
-        tool_policy: ToolPolicy::default(),
         max_retries: 1,
         timeout_secs: preview_timeout_secs(),
     };

@@ -3,7 +3,7 @@
 //! The default backend for every role at RPT2 ship time. Wraps the existing
 //! `LLMProvider` trait from `crates/llm-adapter`. Track A lifts the body of
 //! the legacy `supervisor.rs::call_with_schema` helper into `ApiRunner::run`
-//! so the supervisor can delegate via `ReviewAgent::run`.
+//! so the supervisor can delegate via a configured role binding.
 
 use std::collections::HashMap;
 use std::sync::Arc;

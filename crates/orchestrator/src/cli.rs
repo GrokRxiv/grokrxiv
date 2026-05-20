@@ -4857,11 +4857,15 @@ mod tests {
             None
         );
         assert_eq!(
-            real_existing_pr_url(Some("https://github.com/GrokRxiv/grokrxiv-reviews/issues/123")),
+            real_existing_pr_url(Some(
+                "https://github.com/GrokRxiv/grokrxiv-reviews/issues/123"
+            )),
             None
         );
         assert_eq!(
-            real_existing_pr_url(Some("https://example.com/GrokRxiv/grokrxiv-reviews/pull/123")),
+            real_existing_pr_url(Some(
+                "https://example.com/GrokRxiv/grokrxiv-reviews/pull/123"
+            )),
             None
         );
     }

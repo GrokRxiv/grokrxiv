@@ -10,8 +10,8 @@ use sqlx::PgPool;
 
 use crate::agents::runners::api::ApiRunner;
 use crate::agents::{
-    build_agent, AgentMode, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec, ReviewAgent,
-    SandboxPolicy, ToolPolicy,
+    build_agent, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec, ConfiguredAgent,
+    SandboxPolicy,
 };
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
@@ -20,7 +20,7 @@ use crate::runtime_config::{direct_provider_api_allowed_from_env, model_override
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
 /// Per-role configured-agent registry, keyed by review role.
-pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<dyn ReviewAgent>>;
+pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<ConfiguredAgent>>;
 /// Per-kind `AgentRunner` registry, keyed by runner backend.
 pub type RunnerRegistry = HashMap<AgentRunnerKind, Arc<dyn AgentRunner>>;
 /// Role-specific JSON schema documents.
@@ -377,15 +377,13 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
             role: *role,
             runner: cfg.runner.unwrap_or_default(),
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: cfg.provider.clone(),
             model: model_override_for_role(*role).unwrap_or_else(|| cfg.model.clone()),
             schema,
-            tool_policy: ToolPolicy::default(),
             max_retries: cfg.max_retries.unwrap_or(2),
             timeout_secs: cfg.timeout_secs.unwrap_or(180),
         };
-        out.insert(*role, Arc::from(build_agent(spec)));
+        out.insert(*role, Arc::new(build_agent(spec)));
     }
     out
 }

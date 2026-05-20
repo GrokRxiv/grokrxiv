@@ -711,8 +711,8 @@ async fn run_review_dag_inner(
 ) -> anyhow::Result<Uuid> {
     use crate::agents::runners::api::ApiRunner;
     use crate::agents::{
-        build_agent, AgentInput, AgentMode, AgentRunner, AgentRunnerKind, AgentSpec, ReviewAgent,
-        SandboxPolicy, ToolPolicy,
+        build_agent, AgentInput, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec,
+        ConfiguredAgent, SandboxPolicy,
     };
     use grokrxiv_schemas::{AgentRole, MetaReview, VerifierStatus};
     use serde_json::json;
@@ -720,14 +720,14 @@ async fn run_review_dag_inner(
 
     let default_model = state.config.preview_model.clone();
 
-    // Resolve the `ReviewAgent` + `AgentRunner` pair for a role. Prefers the
-    // boot-time registry built from `agents/*.yaml`; falls back to the active
-    // review runner only when a role config is missing. API fallback needs a
-    // provider, but CLI fallback can run through local subscriptions.
+    // Resolve the configured agent + runner pair for a role. Prefers the
+    // boot-time registry built from `agents/*.yaml`; falls back only for
+    // builds where the verifier-backed registry is unavailable. API fallback
+    // needs a provider, but CLI fallback can run through local subscriptions.
     let make_fallback = |role: AgentRole,
-                         schema: serde_json::Value|
+                         schema: AgentSchema|
      -> anyhow::Result<(
-        Arc<dyn ReviewAgent>,
+        Arc<ConfiguredAgent>,
         Arc<dyn AgentRunner>,
         String,
         AgentRunnerKind,
@@ -739,15 +739,13 @@ async fn run_review_dag_inner(
             role,
             runner: runner_kind,
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: model.clone(),
-            schema: Arc::new(schema),
-            tool_policy: ToolPolicy::default(),
+            schema,
             max_retries: 2,
             timeout_secs: 180,
         };
-        let agent: Arc<dyn ReviewAgent> = Arc::from(build_agent(spec));
+        let agent = Arc::new(build_agent(spec));
         let runner = if runner_kind == AgentRunnerKind::Api {
             let Some(provider) = provider.as_ref() else {
                 anyhow::bail!(
@@ -771,7 +769,7 @@ async fn run_review_dag_inner(
     };
 
     let resolve_agent = |role: AgentRole| -> anyhow::Result<(
-        Arc<dyn ReviewAgent>,
+        Arc<ConfiguredAgent>,
         Arc<dyn AgentRunner>,
         String,
         AgentRunnerKind,
@@ -788,8 +786,8 @@ async fn run_review_dag_inner(
             .agent_schemas
             .get(&role)
             .cloned()
-            .unwrap_or_else(|| Arc::new(json!({ "type": "object" })));
-        make_fallback(role, schema.as_ref().clone())
+            .ok_or_else(|| anyhow::anyhow!("missing schema for role {role:?}"))?;
+        make_fallback(role, schema)
     };
 
     // Pre-create the review row. `models_used` records the per-role model so
@@ -998,7 +996,8 @@ async fn run_review_dag_inner(
                 user_prompt: prompt,
                 source_bundle_path: None,
             };
-            let run = agent.run(&*runner, input).await?;
+            let run =
+                run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input).await?;
             anyhow::Ok((
                 role,
                 run.output,
@@ -1298,7 +1297,13 @@ async fn run_review_dag_inner(
                     user_prompt: meta_prompt,
                     source_bundle_path: None,
                 };
-                match meta_agent.run(&*meta_runner, meta_agent_input).await {
+                match run_agent_with_supervisor_timeout(
+                    meta_agent.as_ref(),
+                    meta_runner.as_ref(),
+                    meta_agent_input,
+                )
+                .await
+                {
                     Ok(run) => (
                         run.output,
                         run.tokens_in,
@@ -3132,9 +3137,99 @@ fn exp_backoff(attempt: u32) -> Duration {
     Duration::from_millis(std::cmp::min(base, 30_000))
 }
 
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_agent_with_supervisor_timeout(
+    agent: &crate::agents::ConfiguredAgent,
+    runner: &dyn crate::agents::AgentRunner,
+    input: crate::agents::AgentInput,
+) -> anyhow::Result<crate::agents::AgentRun> {
+    let role = input.role;
+    let timeout_secs = agent.spec().timeout_secs.max(1);
+    let timeout_duration = Duration::from_secs(timeout_secs as u64);
+    tokio::time::timeout(timeout_duration, agent.run(runner, input))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("agent {role:?} timed out after {timeout_secs}s at supervisor level")
+        })?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    struct NeverCompletesRunner;
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[async_trait::async_trait]
+    impl crate::agents::AgentRunner for NeverCompletesRunner {
+        fn name(&self) -> &'static str {
+            "never-completes"
+        }
+
+        async fn run(
+            &self,
+            spec: &crate::agents::AgentSpec,
+            _input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(crate::agents::AgentRun {
+                role: spec.role,
+                runner: crate::agents::AgentRunnerKind::Cli,
+                model: spec.model.clone(),
+                output: serde_json::json!({}),
+                verifier_status: None,
+                verifier_notes: None,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms: 0,
+                cache_hit: false,
+                sandbox_ref: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[tokio::test]
+    async fn supervisor_times_out_wedged_agent_execution() {
+        use crate::agents::{
+            AgentInput, AgentRunnerKind, AgentSpec, ConfiguredAgent, SandboxPolicy,
+        };
+        use grokrxiv_schemas::AgentRole;
+        use std::sync::Arc;
+
+        let spec = AgentSpec {
+            role: AgentRole::Summary,
+            runner: AgentRunnerKind::Cli,
+            sandbox: SandboxPolicy::None,
+            provider: "claude".to_string(),
+            model: "fake-model".to_string(),
+            schema: std::sync::Arc::new(serde_json::json!({ "type": "object" })),
+            max_retries: 0,
+            timeout_secs: 1,
+        };
+        let input = AgentInput {
+            paper_id: Uuid::nil(),
+            review_id: Uuid::nil(),
+            role: AgentRole::Summary,
+            content_hash_material: serde_json::json!({}),
+            artifact: serde_json::json!({}),
+            system_prompt: "system".to_string(),
+            user_prompt: "user".to_string(),
+            source_bundle_path: None,
+        };
+        let agent = Arc::new(ConfiguredAgent::new(spec));
+        let runner = Arc::new(NeverCompletesRunner);
+
+        let err = run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input)
+            .await
+            .expect_err("wedged runner should time out at supervisor level");
+
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected timeout error, got: {err:#}"
+        );
+    }
 
     #[tokio::test]
     async fn publish_after_approval_deduplicates_inflight_review() {

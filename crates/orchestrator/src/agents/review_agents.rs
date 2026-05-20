@@ -1,66 +1,44 @@
-//! Concrete [`ReviewAgent`] implementations — one per review role.
+//! Role-level agent bindings.
 //!
-//! Each agent owns its role identity and delegates execution to the runner
-//! the supervisor picks for it. The bodies are intentionally minimal because
-//! all six specialist roles share the same flow (build prompt + spec, hand
-//! off to runner). Role-specific behavior (e.g. `MetaReviewerAgent`'s
-//! specialists-only input shape) lives in the supervisor's input
-//! construction, not in the agent itself.
-//!
-//! `RenderAgent` is intentionally outside [`ReviewAgent`]: it runs after the
-//! meta-reviewer and produces `{html, md, tex}` artifacts, so it must not share
-//! the persisted `meta_reviewer` role identity.
+//! Role-specific behavior lives in the supervisor's input construction and in
+//! the YAML/spec registry. A configured review agent is just the resolved
+//! [`AgentSpec`] plus a thin dispatch method to the selected runner.
 
-use async_trait::async_trait;
-use grokrxiv_schemas::AgentRole;
-
-use super::traits::{AgentRunner, ReviewAgent};
+use super::traits::AgentRunner;
 use super::types::{AgentInput, AgentRun, AgentSpec};
 
-macro_rules! review_agent_impl {
-    ($name:ident, $role:expr) => {
-        #[doc = concat!("`ReviewAgent` for the `", stringify!($role), "` role.")]
-        pub struct $name {
-            spec: AgentSpec,
-        }
-
-        impl $name {
-            /// Build with the supplied spec.
-            pub fn new(spec: AgentSpec) -> Self {
-                Self { spec }
-            }
-        }
-
-        #[async_trait]
-        impl ReviewAgent for $name {
-            fn role(&self) -> AgentRole {
-                $role
-            }
-
-            fn spec(&self) -> &AgentSpec {
-                &self.spec
-            }
-
-            async fn run(
-                &self,
-                runner: &dyn AgentRunner,
-                input: AgentInput,
-            ) -> anyhow::Result<AgentRun> {
-                runner.run(&self.spec, &input).await
-            }
-        }
-    };
+/// Fully resolved review agent. It intentionally has no per-role subclasses:
+/// the role is data on `spec`, and every role delegates to the same runner
+/// contract.
+pub struct ConfiguredAgent {
+    spec: AgentSpec,
 }
 
-review_agent_impl!(SummaryAgent, AgentRole::Summary);
-review_agent_impl!(TechnicalCorrectnessAgent, AgentRole::TechnicalCorrectness);
-review_agent_impl!(NoveltyAgent, AgentRole::Novelty);
-review_agent_impl!(ReproducibilityAgent, AgentRole::Reproducibility);
-review_agent_impl!(CitationAgent, AgentRole::Citation);
-review_agent_impl!(MetaReviewerAgent, AgentRole::MetaReviewer);
+impl ConfiguredAgent {
+    /// Build with the supplied spec.
+    pub fn new(spec: AgentSpec) -> Self {
+        Self { spec }
+    }
 
-// RenderAgent is intentionally NOT mapped to AgentRole — it runs after the
-// 6 review roles and emits render artifacts, not a review JSON.
+    /// Which review role this agent is configured for.
+    pub fn role(&self) -> grokrxiv_schemas::AgentRole {
+        self.spec.role
+    }
+
+    /// The fully resolved spec for this run.
+    pub fn spec(&self) -> &AgentSpec {
+        &self.spec
+    }
+
+    /// Execute the role against the supplied input via the chosen runner.
+    pub async fn run(
+        &self,
+        runner: &dyn AgentRunner,
+        input: AgentInput,
+    ) -> anyhow::Result<AgentRun> {
+        runner.run(&self.spec, &input).await
+    }
+}
 
 /// Render helper — synthesizes review.{html, md, tex} from the 6 review outputs.
 /// Wires into the supervisor stage between `meta_reviewer` and the
@@ -81,7 +59,8 @@ impl RenderAgent {
     }
 
     /// Run the render helper through an agent runner. This is a plain helper,
-    /// not a `ReviewAgent`, to avoid colliding with `AgentRole::MetaReviewer`.
+    /// outside the review-agent registry, to avoid colliding with
+    /// `AgentRole::MetaReviewer`.
     pub async fn run(
         &self,
         runner: &dyn AgentRunner,
@@ -94,16 +73,10 @@ impl RenderAgent {
     }
 }
 
-/// Factory: produce the right `ReviewAgent` impl for a role given its spec.
-pub fn build_agent(spec: AgentSpec) -> Box<dyn ReviewAgent> {
-    match spec.role {
-        AgentRole::Summary => Box::new(SummaryAgent::new(spec)),
-        AgentRole::TechnicalCorrectness => Box::new(TechnicalCorrectnessAgent::new(spec)),
-        AgentRole::Novelty => Box::new(NoveltyAgent::new(spec)),
-        AgentRole::Reproducibility => Box::new(ReproducibilityAgent::new(spec)),
-        AgentRole::Citation => Box::new(CitationAgent::new(spec)),
-        AgentRole::MetaReviewer => Box::new(MetaReviewerAgent::new(spec)),
-    }
+/// Factory retained for call-site clarity. Role selection is data in the spec,
+/// so construction is no longer a six-way match.
+pub fn build_agent(spec: AgentSpec) -> ConfiguredAgent {
+    ConfiguredAgent::new(spec)
 }
 
 #[cfg(test)]
@@ -113,15 +86,13 @@ mod render_agent_tests {
     //! independently.
     //!
     //! These tests pin two behaviors:
-    //! 1. `RenderAgent` does not implement `ReviewAgent` and therefore cannot
-    //!    collide with `AgentRole::MetaReviewer`.
+    //! 1. `RenderAgent` stays outside the configured review-agent registry.
     //! 2. `RenderAgent::run()` is a thin delegate — it forwards the spec and
     //!    input to the runner and returns whatever the runner produced.
     //!    The actual `crates/render` invocation will be wired through the
     //!    `ApiRunner` in Track G integration.
     use super::*;
-    use crate::agents::types::{AgentMode, SandboxPolicy};
-    use crate::agents::types::{AgentRunnerKind, ToolPolicy};
+    use crate::agents::types::{AgentRunnerKind, SandboxPolicy};
     use async_trait::async_trait;
     use grokrxiv_schemas::AgentRole;
     use uuid::Uuid;
@@ -163,14 +134,12 @@ mod render_agent_tests {
             role: AgentRole::MetaReviewer,
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: "claude-haiku-4-5-20251001".to_string(),
             schema: std::sync::Arc::new(serde_json::json!({
                 "type": "object",
                 "required": ["html", "md", "tex", "has_math", "macros_used", "section_count"]
             })),
-            tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 90,
         };

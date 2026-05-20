@@ -1,12 +1,12 @@
-//! Agent runtime: `ReviewAgent` + `AgentRunner` + 4 runner backends.
+//! Agent runtime: configured role bindings + `AgentRunner` + 4 runner backends.
 //!
 //! See `research/agent-runner.md` for the design and
 //! `~/.claude/plans/rpt2-real-agent-runtime.md` for the implementation plan.
 //!
 //! Layout:
 //! - [`types`] — taxonomy enums + `AgentSpec` / `AgentInput` / `AgentRun`
-//! - [`traits`] — `ReviewAgent` + `AgentRunner` async traits
-//! - [`review_agents`] — 6 concrete `ReviewAgent` impls plus a separate render helper
+//! - [`traits`] — `AgentRunner` async trait
+//! - [`review_agents`] — configured role binding plus a separate render helper
 //! - [`runners`] — 4 backend impls (`api`, `cli`, `cloud`, `local_inference`)
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
@@ -18,14 +18,11 @@ pub mod specialist_facts;
 pub mod traits;
 pub mod types;
 
-pub use review_agents::{
-    build_agent, CitationAgent, MetaReviewerAgent, NoveltyAgent, RenderAgent, ReproducibilityAgent,
-    SummaryAgent, TechnicalCorrectnessAgent,
-};
-pub use traits::{AgentRunner, ReviewAgent};
+pub use review_agents::{build_agent, ConfiguredAgent, RenderAgent};
+pub use traits::AgentRunner;
 pub use types::{
     AgentInput, AgentMode, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, RevisionTarget,
-    RoleSpecMap, SandboxPolicy, ToolPolicy,
+    RoleSpecMap, SandboxPolicy,
 };
 
 #[cfg(test)]
@@ -35,14 +32,12 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::traits::{AgentRunner, ReviewAgent};
-    use super::types::{
-        AgentInput, AgentMode, AgentRun, AgentRunnerKind, AgentSpec, SandboxPolicy, ToolPolicy,
-    };
-    use super::SummaryAgent;
+    use super::traits::AgentRunner;
+    use super::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec, SandboxPolicy};
+    use super::ConfiguredAgent;
 
     /// Test double that hands back a synthetic [`AgentRun`] without making
-    /// any LLM calls. Verifies the [`ReviewAgent::run`] propagation contract:
+    /// any LLM calls. Verifies the [`ConfiguredAgent::run`] propagation contract:
     /// the agent's role + spec are used verbatim, and the runner's output is
     /// returned unchanged.
     struct FakeAgentRunner {
@@ -65,11 +60,9 @@ mod tests {
             role: AgentRole::Summary,
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
-            mode: AgentMode::ReviewOnly,
             provider: "claude".to_string(),
             model: "fake-model".to_string(),
             schema: std::sync::Arc::new(json!({ "type": "object" })),
-            tool_policy: ToolPolicy::default(),
             max_retries: 2,
             timeout_secs: 30,
         }
@@ -92,7 +85,7 @@ mod tests {
     #[tokio::test]
     async fn summary_agent_propagates_runner_output() {
         let spec = fake_spec();
-        let agent = SummaryAgent::new(spec.clone());
+        let agent = ConfiguredAgent::new(spec.clone());
         let canned = AgentRun {
             role: AgentRole::Summary,
             runner: AgentRunnerKind::Api,
