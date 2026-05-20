@@ -2919,11 +2919,9 @@ mod tests {
     #[tokio::test]
     async fn exec_and_capture_kills_child_on_timeout() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("grokrxiv-cli-timeout-kill-test");
-        let _ = std::fs::create_dir_all(&dir);
-        let script = dir.join("fake-cli.sh");
-        let pid_file = dir.join("pid");
-        let _ = std::fs::remove_file(&pid_file);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake-cli.sh");
+        let pid_file = dir.path().join("pid");
         std::fs::write(
             &script,
             format!(
@@ -2946,7 +2944,7 @@ mod tests {
 
         let err = exec_and_capture(
             &built,
-            Duration::from_secs(1),
+            Duration::from_secs(3),
             grokrxiv_schemas::AgentRole::Novelty,
             "gemini",
         )
@@ -2954,10 +2952,17 @@ mod tests {
         .expect_err("subprocess should time out");
         assert!(err.to_string().contains("timed out"), "{err:#}");
 
-        let pid = std::fs::read_to_string(&pid_file)
-            .expect("pid file")
-            .trim()
-            .to_string();
+        let mut pid = None;
+        for _ in 0..20 {
+            match std::fs::read_to_string(&pid_file) {
+                Ok(value) => {
+                    pid = Some(value.trim().to_string());
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+        let pid = pid.expect("pid file");
         tokio::time::sleep(Duration::from_millis(100)).await;
         let status = std::process::Command::new("kill")
             .args(["-0", &pid])

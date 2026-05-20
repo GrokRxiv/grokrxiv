@@ -85,8 +85,7 @@
         <summary>
           {{ agent.role }} — <span class="muted">{{ agent.model }}</span>
           <span class="badge {{ agent.verifier_status }}">{{ agent.verifier_status }}</span>
-        </summary>
-        {% if agent.meta_review %}
+        </summary>{% if agent.meta_review %}
         <p>{{ agent.meta_review.summary }}</p>
         <p class="muted">Recommendation: <strong>{{ agent.meta_review.recommendation_label }}</strong> · Confidence: {{ agent.meta_review.confidence_pct }}%</p>
         <h3>Strengths</h3>
@@ -100,10 +99,8 @@
         <h3>Questions</h3>
         <ul>
           {% for q in agent.meta_review.questions %}<li>{{ q }}</li>{% endfor %}
-        </ul>
-        {% else %}
-        <pre>{{ agent.output_pretty }}</pre>
-        {% endif %}
+        </ul>{% else %}
+        <pre>{{ agent.output_pretty }}</pre>{% endif %}
       </details>
       {% endfor %}
     </div>
