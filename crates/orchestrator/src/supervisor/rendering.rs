@@ -157,6 +157,7 @@ fn fallback_meta(title: &str) -> grokrxiv_schemas::MetaReview {
         strengths: vec![],
         weaknesses: vec![],
         questions: vec![],
+        revision_targets: vec![],
         recommendation: Recommendation::MinorRevision,
         confidence: 0.5,
     }

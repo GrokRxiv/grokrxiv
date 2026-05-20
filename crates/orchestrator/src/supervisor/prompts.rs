@@ -641,6 +641,8 @@ pub(super) fn build_meta_synthesis_prompt(meta_input: &serde_json::Value) -> Str
          {pretty}\n\n\
          Task: Synthesize these five specialist reviews into a single MetaReview JSON \
          object with fields summary, strengths, weaknesses, questions, recommendation \
-         (one of accept|minor_revision|major_revision|reject), and confidence (0..1)."
+         (one of accept|minor_revision|major_revision|reject), confidence (0..1), and \
+         optional revision_targets entries mapping concrete weaknesses to source, code, \
+         data, bibliography, or review updates."
     )
 }

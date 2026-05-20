@@ -164,6 +164,9 @@ Deferred work:
 
 Only after Tier 2 has a stable role boundary should the framework move beyond `PaperExtract` and the hardcoded review flow.
 
+The detailed future implementation plan lives in
+[`docs/yaml-dag-agent-runtime-major-revision-plan.md`](yaml-dag-agent-runtime-major-revision-plan.md).
+
 Deferred work:
 
 - `ReviewArtifact` or equivalent artifact abstraction.

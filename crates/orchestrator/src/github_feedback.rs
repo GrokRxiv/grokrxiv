@@ -36,9 +36,10 @@ pub fn gate_failure_from_meta(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
+    let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
     let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Questions\n\n{questions}"
+        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
     );
     GateFailureArtifact {
         gate: "meta_reviewer_recommendation".to_string(),
@@ -49,7 +50,7 @@ pub fn gate_failure_from_meta(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions(review_id),
+        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
     }
 }
 
@@ -69,9 +70,10 @@ pub(crate) fn gate_failure_from_publication_gate(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
+    let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
     let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Questions\n\n{questions}"
+        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
     );
     GateFailureArtifact {
         gate: "publication_gate".to_string(),
@@ -82,16 +84,25 @@ pub(crate) fn gate_failure_from_publication_gate(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions(review_id),
+        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
     }
 }
 
 /// Instructions shown in the public review details and GitHub feedback.
 pub fn correction_loop_instructions(review_id: Uuid) -> String {
+    correction_loop_instructions_with_targets(review_id, "- None recorded.")
+}
+
+fn correction_loop_instructions_with_targets(review_id: Uuid, revision_targets: &str) -> String {
     let public_url =
         std::env::var("GROKRXIV_PUBLIC_URL").unwrap_or_else(|_| "https://grokrxiv.org".into());
+    let target_block = if revision_targets.trim() == "- None recorded." {
+        String::new()
+    } else {
+        format!("## Targeted Revisions\n\n{revision_targets}\n\n")
+    };
     format!(
-        "## How to Resubmit Corrections\n\n\
+        "{target_block}## How to Resubmit Corrections\n\n\
          1. Apply the requested fixes to the paper source on this PR branch.\n\
          2. Commit and push the correction back to GitHub:\n\n\
          ```bash\n\

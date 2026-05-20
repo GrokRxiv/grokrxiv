@@ -33,6 +33,7 @@ import {
   PUBLIC_REVIEW_STATUSES,
   type Paper,
   type Review,
+  type RevisionTarget,
 } from "@/lib/types";
 
 type Params = { id: string };
@@ -370,6 +371,9 @@ function ReviewSkeleton() {
 function buildMetaReviewMarkdown(review: Review): string {
   const mr = review.meta_review;
   if (!mr) return "No meta review yet.";
+  const revisionTargets = (mr.revision_targets ?? [])
+    .filter((target) => target.required_update?.trim())
+    .map(formatRevisionTargetMarkdown);
   return [
     mr.summary,
     "",
@@ -379,6 +383,9 @@ function buildMetaReviewMarkdown(review: Review): string {
     "## Weaknesses",
     ...mr.weaknesses.map((s) => `- ${s}`),
     "",
+    ...(revisionTargets.length
+      ? ["## Revision Targets", ...revisionTargets, ""]
+      : []),
     "## Questions",
     ...mr.questions.map((s) => `- ${s}`),
     "",
@@ -386,6 +393,88 @@ function buildMetaReviewMarkdown(review: Review): string {
     "",
     `**${mr.recommendation}** (confidence ${mr.confidence.toFixed(2)})`,
   ].join("\n");
+}
+
+function formatRevisionTargetMarkdown(target: RevisionTarget): string {
+  const evidence =
+    target.evidence && target.evidence !== target.required_update
+      ? `\n  - Evidence: ${target.evidence}`
+      : "";
+  const verification = target.verification_check
+    ? `\n  - Verification: ${target.verification_check}`
+    : "";
+  return [
+    `- ${targetCheckbox(target.status)} **${targetHeading(target)}**${targetStatusSuffix(target.status)}`,
+    `  - Location: ${targetLocation(target)}`,
+    `${evidence}`,
+    `  - Required change: ${target.required_update}`,
+    `${verification}`,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+function targetCheckbox(status: RevisionTarget["status"]): string {
+  return status === "addressed" ? "[x]" : "[ ]";
+}
+
+function targetStatusSuffix(status: RevisionTarget["status"]): string {
+  return status === "open" ? "" : ` _(${status})_`;
+}
+
+function targetHeading(target: RevisionTarget): string {
+  const locator = target.locator ?? "";
+  switch (target.target_kind) {
+    case "data":
+      return locator.includes("data availability")
+        ? "Data availability and restricted inputs"
+        : `Data target: ${shortText(locator || target.required_update, 80)}`;
+    case "code":
+      if (locator.includes("compute")) return "Compute reproducibility";
+      if (locator.includes("configuration")) return "Experiment configuration";
+      if (locator.includes("evaluation")) return "Evaluation pipeline";
+      if (locator.includes("entrypoints")) return "Code release and entrypoints";
+      if (locator.includes("SAC hyperparameters")) {
+        return "SAC hyperparameters and reward scaling";
+      }
+      return locator
+        ? `Code/reproducibility target: ${shortText(locator, 80)}`
+        : "Code/reproducibility artifacts";
+    case "bibliography":
+      return `Bibliography: ${shortText(locator || target.required_update, 96)}`;
+    case "paper_tex":
+    case "paper_pdf":
+      return `Manuscript: ${shortText(locator || target.required_update, 96)}`;
+    case "review_text":
+      return "Review text correction";
+    default:
+      return `Revision target: ${shortText(target.required_update, 96)}`;
+  }
+}
+
+function targetLocation(target: RevisionTarget): string {
+  if (target.source_path && target.locator) {
+    return `\`${target.source_path}\` at \`${target.locator}\``;
+  }
+  if (target.source_path) return `\`${target.source_path}\``;
+  if (target.locator && target.target_kind === "data") {
+    return `data/reproducibility artifacts: \`${target.locator}\``;
+  }
+  if (target.locator && target.target_kind === "code") {
+    return `code/reproducibility artifacts: \`${target.locator}\``;
+  }
+  if (target.locator && target.target_kind === "bibliography") {
+    return `bibliography entry: \`${shortText(target.locator, 120)}\``;
+  }
+  if (target.locator) return `\`${target.locator}\``;
+  if (target.target_kind === "data") return "data/reproducibility artifacts";
+  if (target.target_kind === "code") return "code/reproducibility artifacts";
+  if (target.target_kind === "bibliography") return "bibliography";
+  return "review artifact";
+}
+
+function shortText(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 3)}...`;
 }
 
 function MetaReviewBody({ markdown }: { markdown: string }) {

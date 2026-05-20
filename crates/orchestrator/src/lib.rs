@@ -8,6 +8,7 @@
 
 pub mod agents;
 pub mod arxiv_rate_limit;
+pub(crate) mod batch;
 pub mod cli;
 pub mod cli_status;
 pub mod config;
@@ -19,6 +20,7 @@ pub mod html_review;
 pub mod ingest_pipeline;
 pub(crate) mod review_dag;
 pub(crate) mod review_gate;
+pub(crate) mod revision_targets;
 pub mod routes;
 pub mod runtime_config;
 pub mod scheduler;

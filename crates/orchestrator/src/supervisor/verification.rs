@@ -69,6 +69,7 @@ pub(super) fn meta_failure_output(error: &str) -> serde_json::Value {
         ],
         "recommendation": "major_revision",
         "confidence": 1.0,
+        "revision_targets": [],
     })
 }
 

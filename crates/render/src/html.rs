@@ -81,6 +81,7 @@ fn agent_meta_review(agent: &AgentRecord) -> Option<serde_json::Value> {
         "summary": meta.summary,
         "strengths": meta.strengths,
         "weaknesses": meta.weaknesses,
+        "revision_targets": meta.revision_targets,
         "questions": meta.questions,
         "recommendation_label": recommendation_label(meta.recommendation),
         "confidence_pct": (meta.confidence.clamp(0.0, 1.0) * 100.0).round() as i32,

@@ -730,11 +730,28 @@ async fn post_rereview_gate_feedback(
     let Some(pr_number) = pr_number else {
         return;
     };
-    let meta: Option<Value> = sqlx::query_scalar("select meta_review from reviews where id = $1")
-        .bind(new_review_id)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(None);
+    let mut meta: Option<Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(new_review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    if let Some(new_meta) = meta.take() {
+        let prior_meta: Option<Value> =
+            sqlx::query_scalar("select meta_review from reviews where id = $1")
+                .bind(prior_review_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(None);
+        let reconciled =
+            crate::revision_targets::reconcile_revision_targets(prior_meta.as_ref(), new_meta);
+        if let Err(e) = crate::db::set_review_meta_review(pool, new_review_id, &reconciled).await {
+            tracing::warn!(%new_review_id, err = %e, "failed to persist reconciled revision targets");
+        } else {
+            spawn_revalidate(state, new_review_id);
+        }
+        meta = Some(reconciled);
+    }
     let recommendation = meta
         .as_ref()
         .and_then(|m| m.get("recommendation"))

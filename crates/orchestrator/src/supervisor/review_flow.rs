@@ -701,6 +701,7 @@ pub(super) async fn run_review_dag_inner(
         min_specialist_quorum,
         specialist_total,
     );
+    let revision_source_hint = revision_target_source_path_hint(pool, paper_id, &extract_arc).await;
     if !specialist_gate.meta_can_run {
         let error = format!(
             "verifier quorum not met: only {} of {} specialists produced usable output (need >= {})",
@@ -726,7 +727,8 @@ pub(super) async fn run_review_dag_inner(
                 "blocked_roles": specialist_gate.blocked_roles.clone(),
                 "warning_roles": specialist_gate.warning_roles.clone(),
                 "min_quorum": specialist_gate.min_usable,
-            }
+            },
+            "revision_targets": []
         });
         crate::db::set_review_meta_review(pool, review_id, &synthetic_meta).await?;
 
@@ -877,6 +879,12 @@ pub(super) async fn run_review_dag_inner(
                 }
             }
         };
+
+    let meta_value = crate::revision_targets::enrich_meta_review(
+        meta_value,
+        &meta_input,
+        revision_source_hint.as_deref(),
+    );
 
     let (meta_v_status, meta_v_notes) =
         verify_artifact(state, &extract_arc, AgentRole::MetaReviewer, &meta_value).await;
@@ -1100,9 +1108,90 @@ pub(super) async fn load_latest_review_input_extract(
     }
 }
 
-/// Background worker: publish a moderation-approved review to GitHub.
-/// Wraps [`grokrxiv_publisher::GithubPublisher::open_review_pr`] with an
-/// [`AdminCaller`] capability token; the caller (admin approval endpoint /
+#[cfg(feature = "grokrxiv-ingest")]
+async fn revision_target_source_path_hint(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    extract: &grokrxiv_schemas::PaperExtract,
+) -> Option<String> {
+    let row: Option<(String, Option<String>, serde_json::Value)> = sqlx::query_as(
+        "select coalesce(source_kind, 'arxiv'), source_id, source_metadata \
+         from papers where id = $1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((source_kind, source_id, metadata)) = row else {
+        return fallback_source_path_hint(extract);
+    };
+    if let Some(path) = metadata
+        .get("correction_source_path")
+        .and_then(|v| v.as_str())
+    {
+        if !path.trim().is_empty() {
+            return Some(path.to_string());
+        }
+    }
+    let adapter = metadata.get("adapter").unwrap_or(&serde_json::Value::Null);
+    let raw_source_path = match source_kind.as_str() {
+        "git_repo" => adapter.get("paper_path").and_then(|v| v.as_str()),
+        "local_file" => adapter.get("path").and_then(|v| v.as_str()),
+        "arxiv" => return correction_repo_path_hint(source_id.as_deref(), extract),
+        _ => None,
+    };
+    raw_source_path
+        .and_then(|path| correction_repo_path_from_raw(source_id.as_deref(), path))
+        .or_else(|| raw_source_path.map(str::to_string))
+        .or_else(|| fallback_source_path_hint(extract))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn correction_repo_path_hint(
+    source_id: Option<&str>,
+    extract: &grokrxiv_schemas::PaperExtract,
+) -> Option<String> {
+    let default_name = match extract.source_format.as_deref() {
+        Some("tex") => "paper.tex",
+        Some("pdf") => "paper.pdf",
+        _ => return fallback_source_path_hint(extract),
+    };
+    correction_repo_path_from_raw(source_id, default_name)
+        .or_else(|| Some(default_name.to_string()))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn correction_repo_path_from_raw(source_id: Option<&str>, raw_path: &str) -> Option<String> {
+    let source_id = source_id?.trim();
+    if source_id.is_empty() {
+        return None;
+    }
+    let safe_source_id: String = source_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let file_name = std::path::Path::new(raw_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.trim().is_empty())?;
+    Some(format!("corrections/{safe_source_id}/{file_name}"))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn fallback_source_path_hint(extract: &grokrxiv_schemas::PaperExtract) -> Option<String> {
+    match extract.source_format.as_deref() {
+        Some("tex") => Some("paper.tex".to_string()),
+        Some("pdf") => Some("paper.pdf".to_string()),
+        _ => None,
+    }
+}
 
 #[cfg(feature = "grokrxiv-ingest")]
 pub(super) async fn run_agent_with_supervisor_timeout(

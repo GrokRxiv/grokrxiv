@@ -7,6 +7,9 @@ import type {
   MissingReferenceOutput,
   NoveltyReviewOutput,
   ReproducibilityReviewOutput,
+  RevisionTarget,
+  RevisionTargetKind,
+  RevisionTargetStatus,
   SummaryReviewOutput,
   TechnicalReviewOutput,
 } from "@/lib/types";
@@ -473,6 +476,11 @@ function MetaReviewerDetails({ review }: { review: MetaReview }) {
         empty="No weaknesses provided."
       />
       <ListBlock
+        title="Revision Targets"
+        items={(review.revision_targets ?? []).map(formatRevisionTarget)}
+        empty="No revision targets provided."
+      />
+      <ListBlock
         title="Questions"
         items={review.questions}
         empty="No questions provided."
@@ -703,9 +711,36 @@ function parseMetaReviewer(value: unknown): MetaReview {
     strengths: stringArrayField(record, "strengths"),
     weaknesses: stringArrayField(record, "weaknesses"),
     questions: stringArrayField(record, "questions"),
+    revision_targets: recordArrayField(record, "revision_targets").map(
+      parseRevisionTarget,
+    ),
     recommendation: metaRecommendation(record),
     confidence: numberField(record, "confidence") ?? 0,
   };
+}
+
+function parseRevisionTarget(record: Record<string, unknown>): RevisionTarget {
+  return {
+    id: stringField(record, "id") ?? "",
+    weakness_index: numberField(record, "weakness_index") ?? 0,
+    source_role: agentRoleField(record, "source_role"),
+    target_kind: revisionTargetKind(record),
+    source_path: stringField(record, "source_path"),
+    locator: stringField(record, "locator"),
+    evidence: stringField(record, "evidence"),
+    required_update: stringField(record, "required_update") ?? "",
+    verification_check: stringField(record, "verification_check") ?? "",
+    status: revisionTargetStatus(record),
+  };
+}
+
+function formatRevisionTarget(target: RevisionTarget): string {
+  const path = target.source_path ? ` ${target.source_path}` : "";
+  const locator = target.locator ? ` at ${target.locator}` : "";
+  const check = target.verification_check
+    ? ` Check: ${target.verification_check}`
+    : "";
+  return `[${target.status}] ${target.target_kind}${path}${locator}: ${target.required_update}${check}`;
 }
 
 function parseMissingReference(
@@ -805,6 +840,58 @@ function metaRecommendation(
     return value;
   }
   return "major_revision";
+}
+
+function agentRoleField(
+  record: Record<string, unknown>,
+  key: string,
+): AgentRole | null {
+  const value = stringField(record, key);
+  if (
+    value === "summary" ||
+    value === "technical_correctness" ||
+    value === "novelty" ||
+    value === "reproducibility" ||
+    value === "citation" ||
+    value === "meta_reviewer"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function revisionTargetKind(
+  record: Record<string, unknown>,
+): RevisionTargetKind {
+  const value = stringField(record, "target_kind");
+  if (
+    value === "paper_tex" ||
+    value === "paper_pdf" ||
+    value === "code" ||
+    value === "data" ||
+    value === "bibliography" ||
+    value === "review_text" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return "unknown";
+}
+
+function revisionTargetStatus(
+  record: Record<string, unknown>,
+): RevisionTargetStatus {
+  const value = stringField(record, "status");
+  if (
+    value === "open" ||
+    value === "addressed" ||
+    value === "still_open" ||
+    value === "superseded" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  return "unknown";
 }
 
 function formatNumber(value: number | null): string | null {

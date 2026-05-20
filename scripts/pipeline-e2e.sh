@@ -77,11 +77,12 @@ seed_status="$(http_status "${BASE_URL}/api/v1/reviews/22222222-2222-2222-2222-2
   || fail "seed review API expected 200 or Supabase 503, got ${seed_status}"
 ok "public API reachable (status=${seed_status})"
 
-step "M1 ingest/review pipeline"
-SKIP_APPROVE=1 bash tests/m1-pipeline.sh "${ARXIV_ID}"
-review_id="$(awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' /tmp/grokrxiv-m1-ingest.log | tail -1 | tr -d '\r')"
-[[ -n "${review_id}" ]] || fail "could not recover review_id from /tmp/grokrxiv-m1-ingest.log"
-ok "M1 review_id=${review_id}"
+step "CLI ingest/review pipeline"
+pipeline_log="$(mktemp)"
+SKIP_APPROVE=1 bash tests/m1-pipeline.sh "${ARXIV_ID}" | tee "${pipeline_log}"
+review_id="$(awk '/review_id=/{ for(i=1;i<=NF;i++){ if($i ~ /^review_id=/){ split($i,a,"="); print a[2] } } }' "${pipeline_log}" | tail -1 | tr -d '\r')"
+[[ -n "${review_id}" ]] || fail "could not recover review_id from ${pipeline_log}"
+ok "review_id=${review_id}"
 
 step "artifact bundle contains agent provenance"
 for name in summary technical_correctness novelty reproducibility citation meta_reviewer; do
