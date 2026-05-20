@@ -3038,6 +3038,17 @@ async fn open_publication_pr_impl(
     let source_ref =
         crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
     let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
+    if let Some(existing) = real_existing_pr_url(existing_pr_url.as_deref()) {
+        if emit_output && json {
+            println!(
+                "{}",
+                serde_json::json!({"review_id": review_id, "pr_url": existing, "status": "pr_open", "visibility": visibility, "idempotent": true})
+            );
+        } else if emit_output {
+            println!("pr_url={existing}");
+        }
+        return Ok(existing.to_string());
+    }
 
     // Phase 2: recommendation gate. Read meta_review.recommendation and bail
     // unless the operator passed --force. Missing recommendation is also a
@@ -3169,41 +3180,8 @@ async fn open_publication_pr_impl(
         );
     }
 
-    // GitHub token + repo are required for the real PR. Without them we
-    // simulate so the CLI is still runnable for local-only flows.
-    let Some(token) = std::env::var("GITHUB_TOKEN").ok() else {
-        tracing::warn!(
-            %review_id,
-            artifacts = files.len(),
-            "GITHUB_TOKEN not set — simulating approval (no PR opened)"
-        );
-        let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-        let (owner, repo) = review_repo_for_visibility(&visibility);
-        let simulated = format!(
-            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
-            &review_id.simple().to_string()[..8]
-        );
-        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
-        // Public simulated approvals should flip the badge on the local site;
-        // private approvals stay dashboard/private-repo only.
-        if visibility == "public" {
-            crate::routes::webhook::spawn_revalidate(state, review_id);
-        }
-        if emit_output && json {
-            println!(
-                "{}",
-                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open", "visibility": visibility})
-            );
-        } else if emit_output {
-            println!("pr_url={simulated}");
-        }
-        if emit_output {
-            crate::cli_status::emit(format!(
-                "review {review_id}: simulated pr_open; publish waits for a real reviewed merge webhook"
-            ));
-        }
-        return Ok(simulated);
-    };
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to open publication PR"))?;
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
@@ -3349,6 +3327,17 @@ async fn request_revisions_impl(
     let source_ref =
         crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
     let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
+    if let Some(existing) = real_existing_pr_url(existing_pr_url.as_deref()) {
+        if emit_output && json {
+            println!(
+                "{}",
+                serde_json::json!({"review_id": review_id, "pr_url": existing, "status": "pr_open", "visibility": visibility, "gate": "needs_revision", "idempotent": true})
+            );
+        } else if emit_output {
+            println!("pr_url={existing}");
+        }
+        return Ok(existing.to_string());
+    }
 
     let (meta_review, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
     let recommendation = publication_gate.recommendation.as_str();
@@ -3428,29 +3417,8 @@ async fn request_revisions_impl(
          failure.summary,
     );
 
-    let Some(token) = std::env::var("GITHUB_TOKEN").ok() else {
-        tracing::warn!(
-            %review_id,
-            artifacts = files.len(),
-            "GITHUB_TOKEN not set — simulating revision-needed PR (no PR opened)"
-        );
-        let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-        let (owner, repo) = review_repo_for_visibility(&visibility);
-        let simulated = format!(
-            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
-            &review_id.simple().to_string()[..8]
-        );
-        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
-        if emit_output && json {
-            println!(
-                "{}",
-                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open", "visibility": visibility, "gate": "needs_revision"})
-            );
-        } else if emit_output {
-            println!("pr_url={simulated}");
-        }
-        return Ok(simulated);
-    };
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to open revision-needed PR"))?;
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
@@ -4210,6 +4178,10 @@ fn parse_github_pr_url(url: &str) -> Option<(String, String, u64)> {
         .parse()
         .ok()?;
     Some((owner, repo, number))
+}
+
+fn real_existing_pr_url(url: Option<&str>) -> Option<&str> {
+    url.filter(|value| !value.contains("SIMULATED-") && parse_github_pr_url(value).is_some())
 }
 
 fn extract_correction_source_marker(body: &str) -> Option<&str> {

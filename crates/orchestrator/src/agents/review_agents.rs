@@ -7,8 +7,9 @@
 //! specialists-only input shape) lives in the supervisor's input
 //! construction, not in the agent itself.
 //!
-//! `RenderAgent` is the 7th impl: it runs after the meta-reviewer and
-//! produces the `{html, md, tex}` artifacts the publisher commits.
+//! `RenderAgent` is intentionally outside [`ReviewAgent`]: it runs after the
+//! meta-reviewer and produces `{html, md, tex}` artifacts, so it must not share
+//! the persisted `meta_reviewer` role identity.
 
 use async_trait::async_trait;
 use grokrxiv_schemas::AgentRole;
@@ -59,12 +60,10 @@ review_agent_impl!(CitationAgent, AgentRole::Citation);
 review_agent_impl!(MetaReviewerAgent, AgentRole::MetaReviewer);
 
 // RenderAgent is intentionally NOT mapped to AgentRole — it runs after the
-// 6 review roles and emits render artifacts, not a review JSON. It will get
-// its own role variant in a follow-up migration; for now Track H2 wires it
-// through a separate code path while still implementing the trait.
+// 6 review roles and emits render artifacts, not a review JSON.
 
-/// 7th `ReviewAgent` — synthesizes review.{html, md, tex} from the 6 review
-/// outputs. Wires into the supervisor stage between `meta_reviewer` and the
+/// Render helper — synthesizes review.{html, md, tex} from the 6 review outputs.
+/// Wires into the supervisor stage between `meta_reviewer` and the
 /// `awaiting_moderation` status transition.
 pub struct RenderAgent {
     spec: AgentSpec,
@@ -75,24 +74,19 @@ impl RenderAgent {
     pub fn new(spec: AgentSpec) -> Self {
         Self { spec }
     }
-}
 
-#[async_trait]
-impl ReviewAgent for RenderAgent {
-    fn role(&self) -> AgentRole {
-        // Reuse MetaReviewer slot for now; a dedicated AgentRole::Render
-        // variant lands in a follow-up so the existing DB enum
-        // (review_agents.role CHECK constraint) doesn't need a migration yet.
-        // Supervisor differentiates by sequence (this agent always runs after
-        // the actual meta-reviewer row is written).
-        AgentRole::MetaReviewer
-    }
-
-    fn spec(&self) -> &AgentSpec {
+    /// Return the render spec.
+    pub fn spec(&self) -> &AgentSpec {
         &self.spec
     }
 
-    async fn run(&self, runner: &dyn AgentRunner, input: AgentInput) -> anyhow::Result<AgentRun> {
+    /// Run the render helper through an agent runner. This is a plain helper,
+    /// not a `ReviewAgent`, to avoid colliding with `AgentRole::MetaReviewer`.
+    pub async fn run(
+        &self,
+        runner: &dyn AgentRunner,
+        input: AgentInput,
+    ) -> anyhow::Result<AgentRun> {
         // TODO(Track G integration): wire RenderAgent::run via ApiRunner to invoke
         // crates::render::render_review(...) which already produces {html, md, tex}.
         // Wrap the output as the render_artifact JSON shape.
@@ -119,9 +113,8 @@ mod render_agent_tests {
     //! independently.
     //!
     //! These tests pin two behaviors:
-    //! 1. `RenderAgent::role()` returns the temporary `AgentRole::MetaReviewer`
-    //!    placeholder. A future migration will introduce `AgentRole::Render`;
-    //!    when that lands this test should be updated alongside the variant.
+    //! 1. `RenderAgent` does not implement `ReviewAgent` and therefore cannot
+    //!    collide with `AgentRole::MetaReviewer`.
     //! 2. `RenderAgent::run()` is a thin delegate — it forwards the spec and
     //!    input to the runner and returns whatever the runner produced.
     //!    The actual `crates/render` invocation will be wired through the
@@ -167,8 +160,6 @@ mod render_agent_tests {
     /// would produce after config loading.
     fn render_agent_with_spec() -> RenderAgent {
         let spec = AgentSpec {
-            // Reuses the MetaReviewer slot (see RenderAgent::role) until a
-            // dedicated `AgentRole::Render` variant lands.
             role: AgentRole::MetaReviewer,
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
@@ -209,14 +200,9 @@ mod render_agent_tests {
     }
 
     #[tokio::test]
-    async fn test_render_agent_role_returns_meta_reviewer() {
+    async fn test_render_agent_keeps_spec_without_review_role_identity() {
         let agent = render_agent_with_spec();
-        assert_eq!(
-            agent.role(),
-            AgentRole::MetaReviewer,
-            "RenderAgent::role() should return the MetaReviewer placeholder \
-             until a dedicated AgentRole::Render variant is introduced"
-        );
+        assert_eq!(agent.spec().role, AgentRole::MetaReviewer);
     }
 
     #[tokio::test]

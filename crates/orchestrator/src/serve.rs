@@ -44,6 +44,8 @@ pub async fn run() -> anyhow::Result<()> {
     let app = router(state.clone());
 
     let supervisor = Supervisor::spawn(state.clone());
+    #[cfg(feature = "grokrxiv-publisher")]
+    crate::supervisor::spawn_publish_reconcile(state.clone());
     let _scheduler = if scheduler_disabled_from_env() {
         tracing::info!("scheduler disabled by GROKRXIV_DISABLE_SCHEDULER");
         None

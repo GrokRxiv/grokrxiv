@@ -1246,6 +1246,24 @@ pub async fn show_review(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Option<
     Ok(row)
 }
 
+pub(crate) async fn list_pr_open_reviews_with_urls(
+    pool: &PgPool,
+    limit: i64,
+) -> sqlx::Result<Vec<(Uuid, String)>> {
+    sqlx::query_as(
+        "select id, github_pr_url \
+         from reviews \
+         where status = 'pr_open' \
+           and github_pr_url is not null \
+           and github_pr_url not like '%SIMULATED-%' \
+         order by created_at asc \
+         limit $1",
+    )
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct PaperReviewSeedRow {
     pub(crate) arxiv_id: String,
@@ -1339,6 +1357,8 @@ pub(crate) async fn load_review_render_bundle(
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct PublishReviewRow {
     pub(crate) review_id: Uuid,
+    pub(crate) status: String,
+    pub(crate) github_pr_url: Option<String>,
     pub(crate) arxiv_id: String,
     pub(crate) title: String,
     pub(crate) field: Option<String>,
@@ -1353,7 +1373,7 @@ pub(crate) async fn load_publish_review(
     review_id: Uuid,
 ) -> sqlx::Result<PublishReviewRow> {
     sqlx::query_as(
-        "select r.id as review_id, p.arxiv_id, p.title, p.field, p.id as paper_id, \
+        "select r.id as review_id, r.status, r.github_pr_url, p.arxiv_id, p.title, p.field, p.id as paper_id, \
                 coalesce(r.visibility, 'public') as visibility, \
                 coalesce(p.source_kind, 'arxiv') as source_kind, p.source_id \
          from reviews r join papers p on p.id = r.paper_id \

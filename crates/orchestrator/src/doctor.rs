@@ -491,7 +491,7 @@ async fn check_local_inference(report: &mut DoctorReport) {
 fn check_publisher(report: &mut DoctorReport) {
     report.publisher = Some(match nonblank_env("GITHUB_TOKEN") {
         Some(_) => CheckResult::ok("GITHUB_TOKEN set (PR opens will be live)"),
-        None => CheckResult::skipped("GITHUB_TOKEN unset (approve will simulate PRs)"),
+        None => CheckResult::fail("GITHUB_TOKEN unset (approve requires a live PR token)"),
     });
 }
 
