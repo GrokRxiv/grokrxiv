@@ -163,6 +163,7 @@ impl AppState {
 
         let fallback_model = config.preview_model.clone();
         let role_yaml = load_role_configs();
+        validate_role_configs(&role_yaml)?;
         let role_routing = Arc::new(build_role_routing(&providers, &fallback_model, &role_yaml));
 
         // Build the runner registry. API can be empty in CLI-only setups;
@@ -273,11 +274,16 @@ const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
 /// `build_role_routing` (legacy provider+model map) and `build_agent_registry`
 /// (new `ReviewAgent` map).
 fn load_role_configs() -> RoleYamlMap {
-    // Resolve `agents/` relative to the workspace root. In a container the
-    // binary's cwd is the repo root; in dev `cargo run` also runs from there.
+    // Resolve the default relative to this crate, not process cwd. Some tests
+    // deliberately chdir into temp directories before constructing AppState.
     let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("agents")
+        });
 
     let mut out: RoleYamlMap = HashMap::new();
     for (role, filename) in ROLE_FILES {
@@ -308,6 +314,24 @@ fn load_role_configs() -> RoleYamlMap {
         out.insert(*role, cfg);
     }
     out
+}
+
+fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
+    let missing: Vec<String> = ROLE_FILES
+        .iter()
+        .filter_map(|(role, filename)| match role_yaml.get(role) {
+            Some(Some(_)) => None,
+            _ => Some(format!("{role:?} ({filename})")),
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "agent role YAML is missing or malformed for {}; refusing to start with permissive schemas",
+            missing.join(", ")
+        )
+    }
 }
 
 /// Build the per-role `(provider, model)` map for legacy direct API routing.
@@ -374,7 +398,7 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
         let schema = schemas
             .get(role)
             .cloned()
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+            .expect("role schema loaded for configured role");
         let spec = AgentSpec {
             role: *role,
             runner: cfg.runner.unwrap_or_default(),

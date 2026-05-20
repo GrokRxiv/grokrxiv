@@ -143,7 +143,7 @@ docker exec -i $(docker ps -qf name=supabase_db_grokrxiv) psql -U postgres -d po
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `approve` simulates the PR instead of opening one | `GITHUB_TOKEN` not in env | `export GITHUB_TOKEN=...` |
+| `approve` fails before opening a PR | `GITHUB_TOKEN` not in env | `export GITHUB_TOKEN=...` |
 | Webhook returns 401 | `GITHUB_WEBHOOK_SECRET` mismatch between script env and orchestrator container env | restart orchestrator with matching secret, or update the script's env |
 | `gh pr merge` errors with "Merging is blocked" | Branch protection on the test repo | disable protection on the test repo's `main`, or use `--squash` |
 | `/api/v1/reviews/<id>` returns 404 after step 5 | Supabase RLS hasn't picked up the row | wait a second + retry; if persistent, check the `reviews_public_read` policy at `migrations/20250513000002_rls.sql` |

@@ -112,6 +112,78 @@ impl Supervisor {
     }
 }
 
+#[cfg(feature = "grokrxiv-publisher")]
+/// Spawn a background reconciler that repairs `pr_open` reviews whose GitHub PR
+/// was merged but whose webhook delivery was missed.
+pub fn spawn_publish_reconcile(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(e) = reconcile_published_reviews_once(&state).await {
+                tracing::warn!(err = %format!("{e:#}"), "publish reconcile failed");
+            }
+        }
+    });
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn reconcile_published_reviews_once(state: &AppState) -> anyhow::Result<()> {
+    let Some(pool) = state.db.as_ref() else {
+        return Ok(());
+    };
+    let token = match std::env::var("GITHUB_TOKEN") {
+        Ok(token) => token,
+        Err(_) => {
+            tracing::warn!("publish reconcile skipped: GITHUB_TOKEN not set");
+            return Ok(());
+        }
+    };
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let reviews = crate::db::list_pr_open_reviews_with_urls(pool, 100).await?;
+    for (review_id, pr_url) in reviews {
+        let Some((owner, repo, number)) = parse_github_pr_url(&pr_url) else {
+            tracing::warn!(%review_id, %pr_url, "publish reconcile skipped malformed PR URL");
+            continue;
+        };
+        match client.pulls(&owner, &repo).get(number).await {
+            Ok(pr) if pr.merged_at.is_some() => {
+                if let Err(e) = crate::routes::webhook::finalize_published_review(state, review_id).await
+                {
+                    tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile finalizer failed");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(%review_id, %pr_url, err = %e, "publish reconcile could not read PR");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+fn parse_github_pr_url(url: &str) -> Option<(String, String, u64)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number = parts
+        .next()?
+        .split(|c| matches!(c, '?' | '#' | '/'))
+        .next()?
+        .parse()
+        .ok()?;
+    Some((owner, repo, number))
+}
+
 /// Drive a single paper through ingest + review synchronously and return the
 /// resulting review row id. Used by the `ingest-one` CLI subcommand and the
 /// M1 integration test.
@@ -226,7 +298,12 @@ pub async fn run_review_for_paper_blocking(
     state: &AppState,
     paper_id: Uuid,
 ) -> anyhow::Result<Uuid> {
-    run_review_for_paper_full(state, paper_id).await
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let job_id = crate::db::create_job(pool, JobKind::Review, Some(paper_id)).await?;
+    run_review_for_paper_with_job_tracking(state, paper_id, job_id).await
 }
 
 /// Drive the review DAG for a paper row using a caller-supplied extract.
@@ -243,7 +320,8 @@ pub async fn run_review_for_extract_blocking(
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
-    run_review_dag_from_state(state, pool, paper_id, extract).await
+    let job_id = crate::db::create_job(pool, JobKind::Review, Some(paper_id)).await?;
+    run_review_for_extract_with_job_tracking(state, pool, paper_id, extract, job_id).await
 }
 
 /// Real typed DAG for a single paper.
@@ -325,6 +403,100 @@ fn review_cache_disabled() -> bool {
         std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
         Ok("1") | Ok("true")
     )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_for_paper_with_job_tracking(
+    state: &AppState,
+    paper_id: Uuid,
+    job_id: Uuid,
+) -> anyhow::Result<Uuid> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let mut attempt = 0;
+    loop {
+        crate::db::mark_running(pool, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark review job running: {e}"))?;
+        match run_review_for_paper_full(state, paper_id).await {
+            Ok(review_id) => {
+                crate::db::mark_done(pool, job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark review job done: {e}"))?;
+                return Ok(review_id);
+            }
+            Err(e) if attempt + 1 < MAX_RETRIES && is_retryable(&e) => {
+                attempt += 1;
+                let delay = exp_backoff(attempt);
+                tracing::warn!(
+                    %job_id,
+                    %paper_id,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    err = %format!("{e:#}"),
+                    "blocking review failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                crate::db::mark_failed(pool, job_id, &error)
+                    .await
+                    .map_err(|mark_err| {
+                        anyhow::anyhow!("mark review job failed: {mark_err}; original error: {error}")
+                    })?;
+                return Err(e);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn run_review_for_extract_with_job_tracking(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+    job_id: Uuid,
+) -> anyhow::Result<Uuid> {
+    let mut attempt = 0;
+    loop {
+        crate::db::mark_running(pool, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark review job running: {e}"))?;
+        match run_review_dag_from_state(state, pool, paper_id, extract.clone()).await {
+            Ok(review_id) => {
+                crate::db::mark_done(pool, job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark review job done: {e}"))?;
+                return Ok(review_id);
+            }
+            Err(e) if attempt + 1 < MAX_RETRIES && is_retryable(&e) => {
+                attempt += 1;
+                let delay = exp_backoff(attempt);
+                tracing::warn!(
+                    %job_id,
+                    %paper_id,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    err = %format!("{e:#}"),
+                    "blocking extract review failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                crate::db::mark_failed(pool, job_id, &error)
+                    .await
+                    .map_err(|mark_err| {
+                        anyhow::anyhow!("mark review job failed: {mark_err}; original error: {error}")
+                    })?;
+                return Err(e);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -2238,7 +2410,9 @@ async fn run_item(
     supervisor_tx: &mpsc::Sender<WorkItem>,
 ) -> anyhow::Result<()> {
     if let Some(pool) = state.db.as_ref() {
-        let _ = crate::db::mark_running(pool, item.job_id).await;
+        crate::db::mark_running(pool, item.job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("mark job running: {e}"))?;
     }
     let outcome = match item.kind {
         JobKind::Ingest => run_ingest(state, item, supervisor_tx).await,
@@ -2250,7 +2424,9 @@ async fn run_item(
     match outcome {
         Ok(()) => {
             if let Some(pool) = state.db.as_ref() {
-                let _ = crate::db::mark_done(pool, item.job_id).await;
+                crate::db::mark_done(pool, item.job_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mark job done: {e}"))?;
             }
             Ok(())
         }
@@ -2272,7 +2448,12 @@ async fn run_item(
                 Ok(())
             } else {
                 if let Some(pool) = state.db.as_ref() {
-                    let _ = crate::db::mark_failed(pool, item.job_id, &e.to_string()).await;
+                    let error = e.to_string();
+                    crate::db::mark_failed(pool, item.job_id, &error)
+                        .await
+                        .map_err(|mark_err| {
+                            anyhow::anyhow!("mark job failed: {mark_err}; original error: {error}")
+                        })?;
                 }
                 Err(e)
             }
@@ -2510,6 +2691,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let crate::db::PublishReviewRow {
         review_id: _review_row_id,
+        status,
+        github_pr_url,
         arxiv_id,
         title,
         field,
@@ -2518,6 +2701,15 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         source_kind,
         source_id,
     } = row;
+    if let Some(existing) = real_pr_url(github_pr_url.as_deref()) {
+        tracing::info!(
+            %review_id,
+            status = %status,
+            pr_url = %existing,
+            "publish idempotency: review already has a real PR URL"
+        );
+        return Ok(());
+    }
     let source_ref =
         crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
     let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
@@ -2545,21 +2737,8 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
         );
     }
 
-    let Some(token) = std::env::var("GITHUB_TOKEN").ok() else {
-        // Local-only flows: simulate so the supervisor doesn't crash. The CLI
-        // `approve` command logs the same line; we just persist the simulated
-        // PR URL so downstream `published` transitions still have something
-        // to point at.
-        tracing::warn!(%review_id, "GITHUB_TOKEN unset; simulating publish");
-        let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-        let (owner, repo) = review_repo_for_visibility(&visibility);
-        let simulated = format!(
-            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
-            &review_id.simple().to_string()[..8]
-        );
-        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
-        return Ok(());
-    };
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to open review PR"))?;
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
     let client = octocrab::OctocrabBuilder::new()
@@ -2600,6 +2779,10 @@ async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     // FP-RPT3c C2 — close any superseded PR for this paper.
     close_superseded_pr_if_any(pool, &publisher, &admin, paper_id, &pr_url).await;
     Ok(())
+}
+
+fn real_pr_url(url: Option<&str>) -> Option<&str> {
+    url.filter(|value| !value.contains("SIMULATED-") && value.contains("/pull/"))
 }
 
 #[cfg(feature = "grokrxiv-publisher")]

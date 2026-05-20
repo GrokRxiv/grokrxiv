@@ -6,7 +6,7 @@
 //! Layout:
 //! - [`types`] — taxonomy enums + `AgentSpec` / `AgentInput` / `AgentRun`
 //! - [`traits`] — `ReviewAgent` + `AgentRunner` async traits
-//! - [`review_agents`] — 7 concrete `ReviewAgent` impls (6 review + 1 render)
+//! - [`review_agents`] — 6 concrete `ReviewAgent` impls plus a separate render helper
 //! - [`runners`] — 4 backend impls (`api`, `cli`, `cloud`, `local_inference`)
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
