@@ -14,7 +14,7 @@ The contract is the JSON schema, not the model. Backends are interchangeable: fr
 
 Prerequisites: `pnpm`, `cargo` (Rust ≥1.80), `supabase` CLI, Docker, and
 Pandoc for local TeX extraction. The orchestrator Docker image installs Pandoc
-by default.
+and the Claude/Codex/Gemini CLIs by default.
 
 ```sh
 # 1. Install JS deps + start Supabase locally
@@ -24,9 +24,9 @@ supabase start
 # 2. Build the Rust workspace
 cargo build --workspace
 
-# 3. Set provider keys (project-specific keys, NOT your personal CLI key)
+# 3. Configure local runtime.
 cp .env.example .env
-$EDITOR .env   # ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY
+$EDITOR .env   # default path is CLI/subscription runners; provider API keys stay blank unless testing --runner api
 
 # 4. Run the M1 end-to-end smoke
 bash tests/m1-pipeline.sh
@@ -37,6 +37,21 @@ cd apps/web && pnpm dev   # http://localhost:3000
 # 6. (Optional) Serve the local research viewer
 cd research/site && pnpm install && pnpm dev   # http://localhost:3100
 ```
+
+For Docker CLI mode on macOS, Claude Code needs its Keychain OAuth item exported
+once into a restricted file:
+
+```sh
+security find-generic-password -s 'Claude Code-credentials' -w \
+  > ~/.claude/docker-claude-code-credentials.secret
+chmod 600 ~/.claude/docker-claude-code-credentials.secret
+```
+
+The compose setup mounts only the specific Claude, Codex, and Gemini auth files
+read-only; the orchestrator entrypoint copies them into `/home/grokrxiv` at
+startup. Codex uses `~/.codex/auth.json`; Gemini uses
+`~/.gemini/oauth_creds.json` plus `~/.gemini/google_accounts.json`, with a
+minimal container-local OAuth settings file generated at startup.
 
 ## Project layout
 

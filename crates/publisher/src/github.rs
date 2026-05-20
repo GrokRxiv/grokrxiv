@@ -190,6 +190,49 @@ impl GithubPublisher {
         Ok(())
     }
 
+    /// Create or update the stable gate-feedback issue comment on a PR.
+    ///
+    /// PR conversation comments use GitHub's issues comments API. We first
+    /// scan existing comments for `stable_marker`; when present, that comment
+    /// is patched in place so repeated gate failures do not spam the PR.
+    pub async fn post_or_update_gate_feedback(
+        &self,
+        _caller: &AdminCaller,
+        pr_number: u64,
+        stable_marker: &str,
+        body_md: &str,
+    ) -> Result<GateFeedbackComment> {
+        let body = gate_feedback_body(stable_marker, body_md)?;
+        let comments: Vec<IssueCommentResponse> = self
+            .api_get(&format!("issues/{pr_number}/comments"))
+            .await
+            .with_context(|| format!("list comments on PR #{pr_number}"))?;
+
+        let response: IssueCommentResponse = if let Some(existing) = comments
+            .into_iter()
+            .find(|comment| comment.body.contains(stable_marker))
+        {
+            self.api_patch(
+                &format!("issues/comments/{}", existing.id),
+                &IssueCommentRequest { body },
+            )
+            .await
+            .with_context(|| format!("update gate feedback comment {}", existing.id))?
+        } else {
+            self.api_post(
+                &format!("issues/{pr_number}/comments"),
+                &IssueCommentRequest { body },
+            )
+            .await
+            .with_context(|| format!("create gate feedback comment on PR #{pr_number}"))?
+        };
+
+        Ok(GateFeedbackComment {
+            comment_id: response.id,
+            html_url: response.html_url,
+        })
+    }
+
     async fn api_get<T: serde::de::DeserializeOwned>(&self, suffix: &str) -> Result<T> {
         let url = format!("/repos/{}/{}/{suffix}", self.owner, self.repo);
         self.client.get(&url, None::<&()>).await.map_err(Into::into)
@@ -249,6 +292,18 @@ pub struct OpenReviewPr {
     /// publisher always prepends the public disclaimer and appends the review
     /// id marker; this is intermediate prose only.
     pub body_md: String,
+    /// Optional editable manuscript path included in revision-needed PRs.
+    /// The orchestrator's synchronize webhook uses this marker to re-review
+    /// the changed manuscript snapshot from the PR head branch.
+    pub correction_source_path: Option<String>,
+}
+
+/// Stable reference returned after creating or updating a gate-feedback
+/// comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateFeedbackComment {
+    pub comment_id: u64,
+    pub html_url: String,
 }
 
 /// Build the canonical PR body. Enforces only the
@@ -262,13 +317,66 @@ fn build_pr_body(params: &OpenReviewPr) -> Result<String> {
     if params.body_md.contains("grokrxiv-review-id:") {
         anyhow::bail!("caller body_md may not contain the grokrxiv-review-id marker");
     }
+    if params.body_md.contains("grokrxiv-correction-source-path:") {
+        anyhow::bail!("caller body_md may not contain the grokrxiv-correction-source-path marker");
+    }
     let mut out = String::new();
     out.push_str(params.body_md.trim());
     if !params.body_md.is_empty() {
         out.push_str("\n\n");
     }
+    if let Some(path) = params
+        .correction_source_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    {
+        validate_correction_source_path(path)?;
+        out.push_str(&format!("grokrxiv-correction-source-path: {path}\n"));
+    }
     out.push_str(&format!("grokrxiv-review-id: {}\n", params.review_id));
     Ok(out)
+}
+
+fn validate_correction_source_path(path: &str) -> Result<()> {
+    if path.starts_with('/') || path.contains("..") || path.trim().is_empty() {
+        anyhow::bail!("correction source path must be relative and stay inside the PR branch");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn build_revision_pr_body_for_test(review_id: Uuid, path: &str, body_md: &str) -> String {
+    build_pr_body(&OpenReviewPr {
+        arxiv_id: "git-tex-test".into(),
+        field: "cs".into(),
+        date: chrono::NaiveDate::from_ymd_opt(2026, 5, 19).unwrap(),
+        files: vec![],
+        title: "Needs revision".into(),
+        review_id,
+        body_md: body_md.into(),
+        correction_source_path: Some(path.into()),
+    })
+    .expect("revision PR body")
+}
+
+fn gate_feedback_body(stable_marker: &str, body_md: &str) -> Result<String> {
+    if stable_marker.trim().is_empty() {
+        anyhow::bail!("stable gate-feedback marker may not be empty");
+    }
+
+    let marker_count = body_md.matches(stable_marker).count();
+    if marker_count == 1 {
+        return Ok(body_md.to_string());
+    }
+
+    let mut body = body_md.replace(stable_marker, "");
+    body = body.trim_end().to_string();
+    if !body.is_empty() {
+        body.push_str("\n\n");
+    }
+    body.push_str(stable_marker);
+    body.push('\n');
+    Ok(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -363,13 +471,17 @@ struct IssueCommentResponse {
     #[allow(dead_code)]
     #[serde(default)]
     id: u64,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    body: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{header, method, path_regex};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     fn client(server: &MockServer) -> octocrab::Octocrab {
         octocrab::OctocrabBuilder::new()
@@ -454,6 +566,7 @@ mod tests {
                     title: "Review: Modular Composition (arXiv:2401.12345)".into(),
                     review_id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
                     body_md: "Moderator-approved review.".into(),
+                    correction_source_path: None,
                 },
             )
             .await
@@ -472,6 +585,7 @@ mod tests {
             title: "x".into(),
             review_id: id,
             body_md: "Looks fine.".into(),
+            correction_source_path: None,
         })
         .expect("build");
         assert!(body.starts_with("Looks fine."));
@@ -534,6 +648,201 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn post_or_update_gate_feedback_creates_new_marker_comment() {
+        let server = MockServer::start().await;
+        let post_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let post_hits_c = post_hits.clone();
+        let marker = "<!-- grokrxiv:gate-feedback:review-123 -->";
+
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |req: &Request| {
+                post_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&req.body).expect("request body is json");
+                let body = payload["body"].as_str().expect("body is string");
+                assert!(body.starts_with("Gate failed."));
+                assert!(body.ends_with(&format!("{marker}\n")));
+                assert_eq!(body.matches(marker).count(), 1);
+                ResponseTemplate::new(201).set_body_string(
+                    r#"{"id":4321,"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-4321"}"#,
+                )
+            })
+            .mount(&server)
+            .await;
+
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "grokrxiv-reviews");
+        let admin = AdminCaller::from_admin_endpoint();
+        let comment = publisher
+            .post_or_update_gate_feedback(&admin, 17, marker, "Gate failed.")
+            .await
+            .expect("create gate feedback comment");
+
+        assert_eq!(comment.comment_id, 4321);
+        assert_eq!(
+            comment.html_url,
+            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-4321",
+        );
+        assert_eq!(post_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn post_or_update_gate_feedback_updates_existing_marker_comment() {
+        let server = MockServer::start().await;
+        let patch_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let patch_hits_c = patch_hits.clone();
+        let marker = "<!-- grokrxiv:gate-feedback:review-123 -->";
+
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&format!(
+                r#"[
+                    {{"id":111,"body":"ordinary comment","html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-111"}},
+                    {{"id":777,"body":"old feedback\n\n{marker}","html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777"}}
+                ]"#
+            )))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("PATCH"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/comments/777$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |req: &Request| {
+                patch_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&req.body).expect("request body is json");
+                let body = payload["body"].as_str().expect("body is string");
+                assert_eq!(body.matches(marker).count(), 1);
+                assert_eq!(body, format!("New gate feedback.\n\n{marker}\n"));
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"id":777,"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777"}"#,
+                )
+            })
+            .mount(&server)
+            .await;
+
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "grokrxiv-reviews");
+        let admin = AdminCaller::from_admin_endpoint();
+        let comment = publisher
+            .post_or_update_gate_feedback(&admin, 17, marker, "New gate feedback.")
+            .await
+            .expect("update gate feedback comment");
+
+        assert_eq!(comment.comment_id, 777);
+        assert_eq!(
+            comment.html_url,
+            "https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777",
+        );
+        assert_eq!(patch_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn post_or_update_gate_feedback_reuses_one_comment_for_failure_then_pass() {
+        let server = MockServer::start().await;
+        let marker = "<!-- grokrxiv:gate-feedback:review-123 -->";
+        let get_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let post_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let patch_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let get_hits_c = get_hits.clone();
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |_req: &Request| {
+                let hit = get_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if hit == 0 {
+                    ResponseTemplate::new(200).set_body_string("[]")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                        {
+                            "id": 777,
+                            "body": format!("Gate failed.\n\n{marker}"),
+                            "html_url": "https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777"
+                        }
+                    ]))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let post_hits_c = post_hits.clone();
+        Mock::given(method("POST"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/17/comments$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |req: &Request| {
+                post_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&req.body).expect("request body is json");
+                let body = payload["body"].as_str().expect("body is string");
+                assert!(body.starts_with("Gate failed."));
+                assert_eq!(body.matches(marker).count(), 1);
+                ResponseTemplate::new(201).set_body_string(
+                    r#"{"id":777,"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777"}"#,
+                )
+            })
+            .mount(&server)
+            .await;
+
+        let patch_hits_c = patch_hits.clone();
+        Mock::given(method("PATCH"))
+            .and(path_regex(
+                r"^/repos/GrokRxiv/grokrxiv-reviews/issues/comments/777$",
+            ))
+            .and(header("authorization", "Bearer FAKE"))
+            .respond_with(move |req: &Request| {
+                patch_hits_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&req.body).expect("request body is json");
+                let body = payload["body"].as_str().expect("body is string");
+                assert!(body.starts_with("Gate passed."));
+                assert_eq!(body.matches(marker).count(), 1);
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"id":777,"html_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/17#issuecomment-777"}"#,
+                )
+            })
+            .mount(&server)
+            .await;
+
+        let publisher = GithubPublisher::new(client(&server), "GrokRxiv", "grokrxiv-reviews");
+        let admin = AdminCaller::from_admin_endpoint();
+        let first = publisher
+            .post_or_update_gate_feedback(&admin, 17, marker, "Gate failed.")
+            .await
+            .expect("create gate feedback comment");
+        let second = publisher
+            .post_or_update_gate_feedback(&admin, 17, marker, "Gate passed.")
+            .await
+            .expect("update gate feedback comment");
+
+        assert_eq!(first.comment_id, 777);
+        assert_eq!(second.comment_id, 777);
+        assert_eq!(get_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(post_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(patch_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn parse_pr_number_extracts_trailing_id() {
         assert_eq!(
@@ -556,6 +865,20 @@ mod tests {
     }
 
     #[test]
+    fn revision_pr_body_contains_review_and_correction_source_markers() {
+        let review_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let body = build_revision_pr_body_for_test(
+            review_id,
+            "corrections/git-tex-abc123/paper.tex",
+            "Fix theorem statement.",
+        );
+        assert!(body.contains("grokrxiv-review-id: 11111111-1111-1111-1111-111111111111"));
+        assert!(
+            body.contains("grokrxiv-correction-source-path: corrections/git-tex-abc123/paper.tex")
+        );
+    }
+
+    #[test]
     fn build_pr_body_rejects_caller_injected_marker() {
         let err = build_pr_body(&OpenReviewPr {
             arxiv_id: "2605.12484".into(),
@@ -565,6 +888,7 @@ mod tests {
             title: "x".into(),
             review_id: Uuid::nil(),
             body_md: "evil grokrxiv-review-id: 00000000-0000-0000-0000-000000000000".into(),
+            correction_source_path: None,
         })
         .expect_err("should reject");
         assert!(err.to_string().contains("grokrxiv-review-id"));

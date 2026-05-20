@@ -7,12 +7,14 @@
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use grokrxiv_schemas::AgentRole;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
+use crate::cli_status;
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
     parse_role_model, parse_role_runner, provider_api_allowed, render as render_runtime_config,
@@ -122,6 +124,10 @@ pub struct Cli {
     /// end of the run.
     #[arg(long, global = true, hide = true)]
     pub debug_prompt: bool,
+    /// Emit structured tracing diagnostics to stderr. By default foreground CLI
+    /// runs show only human-readable status lines and final output.
+    #[arg(long, global = true)]
+    pub debug_logs: bool,
     /// RPT3 Wave-3 Team-F: skip selected extraction stages. Comma-separated
     /// names from `{vlm, macros, equations, theorems, citations}`. Each
     /// skipped stage produces a `status: "skipped"` entry in
@@ -137,7 +143,7 @@ pub struct Cli {
 }
 
 /// Hint for `grokrxiv review <source>` when the source can't be inferred.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
     /// arXiv id or URL.
@@ -146,6 +152,8 @@ pub enum SourceType {
     Pdf,
     /// Local LaTeX (.tex) file.
     Tex,
+    /// Git repository containing a PDF or TeX manuscript.
+    Git,
     /// Mixed bundle / unknown.
     Mixed,
 }
@@ -179,14 +187,9 @@ pub enum Command {
         /// arXiv IDs (e.g. `2605.12484`).
         #[arg(required = true)]
         arxiv_ids: Vec<String>,
-        /// Phase 5: after the review reaches `awaiting_moderation`, dispatch
-        /// based on `meta_review.recommendation`:
-        ///   accept | minor_revision → open PR via `approve`
-        ///   reject                  → public rejection via `reject`
-        ///   major_revision          → stays at awaiting_moderation (operator
-        ///                             runs request-changes manually).
-        /// Failures during the auto-step are logged WARN and the review is
-        /// left at awaiting_moderation for manual handling.
+        /// Phase 5: after the review reaches `awaiting_moderation`, open the
+        /// human-review PR. Clean gates use the publication PR body; warn/fail
+        /// gates use the revision-needed PR body.
         #[arg(long)]
         auto_moderate: bool,
     },
@@ -231,21 +234,54 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// The canonical end-to-end entry point.
+    /// The canonical end-to-end entry point. Runs the review and opens the
+    /// GitHub PR used for human review.
     ///
     /// `source` can be:
     /// - an arXiv id (e.g. `2605.12484`),
     /// - an arXiv URL (`https://arxiv.org/abs/...` / `/pdf/...`),
-    /// - `@<path>` to read a newline-delimited file of arXiv sources.
+    /// - a local `.tex` or `.pdf` manuscript,
+    /// - a git repository containing a `.tex` or `.pdf` manuscript,
+    /// - `@<path>` to read a newline-delimited file of review sources.
     ///
-    /// Local PDF/Tex/stdin sources are parsed for dry-run diagnostics, but the
-    /// production review path currently requires arXiv sources.
+    /// arXiv, local `.tex`/`.pdf`, and git repository sources can run through
+    /// the production review path when built with ingest support.
     Review {
         /// Source: arXiv id | URL | path | `-` | `@file`.
         source: String,
         /// Force the source kind when it can't be inferred (e.g. stdin).
         #[arg(long, value_enum)]
         r#type: Option<SourceType>,
+        /// Git revision to review when `--type git` or a git source is inferred.
+        #[arg(long)]
+        rev: Option<String>,
+        /// Relative PDF/TeX manuscript path inside a git repository.
+        #[arg(long, value_name = "PATH")]
+        paper_path: Option<PathBuf>,
+        /// Optional title override for local file or git sources.
+        #[arg(long)]
+        title: Option<String>,
+        /// Optional field/category override for local file or git sources.
+        #[arg(long)]
+        field: Option<String>,
+        /// Scan a git repository/folder for every reviewable TeX/PDF
+        /// manuscript and run one review per discovered paper.
+        #[arg(long)]
+        corpus: bool,
+        /// Relative root inside the git repository to scan when `--corpus`.
+        #[arg(long, value_name = "PATH")]
+        scan_root: Option<PathBuf>,
+        /// Maximum number of corpus manuscripts to review after de-duplication.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Include glob for corpus scan. Repeatable; supports simple `*.tex`
+        /// and `prefix/**` forms.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Exclude glob for corpus scan. Repeatable; supports simple `*.tex`
+        /// and `prefix/**` forms.
+        #[arg(long)]
+        exclude: Vec<String>,
     },
     /// Re-run the review DAG against an already-ingested paper.
     #[command(hide = true)]
@@ -281,22 +317,40 @@ pub enum Command {
     },
 
     // ---------- moderation (admin) ----------
-    /// Open the publication PR on `GrokRxiv/grokrxiv-reviews`.
+    /// Merge the reviewed publication PR and publish/revalidate the web output.
     Approve {
-        /// UUID of the review to approve for PR handoff. This does not merge or publish.
+        /// UUID of the review whose already-open PR should be merged and published.
         review_id: Uuid,
-        /// Bypass the meta_review.recommendation gate. Required when the
-        /// meta-reviewer recommended `reject` or `major_revision`, or when
-        /// no recommendation was recorded.
+        /// Bypass the latest automated publication gate and merge anyway.
         #[arg(long)]
         force: bool,
     },
-    /// Publish a review by merging its open publication PR. The GitHub webhook
-    /// then flips `reviews.status` to `published` and revalidates the public site.
-    #[command(alias = "merge")]
+    /// Open a revision-needed PR for a failed automated review gate.
+    #[command(alias = "needs-revision")]
+    RequestRevisions {
+        /// UUID of the review that needs author revisions.
+        review_id: Uuid,
+        /// Optional moderator note to include in the PR body.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Destructive live smoke for the GitHub correction feedback loop.
+    #[command(hide = true)]
+    FeedbackLoopSmoke {
+        /// Prior review id whose revision PR should receive a smoke commit.
+        review_id: Uuid,
+        /// Maximum time to wait for the webhook-driven re-review.
+        #[arg(long, default_value_t = 3600)]
+        max_wait_secs: u64,
+    },
+    /// Deprecated alias for `approve`.
+    #[command(hide = true, alias = "merge")]
     Publish {
         /// UUID of the review whose PR should be merged.
         review_id: Uuid,
+        /// Bypass the latest automated gate and merge anyway.
+        #[arg(long)]
+        force: bool,
     },
     /// Re-run the post-render html_quality harness on an already-rendered
     /// review. Reads `artifacts/<review_id>/review.html`, runs codex (gpt-5.5)
@@ -436,8 +490,7 @@ pub enum RenderFormat {
 
 /// Run the parsed CLI. Returns a process exit code.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    let status_enabled =
-        cli.status || (!cli.no_status && !cli.json && std::io::stderr().is_terminal());
+    let status_enabled = status_enabled_for_stderr(&cli, std::io::stderr().is_terminal());
     crate::cli_status::set_enabled(status_enabled);
 
     // Resolve layered runtime config once per invocation. The result is held
@@ -558,18 +611,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     );
 
     if dry_run {
-        if let Command::Publish { review_id } = &command {
+        if let Command::Approve { review_id, .. } | Command::Publish { review_id, .. } = &command {
             if json {
                 println!(
                     "{}",
                     serde_json::to_string(&serde_json::json!({
                         "dry_run": true,
-                        "command": "publish",
+                        "command": "approve",
                         "review_id": review_id,
                     }))?
                 );
             } else {
-                println!("dry_run=true command=publish review_id={review_id}");
+                println!("dry_run=true command=approve review_id={review_id}");
             }
             return Ok(());
         }
@@ -603,7 +656,38 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::IngestDaily => ingest_daily().await,
         Command::List { what } => list(what).await,
         Command::Show { review_id, json } => show(review_id, json).await,
-        Command::Review { source, r#type } => review_source(&source, r#type, json, dry_run).await,
+        Command::Review {
+            source,
+            r#type,
+            rev,
+            paper_path,
+            title,
+            field,
+            corpus,
+            scan_root,
+            limit,
+            include,
+            exclude,
+        } => {
+            review_source(
+                &source,
+                r#type,
+                ReviewSourceOptions {
+                    rev,
+                    paper_path,
+                    title,
+                    field,
+                    corpus,
+                    scan_root,
+                    limit,
+                    include,
+                    exclude,
+                },
+                json,
+                dry_run,
+            )
+            .await
+        }
         Command::ReReview { paper_id } => review_paper(paper_id).await,
         Command::ReviewExtracted { source, force } => review_extracted(&source, force, json).await,
         Command::Verify { review_id } => verify(review_id).await,
@@ -613,7 +697,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             out,
         } => render(review_id, format, out).await,
         Command::Approve { review_id, force } => approve(review_id, force, json).await,
-        Command::Publish { review_id } => publish_cmd(review_id, json).await,
+        Command::RequestRevisions { review_id, notes } => {
+            request_revisions(review_id, notes.as_deref(), json).await
+        }
+        Command::FeedbackLoopSmoke {
+            review_id,
+            max_wait_secs,
+        } => feedback_loop_smoke(review_id, max_wait_secs, json).await,
+        Command::Publish { review_id, force } => approve(review_id, force, json).await,
         Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
         Command::Reject { review_id, reason } => reject(review_id, &reason).await,
         Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
@@ -633,6 +724,34 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     result
+}
+
+pub(crate) fn status_enabled_for_stderr(cli: &Cli, stderr_is_terminal: bool) -> bool {
+    cli.status || (!cli.no_status && stderr_is_terminal)
+}
+
+fn emit_pipeline_header(command: &str, subject: &str) {
+    let runner = std::env::var("GROKRXIV_RUNNER_OVERRIDE")
+        .or_else(|_| std::env::var("GROKRXIV_RUNNER"))
+        .unwrap_or_else(|_| "cli".to_string());
+    let extractor = std::env::var("GROKRXIV_EXTRACTOR").unwrap_or_else(|_| "cli".to_string());
+    let cache = if matches!(std::env::var("GROKRXIV_NO_CACHE").as_deref(), Ok("1")) {
+        "off"
+    } else {
+        "on"
+    };
+    let provider_api = if matches!(std::env::var(ALLOW_PROVIDER_API_ENV).as_deref(), Ok("1")) {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    let pairs = [
+        ("runner", runner.as_str()),
+        ("extractor", extractor.as_str()),
+        ("cache", cache),
+        ("provider_api", provider_api),
+    ];
+    cli_status::emit_header(command, subject, &pairs);
 }
 
 // ---------------------------------------------------------------------------
@@ -776,9 +895,7 @@ async fn ingest_many(arxiv_ids: &[String], auto_moderate: bool, json: bool) -> a
     if arxiv_ids.len() <= 1 {
         // Single-paper path stays direct so the M1 smoke output shape is unchanged.
         for id in arxiv_ids {
-            crate::cli_status::emit(format!(
-                "paper {id}: fetch -> extract(vlm, macros, equations, theorems, citations) -> review(summary, technical_correctness, novelty, reproducibility, citation, meta_reviewer) -> verifier -> render -> moderation"
-            ));
+            emit_pipeline_header("ingest", id);
             let review_id =
                 super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
             crate::cli_status::emit(format!(
@@ -1428,8 +1545,34 @@ async fn show(review_id: Uuid, json: bool) -> anyhow::Result<()> {
     let Some(row) = crate::db::show_review(pool, review_id).await? else {
         anyhow::bail!("show: review {review_id} not found");
     };
+    let citation_summary = citation_verifier_summary(pool, review_id).await;
+    let gate = load_publication_gate_context(pool, review_id).await.ok();
     if json {
-        println!("{}", serde_json::to_string_pretty(&row)?);
+        let mut value = serde_json::to_value(&row)?;
+        if let Some(summary) = citation_summary.as_ref() {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "citation_verifier".to_string(),
+                    serde_json::to_value(summary)?,
+                );
+            }
+        }
+        if let Some((_, publication_gate, specialist_gate)) = gate.as_ref() {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "publication_gate".to_string(),
+                    serde_json::json!({
+                        "verdict": publication_gate.verdict,
+                        "recommendation": publication_gate.recommendation.clone(),
+                        "reason": publication_gate.reason.clone(),
+                        "usable_roles": specialist_gate.usable_roles.clone(),
+                        "warning_roles": specialist_gate.warning_roles.clone(),
+                        "blocked_roles": specialist_gate.blocked_roles.clone(),
+                    }),
+                );
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         println!("id          = {}", row.id);
         println!("status      = {}", row.status);
@@ -1448,6 +1591,33 @@ async fn show(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             }
             if let Some(rec) = meta.get("recommendation").and_then(|v| v.as_str()) {
                 println!("recommend   = {}", rec);
+            }
+        }
+        if let Some((_, publication_gate, specialist_gate)) = gate.as_ref() {
+            println!("gate        = {:?}", publication_gate.verdict);
+            println!("gate_reason = {}", truncate(&publication_gate.reason, 220));
+            if !specialist_gate.blocked_roles.is_empty() {
+                println!("blocked     = {}", specialist_gate.blocked_roles.join(", "));
+            }
+            if !specialist_gate.warning_roles.is_empty() {
+                println!("warnings    = {}", specialist_gate.warning_roles.join(", "));
+            }
+        }
+        if let Some(summary) = citation_summary.as_ref() {
+            println!(
+                "citations   = checked={} not_resolved={} needs_review={} unknown={} malformed={} fail_fraction={:.3}",
+                summary.checked,
+                summary.unresolved,
+                summary.unverified,
+                summary.unknown,
+                summary.malformed,
+                summary.unresolved_fraction,
+            );
+            if !summary.evidence.is_empty() {
+                println!("citation checks needing review:");
+                for item in &summary.evidence {
+                    println!("  - {}", item.to_human_line());
+                }
             }
         }
     }
@@ -1527,7 +1697,26 @@ async fn review_extracted(source: &str, force: bool, json: bool) -> anyhow::Resu
             truncate(&title, 80)
         ));
         let review_id = super::supervisor::run_review_for_paper_blocking(&state, paper_id).await?;
-        println!("arxiv_id={arxiv_id} paper_id={paper_id} review_id={review_id}");
+        let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "arxiv_id": arxiv_id,
+                    "paper_id": paper_id,
+                    "review_id": review_id,
+                    "pr_url": pr.pr_url,
+                    "gate_verdict": pr.gate_verdict,
+                    "recommendation": pr.recommendation,
+                    "pr_kind": pr.kind.as_str(),
+                }))?
+            );
+        } else {
+            println!(
+                "arxiv_id={arxiv_id} paper_id={paper_id} review_id={review_id} pr_url={}",
+                pr.pr_url
+            );
+        }
         Ok(())
     }
     #[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
@@ -1648,6 +1837,26 @@ enum ResolvedSource {
     Arxiv(String),
     /// Local file path. Kind is best-guess from the extension.
     LocalFile(std::path::PathBuf, SourceType),
+    /// Git repository source. Corpus expansion can attach an explicit
+    /// manuscript path and group id per resolved paper.
+    GitRepo {
+        repo: String,
+        paper_path: Option<PathBuf>,
+        corpus_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReviewSourceOptions {
+    rev: Option<String>,
+    paper_path: Option<PathBuf>,
+    title: Option<String>,
+    field: Option<String>,
+    corpus: bool,
+    scan_root: Option<PathBuf>,
+    limit: Option<usize>,
+    include: Vec<String>,
+    exclude: Vec<String>,
 }
 
 /// Try to recognise the source as an arXiv id or arXiv URL. Returns the bare
@@ -1726,6 +1935,31 @@ fn guess_local_kind(path: &std::path::Path) -> SourceType {
     }
 }
 
+fn looks_like_git_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    if trimmed.starts_with("git@") || trimmed.ends_with(".git") {
+        return true;
+    }
+    if trimmed.starts_with("https://github.com/")
+        || trimmed.starts_with("http://github.com/")
+        || trimmed.starts_with("https://gitlab.com/")
+        || trimmed.starts_with("http://gitlab.com/")
+    {
+        return true;
+    }
+    let path = std::path::Path::new(trimmed);
+    path.is_dir() && path.join(".git").is_dir()
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn local_source_format(kind: SourceType) -> Option<grokrxiv_ingest::LocalSourceFormat> {
+    match kind {
+        SourceType::Pdf => Some(grokrxiv_ingest::LocalSourceFormat::Pdf),
+        SourceType::Tex => Some(grokrxiv_ingest::LocalSourceFormat::Tex),
+        SourceType::Arxiv | SourceType::Git | SourceType::Mixed => None,
+    }
+}
+
 /// Expand a single source argument into one or more resolved sources.
 ///
 /// - `@file` reads a newline-delimited file.
@@ -1756,7 +1990,7 @@ async fn resolve_source(
         let ext = match kind {
             SourceType::Pdf => ".pdf",
             SourceType::Tex => ".tex",
-            SourceType::Arxiv | SourceType::Mixed => ".bin",
+            SourceType::Arxiv | SourceType::Git | SourceType::Mixed => ".bin",
         };
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -1766,6 +2000,13 @@ async fn resolve_source(
         tokio::fs::write(&path, &buf).await?;
         return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
     }
+    if matches!(type_hint, Some(SourceType::Git)) {
+        return Ok(vec![ResolvedSource::GitRepo {
+            repo: source.to_string(),
+            paper_path: None,
+            corpus_id: None,
+        }]);
+    }
     if let Some(id) = parse_arxiv_source(source) {
         return Ok(vec![ResolvedSource::Arxiv(id)]);
     }
@@ -1774,18 +2015,37 @@ async fn resolve_source(
         let kind = type_hint.unwrap_or_else(|| guess_local_kind(&path));
         return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
     }
-    anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, not a local file)")
+    if looks_like_git_source(source) {
+        return Ok(vec![ResolvedSource::GitRepo {
+            repo: source.to_string(),
+            paper_path: None,
+            corpus_id: None,
+        }]);
+    }
+    anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
 
 /// Canonical end-to-end entry point — `grokrxiv review <source>`.
 async fn review_source(
     source: &str,
     type_hint: Option<SourceType>,
+    options: ReviewSourceOptions,
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     let resolved = resolve_source(source, type_hint).await?;
+    let resolved = expand_corpus_sources(resolved, &options).await?;
     if dry_run {
+        if resolved.len() == 1 {
+            emit_pipeline_header("review", resolved_source_label(&resolved[0]).as_str());
+            cli_status::emit_stage(
+                1,
+                1,
+                "Plan",
+                cli_status::StatusMark::Ok,
+                "dry run; no pipeline work started",
+            );
+        }
         let plan: Vec<serde_json::Value> = resolved
             .iter()
             .map(|s| match s {
@@ -1794,6 +2054,20 @@ async fn review_source(
                     "kind": "local",
                     "path": p.display().to_string(),
                     "type": format!("{k:?}"),
+                }),
+                ResolvedSource::GitRepo {
+                    repo,
+                    paper_path,
+                    corpus_id,
+                } => serde_json::json!({
+                    "kind": "git_repo",
+                    "repo": repo,
+                    "rev": options.rev.as_deref(),
+                    "paper_path": paper_path
+                        .as_ref()
+                        .or(options.paper_path.as_ref())
+                        .map(|p| p.display().to_string()),
+                    "corpus_id": corpus_id,
                 }),
             })
             .collect();
@@ -1811,107 +2085,861 @@ async fn review_source(
         return Ok(());
     }
 
-    // arXiv sources are dispatched through the existing ingest_many path which
-    // handles parallelism + rate limiting. Local files are not supported
-    // end-to-end in RPT2 — we surface a clear error pointing the operator
-    // back at the arXiv path.
-    let arxiv_ids: Vec<String> = resolved
-        .iter()
-        .filter_map(|s| match s {
-            ResolvedSource::Arxiv(id) => Some(id.clone()),
-            _ => None,
-        })
-        .collect();
-    let local: Vec<String> = resolved
-        .iter()
-        .filter_map(|s| match s {
-            ResolvedSource::LocalFile(p, _) => Some(p.display().to_string()),
-            _ => None,
-        })
-        .collect();
-    if !local.is_empty() {
-        anyhow::bail!(
-            "local-file review path is not wired in this build ({} local input(s) deferred to a follow-up). \
-             Use an arXiv id/URL for the canonical end-to-end review.",
-            local.len()
-        );
-    }
-    if arxiv_ids.is_empty() {
+    if resolved.is_empty() {
         anyhow::bail!("no reviewable sources resolved from `{source}`");
     }
 
-    if json {
-        review_arxiv_ids_json(&arxiv_ids).await
-    } else {
-        ingest_many(&arxiv_ids, false, false).await
+    #[cfg(feature = "grokrxiv-ingest")]
+    {
+        review_resolved_sources(&resolved, &options, json).await
+    }
+    #[cfg(not(feature = "grokrxiv-ingest"))]
+    {
+        let _ = (resolved, options, json);
+        anyhow::bail!("review requires --features full (grokrxiv-ingest)")
     }
 }
 
+async fn expand_corpus_sources(
+    resolved: Vec<ResolvedSource>,
+    options: &ReviewSourceOptions,
+) -> anyhow::Result<Vec<ResolvedSource>> {
+    if !options.corpus {
+        return Ok(resolved);
+    }
+    if options.paper_path.is_some() {
+        anyhow::bail!("--corpus cannot be combined with --paper-path; use --scan-root/--include/--exclude instead");
+    }
+    let mut expanded = Vec::new();
+    for source in resolved {
+        match source {
+            ResolvedSource::GitRepo { repo, .. } => {
+                let scan_options = grokrxiv_ingest::CorpusScanOptions {
+                    scan_root: options.scan_root.clone(),
+                    include: options.include.clone(),
+                    exclude: options.exclude.clone(),
+                    limit: options.limit,
+                };
+                let candidates = grokrxiv_ingest::scan_git_repo_corpus(
+                    &repo,
+                    options.rev.as_deref(),
+                    &scan_options,
+                )
+                .await?;
+                let corpus_id =
+                    corpus_id_for(&repo, options.rev.as_deref(), options.scan_root.as_ref());
+                crate::cli_status::emit(format!(
+                    "corpus {corpus_id}: discovered {} manuscript(s)",
+                    candidates.len()
+                ));
+                for candidate in candidates {
+                    expanded.push(ResolvedSource::GitRepo {
+                        repo: repo.clone(),
+                        paper_path: Some(candidate.path),
+                        corpus_id: Some(corpus_id.clone()),
+                    });
+                }
+            }
+            _ => anyhow::bail!("--corpus only supports git repository sources"),
+        }
+    }
+    Ok(expanded)
+}
+
+fn corpus_id_for(repo: &str, rev: Option<&str>, scan_root: Option<&PathBuf>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(repo.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(rev.unwrap_or("HEAD").as_bytes());
+    hasher.update(b"\0");
+    if let Some(scan_root) = scan_root {
+        hasher.update(scan_root.display().to_string().as_bytes());
+    }
+    let hash = hex::encode(hasher.finalize());
+    format!("git-corpus-{}", &hash[..12])
+}
+
 #[cfg(feature = "grokrxiv-ingest")]
-async fn review_arxiv_ids_json(arxiv_ids: &[String]) -> anyhow::Result<()> {
+async fn review_resolved_sources(
+    resolved: &[ResolvedSource],
+    options: &ReviewSourceOptions,
+    json: bool,
+) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?;
 
-    let mut results: Vec<serde_json::Value> = Vec::with_capacity(arxiv_ids.len());
-    for id in arxiv_ids {
-        crate::cli_status::emit(format!(
-            "paper {id}: fetch -> extract -> review -> verifier -> render -> moderation"
-        ));
-        let review_id = super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
-        crate::cli_status::emit(format!(
-            "paper {id}: review_id={review_id} awaiting human moderation"
-        ));
-        // Pull status + per-agent verifier_status for the JSON envelope so the
-        // smoke test can `jq -e .agents | length == 6 and all(.verifier_status==pass)`.
-        let mut envelope = serde_json::json!({
-            "arxiv_id": id,
-            "review_id": review_id,
-            "status": "awaiting_moderation",
-        });
-        if let Some(pool) = state.db.as_ref() {
-            if let Ok((status,)) =
-                sqlx::query_as::<_, (String,)>("select status from reviews where id = $1")
-                    .bind(review_id)
-                    .fetch_one(pool)
-                    .await
-            {
-                envelope["status"] = serde_json::Value::String(status);
+    let mut results = Vec::with_capacity(resolved.len());
+    for source in resolved {
+        match source {
+            ResolvedSource::Arxiv(id) => {
+                emit_pipeline_header("review", id);
+                let review_id =
+                    super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
+                crate::cli_status::emit(format!(
+                    "paper {id}: review_id={review_id} opening GitHub review PR"
+                ));
+                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                let paper_id = paper_id_for_review(pool, review_id).await.ok();
+                let envelope = review_result_envelope_with_pr(
+                    review_result_envelope(pool, review_id, "arxiv", id, paper_id).await?,
+                    &pr,
+                );
+                if !json {
+                    println!(
+                        "source_kind=arxiv source_id={id} paper_id={} review_id={review_id} pr_url={}",
+                        envelope
+                            .get("paper_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("<unknown>"),
+                        pr.pr_url
+                    );
+                }
+                results.push(envelope);
             }
-            let agents: Vec<(String, Option<String>)> = sqlx::query_as(
-                "select role, verifier_status from review_agents where review_id = $1 order by role",
-            )
-            .bind(review_id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-            let agents_json: Vec<serde_json::Value> = agents
-                .into_iter()
-                .map(|(role, vs)| {
-                    serde_json::json!({
-                        "role": role,
-                        "verifier_status": vs.unwrap_or_else(|| "unknown".to_string()),
-                    })
-                })
-                .collect();
-            envelope["agents"] = serde_json::Value::Array(agents_json);
+            ResolvedSource::LocalFile(path, kind) => {
+                let spec = grokrxiv_ingest::ReviewSourceSpec::LocalFile {
+                    path: path.clone(),
+                    format: local_source_format(*kind),
+                    title: options.title.clone(),
+                    authors: Vec::new(),
+                    field: options.field.clone(),
+                };
+                let (paper_id, review_id, source_kind, source_id) =
+                    review_prepared_source(&state, spec).await?;
+                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                if !json {
+                    println!(
+                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
+                        pr.pr_url
+                    );
+                }
+                let envelope = review_result_envelope_with_pr(
+                    review_result_envelope(
+                        pool,
+                        review_id,
+                        &source_kind,
+                        &source_id,
+                        Some(paper_id),
+                    )
+                    .await?,
+                    &pr,
+                );
+                results.push(envelope);
+            }
+            ResolvedSource::GitRepo {
+                repo,
+                paper_path,
+                corpus_id,
+            } => {
+                let spec = grokrxiv_ingest::ReviewSourceSpec::GitRepo {
+                    repo: repo.clone(),
+                    rev: options.rev.clone(),
+                    paper_path: paper_path.clone().or_else(|| options.paper_path.clone()),
+                    title: options.title.clone(),
+                    authors: Vec::new(),
+                    field: options.field.clone(),
+                    corpus_id: corpus_id.clone(),
+                };
+                let (paper_id, review_id, source_kind, source_id) =
+                    review_prepared_source(&state, spec).await?;
+                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                if !json {
+                    println!(
+                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
+                        pr.pr_url
+                    );
+                }
+                let envelope = review_result_envelope_with_pr(
+                    review_result_envelope(
+                        pool,
+                        review_id,
+                        &source_kind,
+                        &source_id,
+                        Some(paper_id),
+                    )
+                    .await?,
+                    &pr,
+                );
+                results.push(envelope);
+            }
         }
-        results.push(envelope);
     }
-    if results.len() == 1 {
-        println!("{}", serde_json::to_string_pretty(&results[0])?);
-    } else {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({"reviews": results}))?
-        );
+
+    if json {
+        if results.len() == 1 {
+            println!("{}", serde_json::to_string_pretty(&results[0])?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
     }
     Ok(())
 }
 
-#[cfg(not(feature = "grokrxiv-ingest"))]
-async fn review_arxiv_ids_json(_arxiv_ids: &[String]) -> anyhow::Result<()> {
-    anyhow::bail!("review --json requires --features full (grokrxiv-ingest)")
+fn resolved_source_label(source: &ResolvedSource) -> String {
+    match source {
+        ResolvedSource::Arxiv(id) => id.clone(),
+        ResolvedSource::LocalFile(path, _) => path.display().to_string(),
+        ResolvedSource::GitRepo {
+            repo, paper_path, ..
+        } => paper_path
+            .as_ref()
+            .map(|path| format!("{repo}:{}", path.display()))
+            .unwrap_or_else(|| repo.clone()),
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn review_prepared_source(
+    state: &super::AppState,
+    spec: grokrxiv_ingest::ReviewSourceSpec,
+) -> anyhow::Result<(Uuid, Uuid, String, String)> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?;
+    let prepared = grokrxiv_ingest::prepare_review_source(spec).await?;
+    let source_kind = source_kind_db(prepared.identity.source_kind).to_string();
+    let source_id = prepared.identity.source_id.clone();
+    let display_label = prepared.identity.display_label.clone();
+    let canonical_uri = prepared.identity.canonical_uri.clone();
+    let arxiv_id = prepared.identity.arxiv_id.clone();
+    let content_hash = prepared.identity.content_hash.clone();
+    let source_metadata = serde_json::json!({
+        "display_label": display_label,
+        "canonical_uri": canonical_uri,
+        "arxiv_id": arxiv_id,
+        "adapter": prepared.source_metadata,
+    });
+    let source = crate::db::PaperSourceMetadata {
+        source_kind: source_kind.clone(),
+        source_id: source_id.clone(),
+        source_uri: Some(canonical_uri),
+        source_hash: Some(content_hash),
+        source_metadata,
+    };
+    let paper_id =
+        crate::db::upsert_paper_with_source(pool, &prepared.extract, None, &source).await?;
+    crate::cli_status::emit(format!(
+        "paper {source_id}: prepared {source_kind}; persisted paper_id={paper_id}; starting review DAG"
+    ));
+    let review_id =
+        super::supervisor::run_review_for_extract_blocking(state, paper_id, prepared.extract)
+            .await?;
+    Ok((paper_id, review_id, source_kind, source_id))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn source_kind_db(kind: grokrxiv_ingest::SourceKind) -> &'static str {
+    match kind {
+        grokrxiv_ingest::SourceKind::Arxiv => "arxiv",
+        grokrxiv_ingest::SourceKind::LocalFile => "local_file",
+        grokrxiv_ingest::SourceKind::GitRepo => "git_repo",
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn paper_id_for_review(pool: &sqlx::PgPool, review_id: Uuid) -> sqlx::Result<Uuid> {
+    sqlx::query_scalar("select paper_id from reviews where id = $1")
+        .bind(review_id)
+        .fetch_one(pool)
+        .await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn review_result_envelope(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    source_kind: &str,
+    source_id: &str,
+    paper_id: Option<Uuid>,
+) -> anyhow::Result<serde_json::Value> {
+    let status: String = sqlx::query_scalar("select status from reviews where id = $1")
+        .bind(review_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|_| "awaiting_moderation".to_string());
+    let agents: Vec<(String, Option<String>)> = sqlx::query_as(
+        "select role, verifier_status from review_agents where review_id = $1 order by role",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let agents_json: Vec<serde_json::Value> = agents
+        .into_iter()
+        .map(|(role, vs)| {
+            serde_json::json!({
+                "role": role,
+                "verifier_status": vs.unwrap_or_else(|| "unknown".to_string()),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "paper_id": paper_id.map(|id| id.to_string()),
+        "review_id": review_id,
+        "status": status,
+        "agents": agents_json,
+    }))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewPrDispatchKind {
+    Publication,
+    RevisionNeeded,
+}
+
+impl ReviewPrDispatchKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Publication => "publication",
+            Self::RevisionNeeded => "revision_needed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReviewPrDispatchOutcome {
+    pr_url: String,
+    gate_verdict: crate::review_gate::GateVerdict,
+    recommendation: String,
+    kind: ReviewPrDispatchKind,
+}
+
+fn review_pr_dispatch_kind(gate: &crate::review_gate::PublicationGate) -> ReviewPrDispatchKind {
+    if gate.verdict == crate::review_gate::GateVerdict::Pass {
+        ReviewPrDispatchKind::Publication
+    } else {
+        ReviewPrDispatchKind::RevisionNeeded
+    }
+}
+
+fn review_result_envelope_with_pr(
+    mut envelope: serde_json::Value,
+    pr: &ReviewPrDispatchOutcome,
+) -> serde_json::Value {
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("pr_url".to_string(), serde_json::json!(pr.pr_url.clone()));
+        obj.insert(
+            "gate_verdict".to_string(),
+            serde_json::json!(pr.gate_verdict),
+        );
+        obj.insert(
+            "recommendation".to_string(),
+            serde_json::json!(pr.recommendation.clone()),
+        );
+        obj.insert("pr_kind".to_string(), serde_json::json!(pr.kind.as_str()));
+    }
+    envelope
+}
+
+async fn load_publication_gate_context(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> anyhow::Result<(
+    Option<serde_json::Value>,
+    crate::review_gate::PublicationGate,
+    crate::review_gate::SpecialistGate,
+)> {
+    let meta_review: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    let recommendation = meta_review
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(|v| v.as_str());
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    let publication_gate =
+        crate::review_gate::PublicationGate::evaluate(crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate: specialist_gate.clone(),
+        });
+    Ok((meta_review, publication_gate, specialist_gate))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CitationVerifierSummary {
+    verifier_status: Option<String>,
+    checked: u64,
+    unresolved: u64,
+    unverified: u64,
+    unknown: u64,
+    malformed: u64,
+    unresolved_fraction: f64,
+    evidence: Vec<CitationEvidenceItem>,
+    artifact_hint: String,
+}
+
+impl CitationVerifierSummary {
+    fn to_markdown(&self) -> String {
+        let mut out = format!(
+            "**Citation verifier:** checked={}, not_resolved={}, needs_review={}, unknown={}, malformed={}, fail_fraction={:.3}.\n\n\
+             Full evidence is in `{}`.",
+            self.checked,
+            self.unresolved,
+            self.unverified,
+            self.unknown,
+            self.malformed,
+            self.unresolved_fraction,
+            self.artifact_hint,
+        );
+        if !self.evidence.is_empty() {
+            out.push_str("\n\nCitation checks needing review:\n");
+            for item in &self.evidence {
+                out.push_str("- ");
+                out.push_str(&item.to_human_line());
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CitationEvidenceItem {
+    key: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    year: Option<String>,
+    doi: Option<String>,
+    arxiv_id: Option<String>,
+    url: Option<String>,
+    status: String,
+    source: Option<String>,
+    reason: Option<String>,
+}
+
+impl CitationEvidenceItem {
+    fn from_verifier_entry(entry: &serde_json::Value) -> Option<Self> {
+        let raw = entry
+            .get("raw")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let status = entry
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unverified")
+            .to_string();
+        Some(Self {
+            key: entry
+                .get("citation_key")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| citation_key_from_raw(raw)),
+            title: entry
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty())
+                .or_else(|| bib_field(raw, "title")),
+            author: entry
+                .get("author")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty())
+                .or_else(|| bib_field(raw, "author")),
+            year: entry
+                .get("year")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty())
+                .or_else(|| bib_field(raw, "year").or_else(|| bib_field(raw, "date"))),
+            doi: entry
+                .get("doi")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty())
+                .or_else(|| bib_field(raw, "doi")),
+            arxiv_id: entry
+                .get("arxiv_id")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty()),
+            url: entry
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(clean_citation_text)
+                .filter(|s| !s.is_empty())
+                .or_else(|| bib_field(raw, "url")),
+            status,
+            source: entry
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            reason: entry
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
+    }
+
+    fn to_human_line(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(key) = self.key.as_deref() {
+            parts.push(key.to_string());
+        }
+        let mut title = self
+            .title
+            .clone()
+            .unwrap_or_else(|| "Untitled citation".to_string());
+        if let Some(year) = self.year.as_deref() {
+            if !title.contains(year) {
+                title.push_str(&format!(" ({year})"));
+            }
+        }
+        parts.push(title);
+        if let Some(author) = self.author.as_deref().and_then(short_author_label) {
+            parts.push(author);
+        }
+        parts.push(self.status_label().to_string());
+        if let Some(identifier) = self.identifier_label() {
+            parts.push(identifier);
+        }
+        if let Some(reason) = self.reason.as_deref() {
+            parts.push(human_citation_reason(reason));
+        }
+        truncate(&parts.join(" — "), 280)
+    }
+
+    fn status_label(&self) -> &'static str {
+        match self.effective_status() {
+            "unresolved" => "not resolved",
+            "malformed" => "malformed identifier",
+            "transient_unknown" => "temporarily unknown",
+            "unverified" => "needs verification",
+            "resolved" => "verified",
+            _ => "needs review",
+        }
+    }
+
+    fn effective_status(&self) -> &str {
+        if self.status == "unresolved" && self.is_bibliographic_coverage_gap() {
+            "unverified"
+        } else {
+            self.status.as_str()
+        }
+    }
+
+    fn is_bibliographic_coverage_gap(&self) -> bool {
+        let source_is_biblio = self.source.as_deref() == Some("crossref_bibliographic");
+        let reason_is_coverage_gap = self
+            .reason
+            .as_deref()
+            .map(|reason| {
+                let lower = reason.to_ascii_lowercase();
+                lower.contains("no bibliographic match above score threshold")
+                    || lower.contains("no match above score threshold")
+            })
+            .unwrap_or(false);
+        source_is_biblio && reason_is_coverage_gap
+    }
+
+    fn identifier_label(&self) -> Option<String> {
+        if let Some(doi) = self.doi.as_deref() {
+            return Some(format!("doi:{doi}"));
+        }
+        if let Some(arxiv_id) = self.arxiv_id.as_deref() {
+            return Some(format!("arXiv:{arxiv_id}"));
+        }
+        if let Some(url) = self.url.as_deref() {
+            return Some(format!("url:{url}"));
+        }
+        None
+    }
+}
+
+fn short_author_label(author: &str) -> Option<String> {
+    let author = author.trim();
+    if author.is_empty() {
+        return None;
+    }
+    let first = author.split(" and ").next().unwrap_or(author).trim();
+    let surname = first
+        .split(',')
+        .next()
+        .unwrap_or(first)
+        .split_whitespace()
+        .last()
+        .unwrap_or(first)
+        .trim();
+    if surname.is_empty() {
+        return None;
+    }
+    if author.contains(" and ") {
+        Some(format!("{surname} et al."))
+    } else {
+        Some(surname.to_string())
+    }
+}
+
+fn human_citation_reason(reason: &str) -> String {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("no bibliographic match above score threshold")
+        || lower.contains("no match above score threshold")
+    {
+        "Crossref bibliographic search did not find a strong match".to_string()
+    } else if lower.contains("crossref status 404") && lower.contains("doi resolver status 404") {
+        "not found by Crossref or DOI resolver".to_string()
+    } else if lower.contains("crossref status 404") {
+        "not found in Crossref".to_string()
+    } else if lower.contains("doi resolver status 404") {
+        "DOI resolver returned 404".to_string()
+    } else if lower.contains("not present in arxiv response") {
+        "not present in arXiv metadata response".to_string()
+    } else if lower.contains("malformed") {
+        reason.to_string()
+    } else if lower.contains("status 429") || lower.contains("status 5") {
+        format!("temporary lookup issue: {reason}")
+    } else {
+        reason.to_string()
+    }
+}
+
+fn citation_key_from_raw(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        if let Some((_, after_open)) = rest.split_once('{') {
+            let key = after_open.split(',').next().unwrap_or_default().trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    if let Some((key, _)) = trimmed.split_once(':') {
+        let key = key.trim();
+        if !key.is_empty()
+            && key.len() <= 96
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Some(key.to_string());
+        }
+    }
+    None
+}
+
+fn bib_field(raw: &str, field: &str) -> Option<String> {
+    let idx = raw
+        .find(&format!("{field} ="))
+        .or_else(|| raw.find(&format!("{field}=")))?;
+    let after_equals = raw[idx..].split_once('=')?.1.trim_start();
+    let (value, _) = parse_bib_value(after_equals)?;
+    let cleaned = clean_citation_text(&value);
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn parse_bib_value(input: &str) -> Option<(String, usize)> {
+    let mut chars = input.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '{' {
+        let mut depth = 1usize;
+        let start = 1usize;
+        for (idx, ch) in chars {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some((input[start..idx].to_string(), idx + ch.len_utf8()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+    if first == '"' {
+        let start = 1usize;
+        for (idx, ch) in chars {
+            if ch == '"' {
+                return Some((input[start..idx].to_string(), idx + ch.len_utf8()));
+            }
+        }
+        return None;
+    }
+    let value = input
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((value, input.find(',').unwrap_or(input.len())))
+}
+
+fn clean_citation_text(value: &str) -> String {
+    value
+        .replace("{{", "")
+        .replace("}}", "")
+        .replace('{', "")
+        .replace('}', "")
+        .replace("\\\"", "\"")
+        .replace("\\'", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn citation_verifier_summary(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> Option<CitationVerifierSummary> {
+    let row: Option<(Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
+        "select verifier_status, verifier_notes \
+         from review_agents \
+         where review_id = $1 and role = 'citation' \
+         order by created_at desc \
+         limit 1",
+    )
+    .bind(review_id)
+    .fetch_optional(pool)
+    .await
+    .ok()?;
+    let (verifier_status, verifier_notes) = row?;
+    let notes = verifier_notes.as_ref()?;
+    let citation_notes = notes
+        .get("citation")
+        .and_then(|v| v.get("notes"))
+        .unwrap_or(notes);
+    let checked = citation_notes
+        .get("checked")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let entry_items: Vec<CitationEvidenceItem> = citation_notes
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(CitationEvidenceItem::from_verifier_entry)
+        .collect();
+    let (unresolved, unverified, unknown, malformed, unresolved_fraction) =
+        if entry_items.is_empty() {
+            let unresolved = citation_notes
+                .get("unresolved")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+                .unwrap_or(0);
+            let unverified = citation_notes
+                .get("unverified")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+                .unwrap_or(0);
+            let unknown = citation_notes
+                .get("unknown")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+                .unwrap_or(0);
+            let malformed = citation_notes
+                .get("malformed")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+                .unwrap_or(0);
+            let unresolved_fraction = citation_notes
+                .get("unresolved_fraction")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            (
+                unresolved,
+                unverified,
+                unknown,
+                malformed,
+                unresolved_fraction,
+            )
+        } else {
+            let unresolved = entry_items
+                .iter()
+                .filter(|entry| entry.effective_status() == "unresolved")
+                .count() as u64;
+            let unverified = entry_items
+                .iter()
+                .filter(|entry| entry.effective_status() == "unverified")
+                .count() as u64;
+            let unknown = entry_items
+                .iter()
+                .filter(|entry| entry.effective_status() == "transient_unknown")
+                .count() as u64;
+            let malformed = entry_items
+                .iter()
+                .filter(|entry| entry.effective_status() == "malformed")
+                .count() as u64;
+            let definitive_total = checked.saturating_sub(unknown).saturating_sub(unverified);
+            let bad = unresolved + malformed;
+            let unresolved_fraction = if definitive_total == 0 {
+                0.0
+            } else {
+                bad as f64 / definitive_total as f64
+            };
+            (
+                unresolved,
+                unverified,
+                unknown,
+                malformed,
+                unresolved_fraction,
+            )
+        };
+    let evidence = entry_items
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                entry.effective_status(),
+                "unresolved" | "unverified" | "transient_unknown" | "malformed"
+            )
+        })
+        .take(8)
+        .collect();
+    Some(CitationVerifierSummary {
+        verifier_status,
+        checked,
+        unresolved,
+        unverified,
+        unknown,
+        malformed,
+        unresolved_fraction,
+        evidence,
+        artifact_hint: format!("artifacts/{review_id}/bundle.zip agents/citation.json"),
+    })
+}
+
+async fn open_review_pr_for_gate(
+    state: &super::AppState,
+    review_id: Uuid,
+    json: bool,
+    emit_output: bool,
+) -> anyhow::Result<ReviewPrDispatchOutcome> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?;
+    let (_, gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let kind = review_pr_dispatch_kind(&gate);
+    let pr_url = match kind {
+        ReviewPrDispatchKind::Publication => {
+            open_publication_pr_impl(state, review_id, false, json, emit_output).await?
+        }
+        ReviewPrDispatchKind::RevisionNeeded => {
+            request_revisions_impl(state, review_id, None, json, emit_output).await?
+        }
+    };
+    crate::cli_status::emit(format!(
+        "review {review_id}: PR [{}] {pr_url}",
+        kind.as_str()
+    ));
+    Ok(ReviewPrDispatchOutcome {
+        pr_url,
+        gate_verdict: gate.verdict,
+        recommendation: gate.recommendation,
+        kind,
+    })
 }
 
 async fn verify(review_id: Uuid) -> anyhow::Result<()> {
@@ -1963,20 +2991,19 @@ async fn render(
 
 async fn approve(review_id: Uuid, force: bool, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
-        "review {review_id}: opening publication PR; human merge is required before publish"
+        "review {review_id}: approving reviewed PR and publishing"
     ));
-    let config = super::Config::from_env();
-    let state = super::AppState::from_config(config).await?;
-    approve_impl(&state, review_id, force, json).await
+    publish_cmd(review_id, force, json).await
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn approve_impl(
+async fn open_publication_pr_impl(
     state: &super::AppState,
     review_id: Uuid,
     force: bool,
     json: bool,
-) -> anyhow::Result<()> {
+    emit_output: bool,
+) -> anyhow::Result<String> {
     use grokrxiv_publisher::{AdminCaller, GithubPublisher, OpenReviewPr};
     use grokrxiv_schemas::ReviewStatus;
 
@@ -1986,8 +3013,19 @@ async fn approve_impl(
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
     // Read the review row + the joined paper for branch + field + arxiv_id.
-    let row: (Uuid, String, String, Option<String>, Uuid, String) = sqlx::query_as(
-        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public') \
+    let row: (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Uuid,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public'), r.github_pr_url, \
+                coalesce(p.source_kind, 'arxiv'), p.source_id \
          from reviews r join papers p on p.id = r.paper_id \
          where r.id = $1",
     )
@@ -1995,47 +3033,114 @@ async fn approve_impl(
     .fetch_one(pool)
     .await
     .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
-    let (_, arxiv_id, title, field, paper_id, visibility) = row;
+    let (_, arxiv_id, title, field, paper_id, visibility, existing_pr_url, source_kind, source_id) =
+        row;
+    let source_ref =
+        crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
+    let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
 
     // Phase 2: recommendation gate. Read meta_review.recommendation and bail
     // unless the operator passed --force. Missing recommendation is also a
     // bail — better to fail loudly than to publish an unverified row.
-    let meta_recommendation: Option<String> =
-        sqlx::query_scalar("select meta_review->>'recommendation' from reviews where id = $1")
+    let meta_review: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
             .bind(review_id)
             .fetch_one(pool)
             .await
             .unwrap_or(None);
-    match meta_recommendation.as_deref() {
-        Some("accept") | Some("minor_revision") => {}
-        Some(rec @ ("reject" | "major_revision")) if !force => {
-            anyhow::bail!(
-                "meta_reviewer recommended `{rec}` for review {review_id}. \
-                 Refusing to open a PR. Use `grokrxiv reject {review_id} --reason …` \
-                 or `grokrxiv request-changes {review_id} --notes …`; if you want \
-                 to publish anyway, re-run with `--force`."
-            );
+    let meta_recommendation = meta_review
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(|v| v.as_str());
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    let publication_gate =
+        crate::review_gate::PublicationGate::evaluate(crate::review_gate::PublicationGateInput {
+            recommendation: meta_recommendation,
+            specialist_gate,
+        });
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
+        let failure = crate::github_feedback::gate_failure_from_publication_gate(
+            review_id,
+            &publication_gate,
+            meta_review.as_ref(),
+        );
+        let _ = crate::github_feedback::record_gate_failure(state, review_id, &failure).await;
+        if let Some(pr_url) = existing_pr_url.as_deref() {
+            if let Some(pr_number) = grokrxiv_publisher::parse_pr_number(pr_url) {
+                let (owner, repo) = review_repo_for_visibility(&visibility);
+                let body = crate::github_feedback::gate_failure_comment_body(
+                    review_id,
+                    &publication_gate.recommendation,
+                    &failure,
+                );
+                match crate::github_feedback::post_or_update_gate_feedback_comment(
+                    state,
+                    &owner,
+                    &repo,
+                    pr_number as i64,
+                    &format!("review-{review_id}"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(Some(comment)) => {
+                        if let Ok(comment_id) = i64::try_from(comment.comment_id) {
+                            let _ = crate::db::attach_gate_feedback_comment(
+                                pool,
+                                review_id,
+                                comment_id,
+                                &comment.html_url,
+                            )
+                            .await;
+                            let _ = crate::db::upsert_github_review_thread(
+                                pool,
+                                review_id,
+                                paper_id,
+                                &owner,
+                                &repo,
+                                Some(pr_number as i64),
+                                Some(pr_url),
+                                None,
+                                None,
+                            )
+                            .await;
+                            let _ = crate::db::update_github_feedback_comment(
+                                pool,
+                                review_id,
+                                comment_id,
+                                &comment.html_url,
+                            )
+                            .await;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(%review_id, err = %e, "approve gate failure: GitHub feedback comment failed");
+                    }
+                }
+            }
         }
-        Some(rec @ ("reject" | "major_revision")) => {
-            tracing::warn!(
-                %review_id,
-                recommendation = rec,
-                "approve --force: bypassing meta_review.recommendation gate"
-            );
-        }
+        anyhow::bail!(
+            "review {review_id} is not cleanly publishable: {} \
+             Use `grokrxiv request-revisions {review_id}`, `grokrxiv reject {review_id} --reason …`, \
+             or re-run approve with `--force` to override.",
+            publication_gate.reason
+        );
+    }
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && force {
+        tracing::warn!(
+            %review_id,
+            recommendation = %publication_gate.recommendation,
+            reason = %publication_gate.reason,
+            "approve --force: bypassing automated publication gate"
+        );
+    }
+    match meta_recommendation {
+        Some("accept" | "minor_revision" | "major_revision" | "reject") => {}
         Some(other) => {
-            tracing::warn!(%review_id, recommendation = other, "approve: unknown recommendation value, treating as ok");
+            tracing::warn!(%review_id, recommendation = other, "approve: unknown recommendation value");
         }
-        None if force => {
-            tracing::warn!(%review_id, "approve --force: no meta_review.recommendation recorded, bypassing gate");
-        }
-        None => {
-            anyhow::bail!(
-                "review {review_id} has no meta_review.recommendation \
-                 (incomplete review run?). Re-run `grokrxiv re-review <paper_id>` \
-                 first, or pass `--force` to override."
-            );
-        }
+        None => {}
     }
 
     // Read on-disk artifacts produced by the M1 run.
@@ -2043,11 +3148,11 @@ async fn approve_impl(
     let now = chrono::Utc::now();
     let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
     let repo_prefix = format!(
-        "reviews/{year}/{month:02}/{field}/{arxiv_id}",
+        "reviews/{year}/{month:02}/{field}/{artifact_id}",
         year = now.format("%Y"),
         month = now.format("%m").to_string().parse::<u32>().unwrap_or(1),
         field = field.as_deref().unwrap_or("cs"),
-        arxiv_id = arxiv_id,
+        artifact_id = artifact_id,
     );
     for name in ["review.html", "review.md", "review.tex", "bundle.zip"] {
         let path = dir_local.join(name);
@@ -2078,28 +3183,26 @@ async fn approve_impl(
             "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
             &review_id.simple().to_string()[..8]
         );
-        let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
-            .bind(review_id)
-            .bind(&simulated)
-            .execute(pool)
-            .await;
+        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
         // Public simulated approvals should flip the badge on the local site;
         // private approvals stay dashboard/private-repo only.
         if visibility == "public" {
             crate::routes::webhook::spawn_revalidate(state, review_id);
         }
-        if json {
+        if emit_output && json {
             println!(
                 "{}",
                 serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open", "visibility": visibility})
             );
-        } else {
+        } else if emit_output {
             println!("pr_url={simulated}");
         }
-        crate::cli_status::emit(format!(
-            "review {review_id}: simulated pr_open; publish waits for a real reviewed merge webhook"
-        ));
-        return Ok(());
+        if emit_output {
+            crate::cli_status::emit(format!(
+                "review {review_id}: simulated pr_open; publish waits for a real reviewed merge webhook"
+            ));
+        }
+        return Ok(simulated);
     };
 
     let (owner, repo) = review_repo_for_visibility(&visibility);
@@ -2110,16 +3213,18 @@ async fn approve_impl(
     let publisher = GithubPublisher::new(client, owner, repo);
 
     let admin = AdminCaller::from_admin_endpoint();
-    let raw_pr_title = format!("Review: {} (arXiv:{})", title, arxiv_id);
+    let raw_pr_title = format!("Review: {} ({})", title, source_ref);
     let raw_pr_body = if visibility == "private" {
         format!(
-            "Approved by `grokrxiv approve {review_id}`.\n\n\
+            "Opened by `grokrxiv review ...`.\n\n\
+             **Automated gate:** Pass.\n\n\
              **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview."
         )
     } else {
         format!(
-            "Approved by `grokrxiv approve {review_id}`.\n\n\
+            "Opened by `grokrxiv review ...`.\n\n\
+             **Automated gate:** Pass.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
             public_url = std::env::var("GROKRXIV_PUBLIC_URL")
@@ -2149,13 +3254,14 @@ async fn approve_impl(
     };
 
     let params = OpenReviewPr {
-        arxiv_id: arxiv_id.clone(),
+        arxiv_id: artifact_id.clone(),
         field: field.unwrap_or_else(|| "cs".into()),
         date: chrono::Utc::now().date_naive(),
         files,
         title: cleaned.title,
         review_id,
         body_md: cleaned.body,
+        correction_source_path: None,
     };
     let pr_url = publisher
         .open_review_pr(&admin, params)
@@ -2164,11 +3270,7 @@ async fn approve_impl(
 
     // Persist transition.
     let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
-    let _ = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
-        .bind(review_id)
-        .bind(&pr_url)
-        .execute(pool)
-        .await;
+    let _ = crate::db::set_review_github_pr_url(pool, review_id, &pr_url).await;
 
     // FP-RPT3c C2 — close any superseded PR for this paper.
     close_superseded_pr_if_any_cli(pool, &publisher, &admin, paper_id, &pr_url).await;
@@ -2180,18 +3282,971 @@ async fn approve_impl(
         crate::routes::webhook::spawn_revalidate(state, review_id);
     }
 
-    if json {
+    if emit_output && json {
         println!(
             "{}",
             serde_json::json!({"review_id": review_id, "pr_url": pr_url, "status": "pr_open", "visibility": visibility})
         );
-    } else {
+    } else if emit_output {
         println!("pr_url={pr_url}");
     }
+    if emit_output {
+        crate::cli_status::emit(format!(
+            "review {review_id}: pr_open at {pr_url}; review and merge the PR manually to publish"
+        ));
+    }
+    Ok(pr_url)
+}
+
+async fn request_revisions(review_id: Uuid, notes: Option<&str>, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
-        "review {review_id}: pr_open at {pr_url}; review and merge the PR manually to publish"
+        "review {review_id}: opening revision-needed PR for automated gate failure"
     ));
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let _ = request_revisions_impl(&state, review_id, notes, json, true).await?;
     Ok(())
+}
+
+#[cfg(feature = "grokrxiv-publisher")]
+async fn request_revisions_impl(
+    state: &super::AppState,
+    review_id: Uuid,
+    notes: Option<&str>,
+    json: bool,
+    emit_output: bool,
+) -> anyhow::Result<String> {
+    use grokrxiv_publisher::{AdminCaller, GithubPublisher, OpenReviewPr};
+    use grokrxiv_schemas::ReviewStatus;
+
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+
+    let row: (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Uuid,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = sqlx::query_as(
+        "select r.id, p.arxiv_id, p.title, p.field, p.id, coalesce(r.visibility, 'public'), r.github_pr_url, \
+                coalesce(p.source_kind, 'arxiv'), p.source_id \
+         from reviews r join papers p on p.id = r.paper_id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
+    let (_, arxiv_id, title, field, paper_id, visibility, existing_pr_url, source_kind, source_id) =
+        row;
+    let source_ref =
+        crate::source_display::source_display_ref(&source_kind, source_id.as_deref(), &arxiv_id);
+    let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
+
+    let (meta_review, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let recommendation = publication_gate.recommendation.as_str();
+    let failure = crate::github_feedback::gate_failure_from_publication_gate(
+        review_id,
+        &publication_gate,
+        meta_review.as_ref(),
+    );
+    let _ = crate::github_feedback::record_gate_failure(state, review_id, &failure).await;
+
+    let moderator = moderator_handle();
+    let _ = crate::db::update_moderation_state(
+        pool,
+        review_id,
+        "changes_requested",
+        notes,
+        Some(&moderator),
+    )
+    .await;
+
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let now = chrono::Utc::now();
+    let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
+    let repo_prefix = format!(
+        "reviews/{year}/{month:02}/{field}/{artifact_id}",
+        year = now.format("%Y"),
+        month = now.format("%m").to_string().parse::<u32>().unwrap_or(1),
+        field = field.as_deref().unwrap_or("cs"),
+        artifact_id = artifact_id,
+    );
+    for name in ["review.html", "review.md", "review.tex", "bundle.zip"] {
+        let path = dir_local.join(name);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            files.push((format!("{repo_prefix}/{name}"), bytes));
+        } else {
+            tracing::warn!(path = %path.display(), "request-revisions: artifact missing, skipping");
+        }
+    }
+    if files.is_empty() {
+        anyhow::bail!(
+            "no rendered artifacts found under artifacts/{review_id} — \
+             re-run `grokrxiv review ...` to regenerate."
+        );
+    }
+
+    let correction_source =
+        load_correction_source_snapshot(pool, paper_id, source_id.as_deref()).await?;
+    if let Some(source) = correction_source.as_ref() {
+        files.push((source.repo_path.clone(), source.bytes.clone()));
+    }
+
+    let public_url =
+        std::env::var("GROKRXIV_PUBLIC_URL").unwrap_or_else(|_| "https://grokrxiv.org".into());
+    let note_block = notes
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("\n\n**Moderator notes:**\n\n{s}"))
+        .unwrap_or_default();
+    let citation_block = citation_verifier_summary(pool, review_id)
+        .await
+        .map(|s| format!("\n\n{}", s.to_markdown()))
+        .unwrap_or_default();
+    let correction_instruction = if let Some(source) = correction_source.as_ref() {
+        format!(
+            "Edit the manuscript snapshot at `{}` on this PR branch, commit, and push.",
+            source.repo_path
+        )
+    } else {
+        "No editable manuscript snapshot was available in the extraction artifacts. Push a revised source/PDF change to this PR branch or rerun extraction with source artifacts enabled.".to_string()
+    };
+    let raw_pr_title = format!("Needs revision: {} ({})", title, source_ref);
+    let raw_pr_body = format!(
+        "Opened by `grokrxiv request-revisions {review_id}`.\n\n\
+         **Automated gate:** Needs revision (`{recommendation}`).\n\n\
+         **Public review details:** {public_url}/reviews/{review_id}\n\n\
+         This review is not approved for publication yet. {correction_instruction} Each push triggers GrokRxiv automated re-review through the `pull_request.synchronize` webhook. GrokRxiv updates the stable gate comment with pass/fail status and concrete correction notes until automation accepts the fixes.{note_block}{citation_block}\n\n\
+         {}",
+         failure.summary,
+    );
+
+    let Some(token) = std::env::var("GITHUB_TOKEN").ok() else {
+        tracing::warn!(
+            %review_id,
+            artifacts = files.len(),
+            "GITHUB_TOKEN not set — simulating revision-needed PR (no PR opened)"
+        );
+        let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
+        let (owner, repo) = review_repo_for_visibility(&visibility);
+        let simulated = format!(
+            "https://github.com/{owner}/{repo}/pull/SIMULATED-{}",
+            &review_id.simple().to_string()[..8]
+        );
+        let _ = crate::db::set_review_github_pr_url(pool, review_id, &simulated).await;
+        if emit_output && json {
+            println!(
+                "{}",
+                serde_json::json!({"review_id": review_id, "pr_url": simulated, "status": "pr_open", "visibility": visibility, "gate": "needs_revision"})
+            );
+        } else if emit_output {
+            println!("pr_url={simulated}");
+        }
+        return Ok(simulated);
+    };
+
+    let (owner, repo) = review_repo_for_visibility(&visibility);
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let publisher = GithubPublisher::new(client, owner.clone(), repo.clone());
+    let admin = AdminCaller::from_admin_endpoint();
+
+    let cleaned = if std::env::var("GROKRXIV_HTML_QUALITY_DISABLE")
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+    {
+        crate::html_review::CleanedPrText {
+            title: raw_pr_title.clone(),
+            body: raw_pr_body.clone(),
+            fixes: serde_json::Value::Array(vec![]),
+            summary: String::new(),
+            confidence: 0.0,
+        }
+    } else {
+        crate::html_review::clean_pr_text(state, review_id, &raw_pr_title, &raw_pr_body).await
+    };
+
+    let params = OpenReviewPr {
+        arxiv_id: artifact_id.clone(),
+        field: field.unwrap_or_else(|| "cs".into()),
+        date: chrono::Utc::now().date_naive(),
+        files,
+        title: cleaned.title,
+        review_id,
+        body_md: cleaned.body,
+        correction_source_path: correction_source.as_ref().map(|s| s.repo_path.clone()),
+    };
+    let pr_url = publisher
+        .open_review_pr(&admin, params)
+        .await
+        .map_err(|e| anyhow::anyhow!("open_review_pr: {e}"))?;
+    let pr_number =
+        grokrxiv_publisher::parse_pr_number(&pr_url).and_then(|n| i64::try_from(n).ok());
+
+    let _ = crate::db::set_review_status(pool, review_id, ReviewStatus::PrOpen, None).await;
+    let _ = crate::db::set_review_github_pr_url(pool, review_id, &pr_url).await;
+    let _ = crate::db::upsert_github_review_thread(
+        pool,
+        review_id,
+        paper_id,
+        &owner,
+        &repo,
+        pr_number,
+        Some(&pr_url),
+        None,
+        None,
+    )
+    .await;
+
+    if let Some(pr_number) = pr_number {
+        let body =
+            crate::github_feedback::gate_failure_comment_body(review_id, recommendation, &failure);
+        match crate::github_feedback::post_or_update_gate_feedback_comment(
+            state,
+            &owner,
+            &repo,
+            pr_number,
+            &format!("review-{review_id}"),
+            &body,
+        )
+        .await
+        {
+            Ok(Some(comment)) => {
+                if let Ok(comment_id) = i64::try_from(comment.comment_id) {
+                    let _ = crate::db::attach_gate_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                    let _ = crate::db::update_github_feedback_comment(
+                        pool,
+                        review_id,
+                        comment_id,
+                        &comment.html_url,
+                    )
+                    .await;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(%review_id, err = %e, "request-revisions: GitHub feedback comment failed");
+            }
+        }
+    }
+
+    if let Some(existing) = existing_pr_url.as_deref() {
+        if existing != pr_url {
+            if let Some(old_pr_number) = grokrxiv_publisher::parse_pr_number(existing) {
+                let comment = format!(
+                    "Closed because review `{review_id}` was reopened as a revision-needed PR: {pr_url}"
+                );
+                if let Err(e) = publisher
+                    .close_pr_with_comment(&admin, old_pr_number, &comment)
+                    .await
+                {
+                    tracing::warn!(%review_id, %existing, err = %e, "request-revisions: failed to close superseded PR");
+                }
+            }
+        }
+    }
+
+    if visibility == "public" {
+        crate::routes::webhook::spawn_revalidate(state, review_id);
+    }
+    if emit_output && json {
+        println!(
+            "{}",
+            serde_json::json!({"review_id": review_id, "pr_url": pr_url, "status": "pr_open", "visibility": visibility, "gate": "needs_revision"})
+        );
+    } else if emit_output {
+        println!("pr_url={pr_url}");
+    }
+    if emit_output {
+        crate::cli_status::emit(format!(
+            "review {review_id}: revision-needed PR open at {pr_url}; author pushes trigger automated re-review"
+        ));
+    }
+    Ok(pr_url)
+}
+
+#[derive(Debug, Clone)]
+struct CorrectionSourceSnapshot {
+    repo_path: String,
+    bytes: Vec<u8>,
+}
+
+async fn load_correction_source_snapshot(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    source_id: Option<&str>,
+) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select coalesce(source_kind, 'arxiv'), arxiv_id, source_uri, source_id, source_metadata \
+             from papers where id = $1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_kind, arxiv_id, source_uri, row_source_id, source_metadata)) = row else {
+        return Ok(None);
+    };
+    let stable_source_id = source_id
+        .map(str::to_owned)
+        .or(row_source_id)
+        .unwrap_or_else(|| arxiv_id.clone());
+    let adapter = source_metadata
+        .get("adapter")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    match source_kind.as_str() {
+        "git_repo" => {
+            let repo = adapter
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("git source metadata missing adapter.repo"))?;
+            let paper_path = adapter
+                .get("paper_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("git source metadata missing adapter.paper_path"))?;
+            let paper_path = PathBuf::from(paper_path);
+            ensure_relative_inside_repo(&paper_path)?;
+            let rev = adapter
+                .get("resolved_commit")
+                .and_then(|v| v.as_str())
+                .or_else(|| adapter.get("rev").and_then(|v| v.as_str()));
+            let tmp = tempfile::TempDir::new().context("create temp dir for correction source")?;
+            let checkout = tmp.path().join("repo");
+            run_git_for_correction(["clone", "--quiet", repo, path_to_str(&checkout)?], None)
+                .await
+                .with_context(|| format!("clone correction source {repo}"))?;
+            if let Some(rev) = rev.filter(|s| !s.trim().is_empty()) {
+                run_git_for_correction(["checkout", "--quiet", rev], Some(&checkout))
+                    .await
+                    .with_context(|| format!("checkout correction source revision {rev}"))?;
+            }
+            let source_file = checkout.join(&paper_path);
+            let bytes = tokio::fs::read(&source_file)
+                .await
+                .with_context(|| format!("read correction source {}", paper_path.display()))?;
+            Ok(Some(CorrectionSourceSnapshot {
+                repo_path: correction_repo_path(&stable_source_id, &paper_path),
+                bytes,
+            }))
+        }
+        "local_file" => {
+            let path = adapter
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    source_uri
+                        .as_deref()
+                        .and_then(|uri| uri.strip_prefix("file://"))
+                        .map(PathBuf::from)
+                });
+            let Some(path) = path else {
+                return Ok(None);
+            };
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("read local correction source {}", path.display()))?;
+            Ok(Some(CorrectionSourceSnapshot {
+                repo_path: correction_repo_path(&stable_source_id, &path),
+                bytes,
+            }))
+        }
+        "arxiv" => load_arxiv_correction_source_snapshot(&arxiv_id, &stable_source_id).await,
+        _ => Ok(None),
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn load_arxiv_correction_source_snapshot(
+    arxiv_id: &str,
+    stable_source_id: &str,
+) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
+    let staged = grokrxiv_ingest::ingest_staged(arxiv_id)
+        .await
+        .with_context(|| format!("fetch arXiv correction source {arxiv_id}"))?;
+    if let Some(source_tarball) = staged.source_tarball.as_ref() {
+        match grokrxiv_ingest::extract_main_tex_source(source_tarball) {
+            Ok(main) => {
+                return Ok(Some(CorrectionSourceSnapshot {
+                    repo_path: correction_repo_path(stable_source_id, Path::new(&main.path)),
+                    bytes: main.contents.into_bytes(),
+                }));
+            }
+            Err(e) => {
+                tracing::warn!(%arxiv_id, err = %e, "arXiv source bundle did not yield editable main TeX; falling back to PDF if available");
+            }
+        }
+    }
+    if let Some(pdf_bytes) = staged.pdf_bytes {
+        return Ok(Some(CorrectionSourceSnapshot {
+            repo_path: correction_repo_path(stable_source_id, Path::new("paper.pdf")),
+            bytes: pdf_bytes.to_vec(),
+        }));
+    }
+    Ok(None)
+}
+
+#[cfg(not(feature = "grokrxiv-ingest"))]
+async fn load_arxiv_correction_source_snapshot(
+    _arxiv_id: &str,
+    _stable_source_id: &str,
+) -> anyhow::Result<Option<CorrectionSourceSnapshot>> {
+    Ok(None)
+}
+
+async fn run_git_for_correction<'a, I>(args: I, cwd: Option<&Path>) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    let output = cmd.output().await.context("spawn git")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn path_to_str(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
+}
+
+fn ensure_relative_inside_repo(path: &Path) -> anyhow::Result<()> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("git paper_path must be a relative path inside the repository");
+    }
+    Ok(())
+}
+
+fn correction_repo_path(source_id: &str, source_path: &Path) -> String {
+    let safe_source_id: String = source_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let file_name = source_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("paper.tex");
+    format!("corrections/{safe_source_id}/{file_name}")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPrView {
+    body: Option<String>,
+    url: String,
+    head_ref_name: String,
+    head_repository: GhRepository,
+    head_repository_owner: GhOwner,
+    comments: Vec<GhComment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRepository {
+    name: Option<String>,
+    name_with_owner: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhOwner {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhComment {
+    body: String,
+    url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SmokeEditPlan {
+    edit_path: PathBuf,
+    git_add_paths: Vec<PathBuf>,
+    payload: String,
+}
+
+fn pr_body_needs_revision_refresh(body: &str) -> bool {
+    extract_correction_source_marker(body).is_none()
+}
+
+fn smoke_edit_plan(correction_path: &str) -> anyhow::Result<SmokeEditPlan> {
+    ensure_safe_relative_marker(correction_path)?;
+    let correction = PathBuf::from(correction_path);
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let extension = correction
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "pdf" {
+        let sidecar = correction
+            .parent()
+            .map(|parent| parent.join("grokrxiv-smoke-trigger.md"))
+            .unwrap_or_else(|| PathBuf::from("grokrxiv-smoke-trigger.md"));
+        return Ok(SmokeEditPlan {
+            edit_path: sidecar.clone(),
+            git_add_paths: vec![sidecar],
+            payload: format!(
+                "\n- {timestamp}: GrokRxiv feedback-loop smoke trigger for PDF-backed correction PR `{correction_path}`.\n"
+            ),
+        });
+    }
+    Ok(SmokeEditPlan {
+        edit_path: correction.clone(),
+        git_add_paths: vec![correction],
+        payload: format!("\n% GrokRxiv feedback-loop smoke correction {timestamp}\n"),
+    })
+}
+
+async fn feedback_loop_smoke(
+    review_id: Uuid,
+    max_wait_secs: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+    if std::env::var("GROKRXIV_E2E_ALLOW_GITHUB_PUSH").as_deref() != Ok("1") {
+        anyhow::bail!(
+            "feedback-loop-smoke refuses to push unless GROKRXIV_E2E_ALLOW_GITHUB_PUSH=1"
+        );
+    }
+    for key in ["GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "DATABASE_URL"] {
+        if std::env::var(key)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_none()
+        {
+            anyhow::bail!("{key} must be set for feedback-loop-smoke");
+        }
+    }
+
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let mut thread = crate::db::fetch_feedback_loop_thread(pool, review_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("review {review_id} not found"))?;
+
+    let mut pr_url = thread
+        .github_pr_url
+        .as_deref()
+        .filter(|url| !url.contains("SIMULATED"))
+        .map(str::to_owned);
+    if pr_url.is_none() {
+        pr_url = Some(request_revisions_impl(&state, review_id, None, false, false).await?);
+        thread = crate::db::fetch_feedback_loop_thread(pool, review_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("review {review_id} disappeared after request-revisions")
+            })?;
+    }
+    let pr_url = pr_url.ok_or_else(|| anyhow::anyhow!("review {review_id} has no real PR URL"))?;
+    let (mut owner, mut repo, mut pr_number) = parse_github_pr_url(&pr_url)
+        .or_else(|| {
+            Some((
+                thread.repo_owner.clone()?,
+                thread.repo_name.clone()?,
+                u64::try_from(thread.pr_number?).ok()?,
+            ))
+        })
+        .ok_or_else(|| anyhow::anyhow!("github_pr_url is not a GitHub PR URL: {pr_url}"))?;
+    let mut pr_info = gh_pr_view(&owner, &repo, pr_number).await?;
+    if pr_info
+        .body
+        .as_deref()
+        .map(pr_body_needs_revision_refresh)
+        .unwrap_or(true)
+    {
+        crate::cli_status::emit(format!(
+            "review {review_id}: existing PR lacks correction source marker; refreshing revision PR"
+        ));
+        let refreshed_pr_url =
+            request_revisions_impl(&state, review_id, None, false, false).await?;
+        thread = crate::db::fetch_feedback_loop_thread(pool, review_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("review {review_id} disappeared after revision PR refresh")
+            })?;
+        (owner, repo, pr_number) = parse_github_pr_url(&refreshed_pr_url)
+            .or_else(|| {
+                Some((
+                    thread.repo_owner.clone()?,
+                    thread.repo_name.clone()?,
+                    u64::try_from(thread.pr_number?).ok()?,
+                ))
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "refreshed github_pr_url is not a GitHub PR URL: {refreshed_pr_url}"
+                )
+            })?;
+        pr_info = gh_pr_view(&owner, &repo, pr_number).await?;
+    }
+    let correction_path = pr_info
+        .body
+        .as_deref()
+        .and_then(extract_correction_source_marker)
+        .ok_or_else(|| {
+            anyhow::anyhow!("PR body is missing grokrxiv-correction-source-path marker")
+        })?;
+    ensure_safe_relative_marker(correction_path)?;
+
+    let head_repo = pr_info
+        .head_repository
+        .name_with_owner
+        .clone()
+        .or_else(|| {
+            pr_info
+                .head_repository
+                .name
+                .as_ref()
+                .map(|name| format!("{}/{}", pr_info.head_repository_owner.login, name))
+        })
+        .ok_or_else(|| anyhow::anyhow!("PR head repository is missing from gh output"))?;
+    if pr_info.head_ref_name.trim().is_empty() {
+        anyhow::bail!("PR head branch is missing from gh output");
+    }
+
+    let tmp = tempfile::TempDir::new().context("create feedback-loop smoke checkout")?;
+    let checkout = tmp.path().join("checkout");
+    run_process(
+        "gh",
+        vec![
+            "repo".into(),
+            "clone".into(),
+            head_repo.clone(),
+            path_to_str(&checkout)?.into(),
+        ],
+        None,
+    )
+    .await
+    .with_context(|| format!("clone PR head repository {head_repo}"))?;
+    run_process(
+        "git",
+        vec!["checkout".into(), pr_info.head_ref_name.clone()],
+        Some(&checkout),
+    )
+    .await
+    .with_context(|| format!("checkout PR branch {}", pr_info.head_ref_name))?;
+
+    let correction_file = checkout.join(correction_path);
+    if !correction_file.starts_with(&checkout) {
+        anyhow::bail!("correction source path escapes checkout");
+    }
+    let smoke_plan = smoke_edit_plan(correction_path)?;
+    let edit_file = checkout.join(&smoke_plan.edit_path);
+    if !edit_file.starts_with(&checkout) {
+        anyhow::bail!("smoke edit path escapes checkout");
+    }
+    tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&edit_file)
+        .await
+        .with_context(|| format!("open smoke edit {}", smoke_plan.edit_path.display()))?
+        .write_all(smoke_plan.payload.as_bytes())
+        .await
+        .with_context(|| format!("write smoke edit {}", smoke_plan.edit_path.display()))?;
+    run_process(
+        "git",
+        vec!["config".into(), "user.name".into(), "GrokRxiv Smoke".into()],
+        Some(&checkout),
+    )
+    .await?;
+    run_process(
+        "git",
+        vec![
+            "config".into(),
+            "user.email".into(),
+            "smoke@grokrxiv.local".into(),
+        ],
+        Some(&checkout),
+    )
+    .await?;
+    for path in &smoke_plan.git_add_paths {
+        run_process(
+            "git",
+            vec!["add".into(), path.to_string_lossy().to_string()],
+            Some(&checkout),
+        )
+        .await?;
+    }
+    run_process(
+        "git",
+        vec![
+            "commit".into(),
+            "-m".into(),
+            "test: trigger GrokRxiv feedback-loop smoke".into(),
+        ],
+        Some(&checkout),
+    )
+    .await?;
+    run_process(
+        "git",
+        vec![
+            "push".into(),
+            "origin".into(),
+            format!("HEAD:{}", pr_info.head_ref_name),
+        ],
+        Some(&checkout),
+    )
+    .await
+    .with_context(|| format!("push smoke commit to {}", pr_info.head_ref_name))?;
+    let commit_sha = run_process(
+        "git",
+        vec!["rev-parse".into(), "HEAD".into()],
+        Some(&checkout),
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    let request = poll_rereview_request(pool, review_id, &commit_sha, max_wait_secs).await?;
+    let new_review_id = request
+        .new_review_id
+        .ok_or_else(|| anyhow::anyhow!("re-review finished without new_review_id"))?;
+    let marker = format!("<!-- grokrxiv:gate-feedback:review-{review_id} -->");
+    let gate_comment = gh_find_gate_comment(&owner, &repo, pr_number, &marker).await?;
+    let gate = load_publication_gate_for_review_output(pool, new_review_id).await?;
+
+    let output = serde_json::json!({
+        "prior_review_id": review_id,
+        "new_review_id": new_review_id,
+        "paper_id": thread.paper_id,
+        "request_id": request.id,
+        "pr_url": pr_info.url,
+        "commit_sha": commit_sha,
+        "gate_verdict": gate.verdict,
+        "recommendation": gate.recommendation,
+        "gate_reason": gate.reason,
+        "gate_comment_url": gate_comment.url.or(thread.feedback_comment_url),
+    });
+    if json {
+        println!("{}", output);
+    } else {
+        println!("prior_review_id={review_id}");
+        println!("new_review_id={new_review_id}");
+        println!("request_id={}", request.id);
+        println!("pr_url={}", pr_info.url);
+        println!("commit_sha={commit_sha}");
+        println!("gate_verdict={:?}", gate.verdict);
+        println!("recommendation={}", gate.recommendation);
+        if let Some(url) = output.get("gate_comment_url").and_then(|v| v.as_str()) {
+            println!("gate_comment_url={url}");
+        }
+    }
+    Ok(())
+}
+
+async fn load_publication_gate_for_review_output(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+) -> anyhow::Result<crate::review_gate::PublicationGate> {
+    let meta: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    let recommendation = meta
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(serde_json::Value::as_str);
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    Ok(crate::review_gate::PublicationGate::evaluate(
+        crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate,
+        },
+    ))
+}
+
+async fn poll_rereview_request(
+    pool: &sqlx::PgPool,
+    prior_review_id: Uuid,
+    commit_sha: &str,
+    max_wait_secs: u64,
+) -> anyhow::Result<crate::db::RereviewRequestStatus> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(max_wait_secs);
+    loop {
+        if let Some(row) =
+            crate::db::fetch_rereview_request_for_commit(pool, prior_review_id, commit_sha).await?
+        {
+            match row.state.as_str() {
+                "done" => return Ok(row),
+                "failed" => {
+                    anyhow::bail!(
+                        "feedback-loop re-review failed: {}",
+                        row.error.as_deref().unwrap_or("no error recorded")
+                    );
+                }
+                _ => {}
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for re-review request for commit {commit_sha}");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
+}
+
+async fn gh_pr_view(owner: &str, repo: &str, pr_number: u64) -> anyhow::Result<GhPrView> {
+    let stdout = run_process(
+        "gh",
+        vec![
+            "pr".into(),
+            "view".into(),
+            pr_number.to_string(),
+            "--repo".into(),
+            format!("{owner}/{repo}"),
+            "--json".into(),
+            "body,comments,headRefName,headRepository,headRepositoryOwner,url".into(),
+        ],
+        None,
+    )
+    .await?;
+    serde_json::from_str(&stdout).context("parse gh pr view JSON")
+}
+
+async fn gh_find_gate_comment(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    marker: &str,
+) -> anyhow::Result<GhComment> {
+    let pr = gh_pr_view(owner, repo, pr_number).await?;
+    let matches: Vec<GhComment> = pr
+        .comments
+        .into_iter()
+        .filter(|comment| comment.body.contains(marker))
+        .collect();
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => anyhow::bail!("GitHub PR has no gate feedback comment with marker {marker}"),
+        n => anyhow::bail!("GitHub PR has {n} gate feedback comments with marker {marker}"),
+    }
+}
+
+async fn run_process(
+    program: &str,
+    args: Vec<String>,
+    cwd: Option<&Path>,
+) -> anyhow::Result<String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(&args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    let output = cmd
+        .output()
+        .await
+        .with_context(|| format!("spawn {program}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} {} failed: {}",
+            program,
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_github_pr_url(url: &str) -> Option<(String, String, u64)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number = parts
+        .next()?
+        .split(|c| matches!(c, '?' | '#' | '/'))
+        .next()?
+        .parse()
+        .ok()?;
+    Some((owner, repo, number))
+}
+
+fn extract_correction_source_marker(body: &str) -> Option<&str> {
+    for line in body.lines() {
+        if let Some(rest) = line.trim().strip_prefix("grokrxiv-correction-source-path:") {
+            let path = rest.trim();
+            if !path.is_empty() && ensure_safe_relative_marker(path).is_ok() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn ensure_safe_relative_marker(path: &str) -> anyhow::Result<()> {
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("correction source path must be relative and stay inside the PR branch");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-publisher"))]
+async fn request_revisions_impl(
+    _state: &super::AppState,
+    review_id: Uuid,
+    _notes: Option<&str>,
+    _json: bool,
+    _emit_output: bool,
+) -> anyhow::Result<String> {
+    anyhow::bail!(
+        "request-revisions <{review_id}> requires --features full (grokrxiv-publisher) at build time."
+    )
 }
 
 /// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
@@ -2296,21 +4351,22 @@ fn split_owner_repo(raw: &str) -> Option<(String, String)> {
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]
-async fn approve_impl(
+async fn open_publication_pr_impl(
     _state: &super::AppState,
     review_id: Uuid,
     _force: bool,
     _json: bool,
-) -> anyhow::Result<()> {
+    _emit_output: bool,
+) -> anyhow::Result<String> {
     anyhow::bail!(
-        "approve <{review_id}> requires --features full (grokrxiv-publisher) at build time."
+        "opening a review PR for <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
 }
 
 #[cfg(feature = "grokrxiv-publisher")]
-async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result<()> {
     crate::cli_status::emit(format!(
-        "review {review_id}: merging publication PR; webhook will flip status to published"
+        "review {review_id}: merging reviewed PR and publishing web output"
     ));
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
@@ -2326,32 +4382,65 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let pr_url = pr_url.ok_or_else(|| {
-        anyhow::anyhow!(
-            "review {review_id} has no github_pr_url; run `grokrxiv approve {review_id}` first"
-        )
+        anyhow::anyhow!("review {review_id} has no github_pr_url; run `grokrxiv review ...` first")
     })?;
-    let pr_number = grokrxiv_publisher::parse_pr_number(&pr_url).ok_or_else(|| {
+
+    let meta_review: Option<serde_json::Value> =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None);
+    let recommendation = meta_review
+        .as_ref()
+        .and_then(|m| m.get("recommendation"))
+        .and_then(|v| v.as_str());
+    let specialist_gate = crate::db::load_specialist_gate_for_review(pool, review_id).await?;
+    let publication_gate =
+        crate::review_gate::PublicationGate::evaluate(crate::review_gate::PublicationGateInput {
+            recommendation,
+            specialist_gate,
+        });
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
+        anyhow::bail!(
+            "approve refused: latest automated gate for review {review_id} is not pass: {} \
+             Push fixes to the PR and wait for re-review, or run `grokrxiv approve {review_id} --force`.",
+            publication_gate.reason
+        );
+    }
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass {
+        tracing::warn!(
+            %review_id,
+            reason = %publication_gate.reason,
+            "approve --force: bypassing latest automated gate"
+        );
+    }
+
+    let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
-             Re-run `grokrxiv approve` with GITHUB_TOKEN set."
+             Re-run `grokrxiv review ...` with GITHUB_TOKEN set."
         )
     })?;
 
     let token = std::env::var("GITHUB_TOKEN")
         .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to merge"))?;
-    let owner = std::env::var("GROKRXIV_REVIEWS_OWNER").unwrap_or_else(|_| "GrokRxiv".into());
-    let repo = std::env::var("GROKRXIV_REVIEWS_REPO").unwrap_or_else(|_| "grokrxiv-reviews".into());
     let client = octocrab::OctocrabBuilder::new()
         .personal_token(token)
         .build()
         .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
     let resp = client
-        .pulls(&owner, &repo)
+        .pulls(owner, repo)
         .merge(pr_number)
         .method(octocrab::params::pulls::MergeMethod::Squash)
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("merge PR #{pr_number}: {e}"))?;
+    let published_finalized = if resp.merged {
+        crate::routes::webhook::finalize_published_review(&state, review_id).await?
+    } else {
+        false
+    };
 
     if json {
         println!(
@@ -2362,6 +4451,7 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
                 "merged": resp.merged,
                 "sha": resp.sha,
                 "message": resp.message,
+                "published_finalized": published_finalized,
             })
         );
     } else {
@@ -2372,15 +4462,15 @@ async fn publish_cmd(review_id: Uuid, json: bool) -> anyhow::Result<()> {
         );
     }
     crate::cli_status::emit(format!(
-        "review {review_id}: merged PR #{pr_number}; webhook will flip status to published"
+        "review {review_id}: merged PR #{pr_number}; published_finalized={published_finalized}"
     ));
     Ok(())
 }
 
 #[cfg(not(feature = "grokrxiv-publisher"))]
-async fn publish_cmd(review_id: Uuid, _json: bool) -> anyhow::Result<()> {
+async fn publish_cmd(review_id: Uuid, _force: bool, _json: bool) -> anyhow::Result<()> {
     anyhow::bail!(
-        "publish <{review_id}> requires --features full (grokrxiv-publisher) at build time."
+        "approve <{review_id}> requires --features full (grokrxiv-publisher) at build time."
     )
 }
 
@@ -2499,17 +4589,9 @@ async fn reject(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Phase 5: dispatch on `meta_review.recommendation` after a review reaches
-/// `awaiting_moderation`. Called by `grokrxiv ingest --auto-moderate`.
-///
-/// - `accept` / `minor_revision` → open PR via approve (gate already aligned).
-/// - `reject` → rejection public artifact, rationale = joined weaknesses.
-/// - `major_revision` → leave at awaiting_moderation; operator runs
-///   `grokrxiv request-changes` manually (avoids unbounded re-review loops).
-///
-/// All failures inside this function are logged WARN and bubbled up so the
-/// caller can decide whether to surface them. The review row is never
-/// modified to a worse state on auto-moderate failure.
+/// Phase 5: open the GitHub human-review PR after a review reaches
+/// `awaiting_moderation`. Clean gates open the publication PR; warn/fail gates
+/// open the revision-needed PR with the stable automated feedback comment.
 async fn auto_moderate_review(
     state: &super::AppState,
     review_id: Uuid,
@@ -2536,51 +4618,7 @@ async fn auto_moderate_review(
         recommendation,
         "auto-moderate dispatch"
     );
-    match recommendation {
-        "accept" | "minor_revision" => {
-            #[cfg(feature = "grokrxiv-publisher")]
-            {
-                approve_impl(state, review_id, false, json).await?;
-            }
-            #[cfg(not(feature = "grokrxiv-publisher"))]
-            {
-                anyhow::bail!("auto-moderate accept requires grokrxiv-publisher feature");
-            }
-        }
-        "reject" => {
-            let rationale = meta
-                .as_ref()
-                .and_then(|m| m.get("weaknesses"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|w| w.as_str())
-                        .map(|s| format!("- {s}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    "Auto-rejected by meta_reviewer recommendation; no weaknesses listed.".into()
-                });
-            reject(review_id, &rationale).await?;
-        }
-        "major_revision" => {
-            tracing::info!(
-                target: "auto_moderate",
-                %review_id,
-                "major_revision: leaving at awaiting_moderation; run `grokrxiv request-changes` to dispatch"
-            );
-        }
-        other => {
-            tracing::warn!(
-                target: "auto_moderate",
-                %review_id,
-                recommendation = other,
-                "unknown recommendation; leaving at awaiting_moderation"
-            );
-        }
-    }
+    let _ = open_review_pr_for_gate(state, review_id, json, true).await?;
     Ok(())
 }
 
@@ -2724,6 +4762,7 @@ async fn tail_jobs(kind: Option<String>, state: Option<String>) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_display::source_display_ref;
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -2751,7 +4790,7 @@ mod tests {
             "list",
             "show",
             "approve",
-            "publish",
+            "request-revisions",
             "reject",
             "request-changes",
             "open",
@@ -2763,15 +4802,17 @@ mod tests {
         }
 
         for hidden in [
+            "publish",
             "merge",
             "tail-jobs",
             "html-review",
+            "feedback-loop-smoke",
             "migrate",
             "ingest-range",
             "ingest-daily",
         ] {
             assert!(
-                !help.contains(hidden),
+                !help.contains(&format!("\n  {hidden}")),
                 "did not expect `{hidden}` in default help:\n{help}"
             );
         }
@@ -2784,16 +4825,52 @@ mod tests {
         let publish = Cli::try_parse_from(["grokrxiv", "publish", &review_id.to_string()])
             .expect("publish should parse");
         match publish.command {
-            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            Command::Publish {
+                review_id: parsed,
+                force,
+            } => {
+                assert_eq!(parsed, review_id);
+                assert!(!force);
+            }
             other => panic!("expected publish command, got {other:?}"),
         }
 
-        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string()])
+        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string(), "--force"])
             .expect("hidden merge alias should parse");
         match merge.command {
-            Command::Publish { review_id: parsed } => assert_eq!(parsed, review_id),
+            Command::Publish {
+                review_id: parsed,
+                force,
+            } => {
+                assert_eq!(parsed, review_id);
+                assert!(force);
+            }
             other => panic!("expected publish command from hidden alias, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn source_display_ref_only_prefixes_true_arxiv_sources() {
+        assert_eq!(
+            source_display_ref("arxiv", Some("2605.16051"), "2605.16051"),
+            "arXiv:2605.16051"
+        );
+        assert_eq!(
+            source_display_ref(
+                "local_file",
+                Some("local-pdf-d96363843fd8"),
+                "local-pdf-d96363843fd8"
+            ),
+            "local-pdf-d96363843fd8"
+        );
+        assert_eq!(
+            source_display_ref(
+                "git_repo",
+                Some("git-tex-3a2e680b410f"),
+                "git-tex-3a2e680b410f"
+            ),
+            "git-tex-3a2e680b410f"
+        );
     }
 
     #[tokio::test]
@@ -2812,16 +4889,39 @@ mod tests {
         let status = Cli::try_parse_from(["grokrxiv", "--status", "doctor"]).unwrap();
         assert!(status.status);
         assert!(!status.no_status);
+        assert!(!status.debug_logs);
 
         let no_status = Cli::try_parse_from(["grokrxiv", "--no-status", "doctor"]).unwrap();
         assert!(!no_status.status);
         assert!(no_status.no_status);
+
+        let debug_logs = Cli::try_parse_from(["grokrxiv", "--debug-logs", "doctor"]).unwrap();
+        assert!(debug_logs.debug_logs);
 
         let both = Cli::try_parse_from(["grokrxiv", "--status", "--no-status", "doctor"]);
         assert!(
             both.is_err(),
             "--status and --no-status must be mutually exclusive"
         );
+    }
+
+    #[test]
+    fn json_foreground_runs_still_show_clean_status() {
+        let cli = Cli::try_parse_from(["grokrxiv", "--json", "doctor"]).unwrap();
+        assert!(status_enabled_for_stderr(&cli, true));
+        assert!(!status_enabled_for_stderr(&cli, false));
+    }
+
+    #[test]
+    fn no_status_suppresses_status_even_for_foreground_runs() {
+        let cli = Cli::try_parse_from(["grokrxiv", "--no-status", "doctor"]).unwrap();
+        assert!(!status_enabled_for_stderr(&cli, true));
+    }
+
+    #[test]
+    fn explicit_status_forces_status_for_redirected_stderr() {
+        let cli = Cli::try_parse_from(["grokrxiv", "--status", "--json", "doctor"]).unwrap();
+        assert!(status_enabled_for_stderr(&cli, false));
     }
 
     #[test]
@@ -2932,6 +5032,150 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cli_parses_hidden_feedback_loop_smoke() {
+        let review_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let cli = Cli::try_parse_from([
+            "grokrxiv",
+            "feedback-loop-smoke",
+            &review_id.to_string(),
+            "--max-wait-secs",
+            "3600",
+        ])
+        .expect("hidden smoke command parses");
+        match cli.command {
+            Command::FeedbackLoopSmoke {
+                review_id: parsed,
+                max_wait_secs,
+            } => {
+                assert_eq!(parsed, review_id);
+                assert_eq!(max_wait_secs, 3600);
+            }
+            other => panic!("expected FeedbackLoopSmoke, got {other:?}"),
+        }
+
+        let mut help = Vec::new();
+        Cli::command().write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(!help.contains("feedback-loop-smoke"));
+    }
+
+    #[test]
+    fn citation_evidence_entry_formats_concise_human_text() {
+        let entry = serde_json::json!({
+            "raw": "cohenCubicalTypeTheory2018: title = {Cubical {{Type Theory}}: {{A Constructive Interpretation}} of the {{Univalence Axiom}}}, author = {Cohen, Cyril and Coquand, Thierry and Huber, Simon and M{\\\"o}rtberg, Anders}, year = {2018}, doi = {10.4230/LIPICS.TYPES.2015.5}, abstract = {Long abstract should not appear.}",
+            "status": "unverified",
+            "source": "crossref_bibliographic",
+            "reason": "no bibliographic match above score threshold",
+            "doi": "10.4230/LIPICS.TYPES.2015.5",
+            "title": "Cubical Type Theory: A Constructive Interpretation of the Univalence Axiom"
+        });
+
+        let item = CitationEvidenceItem::from_verifier_entry(&entry).expect("evidence item");
+        let text = item.to_human_line();
+
+        assert!(text.contains("cohenCubicalTypeTheory2018"));
+        assert!(text.contains("Cubical Type Theory"));
+        assert!(text.contains("2018"));
+        assert!(text.contains("needs verification"));
+        assert!(text.contains("10.4230/LIPICS.TYPES.2015.5"));
+        assert!(!text.contains("Long abstract"));
+        assert!(text.len() < 280, "{text}");
+    }
+
+    #[test]
+    fn feedback_loop_pr_without_correction_marker_requires_refresh() {
+        let stale_body = "\
+Needs revision.
+
+grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
+";
+        assert!(pr_body_needs_revision_refresh(stale_body));
+
+        let fresh_body = "\
+Needs revision.
+
+grokrxiv-correction-source-path: corrections/source/paper.tex
+grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
+";
+        assert!(!pr_body_needs_revision_refresh(fresh_body));
+    }
+
+    #[test]
+    fn smoke_edit_plan_uses_sidecar_for_pdf_and_inline_comment_for_tex() {
+        let tex = smoke_edit_plan("corrections/source/paper.tex").expect("tex plan");
+        assert_eq!(tex.edit_path, PathBuf::from("corrections/source/paper.tex"));
+        assert!(tex
+            .git_add_paths
+            .contains(&PathBuf::from("corrections/source/paper.tex")));
+        assert!(tex
+            .payload
+            .contains("% GrokRxiv feedback-loop smoke correction"));
+
+        let pdf = smoke_edit_plan("corrections/source/paper.pdf").expect("pdf plan");
+        assert_eq!(
+            pdf.edit_path,
+            PathBuf::from("corrections/source/grokrxiv-smoke-trigger.md")
+        );
+        assert!(pdf.git_add_paths.contains(&PathBuf::from(
+            "corrections/source/grokrxiv-smoke-trigger.md"
+        )));
+        assert!(!pdf
+            .git_add_paths
+            .contains(&PathBuf::from("corrections/source/paper.pdf")));
+        assert!(pdf.payload.contains("PDF-backed correction PR"));
+    }
+
+    #[test]
+    fn cli_parses_git_corpus_review_options() {
+        let cli = Cli::try_parse_from([
+            "grokrxiv",
+            "--runner",
+            "cli",
+            "--extractor",
+            "cli",
+            "review",
+            "https://github.com/MagnetonIO/emergent_spacetime",
+            "--type",
+            "git",
+            "--rev",
+            "main",
+            "--corpus",
+            "--scan-root",
+            "papers/information-theory/src",
+            "--limit",
+            "1",
+            "--include",
+            "*.tex",
+            "--exclude",
+            "target/**",
+        ])
+        .expect("git corpus review command should parse");
+
+        match cli.command {
+            Command::Review {
+                r#type,
+                corpus,
+                scan_root,
+                limit,
+                include,
+                exclude,
+                ..
+            } => {
+                assert_eq!(r#type, Some(SourceType::Git));
+                assert!(corpus);
+                assert_eq!(
+                    scan_root,
+                    Some(PathBuf::from("papers/information-theory/src"))
+                );
+                assert_eq!(limit, Some(1));
+                assert_eq!(include, vec!["*.tex"]);
+                assert_eq!(exclude, vec!["target/**"]);
+            }
+            other => panic!("expected Review command, got {other:?}"),
+        }
+    }
+
     #[cfg(feature = "grokrxiv-storage")]
     #[test]
     fn extraction_audit_rejects_context_free_citations() {
@@ -2998,7 +5242,7 @@ mod tests {
     }
 
     #[test]
-    fn approve_help_is_pr_handoff_not_publish() {
+    fn approve_help_is_merge_and_publish() {
         let mut cmd = Cli::command();
         let approve = cmd
             .find_subcommand_mut("approve")
@@ -3007,8 +5251,41 @@ mod tests {
         approve.write_long_help(&mut help).unwrap();
         let help = String::from_utf8(help).unwrap();
 
-        assert!(help.contains("Open the publication PR"));
-        assert!(help.contains("does not merge or publish"));
-        assert!(!help.contains("approve and publish"));
+        assert!(help.contains("Merge the reviewed publication PR"));
+        assert!(help.contains("publish"));
+        assert!(!help.contains("does not merge or publish"));
+    }
+
+    #[test]
+    fn review_pr_dispatch_uses_revision_pr_for_non_pass_gates() {
+        let clean = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Pass,
+            reason: "ok".to_string(),
+            recommendation: "accept".to_string(),
+        };
+        assert_eq!(
+            review_pr_dispatch_kind(&clean),
+            ReviewPrDispatchKind::Publication
+        );
+
+        let warned = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Warn,
+            reason: "blocked roles remain".to_string(),
+            recommendation: "accept".to_string(),
+        };
+        assert_eq!(
+            review_pr_dispatch_kind(&warned),
+            ReviewPrDispatchKind::RevisionNeeded
+        );
+
+        let failed = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+        assert_eq!(
+            review_pr_dispatch_kind(&failed),
+            ReviewPrDispatchKind::RevisionNeeded
+        );
     }
 }

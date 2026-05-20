@@ -89,7 +89,7 @@ export async function getReviewById(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status, verifier_notes)",
     )
     .eq("id", id)
     .eq("visibility", "public")
@@ -103,12 +103,19 @@ export async function getPaperByArxivId(arxivId: string): Promise<{
   paper: Paper;
   reviews: ReviewSummary[];
 } | null> {
+  return getPaperBySourceKey(arxivId);
+}
+
+export async function getPaperBySourceKey(sourceKey: string): Promise<{
+  paper: Paper;
+  reviews: ReviewSummary[];
+} | null> {
   if (!isSupabaseConfigured()) return null;
   const supabase = await createSupabaseServerClient();
   const { data: paper, error: paperErr } = await supabase
     .from("papers")
     .select("*")
-    .eq("arxiv_id", arxivId)
+    .or(`arxiv_id.eq.${sourceKey},source_id.eq.${sourceKey}`)
     .single();
   if (paperErr || !paper) return null;
   const { data: reviews } = await supabase

@@ -83,14 +83,29 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, model, output, verifier_status, verifier_notes)",
     )
     .eq("id", id)
     .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .single();
   if (error || !data) return null;
-  return data as unknown as Review;
+  const review = data as unknown as Review;
+  const { data: gateFailure } = await supabase
+    .from("review_gate_failures")
+    .select("summary, details_md, action_required_md, github_comment_url")
+    .eq("review_id", id)
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (gateFailure) {
+    review.gate_failure_reason = gateFailure.summary ?? null;
+    review.gate_failure_instructions =
+      gateFailure.action_required_md ?? gateFailure.details_md ?? null;
+    review.gate_failure_comment_url = gateFailure.github_comment_url ?? null;
+  }
+  return review;
 }
 
 /// Phase 4: fetch the moderator's rationale for a rejected review. Returns
@@ -144,12 +159,19 @@ export async function getPaperByArxivIdAnon(arxivId: string): Promise<{
   paper: Paper;
   reviews: ReviewSummary[];
 } | null> {
+  return getPaperBySourceKeyAnon(arxivId);
+}
+
+export async function getPaperBySourceKeyAnon(sourceKey: string): Promise<{
+  paper: Paper;
+  reviews: ReviewSummary[];
+} | null> {
   if (!isSupabaseConfigured()) return null;
   const supabase = client();
   const { data: paper, error } = await supabase
     .from("papers")
     .select("*")
-    .eq("arxiv_id", arxivId)
+    .or(`arxiv_id.eq.${sourceKey},source_id.eq.${sourceKey}`)
     .single();
   if (error || !paper) return null;
   const { data: reviews } = await supabase
@@ -206,4 +228,14 @@ export async function listAllPaperArxivIdsAnon(): Promise<
     out.push(row.paper);
   }
   return out;
+}
+
+export async function listAllPaperSourceKeysAnon(): Promise<
+  { source_key: string; ingested_at: string }[]
+> {
+  const papers = await listAllPaperArxivIdsAnon();
+  return papers.map((paper) => ({
+    source_key: paper.arxiv_id,
+    ingested_at: paper.ingested_at,
+  }));
 }

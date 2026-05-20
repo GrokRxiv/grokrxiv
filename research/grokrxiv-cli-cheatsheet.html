@@ -228,6 +228,8 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <span data-line=""> </span>
 <span data-line=""><span style="color:#6A737D"># Verify</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --version</span><span style="color:#6A737D">            # grokrxiv 0.1.0</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#6A737D">                     # prints help; does not start the server</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> serve</span><span style="color:#6A737D">               # start HTTP API + supervisor + scheduler</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">               # preflight per-runner reachability check</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#6A737D">        # machine-readable</span></span></code></pre></figure>
 <h2 id="required-environment"><a class="anchor" aria-label="anchor" href="#required-environment">#</a>Required environment</h2>
@@ -253,8 +255,9 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Single paper, default review runner + default extractor = cli</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> --json</span></span>
 <span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Batch parallel (orchestrator fan-out)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> ingest</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> 2605.00316</span><span style="color:#79B8FF"> 2605.00478</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<span data-line=""><span style="color:#6A737D"># Batch from a source manifest (one arXiv id or URL per line)</span></span>
+<span data-line=""><span style="color:#79B8FF">printf</span><span style="color:#9ECBFF"> '%s\n'</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> 2605.00316</span><span style="color:#79B8FF"> 2605.00478</span><span style="color:#F97583"> ></span><span style="color:#9ECBFF"> /tmp/grokrxiv-sources.txt</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#9ECBFF"> @/tmp/grokrxiv-sources.txt</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
 <p>Cost: review and extraction use the local CLI auth path by default. In
 <code>--runner cli --extractor cli</code> runs, GrokRxiv strips provider API key env vars
 from the child <code>claude</code> / <code>codex</code> / <code>gemini</code> processes so the CLIs use their
@@ -273,28 +276,29 @@ when you intend to spend against provider API credits.</p>
 <h3 id="c-forcing-per-role-overrides"><a class="anchor" aria-label="anchor" href="#c-forcing-per-role-overrides">#</a>C. Forcing per-role overrides</h3>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Run everything via API but route the expensive technical_correctness</span></span>
 <span data-line=""><span style="color:#6A737D"># through your Claude Code subscription instead</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> ingest</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> technical_correctness=cli</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#79B8FF">  --json</span></span>
 <span data-line=""> </span>
 <span data-line=""><span style="color:#6A737D"># Run cheap roles on local OSS (requires Ollama running)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> ingest</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> summary=local_inference</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> citation=local_inference</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#79B8FF">  --json</span></span></code></pre></figure>
 <h2 id="approve--real-github-pr"><a class="anchor" aria-label="anchor" href="#approve--real-github-pr">#</a>Approve → real GitHub PR</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># After ingest completes, approve to open a real PR on GrokRxiv/grokrxiv-reviews</span></span>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># After review completes, approve to open a real PR on GrokRxiv/grokrxiv-reviews</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
-<span data-line=""><span style="color:#6A737D"># Returns: {"pr_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/N", ...}</span></span></code></pre></figure>
-<h2 id="make-it-visible-on-the-web"><a class="anchor" aria-label="anchor" href="#make-it-visible-on-the-web">#</a>Make it visible on the web</h2>
-<p>The Supabase RLS gate restricts anon visibility to <code>status IN ('published','corrected')</code>. Until the PR-merge webhook is wired, transition manually:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">docker</span><span style="color:#9ECBFF"> exec</span><span style="color:#9ECBFF"> supabase_db_grokrxiv</span><span style="color:#9ECBFF"> psql</span><span style="color:#79B8FF"> -U</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -d</span><span style="color:#9ECBFF"> postgres</span><span style="color:#79B8FF"> -c</span><span style="color:#9ECBFF"> "</span></span>
-<span data-line=""><span style="color:#9ECBFF">UPDATE reviews SET status='published', published_at=now()</span></span>
-<span data-line=""><span style="color:#9ECBFF">WHERE id = '&#x3C;REVIEW_UUID>';</span></span>
-<span data-line=""><span style="color:#9ECBFF">"</span></span>
+<span data-line=""><span style="color:#6A737D"># Returns: {"pr_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/N", ...}</span></span>
 <span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Verify:</span></span>
-<span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -sf</span><span style="color:#79B8FF"> -o</span><span style="color:#9ECBFF"> /dev/null</span><span style="color:#79B8FF"> -w</span><span style="color:#9ECBFF"> "%{http_code}\n"</span><span style="color:#79B8FF"> \</span></span>
+<span data-line=""><span style="color:#6A737D"># After human review, publish by merging the open PR.</span></span>
+<span data-line=""><span style="color:#6A737D"># You can do this in GitHub, or explicitly from the CLI:</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> publish</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<h2 id="web-visibility"><a class="anchor" aria-label="anchor" href="#web-visibility">#</a>Web visibility</h2>
+<p>Public reviews are visible on the web when <code>visibility='public'</code> and
+<code>status IN ('pr_open','published','corrected','rejected')</code>. <code>grokrxiv approve</code>
+opens the PR and transitions the review to <code>pr_open</code>; the merge webhook later
+flips it to <code>published</code>.</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -sf</span><span style="color:#79B8FF"> -o</span><span style="color:#9ECBFF"> /dev/null</span><span style="color:#79B8FF"> -w</span><span style="color:#9ECBFF"> "%{http_code}\n"</span><span style="color:#79B8FF"> \</span></span>
 <span data-line=""><span style="color:#9ECBFF">  http://localhost:3000/reviews/</span><span style="color:#F97583">&#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span></code></pre></figure>
 <h2 id="useful-flags"><a class="anchor" aria-label="anchor" href="#useful-flags">#</a>Useful flags</h2>
 <table>
@@ -365,7 +369,7 @@ when you intend to spend against provider API credits.</p>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$rid</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.pr_url | test("^https://github.com/")'</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-17T16:10:15.525Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-19T00:03:20.763Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

@@ -13,13 +13,17 @@ pub mod cli_status;
 pub mod config;
 pub mod db;
 pub mod doctor;
+pub mod github_feedback;
 pub mod html_review;
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 pub mod ingest_pipeline;
+pub(crate) mod review_dag;
+pub(crate) mod review_gate;
 pub mod routes;
 pub mod runtime_config;
 pub mod scheduler;
 pub mod serve;
+pub mod source_display;
 pub mod state;
 pub mod stubs;
 pub mod supervisor;

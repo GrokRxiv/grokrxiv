@@ -2,12 +2,14 @@
 #
 # GrokRxiv orchestrator — multi-stage Rust build.
 # Stage 1: compile a release binary against musl-friendly bookworm.
-# Stage 2: Debian slim runtime with CA certs, libssl, tini, and optional Pandoc.
+# Stage 2: Node/Debian slim runtime with CA certs, libssl, tini, optional
+# Pandoc, and optional provider CLIs.
 
 ARG PANDOC_VERSION=3.9.0.2
 ARG PANDOC_SHA256_AMD64=a69abfababda8a56969a254b09f9553a7be89ddec00d4e0fe9fd585d71a67508
 ARG PANDOC_SHA256_ARM64=b6d21e8f9c3b15744f5a7ab40248019157ed7793875dbe0383d4c82ff572b528
 ARG INSTALL_PANDOC=1
+ARG INSTALL_AGENT_CLIS=1
 
 FROM rust:1.82-slim AS builder
 WORKDIR /app
@@ -30,23 +32,29 @@ COPY crates ./crates
 # `include_str!("../../../schemas/...")`, so the schemas tree must be present
 # during the build stage (not just the runtime stage).
 COPY schemas ./schemas
+# The HTML/PR quality prompts are also embedded with `include_str!`.
+COPY prompts ./prompts
 
 ENV RUSTUP_TOOLCHAIN=1.82.0
 RUN cargo build --release -p grokrxiv-orchestrator
 
-FROM debian:bookworm-slim AS runtime
+FROM node:20-bookworm-slim AS runtime
 
 ARG TARGETARCH
 ARG PANDOC_VERSION
 ARG PANDOC_SHA256_AMD64
 ARG PANDOC_SHA256_ARM64
 ARG INSTALL_PANDOC
+ARG INSTALL_AGENT_CLIS
 
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       ca-certificates \
+      git \
+      gosu \
       libssl3 \
+      ripgrep \
       tini; \
     if [ "$INSTALL_PANDOC" = "1" ]; then \
       apt-get install -y --no-install-recommends curl tar; \
@@ -64,6 +72,13 @@ RUN set -eux; \
       rm -rf /tmp/pandoc /tmp/pandoc.tar.gz; \
       apt-get purge -y --auto-remove curl; \
     fi; \
+    if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
+      npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli; \
+      node_arch="$(node -p 'process.arch')"; \
+      mkdir -p /usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep; \
+      ln -sf /usr/bin/rg "/usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep/rg-linux-${node_arch}"; \
+      npm cache clean --force; \
+    fi; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --create-home --shell /usr/sbin/nologin grokrxiv
 
@@ -71,14 +86,18 @@ COPY --from=builder /app/target/release/grokrxiv-orchestrator /usr/local/bin/orc
 COPY agents  /etc/grokrxiv/agents
 COPY schemas /etc/grokrxiv/schemas
 COPY prompts /etc/grokrxiv/prompts
+COPY infra/docker/orchestrator-entrypoint.sh /usr/local/bin/grokrxiv-orchestrator-entrypoint
+RUN chmod 0755 /usr/local/bin/grokrxiv-orchestrator-entrypoint
 
 ENV ORCHESTRATOR_BIND=0.0.0.0:8080 \
     GROKRXIV_AGENTS_DIR=/etc/grokrxiv/agents \
     GROKRXIV_SCHEMAS_DIR=/etc/grokrxiv/schemas \
     GROKRXIV_PROMPTS_DIR=/etc/grokrxiv/prompts \
+    GROKRXIV_CLI_AUTH_SOURCE=/run/secrets/grokrxiv-cli-auth \
+    GROKRXIV_CLI_AUTH_HOME=/home/grokrxiv \
+    HOME=/home/grokrxiv \
     RUST_LOG=info
 
-USER grokrxiv
 EXPOSE 8080
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/grokrxiv-orchestrator-entrypoint"]
 CMD ["/usr/local/bin/orchestrator", "serve"]

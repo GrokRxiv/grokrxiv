@@ -12,5 +12,5 @@ verifiers:
   - json_schema
   - tone
 max_retries: 2
-timeout_secs: 150
+timeout_secs: 360
 escalation: human

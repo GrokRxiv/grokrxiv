@@ -39,7 +39,7 @@ export default function HomePage() {
         </p>
         <div className="flex items-center gap-3">
           <Button asChild size="lg">
-            <Link href="#upload">Upload a PDF</Link>
+            <Link href="#sample-review">Try sample review</Link>
           </Button>
           <Button asChild variant="outline" size="lg">
             <Link href="#how">How it works</Link>
@@ -48,7 +48,7 @@ export default function HomePage() {
       </section>
 
       {/* Upload */}
-      <section className="flex flex-col gap-4">
+      <section id="sample-review" className="flex scroll-mt-24 flex-col gap-4">
         <h2 className="text-2xl font-semibold tracking-tight">
           Try a sample review
         </h2>

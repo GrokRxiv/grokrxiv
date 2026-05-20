@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { ReviewCard } from "@/components/review-card";
+import { sourceAriaLabel } from "@/components/source-label";
 import { Button } from "@/components/ui/button";
 import { listPublishedReviewsAnon } from "@/lib/supabase/anon";
 import { CANONICAL_URL } from "@/lib/env";
@@ -230,8 +231,8 @@ async function ReviewsList({
           </p>
           <p>
             Try widening the search, removing the field filter, or{" "}
-            <Link href="/#upload" className="underline underline-offset-4">
-              upload a sample PDF
+            <Link href="/#sample-review" className="underline underline-offset-4">
+              run a sample preview
             </Link>{" "}
             from the homepage.
           </p>
@@ -240,7 +241,7 @@ async function ReviewsList({
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {data.map((r) => (
             <li key={r.id}>
-              <article aria-label={`Review of arXiv:${r.paper?.arxiv_id ?? ""}`}>
+              <article aria-label={r.paper ? sourceAriaLabel(r.paper) : "Review"}>
                 <ReviewCard review={r} />
               </article>
             </li>

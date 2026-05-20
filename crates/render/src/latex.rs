@@ -38,10 +38,19 @@ pub fn render_latex(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentReco
     out.push_str("\\begin{document}\n");
     out.push_str("\\maketitle\n\n");
 
-    out.push_str(&format!(
-        "\\noindent\\textbf{{arXiv:}} \\href{{https://arxiv.org/abs/{0}}}{{{0}}}",
-        latex_escape(&paper.arxiv_id)
-    ));
+    let source_label = crate::paper_source_label(&paper.arxiv_id);
+    if let Some(source_url) = crate::paper_source_url(&paper.arxiv_id) {
+        out.push_str(&format!(
+            "\\noindent\\textbf{{Source:}} \\href{{{}}}{{{}}}",
+            latex_escape(&source_url),
+            latex_escape(&source_label)
+        ));
+    } else {
+        out.push_str(&format!(
+            "\\noindent\\textbf{{Source:}} \\texttt{{{}}}",
+            latex_escape(&source_label)
+        ));
+    }
     if let Some(field) = &paper.field {
         out.push_str(&format!(
             " \\quad \\textbf{{Field:}} {}",

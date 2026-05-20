@@ -1,8 +1,9 @@
 //! Database helpers for the `jobs`, `reviews`, and `uploads` tables.
 //!
-//! All functions accept a borrowed [`sqlx::PgPool`] and use untyped queries
-//! (`query_as`/`query`) so the crate builds even before migrations are
-//! applied. Migration-driven `query!` macros can replace these later.
+//! All functions accept a borrowed [`sqlx::PgPool`]. The repository boundary
+//! uses typed row structs with runtime-checked SQLx queries so the crate still
+//! builds before migrations are applied. Migration-driven `query!` macros can
+//! replace these helpers later once the query surface is smaller.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
@@ -75,6 +76,32 @@ pub async fn set_review_status(
     Ok(res.rows_affected())
 }
 
+pub(crate) async fn set_review_meta_review(
+    pool: &PgPool,
+    review_id: Uuid,
+    meta_review: &Value,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query("update reviews set meta_review = $2 where id = $1")
+        .bind(review_id)
+        .bind(meta_review)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+pub(crate) async fn set_review_github_pr_url(
+    pool: &PgPool,
+    review_id: Uuid,
+    github_pr_url: &str,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query("update reviews set github_pr_url = $2 where id = $1")
+        .bind(review_id)
+        .bind(github_pr_url)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 /// Insert a row into `uploads` for a fast-preview sample. Returns the inserted
 /// row id.
 pub async fn insert_sample_upload(
@@ -106,6 +133,101 @@ fn serde_plain<T: serde::Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
+pub(crate) fn review_status_from_db_str(s: &str) -> Option<ReviewStatus> {
+    match s {
+        "draft" => Some(ReviewStatus::Draft),
+        "awaiting_moderation" => Some(ReviewStatus::AwaitingModeration),
+        "in_review" => Some(ReviewStatus::InReview),
+        "pr_open" => Some(ReviewStatus::PrOpen),
+        "published" => Some(ReviewStatus::Published),
+        "corrected" => Some(ReviewStatus::Corrected),
+        "withdrawn" => Some(ReviewStatus::Withdrawn),
+        "rejected" => Some(ReviewStatus::Rejected),
+        _ => None,
+    }
+}
+
+pub(crate) fn verifier_status_from_db_str(s: &str) -> Option<VerifierStatus> {
+    match s {
+        "pass" => Some(VerifierStatus::Pass),
+        "warn" => Some(VerifierStatus::Warn),
+        "fail" => Some(VerifierStatus::Fail),
+        _ => None,
+    }
+}
+
+fn agent_role_from_db_str(s: &str) -> Option<AgentRole> {
+    match s {
+        "summary" => Some(AgentRole::Summary),
+        "technical_correctness" => Some(AgentRole::TechnicalCorrectness),
+        "novelty" => Some(AgentRole::Novelty),
+        "reproducibility" => Some(AgentRole::Reproducibility),
+        "citation" => Some(AgentRole::Citation),
+        "meta_reviewer" => Some(AgentRole::MetaReviewer),
+        _ => None,
+    }
+}
+
+/// Load specialist verifier aggregate for the publication gate.
+pub(crate) async fn load_specialist_gate_for_review(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<crate::review_gate::SpecialistGate> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "select role, verifier_status from review_agents \
+         where review_id = $1 and role <> 'meta_reviewer' \
+         order by role",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+    let statuses: Vec<(AgentRole, Option<VerifierStatus>)> = rows
+        .into_iter()
+        .filter_map(|(role, status)| {
+            agent_role_from_db_str(&role).map(|role| {
+                (
+                    role,
+                    status.as_deref().and_then(verifier_status_from_db_str),
+                )
+            })
+        })
+        .collect();
+    Ok(crate::review_gate::SpecialistGate::evaluate(
+        &statuses,
+        crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM,
+        crate::review_dag::canonical_specialist_roles().len(),
+    ))
+}
+
+/// Public-safe source metadata persisted on `papers`.
+#[derive(Debug, Clone, Default)]
+pub struct PaperSourceMetadata {
+    /// Broad source adapter that prepared the paper.
+    pub source_kind: String,
+    /// Stable source identifier. For arXiv this is the arXiv id; for local/git
+    /// sources this is content-hash based.
+    pub source_id: String,
+    /// Canonical source URI when it is safe to persist.
+    pub source_uri: Option<String>,
+    /// SHA-256 or equivalent content hash for the manuscript input.
+    pub source_hash: Option<String>,
+    /// Adapter-specific source metadata, e.g. git commit/repo details.
+    pub source_metadata: Value,
+}
+
+impl PaperSourceMetadata {
+    /// Build the legacy arXiv metadata projection for existing call sites.
+    pub fn arxiv(arxiv_id: &str) -> Self {
+        Self {
+            source_kind: "arxiv".to_string(),
+            source_id: arxiv_id.to_string(),
+            source_uri: Some(format!("https://arxiv.org/abs/{arxiv_id}")),
+            source_hash: None,
+            source_metadata: Value::Object(Default::default()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M1 persistence helpers — paper / review / review_agents
 // ---------------------------------------------------------------------------
@@ -117,17 +239,41 @@ pub async fn upsert_paper(
     extract: &PaperExtract,
     submitted_date: Option<NaiveDate>,
 ) -> sqlx::Result<Uuid> {
+    upsert_paper_with_source(
+        pool,
+        extract,
+        submitted_date,
+        &PaperSourceMetadata::arxiv(&extract.arxiv_id),
+    )
+    .await
+}
+
+/// Insert or update a paper from a `PaperExtract` plus source identity.
+/// Idempotent on `(source_kind, source_id)` while keeping `arxiv_id` populated
+/// for compatibility with existing routes and artifacts.
+pub async fn upsert_paper_with_source(
+    pool: &PgPool,
+    extract: &PaperExtract,
+    submitted_date: Option<NaiveDate>,
+    source: &PaperSourceMetadata,
+) -> sqlx::Result<Uuid> {
     let authors_json =
         serde_json::to_value(&extract.authors).unwrap_or_else(|_| Value::Array(vec![]));
     let id: Uuid = sqlx::query_scalar(
-        "insert into papers (arxiv_id, title, authors, abstract, field, submitted_date)
-         values ($1, $2, $3, $4, $5, $6)
-         on conflict (arxiv_id) do update set
+        "insert into papers \
+           (arxiv_id, title, authors, abstract, field, submitted_date, \
+            source_kind, source_id, source_uri, source_hash, source_metadata)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         on conflict (source_kind, source_id) where source_id is not null do update set
+           arxiv_id = excluded.arxiv_id,
            title = excluded.title,
            authors = excluded.authors,
            abstract = excluded.abstract,
            field = excluded.field,
-           submitted_date = coalesce(excluded.submitted_date, papers.submitted_date)
+           submitted_date = coalesce(excluded.submitted_date, papers.submitted_date),
+           source_uri = excluded.source_uri,
+           source_hash = excluded.source_hash,
+           source_metadata = excluded.source_metadata
          returning id",
     )
     .bind(&extract.arxiv_id)
@@ -136,9 +282,51 @@ pub async fn upsert_paper(
     .bind(extract.abstract_.as_str())
     .bind(extract.field.as_deref())
     .bind(submitted_date)
+    .bind(&source.source_kind)
+    .bind(&source.source_id)
+    .bind(source.source_uri.as_deref())
+    .bind(source.source_hash.as_deref())
+    .bind(&source.source_metadata)
     .fetch_one(pool)
     .await?;
     Ok(id)
+}
+
+/// Refresh the mutable source snapshot for an existing logical paper without
+/// changing its stable `source_id`. Used by GitHub correction-loop re-reviews:
+/// the author pushed a new commit for the same submission, so the paper row
+/// should show the latest title/hash/metadata while existing review links keep
+/// pointing at the same paper id.
+pub async fn update_paper_source_snapshot(
+    pool: &PgPool,
+    paper_id: Uuid,
+    extract: &PaperExtract,
+    source: &PaperSourceMetadata,
+) -> sqlx::Result<u64> {
+    let authors_json =
+        serde_json::to_value(&extract.authors).unwrap_or_else(|_| Value::Array(vec![]));
+    let res = sqlx::query(
+        "update papers set \
+           title = $2, \
+           authors = $3, \
+           abstract = $4, \
+           field = $5, \
+           source_uri = $6, \
+           source_hash = $7, \
+           source_metadata = $8 \
+         where id = $1",
+    )
+    .bind(paper_id)
+    .bind(&extract.title)
+    .bind(authors_json)
+    .bind(extract.abstract_.as_str())
+    .bind(extract.field.as_deref())
+    .bind(source.source_uri.as_deref())
+    .bind(source.source_hash.as_deref())
+    .bind(&source.source_metadata)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 /// Insert a new review row for `paper_id` at `awaiting_moderation`. Returns
@@ -533,6 +721,309 @@ pub async fn insert_correction(
     Ok(id)
 }
 
+/// Insert a durable lifecycle event. `github_delivery_id` is unique when set
+/// and lets webhook handlers acknowledge duplicate deliveries without
+/// repeating side effects.
+pub async fn insert_review_event(
+    pool: &PgPool,
+    review_id: Option<Uuid>,
+    paper_id: Option<Uuid>,
+    event_type: &str,
+    source: &str,
+    payload: &Value,
+    github_delivery_id: Option<&str>,
+) -> sqlx::Result<Option<Uuid>> {
+    let id = Uuid::new_v4();
+    let res = sqlx::query(
+        "insert into review_events \
+           (id, review_id, paper_id, event_type, source, payload, github_delivery_id) \
+         values ($1, $2, $3, $4, $5, $6, $7) \
+         on conflict (github_delivery_id) where github_delivery_id is not null do nothing",
+    )
+    .bind(id)
+    .bind(review_id)
+    .bind(paper_id)
+    .bind(event_type)
+    .bind(source)
+    .bind(payload)
+    .bind(github_delivery_id)
+    .execute(pool)
+    .await?;
+    Ok((res.rows_affected() > 0).then_some(id))
+}
+
+/// Persist a structured automated gate failure for a review.
+pub async fn insert_review_gate_failure(
+    pool: &PgPool,
+    review_id: Uuid,
+    gate: &str,
+    severity: &str,
+    summary: &str,
+    details_md: &str,
+    action_required_md: Option<&str>,
+) -> sqlx::Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "update review_gate_failures \
+         set status = 'superseded', resolved_at = now() \
+         where review_id = $1 and gate = $2 and status = 'open'",
+    )
+    .bind(review_id)
+    .bind(gate)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "insert into review_gate_failures \
+           (id, review_id, gate, severity, summary, details_md, action_required_md) \
+         values ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(id)
+    .bind(review_id)
+    .bind(gate)
+    .bind(severity)
+    .bind(summary)
+    .bind(details_md)
+    .bind(action_required_md)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Attach a GitHub feedback comment URL to every open gate failure for a
+/// review. The publisher keeps exactly one stable comment per review.
+pub async fn attach_gate_feedback_comment(
+    pool: &PgPool,
+    review_id: Uuid,
+    comment_id: i64,
+    comment_url: &str,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update review_gate_failures \
+         set github_comment_id = $2, github_comment_url = $3 \
+         where review_id = $1 and status = 'open'",
+    )
+    .bind(review_id)
+    .bind(comment_id)
+    .bind(comment_url)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Upsert the GitHub publication/review thread associated with a review PR.
+pub async fn upsert_github_review_thread(
+    pool: &PgPool,
+    review_id: Uuid,
+    paper_id: Uuid,
+    repo_owner: &str,
+    repo_name: &str,
+    pr_number: Option<i64>,
+    pr_url: Option<&str>,
+    head_ref: Option<&str>,
+    head_sha: Option<&str>,
+) -> sqlx::Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query_scalar(
+        "insert into github_review_threads \
+           (id, review_id, paper_id, repo_owner, repo_name, pr_number, pr_url, head_ref, head_sha, last_seen_commit_sha) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) \
+         on conflict (review_id) do update set \
+           paper_id = excluded.paper_id, \
+           repo_owner = excluded.repo_owner, \
+           repo_name = excluded.repo_name, \
+           pr_number = coalesce(excluded.pr_number, github_review_threads.pr_number), \
+           pr_url = coalesce(excluded.pr_url, github_review_threads.pr_url), \
+           head_ref = coalesce(excluded.head_ref, github_review_threads.head_ref), \
+           head_sha = coalesce(excluded.head_sha, github_review_threads.head_sha), \
+           last_seen_commit_sha = coalesce(excluded.last_seen_commit_sha, github_review_threads.last_seen_commit_sha), \
+           updated_at = now() \
+         returning id",
+    )
+    .bind(id)
+    .bind(review_id)
+    .bind(paper_id)
+    .bind(repo_owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .bind(pr_url)
+    .bind(head_ref)
+    .bind(head_sha)
+    .fetch_one(pool)
+    .await
+}
+
+/// Persist feedback-comment metadata on the GitHub review thread.
+pub async fn update_github_feedback_comment(
+    pool: &PgPool,
+    review_id: Uuid,
+    comment_id: i64,
+    comment_url: &str,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update github_review_threads \
+         set feedback_comment_id = $2, feedback_comment_url = $3, updated_at = now() \
+         where review_id = $1",
+    )
+    .bind(review_id)
+    .bind(comment_id)
+    .bind(comment_url)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FeedbackLoopThread {
+    pub paper_id: Uuid,
+    pub github_pr_url: Option<String>,
+    pub repo_owner: Option<String>,
+    pub repo_name: Option<String>,
+    pub pr_number: Option<i64>,
+    pub feedback_comment_url: Option<String>,
+}
+
+pub(crate) async fn fetch_feedback_loop_thread(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<Option<FeedbackLoopThread>> {
+    sqlx::query_as(
+        "select r.paper_id, r.github_pr_url, t.repo_owner, t.repo_name, t.pr_number, t.feedback_comment_url \
+         from reviews r \
+         left join github_review_threads t on t.review_id = r.id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row: Option<(Uuid, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>)>| {
+        row.map(
+            |(paper_id, github_pr_url, repo_owner, repo_name, pr_number, feedback_comment_url)| {
+                FeedbackLoopThread {
+                    paper_id,
+                    github_pr_url,
+                    repo_owner,
+                    repo_name,
+                    pr_number,
+                    feedback_comment_url,
+                }
+            },
+        )
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RereviewRequestStatus {
+    pub id: Uuid,
+    pub state: String,
+    pub new_review_id: Option<Uuid>,
+    pub error: Option<String>,
+}
+
+pub(crate) async fn fetch_rereview_request_for_commit(
+    pool: &PgPool,
+    prior_review_id: Uuid,
+    github_commit_sha: &str,
+) -> sqlx::Result<Option<RereviewRequestStatus>> {
+    sqlx::query_as(
+        "select id, state, new_review_id, error \
+         from rereview_requests \
+         where prior_review_id = $1 and github_commit_sha = $2 \
+         order by created_at desc \
+         limit 1",
+    )
+    .bind(prior_review_id)
+    .bind(github_commit_sha)
+    .fetch_optional(pool)
+    .await
+    .map(
+        |row: Option<(Uuid, String, Option<Uuid>, Option<String>)>| {
+            row.map(|(id, state, new_review_id, error)| RereviewRequestStatus {
+                id,
+                state,
+                new_review_id,
+                error,
+            })
+        },
+    )
+}
+
+/// Enqueue a re-review request triggered by a new author correction commit.
+/// Duplicate `(prior_review_id, sha)` requests are ignored idempotently.
+pub async fn enqueue_rereview_for_commit(
+    pool: &PgPool,
+    paper_id: Uuid,
+    prior_review_id: Uuid,
+    github_commit_sha: &str,
+    requested_by: Option<&str>,
+    notes_md: Option<&str>,
+) -> sqlx::Result<Option<Uuid>> {
+    let id = Uuid::new_v4();
+    let res = sqlx::query(
+        "insert into rereview_requests \
+           (id, paper_id, prior_review_id, trigger, github_commit_sha, requested_by, notes_md) \
+         values ($1, $2, $3, 'author_commit', $4, $5, $6) \
+         on conflict (prior_review_id, github_commit_sha) where github_commit_sha is not null do nothing",
+    )
+    .bind(id)
+    .bind(paper_id)
+    .bind(prior_review_id)
+    .bind(github_commit_sha)
+    .bind(requested_by)
+    .bind(notes_md)
+    .execute(pool)
+    .await?;
+    Ok((res.rows_affected() > 0).then_some(id))
+}
+
+/// Mark a queued re-review request as running.
+pub async fn mark_rereview_running(pool: &PgPool, request_id: Uuid) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update rereview_requests \
+         set state = 'running', started_at = now(), error = null \
+         where id = $1 and state = 'queued'",
+    )
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Mark a re-review request complete and attach the newly created review id.
+pub async fn mark_rereview_done(
+    pool: &PgPool,
+    request_id: Uuid,
+    new_review_id: Uuid,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update rereview_requests \
+         set state = 'done', new_review_id = $2, finished_at = now(), error = null \
+         where id = $1",
+    )
+    .bind(request_id)
+    .bind(new_review_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Mark a re-review request failed with a human-readable error string.
+pub async fn mark_rereview_failed(
+    pool: &PgPool,
+    request_id: Uuid,
+    error: &str,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update rereview_requests \
+         set state = 'failed', finished_at = now(), error = $2 \
+         where id = $1",
+    )
+    .bind(request_id)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// One row in the `list reviews` CLI output.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct ReviewListRow {
@@ -729,6 +1220,12 @@ pub async fn get_review_status_and_mode(
             .bind(review_id)
             .fetch_optional(pool)
             .await?;
+    if let Some((status, _)) = row.as_ref() {
+        debug_assert!(
+            review_status_from_db_str(status).is_some(),
+            "unknown reviews.status value: {status}"
+        );
+    }
     Ok(row)
 }
 
@@ -747,6 +1244,124 @@ pub async fn show_review(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Option<
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct PaperReviewSeedRow {
+    pub(crate) arxiv_id: String,
+    pub(crate) title: String,
+    pub(crate) abstract_: Option<String>,
+    pub(crate) field: Option<String>,
+    pub(crate) submitted_date: Option<NaiveDate>,
+}
+
+pub(crate) async fn load_paper_review_seed(
+    pool: &PgPool,
+    paper_id: Uuid,
+) -> sqlx::Result<PaperReviewSeedRow> {
+    sqlx::query_as(
+        "select arxiv_id, title, abstract as abstract_, field, submitted_date \
+         from papers where id = $1",
+    )
+    .bind(paper_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub(crate) async fn load_latest_review_input_artifact(
+    pool: &PgPool,
+    paper_id: Uuid,
+) -> sqlx::Result<Option<Value>> {
+    let row: Option<(Value,)> = sqlx::query_as(
+        "select ri.artifact \
+         from review_inputs ri \
+         join reviews r on r.id = ri.review_id \
+         where ri.paper_id = $1 \
+         order by r.created_at desc \
+         limit 1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(artifact,)| artifact))
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct ReviewRenderHeadRow {
+    pub(crate) meta_review: Option<Value>,
+    pub(crate) paper_id: Uuid,
+    pub(crate) arxiv_id: String,
+    pub(crate) title: String,
+    pub(crate) abstract_: Option<String>,
+    pub(crate) field: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct ReviewAgentRenderRow {
+    pub(crate) role: String,
+    pub(crate) model: String,
+    pub(crate) output: Value,
+    pub(crate) verifier_status: Option<String>,
+    pub(crate) verifier_notes: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReviewRenderBundle {
+    pub(crate) review: ReviewRenderHeadRow,
+    pub(crate) agents: Vec<ReviewAgentRenderRow>,
+}
+
+pub(crate) async fn load_review_render_bundle(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<ReviewRenderBundle> {
+    let review: ReviewRenderHeadRow = sqlx::query_as(
+        "select r.meta_review, p.id as paper_id, p.arxiv_id, p.title, \
+                p.abstract as abstract_, p.field \
+         from reviews r join papers p on p.id = r.paper_id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_one(pool)
+    .await?;
+
+    let agents: Vec<ReviewAgentRenderRow> = sqlx::query_as(
+        "select role, model, output, verifier_status, verifier_notes \
+         from review_agents where review_id = $1 order by role",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(ReviewRenderBundle { review, agents })
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct PublishReviewRow {
+    pub(crate) review_id: Uuid,
+    pub(crate) arxiv_id: String,
+    pub(crate) title: String,
+    pub(crate) field: Option<String>,
+    pub(crate) paper_id: Uuid,
+    pub(crate) visibility: String,
+    pub(crate) source_kind: String,
+    pub(crate) source_id: Option<String>,
+}
+
+pub(crate) async fn load_publish_review(
+    pool: &PgPool,
+    review_id: Uuid,
+) -> sqlx::Result<PublishReviewRow> {
+    sqlx::query_as(
+        "select r.id as review_id, p.arxiv_id, p.title, p.field, p.id as paper_id, \
+                coalesce(r.visibility, 'public') as visibility, \
+                coalesce(p.source_kind, 'arxiv') as source_kind, p.source_id \
+         from reviews r join papers p on p.id = r.paper_id \
+         where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_one(pool)
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +1530,28 @@ pub async fn mark_paper_extraction_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_status_decoders_round_trip_known_values_and_reject_unknowns() {
+        assert_eq!(
+            review_status_from_db_str(&serde_plain(&ReviewStatus::AwaitingModeration)),
+            Some(ReviewStatus::AwaitingModeration)
+        );
+        assert_eq!(
+            review_status_from_db_str(&serde_plain(&ReviewStatus::PrOpen)),
+            Some(ReviewStatus::PrOpen)
+        );
+        assert_eq!(
+            verifier_status_from_db_str(&serde_plain(&VerifierStatus::Pass)),
+            Some(VerifierStatus::Pass)
+        );
+        assert_eq!(
+            verifier_status_from_db_str(&serde_plain(&VerifierStatus::Warn)),
+            Some(VerifierStatus::Warn)
+        );
+        assert_eq!(review_status_from_db_str("half_published"), None);
+        assert_eq!(verifier_status_from_db_str("maybe"), None);
+    }
 
     /// FP-RPT3b B6: when a fresh review supersedes a prior active review,
     /// the prior review's `moderation_queue` row must transition from

@@ -49,6 +49,11 @@ export interface Author {
 export interface Paper {
   id: string;
   arxiv_id: string;
+  source_kind?: string | null;
+  source_id?: string | null;
+  source_uri?: string | null;
+  source_hash?: string | null;
+  source_metadata?: Record<string, unknown> | null;
   title: string;
   authors: Author[];
   abstract?: string;
@@ -70,6 +75,102 @@ export interface AgentOutput {
   model: string;
   output: unknown;
   verifier_status: VerifierStatus;
+  verifier_notes?: unknown | null;
+}
+
+export interface SummaryReviewOutput {
+  tldr: string | null;
+  plain_language_summary: string | null;
+  audience: string | null;
+  key_contributions: string[];
+}
+
+export interface TechnicalClaimOutput {
+  id: string | null;
+  claim: string | null;
+  assessment: string | null;
+  severity: string | null;
+  location: string | null;
+  evidence: string | null;
+  suggested_fix: string | null;
+}
+
+export interface TechnicalReviewOutput {
+  claims: TechnicalClaimOutput[];
+  overall_correctness: string | null;
+  confidence: number | null;
+}
+
+export interface RelatedWorkOutput {
+  citation_key: string | null;
+  title: string | null;
+  relation: string | null;
+  delta: string | null;
+}
+
+export interface MissingReferenceOutput {
+  title: string | null;
+  reason: string | null;
+}
+
+export interface NoveltyReviewOutput {
+  novelty_score: number | null;
+  verdict: string | null;
+  confidence: number | null;
+  related_work: RelatedWorkOutput[];
+  missing_prior_art: MissingReferenceOutput[];
+}
+
+export interface ReproducibilityEnvironmentOutput {
+  hardware: string | null;
+  software: string | null;
+  dependencies: string[];
+}
+
+export interface ReproducibilityConcernOutput {
+  area: string | null;
+  description: string | null;
+  severity: string | null;
+}
+
+export interface ReproducibilityReviewOutput {
+  code_availability: string | null;
+  code_url: string | null;
+  data_availability: string | null;
+  data_url: string | null;
+  environment: ReproducibilityEnvironmentOutput | null;
+  concerns: ReproducibilityConcernOutput[];
+  reproducibility_score: number | null;
+  confidence: number | null;
+}
+
+export interface CitationReferenceOutput {
+  key: string | null;
+  raw: string | null;
+  title: string | null;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  url: string | null;
+}
+
+export interface CitationEntryOutput {
+  citation: CitationReferenceOutput | null;
+  exists: boolean | null;
+  resolved_doi: string | null;
+  resolved_url: string | null;
+  relevance: string | null;
+  notes: string | null;
+  explanation: string | null;
+}
+
+export interface CitationReviewOutput {
+  entries: CitationEntryOutput[];
+  missing_references: MissingReferenceOutput[];
+  summary: string | null;
+  confidence: number | null;
 }
 
 export interface ReviewSummary {
@@ -79,6 +180,10 @@ export interface ReviewSummary {
   visibility: ReviewVisibility;
   github_pr_url?: string;
   github_review_url?: string;
+  github_comment_url?: string | null;
+  gate_failure_reason?: string | null;
+  gate_failure_instructions?: string | null;
+  gate_failure_comment_url?: string | null;
   models_used: Record<string, string>;
   created_at: string;
   published_at?: string;

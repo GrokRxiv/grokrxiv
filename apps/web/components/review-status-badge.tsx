@@ -1,7 +1,7 @@
 import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import type { ReviewStatus, VerifierStatus } from "@/lib/types";
+import type { Recommendation, ReviewStatus, VerifierStatus } from "@/lib/types";
 
 const STATUS_VARIANT: Record<
   ReviewStatus,
@@ -30,6 +30,36 @@ const STATUS_LABEL: Record<ReviewStatus, string> = {
 
 export function ReviewStatusBadge({ status }: { status: ReviewStatus }) {
   return <Badge variant={STATUS_VARIANT[status]}>{STATUS_LABEL[status]}</Badge>;
+}
+
+const GATE_VARIANT: Record<
+  Recommendation,
+  "success" | "warn" | "destructive"
+> = {
+  accept: "success",
+  minor_revision: "warn",
+  major_revision: "warn",
+  reject: "destructive",
+};
+
+const GATE_LABEL: Record<Recommendation, string> = {
+  accept: "Gate passed",
+  minor_revision: "Needs revision",
+  major_revision: "Needs revision",
+  reject: "Gate rejected",
+};
+
+export function AutomatedGateBadge({
+  recommendation,
+}: {
+  recommendation?: Recommendation | null;
+}) {
+  if (!recommendation) return null;
+  return (
+    <Badge variant={GATE_VARIANT[recommendation]}>
+      {GATE_LABEL[recommendation]}
+    </Badge>
+  );
 }
 
 const VERIFIER_VARIANT: Record<

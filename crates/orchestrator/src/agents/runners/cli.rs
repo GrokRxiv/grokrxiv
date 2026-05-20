@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -25,7 +25,7 @@ use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
-use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
+use crate::runtime_config::{role_env_suffix, ALLOW_PROVIDER_API_ENV};
 use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
 
 /// FP-RPT3b B5: structured errors returned by `CliRunner::run`. Wrapped into
@@ -439,19 +439,20 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
     format!(
-        "{system}\n\n\
-         GrokRxiv has prepared the exact review inputs in your current working directory.\n\
-         Use these files only:\n\
-         - review_input.json: canonical JSON artifact to review\n\
-         - prompt.md: role-specific task\n\
-         - system.md: role instruction\n\
-         - schema.json: required output schema\n\n\
-         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
-         If you use local file tools, restrict them to the current directory and these files.\n\n\
-         Role task:\n{user}",
-        system = input.system_prompt,
-        user = input.user_prompt,
-    )
+	        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
+	         Read and follow these files only:\n\
+	         - system.md: role instruction\n\
+	         - prompt.md: role-specific task\n\
+	         - review_input.json: canonical JSON artifact to review\n\
+	         - schema.json: required output schema\n\n\
+	         Return exactly one JSON object that validates against schema.json. \
+	         The first byte of stdout must be `{{` and the last byte must be `}}`. \
+	         Do not include prose, markdown fences, a plan, a strategy, a confirmation question, \
+	         or extra properties.\n\n\
+	         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
+	         If you use local file tools, restrict them to the current directory and these files.",
+	        role = role_slug(input.role),
+	    )
 }
 
 fn render_tool_prompt(
@@ -510,8 +511,6 @@ fn build_tool_command(
             prompt.to_string(),
             "--model".to_string(),
             spec.model.clone(),
-            "--approval-mode".to_string(),
-            "plan".to_string(),
             "-o".to_string(),
             "json".to_string(),
         ],
@@ -723,22 +722,34 @@ fn build_api_fallback_providers(
 }
 
 /// Resolve the subprocess timeout. Priority order:
-///   1. `GROKRXIV_CLI_TIMEOUT_SECS` env var (operator override).
-///   2. `spec.timeout_secs` from `agents/<role>.yaml`.
-///   3. `DEFAULT_CLI_TIMEOUT_SECS`.
-/// The env var stays a global escape hatch but no longer silently overrides
-/// the YAML's per-role budget.
+///   1. `GROKRXIV_<ROLE>_TIMEOUT_SECS` env var.
+///   2. `GROKRXIV_CLI_TIMEOUT_SECS` env var (global operator override).
+///   3. `spec.timeout_secs` from `agents/<role>.yaml`.
+///   4. `DEFAULT_CLI_TIMEOUT_SECS`.
+/// The global env var stays available, but slow roles can now be tuned without
+/// loosening every CLI call.
 fn cli_timeout_for(spec: &AgentSpec) -> Duration {
-    if let Some(secs) = std::env::var("GROKRXIV_CLI_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
+    if let Some(secs) = timeout_env_secs(&role_timeout_env_var(spec.role)) {
+        return Duration::from_secs(secs);
+    }
+    if let Some(secs) = timeout_env_secs("GROKRXIV_CLI_TIMEOUT_SECS") {
         return Duration::from_secs(secs);
     }
     if spec.timeout_secs > 0 {
         return Duration::from_secs(spec.timeout_secs.into());
     }
     Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
+}
+
+fn timeout_env_secs(key: &str) -> Option<u64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+}
+
+fn role_timeout_env_var(role: grokrxiv_schemas::AgentRole) -> String {
+    format!("GROKRXIV_{}_TIMEOUT_SECS", role_env_suffix(role))
 }
 
 /// Compose the per-CLI command. Pure: does not spawn anything. For codex it
@@ -800,17 +811,14 @@ fn build_command(
             // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
             // model output in `{"session_id": ..., "response": "<inner>",
             // "stats": {...}}` — `extract_json_text` unwraps that wrapper
-            // before schema validation. Without `-o json` gemini emits prose,
-            // which forces every CLI Gemini call into the corrective-retry
-            // path (B3). The prompt itself carries the `/grokrxiv-review`
-            // prefix so the model knows to emit only the role-schema JSON.
+            // before schema validation. Do not add `--approval-mode plan` here:
+            // plan mode makes Gemini return a strategy/confirmation prompt
+            // instead of the schema JSON for review roles.
             let args = vec![
                 "-p".to_string(),
                 provider_prompt.clone(),
                 "--model".to_string(),
                 spec.model.clone(),
-                "--approval-mode".to_string(),
-                "plan".to_string(),
                 "-o".to_string(),
                 "json".to_string(),
             ];
@@ -885,6 +893,22 @@ async fn exec_and_capture(
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn `{}`: {e}", built.program))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for `{}`", built.program))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stderr for `{}`", built.program))?;
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).await.map(|_| buf)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.map(|_| buf)
+    });
 
     if uses_stdin {
         if let Some(mut stdin) = child.stdin.take() {
@@ -897,15 +921,13 @@ async fn exec_and_capture(
         }
     }
 
-    let wait_fut = child.wait_with_output();
-    let output = match timeout(timeout_dur, wait_fut).await {
-        Ok(Ok(o)) => o,
+    let status = match timeout(timeout_dur, child.wait()).await {
+        Ok(Ok(status)) => status,
         Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
         Err(_) => {
-            // Timed out — we already moved `child` into wait_with_output, so
-            // we can't call .kill(). wait_with_output drops the child handle
-            // which on tokio signals the process and reaps it. To be safe
-            // surface a clear error.
+            let _ = timeout(Duration::from_secs(5), child.kill()).await;
+            stdout_task.abort();
+            stderr_task.abort();
             anyhow::bail!(
                 "CliRunner timed out after {}s for role {:?}",
                 timeout_dur.as_secs(),
@@ -913,9 +935,17 @@ async fn exec_and_capture(
             );
         }
     };
+    let stdout = stdout_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stdout task failed for `{}`: {e}", built.program))?
+        .map_err(|e| anyhow::anyhow!("read stdout for `{}` failed: {e}", built.program))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stderr task failed for `{}`: {e}", built.program))?
+        .map_err(|e| anyhow::anyhow!("read stderr for `{}` failed: {e}", built.program))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr).to_string();
         // FP-RPT3b B5: classify as a structured quota error when stderr
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
@@ -928,19 +958,19 @@ async fn exec_and_capture(
             .context(format!(
                 "`{}` exited with {:?} for role {:?}",
                 built.program,
-                output.status.code(),
+                status.code(),
                 role,
             )));
         }
         anyhow::bail!(
             "`{}` exited with {:?} for role {:?}: {stderr}",
             built.program,
-            output.status.code(),
+            status.code(),
             role,
         );
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stdout = String::from_utf8_lossy(&stdout).to_string();
     Ok(stdout)
 }
 
@@ -1063,10 +1093,74 @@ fn parse_and_validate(
     // block even when --output-format=json is set. Mirrors the helper in
     // ApiRunner.
     let cleaned = strip_code_fences(extracted.trim());
-    let parsed: serde_json::Value = serde_json::from_str(cleaned)
-        .map_err(|e| anyhow::anyhow!("not valid JSON: {e}; raw={extracted:?}"))?;
+    let parsed: serde_json::Value = match serde_json::from_str(cleaned) {
+        Ok(parsed) => parsed,
+        Err(first_err) => {
+            let mut candidate_errors: Vec<String> = Vec::new();
+            for candidate in json_object_candidates(cleaned).into_iter().rev() {
+                match serde_json::from_str::<serde_json::Value>(&candidate) {
+                    Ok(parsed) => match validate_parsed(parsed, schema) {
+                        Ok(validated) => return Ok(validated),
+                        Err(err) => candidate_errors.push(err.to_string()),
+                    },
+                    Err(err) => candidate_errors.push(err.to_string()),
+                }
+            }
+            if candidate_errors.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "not valid JSON: {first_err}; raw={extracted:?}"
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "not valid JSON: {first_err}; candidate errors={}; raw={extracted:?}",
+                candidate_errors.join(" | ")
+            ));
+        }
+    };
 
     validate_parsed(parsed, schema)
+}
+
+fn json_object_candidates(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start_idx) = start.take() {
+                        out.push(text[start_idx..=idx].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn validate_parsed(
@@ -1109,9 +1203,10 @@ fn repair_review_output(
         AgentRole::Reproducibility => parse_json_lenient(extracted)
             .and_then(repair_reproducibility_review)
             .or_else(|| Some(fallback_reproducibility_review(artifact)))?,
-        AgentRole::Citation => parse_json_lenient(extracted)
-            .and_then(repair_citation_review)
-            .or_else(|| Some(fallback_citation_review(artifact)))?,
+        AgentRole::Citation => {
+            let _ = artifact;
+            parse_json_lenient(extracted).and_then(repair_citation_review)?
+        }
         _ => return None,
     };
 
@@ -1463,33 +1558,12 @@ fn repair_citation_review(parsed: serde_json::Value) -> Option<serde_json::Value
     }))
 }
 
-fn fallback_citation_review(artifact: &serde_json::Value) -> serde_json::Value {
-    let entries = artifact
-        .get("bibliography")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .enumerate()
-                .map(|(idx, item)| fallback_citation_entry(item, idx, artifact))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    serde_json::json!({
-        "entries": entries,
-        "missing_references": [],
-        "summary": "Deterministic citation review generated from extracted bibliography and in-text citation contexts. Entries are preserved for moderation; external existence lookups were not performed in this stage.",
-        "confidence": 0.55,
-    })
-}
-
 fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serde_json::Value> {
     let citation = item.get("citation")?;
     let citation_obj = normalize_citation(citation, idx);
     Some(serde_json::json!({
         "citation": citation_obj,
-        "exists": item.get("exists").and_then(|v| v.as_bool()).unwrap_or(false),
+        "exists": nullable_bool(item.get("exists")),
         "resolved_doi": nullable_string(item.get("resolved_doi")),
         "resolved_url": nullable_string(item.get("resolved_url").or_else(|| item.get("url"))),
         "relevance": normalize_relevance(item.get("relevance").and_then(|v| v.as_str())),
@@ -1497,42 +1571,6 @@ fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serd
         "explanation": text_field(item, &["explanation", "reason", "comment", "notes"])
             .unwrap_or_else(|| "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()),
     }))
-}
-
-fn fallback_citation_entry(
-    item: &serde_json::Value,
-    idx: usize,
-    artifact: &serde_json::Value,
-) -> serde_json::Value {
-    let contexts = citation_contexts_for(item, artifact);
-    let (notes, explanation, relevance) = if contexts.is_empty() {
-        (
-            "No matching in-text citation context was found in the extracted body.".to_string(),
-            "Bibliography entry preserved for human moderation; no matching extracted citation context was found and no external citation lookup was completed.".to_string(),
-            "medium",
-        )
-    } else {
-        let joined = contexts
-            .iter()
-            .take(3)
-            .map(|(section, sentence)| format!("{section}: {sentence}"))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        (
-            format!("{} extracted citation context(s) matched.", contexts.len()),
-            format!("Cited in extracted paper context(s): {joined}"),
-            "high",
-        )
-    };
-    serde_json::json!({
-        "citation": normalize_citation(item, idx),
-        "exists": false,
-        "resolved_doi": null,
-        "resolved_url": null,
-        "relevance": relevance,
-        "notes": notes,
-        "explanation": explanation,
-    })
 }
 
 fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::Value {
@@ -1575,89 +1613,6 @@ fn citation_key(citation: &serde_json::Value) -> Option<String> {
         })
 }
 
-fn citation_contexts_for(
-    citation: &serde_json::Value,
-    artifact: &serde_json::Value,
-) -> Vec<(String, String)> {
-    let Some(key) = citation_key(citation) else {
-        return Vec::new();
-    };
-    // Strip surrounding brackets so a key like `[1]` produces needles for `[1]`
-    // (numeric citation style) not `[[1]]`. Some extractors emit `key="[1]"`,
-    // others emit `key="1"`; handle both.
-    let bare = key
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    let bracketed = format!("[{bare}]");
-    let mut needles: Vec<String> = vec![
-        format!("@{bare}"),     // BibTeX-style `@Deutsch1991`
-        bracketed.clone(),       // Numeric `[1]`
-        format!("{{{bare}}}"),  // LaTeX `{Deutsch1991}`
-    ];
-    // Preserve the original key as a needle too — covers cases where the
-    // body already includes the bracketed form (e.g. raw cite key `Deutsch1991`).
-    if key != bare && !needles.contains(&key) {
-        needles.push(key.clone());
-    }
-    artifact
-        .get("sections")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .flat_map(|section| {
-            let heading = section
-                .get("heading")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = section
-                .get("body_markdown")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            extract_sentences(body)
-                .into_iter()
-                .filter({
-                    let needles = needles.clone();
-                    move |sentence| needles.iter().any(|needle| sentence.contains(needle))
-                })
-                .map(move |sentence| (heading.clone(), truncate_context(&sentence)))
-        })
-        .take(5)
-        .collect()
-}
-
-fn extract_sentences(body: &str) -> Vec<String> {
-    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut sentences = Vec::new();
-    let mut current = String::new();
-    for ch in normalized.chars() {
-        current.push(ch);
-        if matches!(ch, '.' | '?' | '!') {
-            let sentence = current.trim();
-            if !sentence.is_empty() {
-                sentences.push(sentence.to_string());
-            }
-            current.clear();
-        }
-    }
-    let tail = current.trim();
-    if !tail.is_empty() {
-        sentences.push(tail.to_string());
-    }
-    sentences
-}
-
-fn truncate_context(sentence: &str) -> String {
-    const MAX: usize = 360;
-    if sentence.chars().count() <= MAX {
-        return sentence.to_string();
-    }
-    let mut out: String = sentence.chars().take(MAX.saturating_sub(16)).collect();
-    out.push_str("... [truncated]");
-    out
-}
-
 fn normalize_relevance(raw: Option<&str>) -> &'static str {
     match raw.unwrap_or("").to_ascii_lowercase().as_str() {
         "high" => "high",
@@ -1672,6 +1627,13 @@ fn nullable_string(v: Option<&serde_json::Value>) -> Option<String> {
     match v {
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
         Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn nullable_bool(v: Option<&serde_json::Value>) -> Option<bool> {
+    match v {
+        Some(serde_json::Value::Bool(b)) => Some(*b),
         _ => None,
     }
 }
@@ -2140,23 +2102,47 @@ mod tests {
     /// state changes serial (parallel test threads share process env).
     #[test]
     fn cli_timeout_for_resolution_order() {
-        // 1. env var wins over everything.
+        // 1. per-role env var wins over everything.
+        {
+            let _guard = EnvVarGuard::set(&[
+                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", "77"),
+                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+            ]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.role = AgentRole::TechnicalCorrectness;
+            spec.timeout_secs = 999;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(77));
+        }
+        // 2. invalid/blank per-role env var is ignored.
+        {
+            let _guard = EnvVarGuard::set(&[
+                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", ""),
+                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+            ]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.role = AgentRole::TechnicalCorrectness;
+            spec.timeout_secs = 999;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+        }
+        // 3. global env var wins over YAML/spec.
         {
             let _guard = EnvVarGuard::set(&[("GROKRXIV_CLI_TIMEOUT_SECS", "42")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
-        // 2. no env var → spec wins over default.
+        // 4. no env var → spec wins over default.
         {
-            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let _guard =
+                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 120;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(120));
         }
-        // 3. no env var, spec=0 → falls back to default.
+        // 5. no env var, spec=0 → falls back to default.
         {
-            let _guard = EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS"]);
+            let _guard =
+                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 0;
             assert_eq!(
@@ -2175,6 +2161,13 @@ mod tests {
         let built = build_tool_command(&r, &spec, "prompt", &workdir).expect("build command");
 
         assert_eq!(built.cwd.as_deref(), Some(workdir.as_path()));
+        assert!(
+            !built
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
+            "gemini extraction tool loop must not use plan mode; it must return tool-call JSON"
+        );
     }
 
     #[test]
@@ -2204,6 +2197,10 @@ mod tests {
 
         let rendered = render_review_prompt_with_files(&input);
         assert!(rendered.contains("review_input.json"));
+        assert!(
+            !rendered.contains("review this paper"),
+            "review prompt should reference prompt.md instead of duplicating the role task"
+        );
         assert!(rendered.contains("Do not search parent directories"));
     }
 
@@ -2345,9 +2342,10 @@ mod tests {
             "missing --model <model> pair in {args:?}"
         );
         assert!(
-            args.windows(2)
+            !args
+                .windows(2)
                 .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
-            "missing --approval-mode plan pair in {args:?}"
+            "gemini review JSON calls must not use plan mode; it causes prose strategy output: {args:?}"
         );
 
         // A7 lock-in #2: `-o json` is set so gemini emits the
@@ -2449,6 +2447,34 @@ mod tests {
         let v =
             parse_and_validate("{\"a\":1}", &serde_json::json!({})).expect("empty schema passes");
         assert_eq!(v["a"], 1);
+    }
+
+    #[test]
+    fn test_parse_and_validate_extracts_fenced_json_after_prose() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["foo"],
+            "properties": { "foo": { "type": "string" } }
+        });
+        let raw = "Here is the JSON:\n\n```json\n{\"foo\":\"bar\"}\n```";
+
+        let v = parse_and_validate(raw, &schema).expect("fenced object extracted");
+
+        assert_eq!(v["foo"], "bar");
+    }
+
+    #[test]
+    fn test_parse_and_validate_prefers_last_valid_json_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["foo"],
+            "properties": { "foo": { "type": "string" } }
+        });
+        let raw = "First attempt:\n```json\n{\"foo\":7}\n```\n\n{\"foo\":\"bar\"}";
+
+        let v = parse_and_validate(raw, &schema).expect("last valid object extracted");
+
+        assert_eq!(v["foo"], "bar");
     }
 
     #[test]
@@ -2618,7 +2644,7 @@ mod tests {
     }
 
     #[test]
-    fn citation_repair_builds_honest_fallback_from_bibliography() {
+    fn citation_repair_does_not_build_schema_only_fallback_from_bibliography() {
         let schema = citation_review_schema_for_test();
         let artifact = serde_json::json!({
             "bibliography": [{
@@ -2633,25 +2659,12 @@ mod tests {
             }]
         });
 
-        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact)
-            .expect("fallback validates");
+        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact);
 
-        assert_eq!(repaired["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(repaired["entries"][0]["citation"]["key"], "doe2024");
-        assert_eq!(
-            repaired["entries"][0]["citation"]["title"],
-            "A Useful Paper"
+        assert!(
+            repaired.is_none(),
+            "citation fallback must not create a schema-shaped review without an LLM citation judgment"
         );
-        assert_eq!(repaired["entries"][0]["exists"], false);
-        assert_eq!(repaired["entries"][0]["relevance"], "high");
-        assert!(repaired["entries"][0]["explanation"]
-            .as_str()
-            .unwrap()
-            .contains("Introduction"));
-        assert!(repaired["summary"]
-            .as_str()
-            .unwrap()
-            .contains("external existence lookups were not performed"));
     }
 
     #[test]
@@ -2707,7 +2720,7 @@ mod tests {
                                 },
                                 "required": ["key", "raw", "title", "authors", "year", "venue", "doi", "arxiv_id", "url"]
                             },
-                            "exists": {"type": "boolean"},
+                            "exists": {"type": ["boolean", "null"]},
                             "resolved_doi": {"type": ["string", "null"]},
                             "resolved_url": {"type": ["string", "null"]},
                             "relevance": {"type": "string", "enum": ["high", "medium", "low", "unrelated"]},
@@ -2899,6 +2912,62 @@ mod tests {
         assert!(
             downcast.is_none(),
             "non-quota failures must not be tagged as QuotaExhausted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_kills_child_on_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("grokrxiv-cli-timeout-kill-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-cli.sh");
+        let pid_file = dir.join("pid");
+        let _ = std::fs::remove_file(&pid_file);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                pid_file.to_string_lossy()
+            ),
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let err = exec_and_capture(
+            &built,
+            Duration::from_secs(1),
+            grokrxiv_schemas::AgentRole::Novelty,
+            "gemini",
+        )
+        .await
+        .expect_err("subprocess should time out");
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("pid file")
+            .trim()
+            .to_string();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run kill -0");
+        assert!(
+            !status.success(),
+            "timed-out child process {pid} should have been killed"
         );
     }
 

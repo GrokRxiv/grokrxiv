@@ -8,18 +8,27 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ReviewStatusBadge } from "@/components/review-status-badge";
+import {
+  AutomatedGateBadge,
+  ReviewStatusBadge,
+} from "@/components/review-status-badge";
 import { MathText } from "@/components/math-text";
+import {
+  displayFieldForPaper,
+  sourceInfoForPaper,
+} from "@/components/source-label";
 import type { ReviewWithPaper } from "@/lib/types";
 
 export function ReviewCard({ review }: { review: ReviewWithPaper }) {
   const { paper, meta_review } = review;
+  const source = sourceInfoForPaper(paper);
+  const field = displayFieldForPaper(paper);
   return (
     <Link href={`/reviews/${review.id}`} className="block h-full">
       <Card className="h-full transition-shadow hover:shadow-md">
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
-            <Badge variant="outline">{paper.field ?? "—"}</Badge>
+            <Badge variant="outline">{field ?? "Uncategorized"}</Badge>
             <ReviewStatusBadge status={review.status} />
           </div>
           <CardTitle className="line-clamp-3 text-base">
@@ -39,10 +48,8 @@ export function ReviewCard({ review }: { review: ReviewWithPaper }) {
           </p>
         </CardContent>
         <CardFooter className="flex items-center justify-between text-xs text-[color:var(--color-muted-foreground)]">
-          <span className="font-mono">{paper.arxiv_id}</span>
-          {meta_review?.recommendation ? (
-            <Badge variant="secondary">{meta_review.recommendation}</Badge>
-          ) : null}
+          <span className="font-mono">{source.detail}</span>
+          <AutomatedGateBadge recommendation={meta_review?.recommendation} />
         </CardFooter>
       </Card>
     </Link>

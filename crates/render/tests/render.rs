@@ -108,6 +108,48 @@ fn markdown_omits_disclaimer_and_shows_corrections() {
 }
 
 #[test]
+fn local_source_artifacts_do_not_render_arxiv_prefix() {
+    let (meta, mut paper, agents) = fixture();
+    paper.arxiv_id = "local-pdf-d96363843fd8".into();
+    paper.source_format = Some("pdf".into());
+
+    let html = render_html(&meta, &paper, &agents).expect("render html");
+    let md = render_markdown(&meta, &paper, &agents);
+    let tex = render_latex(&meta, &paper, &agents);
+
+    for artifact in [&html, &md, &tex] {
+        assert!(artifact.contains("local-pdf-d96363843fd8"));
+        assert!(!artifact.contains("arXiv:local-pdf-d96363843fd8"));
+        assert!(!artifact.contains("arxiv.org/abs/local-pdf-d96363843fd8"));
+    }
+}
+
+#[test]
+fn html_renders_meta_reviewer_as_human_text_not_json() {
+    let (meta, paper, _) = fixture();
+    let agents = vec![AgentRecord {
+        role: AgentRole::MetaReviewer,
+        model: "preview".into(),
+        output: serde_json::to_value(&meta).expect("meta review json"),
+        verifier: VerifierResult {
+            status: VerifierStatus::Fail,
+            notes: json!({ "preview": true }),
+        },
+    }];
+
+    let html = render_html(&meta, &paper, &agents).expect("render html");
+
+    assert!(html.contains("meta_reviewer"));
+    assert!(html.contains("Recommendation: <strong>Minor revision</strong>"));
+    assert!(html.contains("Clear hierarchical structure"));
+    assert!(html.contains("How does this extend to non-equilibrium regimes?"));
+    assert!(
+        !html.contains("&quot;recommendation&quot;"),
+        "meta reviewer output should not be shown as raw JSON in HTML"
+    );
+}
+
+#[test]
 fn latex_omits_disclaimer_and_balanced_braces() {
     let (meta, paper, agents) = fixture();
     let tex = render_latex(&meta, &paper, &agents);

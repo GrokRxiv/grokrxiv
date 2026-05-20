@@ -14,5 +14,5 @@ verifiers:
   - render
   - cross_agent_consistency
 max_retries: 2
-timeout_secs: 180
+timeout_secs: 300
 escalation: human

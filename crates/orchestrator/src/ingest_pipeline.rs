@@ -712,8 +712,24 @@ fn resolve_runner(
 }
 
 fn resolve_extractor(stage: &str) -> ExtractorKind {
-    if let Ok(v) = std::env::var("GROKRXIV_EXTRACTOR") {
-        if let Some(kind) = parse_extractor(&v) {
+    let extractor = std::env::var("GROKRXIV_EXTRACTOR").ok();
+    let fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
+    resolve_extractor_from_routing(
+        stage,
+        extractor.as_deref(),
+        fallback.as_deref(),
+        load_extraction_routing(stage).as_ref(),
+    )
+}
+
+fn resolve_extractor_from_routing(
+    stage: &str,
+    extractor: Option<&str>,
+    fallback: Option<&str>,
+    routing: Option<&ExtractionRouting>,
+) -> ExtractorKind {
+    if let Some(v) = extractor {
+        if let Some(kind) = parse_extractor(v) {
             return kind;
         }
         tracing::warn!(
@@ -723,15 +739,10 @@ fn resolve_extractor(stage: &str) -> ExtractorKind {
         );
         return ExtractorKind::Cli;
     }
-    if matches!(
-        std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").as_deref(),
-        Ok("api")
-    ) {
+    if matches!(fallback, Some("api")) {
         return ExtractorKind::Api;
     }
-    load_extraction_routing(stage)
-        .and_then(|r| r.runner)
-        .unwrap_or_default()
+    routing.and_then(|r| r.runner).unwrap_or_default()
 }
 
 fn force_agent_extraction() -> bool {
@@ -857,6 +868,13 @@ pub(crate) struct ExtractionBudget {
 /// the YAML number instead of its hardcoded inline ceiling.
 pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     let routing = load_extraction_routing(stage);
+    extraction_budget_from_routing(stage, routing.as_ref())
+}
+
+fn extraction_budget_from_routing(
+    stage: &str,
+    routing: Option<&ExtractionRouting>,
+) -> ExtractionBudget {
     let (cost, iters) = match stage {
         "vlm" => (1.0, 40),
         "macros" => (0.40, 20),
@@ -867,11 +885,9 @@ pub(crate) fn extraction_budget_for(stage: &str) -> ExtractionBudget {
     };
     ExtractionBudget {
         max_cost_usd: routing
-            .as_ref()
             .and_then(|r| r.resolved_max_cost_usd())
             .unwrap_or(cost),
         max_iters: routing
-            .as_ref()
             .and_then(|r| r.resolved_max_iters())
             .unwrap_or(iters),
     }
@@ -1961,9 +1977,6 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
 mod a4_tests {
     use super::*;
     use grokrxiv_schemas::{Citation, PaperExtract, Section};
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn extract_with(sections: Vec<&str>, bib: usize) -> PaperExtract {
         PaperExtract {
@@ -1990,6 +2003,13 @@ mod a4_tests {
                 .collect(),
             source_format: None,
         }
+    }
+
+    fn test_extraction_routing(stage: &str) -> ExtractionRouting {
+        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
+        let path = agents_dir.join("extraction").join(format!("{stage}.yaml"));
+        let yaml = std::fs::read_to_string(&path).expect("read extraction routing fixture");
+        serde_yaml::from_str(&yaml).expect("parse extraction routing fixture")
     }
 
     #[test]
@@ -2097,13 +2117,8 @@ mod a4_tests {
     /// (macros uses `loop:` block; the rest top-level).
     #[test]
     fn macros_budget_resolves_to_yaml_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // Locate the agents/ dir relative to the workspace root. Tests run
-        // with CARGO_MANIFEST_DIR=<crate dir>, so go up two levels.
-        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
-        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
-        // Force a re-read by clearing the cache via a fresh stage name.
-        let b = extraction_budget_for("macros");
+        let routing = test_extraction_routing("macros");
+        let b = extraction_budget_from_routing("macros", Some(&routing));
         // YAML uses `loop: {max_cost_usd: 0.40, max_iters: 20}` — both should
         // surface through the resolved getter, not the hardcoded fallback.
         assert!(
@@ -2117,10 +2132,8 @@ mod a4_tests {
     /// Same idea for citations.yaml (top-level form, not nested under `loop:`).
     #[test]
     fn citations_budget_resolves_to_yaml_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
-        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
-        let b = extraction_budget_for("citations");
+        let routing = test_extraction_routing("citations");
+        let b = extraction_budget_from_routing("citations", Some(&routing));
         assert!(
             (b.max_cost_usd - 0.50).abs() < 1e-6,
             "citations budget must equal $0.50 (got ${})",
@@ -2131,37 +2144,20 @@ mod a4_tests {
 
     #[test]
     fn extractor_resolves_to_yaml_cli_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let agents_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../agents");
-        std::env::set_var("GROKRXIV_AGENTS_DIR", &agents_dir);
-        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
-        let prev_fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
-        std::env::remove_var("GROKRXIV_EXTRACTOR");
-        std::env::remove_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK");
-
-        assert_eq!(resolve_extractor("macros"), ExtractorKind::Cli);
-
-        if let Some(prev) = prev {
-            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
-        }
-        if let Some(prev) = prev_fallback {
-            std::env::set_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK", prev);
-        }
+        let routing = test_extraction_routing("macros");
+        assert_eq!(
+            resolve_extractor_from_routing("macros", None, None, Some(&routing)),
+            ExtractorKind::Cli
+        );
     }
 
     #[test]
     fn extractor_env_overrides_yaml() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
-        std::env::set_var("GROKRXIV_EXTRACTOR", "api");
-
-        assert_eq!(resolve_extractor("macros"), ExtractorKind::Api);
-
-        if let Some(prev) = prev {
-            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
-        } else {
-            std::env::remove_var("GROKRXIV_EXTRACTOR");
-        }
+        let routing = test_extraction_routing("macros");
+        assert_eq!(
+            resolve_extractor_from_routing("macros", Some("api"), None, Some(&routing)),
+            ExtractorKind::Api
+        );
     }
 
     #[test]

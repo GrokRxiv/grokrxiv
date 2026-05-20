@@ -14,8 +14,8 @@
         "properties": {
           "citation": { "$ref": "citation.schema.json" },
           "exists": {
-            "type": "boolean",
-            "description": "Whether the cited work was located via Crossref / Semantic Scholar / arXiv."
+            "type": ["boolean", "null"],
+            "description": "LLM-supplied existence signal when present. Deterministic verifier provenance in verifier_notes is authoritative."
           },
           "resolved_doi": { "type": ["string", "null"] },
           "resolved_url": { "type": ["string", "null"] },

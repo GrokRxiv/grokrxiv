@@ -13,10 +13,14 @@ pub fn render_markdown(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentR
     // Disclaimer suppressed — see crates/render/src/lib.rs::PUBLIC_DISCLAIMER.
 
     out.push_str(&format!("# {}\n\n", paper.title));
-    out.push_str(&format!(
-        "GrokRxiv review of [arXiv:{0}](https://arxiv.org/abs/{0})",
-        paper.arxiv_id
-    ));
+    let source_label = crate::paper_source_label(&paper.arxiv_id);
+    if let Some(source_url) = crate::paper_source_url(&paper.arxiv_id) {
+        out.push_str(&format!(
+            "GrokRxiv review of [{source_label}]({source_url})"
+        ));
+    } else {
+        out.push_str(&format!("GrokRxiv review of `{source_label}`"));
+    }
     if let Some(field) = &paper.field {
         out.push_str(&format!(" · `{field}`"));
     }

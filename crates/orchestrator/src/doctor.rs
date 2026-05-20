@@ -5,6 +5,8 @@
 //! exit code to 1.
 
 use serde::Serialize;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -147,6 +149,10 @@ impl DoctorReport {
 
     /// True if a critical check failed (DB URL or no configured review runner).
     pub fn has_critical_failure(&self) -> bool {
+        self.has_critical_failure_with_runner_requirement(doctor_requires_review_runner())
+    }
+
+    fn has_critical_failure_with_runner_requirement(&self, require_review_runner: bool) -> bool {
         let db_fail = matches!(
             self.database_url.as_ref().map(|c| c.status),
             Some(CheckStatus::Fail)
@@ -174,7 +180,9 @@ impl DoctorReport {
         let any_local_ok = [&self.local_inference.litellm, &self.local_inference.ollama]
             .iter()
             .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
-        db_fail || !(any_api_ok || any_cli_ok || any_cloud_ok || any_local_ok)
+        db_fail
+            || (require_review_runner
+                && !(any_api_ok || any_cli_ok || any_cloud_ok || any_local_ok))
     }
 
     /// Pretty-print the report to stdout.
@@ -299,22 +307,22 @@ async fn check_api_runners(report: &mut DoctorReport) {
     };
 
     // Anthropic
-    report.api_runners.anthropic = Some(match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(_) => CheckResult::ok("ANTHROPIC_API_KEY set"),
-        Err(_) => CheckResult::skipped("ANTHROPIC_API_KEY unset"),
+    report.api_runners.anthropic = Some(match nonblank_env("ANTHROPIC_API_KEY") {
+        Some(_) => CheckResult::ok("ANTHROPIC_API_KEY set"),
+        None => CheckResult::skipped("ANTHROPIC_API_KEY unset"),
     });
     // OpenAI
-    report.api_runners.openai = Some(match std::env::var("OPENAI_API_KEY") {
-        Ok(key) => match ping_openai(&client, &key).await {
+    report.api_runners.openai = Some(match nonblank_env("OPENAI_API_KEY") {
+        Some(key) => match ping_openai(&client, &key).await {
             Ok(()) => CheckResult::ok("OPENAI_API_KEY reachable (/v1/models)"),
             Err(e) => CheckResult::fail(format!("OPENAI_API_KEY set but unreachable: {e}")),
         },
-        Err(_) => CheckResult::skipped("OPENAI_API_KEY unset"),
+        None => CheckResult::skipped("OPENAI_API_KEY unset"),
     });
     // Gemini
-    report.api_runners.gemini = Some(match std::env::var("GOOGLE_GENERATIVE_AI_API_KEY") {
-        Ok(_) => CheckResult::ok("GOOGLE_GENERATIVE_AI_API_KEY set"),
-        Err(_) => CheckResult::skipped("GOOGLE_GENERATIVE_AI_API_KEY unset"),
+    report.api_runners.gemini = Some(match nonblank_env("GOOGLE_GENERATIVE_AI_API_KEY") {
+        Some(_) => CheckResult::ok("GOOGLE_GENERATIVE_AI_API_KEY set"),
+        None => CheckResult::skipped("GOOGLE_GENERATIVE_AI_API_KEY unset"),
     });
 }
 
@@ -331,27 +339,92 @@ async fn ping_openai(client: &reqwest::Client, key: &str) -> anyhow::Result<()> 
 }
 
 fn check_cli_runners(report: &mut DoctorReport) {
+    let config = CliRunnerCheckConfig::from_env();
+    check_cli_runners_with(report, &config);
+}
+
+struct CliRunnerCheckConfig {
+    path: OsString,
+    home: PathBuf,
+    require_auth: bool,
+}
+
+impl CliRunnerCheckConfig {
+    fn from_env() -> Self {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/home/grokrxiv"));
+        let cli_selected = std::env::var("GROKRXIV_RUNNER")
+            .ok()
+            .map(|v| v.eq_ignore_ascii_case("cli"))
+            .unwrap_or(false)
+            || std::env::var("GROKRXIV_EXTRACTOR")
+                .ok()
+                .map(|v| v.eq_ignore_ascii_case("cli"))
+                .unwrap_or(false);
+        Self {
+            path,
+            home,
+            require_auth: env_truthy("GROKRXIV_REQUIRE_CLI_AUTH") || cli_selected,
+        }
+    }
+}
+
+fn check_cli_runners_with(report: &mut DoctorReport, config: &CliRunnerCheckConfig) {
     for (name, slot) in [
         ("claude", &mut report.cli_runners.claude),
         ("codex", &mut report.cli_runners.codex),
         ("gemini", &mut report.cli_runners.gemini),
     ] {
-        *slot = Some(match which(name) {
-            Some(p) => CheckResult::ok(format!("found {p}")),
+        *slot = Some(match which_in_path(name, &config.path) {
+            Some(p) => match cli_auth_status(name, &config.home) {
+                Some(auth) => CheckResult::ok(format!("found {p}; auth {auth}")),
+                None if config.require_auth => CheckResult::fail(format!(
+                    "found {p}; auth missing in {}",
+                    config.home.display()
+                )),
+                None => CheckResult::ok(format!("found {p}; auth not checked")),
+            },
+            None if config.require_auth => CheckResult::fail(format!("`{name}` not on PATH")),
             None => CheckResult::skipped(format!("`{name}` not on PATH")),
         });
     }
 }
 
-fn which(bin: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
+fn which_in_path(bin: &str, path: &OsString) -> Option<String> {
+    for dir in std::env::split_paths(path) {
         let candidate = dir.join(bin);
         if candidate.is_file() {
             return Some(candidate.display().to_string());
         }
     }
     None
+}
+
+fn cli_auth_status(name: &str, home: &Path) -> Option<&'static str> {
+    match name {
+        "claude" => {
+            if home.join(".claude.json").is_file() {
+                Some("present (.claude.json)")
+            } else if home.join(".claude").is_dir() {
+                Some("present (.claude)")
+            } else {
+                None
+            }
+        }
+        "codex" => home
+            .join(".codex")
+            .join("auth.json")
+            .is_file()
+            .then_some("present (.codex/auth.json)"),
+        "gemini" => home
+            .join(".gemini")
+            .join("oauth_creds.json")
+            .is_file()
+            .then_some("present (.gemini/oauth_creds.json)"),
+        _ => None,
+    }
 }
 
 async fn check_cloud_runners(report: &mut DoctorReport) {
@@ -416,18 +489,59 @@ async fn check_local_inference(report: &mut DoctorReport) {
 }
 
 fn check_publisher(report: &mut DoctorReport) {
-    report.publisher = Some(match std::env::var("GITHUB_TOKEN") {
-        Ok(_) => CheckResult::ok("GITHUB_TOKEN set (PR opens will be live)"),
-        Err(_) => CheckResult::skipped("GITHUB_TOKEN unset (approve will simulate PRs)"),
+    report.publisher = Some(match nonblank_env("GITHUB_TOKEN") {
+        Some(_) => CheckResult::ok("GITHUB_TOKEN set (PR opens will be live)"),
+        None => CheckResult::skipped("GITHUB_TOKEN unset (approve will simulate PRs)"),
     });
+}
+
+fn nonblank_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn doctor_requires_review_runner() -> bool {
+    !matches!(
+        std::env::var("GROKRXIV_DOCTOR_REQUIRE_RUNNER").as_deref(),
+        Ok("0") | Ok("false") | Ok("no") | Ok("off")
+    )
+}
+
+struct DocConverterConfig {
+    pandoc_bin: String,
+    latexml_bin: String,
+    latexmlpost_bin: String,
+    enable_latexml: bool,
+    disable_latexml: bool,
+}
+
+impl DocConverterConfig {
+    fn from_env() -> Self {
+        Self {
+            pandoc_bin: std::env::var("GROKRXIV_PANDOC_BIN")
+                .unwrap_or_else(|_| "pandoc".to_string()),
+            latexml_bin: std::env::var("GROKRXIV_LATEXML_BIN")
+                .unwrap_or_else(|_| "latexml".to_string()),
+            latexmlpost_bin: std::env::var("GROKRXIV_LATEXMLPOST_BIN")
+                .unwrap_or_else(|_| "latexmlpost".to_string()),
+            enable_latexml: env_truthy("GROKRXIV_TEX_ENABLE_LATEXML"),
+            disable_latexml: env_truthy("GROKRXIV_TEX_DISABLE_LATEXML"),
+        }
+    }
 }
 
 /// Pandoc + optional LaTeXML reachability. Pandoc is required (FAIL if <3.0 or
 /// missing); LaTeXML is checked only when semantic AST enrichment is explicitly
 /// enabled.
 fn check_doc_converters(report: &mut DoctorReport) {
-    let pandoc_bin = std::env::var("GROKRXIV_PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
-    report.pandoc = Some(match run_version(&pandoc_bin) {
+    let config = DocConverterConfig::from_env();
+    check_doc_converters_with(report, &config);
+}
+
+fn check_doc_converters_with(report: &mut DoctorReport, config: &DocConverterConfig) {
+    report.pandoc = Some(match run_version(&config.pandoc_bin) {
         Ok(out) => match parse_pandoc_major(&out) {
             Some(major) if major >= 3 => {
                 CheckResult::ok(format!("pandoc {} (>= 3.0)", first_version_token(&out)))
@@ -441,40 +555,38 @@ fn check_doc_converters(report: &mut DoctorReport) {
                 out.lines().next().unwrap_or("")
             )),
         },
-        Err(e) => CheckResult::fail(format!("`{pandoc_bin} --version` failed: {e}")),
+        Err(e) => CheckResult::fail(format!("`{} --version` failed: {e}", config.pandoc_bin)),
     });
 
-    if env_truthy("GROKRXIV_TEX_DISABLE_LATEXML") {
+    if config.disable_latexml {
         report.latexml = Some(CheckResult::skipped(
             "GROKRXIV_TEX_DISABLE_LATEXML set; LaTeXML semantic AST enrichment disabled",
         ));
         return;
     }
-    if !env_truthy("GROKRXIV_TEX_ENABLE_LATEXML") {
+    if !config.enable_latexml {
         report.latexml = Some(CheckResult::skipped(
             "GROKRXIV_TEX_ENABLE_LATEXML unset; LaTeXML semantic AST enrichment disabled",
         ));
         return;
     }
 
-    let latexml_bin =
-        std::env::var("GROKRXIV_LATEXML_BIN").unwrap_or_else(|_| "latexml".to_string());
-    let latexmlpost_bin =
-        std::env::var("GROKRXIV_LATEXMLPOST_BIN").unwrap_or_else(|_| "latexmlpost".to_string());
-    let latexml = match run_version(&latexml_bin) {
+    let latexml = match run_version(&config.latexml_bin) {
         Ok(out) => first_version_token(&out),
         Err(e) => {
             report.latexml = Some(CheckResult::fail(format!(
-                "`{latexml_bin} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}"
+                "`{} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}",
+                config.latexml_bin
             )));
             return;
         }
     };
-    let latexmlpost = match run_version(&latexmlpost_bin) {
+    let latexmlpost = match run_version(&config.latexmlpost_bin) {
         Ok(out) => first_version_token(&out),
         Err(e) => {
             report.latexml = Some(CheckResult::fail(format!(
-                "`{latexmlpost_bin} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}"
+                "`{} --version` failed while GROKRXIV_TEX_ENABLE_LATEXML=1: {e}",
+                config.latexmlpost_bin
             )));
             return;
         }
@@ -587,82 +699,58 @@ fn check_data_repo(report: &mut DoctorReport) {
     report.data_repo = Some(CheckResult::ok(format!("{path} ready{schema_note}")));
 }
 
-/// Per-extraction-agent YAML config parseability. Reads
-/// `agents/extraction/<role>.yaml` from the working directory and reports
-/// whether each is a syntactically valid YAML document. Per-role missing
-/// files map to `skipped` (Wave 2 may not have shipped one for every role
-/// at audit time).
-fn check_extraction_agent_yaml(report: &mut DoctorReport) {
-    use std::path::PathBuf;
-    let roots: Vec<PathBuf> = [
-        std::env::current_dir().ok(),
-        Some(PathBuf::from("agents")),
-        Some(PathBuf::from("crates/orchestrator/agents")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+struct ExtractionAgentConfig {
+    agents_dir: std::path::PathBuf,
+}
 
-    fn check_one(roots: &[PathBuf], role: &str) -> CheckResult {
-        let rel = format!("agents/extraction/{role}.yaml");
-        for root in roots {
-            let candidate = root.join(&rel);
-            if !candidate.exists() {
-                continue;
-            }
-            return match std::fs::read_to_string(&candidate) {
-                Ok(text) => match serde_yaml::from_str::<serde_yaml::Value>(&text) {
-                    Ok(_) => CheckResult::ok(format!("{} parses", candidate.display())),
-                    Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
-                },
-                Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
-            };
+impl ExtractionAgentConfig {
+    fn from_env() -> Self {
+        let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
+        Self { agents_dir }
+    }
+}
+
+/// Per-extraction-agent YAML config parseability. Reads
+/// `extraction/<role>.yaml` from `GROKRXIV_AGENTS_DIR` or the default
+/// `agents/` directory, matching the runtime extraction loader. Per-role
+/// missing files map to `skipped` (Wave 2 may not have shipped one for every
+/// role at audit time).
+fn check_extraction_agent_yaml(report: &mut DoctorReport) {
+    let config = ExtractionAgentConfig::from_env();
+    check_extraction_agent_yaml_with(report, &config);
+}
+
+fn check_extraction_agent_yaml_with(report: &mut DoctorReport, config: &ExtractionAgentConfig) {
+    fn check_one(config: &ExtractionAgentConfig, role: &str) -> CheckResult {
+        let candidate = config
+            .agents_dir
+            .join("extraction")
+            .join(format!("{role}.yaml"));
+        if !candidate.exists() {
+            return CheckResult::skipped(format!("{} not found", candidate.display()));
         }
-        CheckResult::skipped(format!("{rel} not found on any search root"))
+        match std::fs::read_to_string(&candidate) {
+            Ok(text) => match serde_yaml::from_str::<serde_yaml::Value>(&text) {
+                Ok(_) => CheckResult::ok(format!("{} parses", candidate.display())),
+                Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
+            },
+            Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
+        }
     }
 
-    report.extraction_agents.vlm = Some(check_one(&roots, "vlm"));
-    report.extraction_agents.macros = Some(check_one(&roots, "macros"));
-    report.extraction_agents.equations = Some(check_one(&roots, "equations"));
-    report.extraction_agents.theorems = Some(check_one(&roots, "theorems"));
-    report.extraction_agents.citations = Some(check_one(&roots, "citations"));
+    report.extraction_agents.vlm = Some(check_one(config, "vlm"));
+    report.extraction_agents.macros = Some(check_one(config, "macros"));
+    report.extraction_agents.equations = Some(check_one(config, "equations"));
+    report.extraction_agents.theorems = Some(check_one(config, "theorems"));
+    report.extraction_agents.citations = Some(check_one(config, "citations"));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn clear(names: &[&'static str]) -> Self {
-            let saved = names
-                .iter()
-                .map(|name| (*name, std::env::var(name).ok()))
-                .collect();
-            for name in names {
-                std::env::remove_var(name);
-            }
-            Self { saved }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (name, value) in self.saved.drain(..) {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
 
     #[cfg(unix)]
     fn fake_bin(dir: &tempfile::TempDir, name: &str, body: &str) -> String {
@@ -678,29 +766,139 @@ mod tests {
         path.display().to_string()
     }
 
+    #[test]
+    fn nonblank_env_treats_blank_as_unset() {
+        std::env::set_var("GROKRXIV_DOCTOR_TEST_BLANK", "   ");
+        std::env::set_var("GROKRXIV_DOCTOR_TEST_SET", " value ");
+        assert_eq!(nonblank_env("GROKRXIV_DOCTOR_TEST_BLANK"), None);
+        assert_eq!(
+            nonblank_env("GROKRXIV_DOCTOR_TEST_SET").as_deref(),
+            Some("value")
+        );
+        std::env::remove_var("GROKRXIV_DOCTOR_TEST_BLANK");
+        std::env::remove_var("GROKRXIV_DOCTOR_TEST_SET");
+    }
+
+    #[test]
+    fn doctor_requires_runner_by_default_but_healthcheck_can_skip_it() {
+        let mut report = DoctorReport::new("test");
+        report.database_url = Some(CheckResult::ok("db"));
+
+        assert!(report.has_critical_failure_with_runner_requirement(true));
+        assert!(!report.has_critical_failure_with_runner_requirement(false));
+    }
+
+    #[test]
+    fn doctor_extraction_agents_honor_configured_agents_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let extraction = tmp.path().join("extraction");
+        std::fs::create_dir_all(&extraction).unwrap();
+        for role in ["vlm", "macros", "equations", "theorems", "citations"] {
+            std::fs::write(extraction.join(format!("{role}.yaml")), "provider: cli\n").unwrap();
+        }
+
+        let config = ExtractionAgentConfig {
+            agents_dir: tmp.path().to_path_buf(),
+        };
+        let mut report = DoctorReport::new("test");
+        check_extraction_agent_yaml_with(&mut report, &config);
+
+        assert_eq!(
+            report.extraction_agents.vlm.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        assert_eq!(
+            report
+                .extraction_agents
+                .citations
+                .as_ref()
+                .map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runner_check_fails_when_cli_mode_requires_missing_auth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let claude = fake_bin(&tmp, "claude", "echo '2.1.144 (Claude Code)'");
+        std::fs::rename(&claude, bin_dir.join("claude")).unwrap();
+
+        let config = CliRunnerCheckConfig {
+            path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
+            home: tmp.path().join("home"),
+            require_auth: true,
+        };
+        let mut report = DoctorReport::new("test");
+
+        check_cli_runners_with(&mut report, &config);
+
+        let result = report.cli_runners.claude.expect("claude check");
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(
+            result.message.contains("auth missing"),
+            "{}",
+            result.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runner_check_accepts_binary_and_auth_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        for name in ["claude", "codex", "gemini"] {
+            let bin = fake_bin(&tmp, name, &format!("echo '{name} ok'"));
+            std::fs::rename(&bin, bin_dir.join(name)).unwrap();
+        }
+        std::fs::write(home.join(".claude.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(home.join(".gemini").join("oauth_creds.json"), "{}").unwrap();
+
+        let config = CliRunnerCheckConfig {
+            path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
+            home,
+            require_auth: true,
+        };
+        let mut report = DoctorReport::new("test");
+
+        check_cli_runners_with(&mut report, &config);
+
+        assert_eq!(
+            report.cli_runners.claude.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        assert_eq!(
+            report.cli_runners.codex.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+        assert_eq!(
+            report.cli_runners.gemini.as_ref().map(|c| c.status),
+            Some(CheckStatus::Ok)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn doctor_skips_latexml_when_semantic_ast_is_not_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let _env = EnvGuard::clear(&[
-            "GROKRXIV_PANDOC_BIN",
-            "GROKRXIV_LATEXML_BIN",
-            "GROKRXIV_LATEXMLPOST_BIN",
-            "GROKRXIV_TEX_ENABLE_LATEXML",
-            "GROKRXIV_TEX_DISABLE_LATEXML",
-        ]);
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var(
-            "GROKRXIV_PANDOC_BIN",
-            fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
-        );
-        std::env::set_var(
-            "GROKRXIV_LATEXML_BIN",
-            tmp.path().join("missing-latexml").display().to_string(),
-        );
+        let config = DocConverterConfig {
+            pandoc_bin: fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
+            latexml_bin: tmp.path().join("missing-latexml").display().to_string(),
+            latexmlpost_bin: tmp.path().join("missing-latexmlpost").display().to_string(),
+            enable_latexml: false,
+            disable_latexml: false,
+        };
 
         let mut report = DoctorReport::new("test");
-        check_doc_converters(&mut report);
+        check_doc_converters_with(&mut report, &config);
 
         assert_eq!(
             report.pandoc.as_ref().map(|c| c.status),
@@ -718,31 +916,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn doctor_requires_latexmlpost_when_semantic_ast_is_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let _env = EnvGuard::clear(&[
-            "GROKRXIV_PANDOC_BIN",
-            "GROKRXIV_LATEXML_BIN",
-            "GROKRXIV_LATEXMLPOST_BIN",
-            "GROKRXIV_TEX_ENABLE_LATEXML",
-            "GROKRXIV_TEX_DISABLE_LATEXML",
-        ]);
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var(
-            "GROKRXIV_PANDOC_BIN",
-            fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
-        );
-        std::env::set_var(
-            "GROKRXIV_LATEXML_BIN",
-            fake_bin(&tmp, "latexml", "echo 'latexml 0.8.8'"),
-        );
-        std::env::set_var(
-            "GROKRXIV_LATEXMLPOST_BIN",
-            tmp.path().join("missing-latexmlpost").display().to_string(),
-        );
-        std::env::set_var("GROKRXIV_TEX_ENABLE_LATEXML", "1");
+        let config = DocConverterConfig {
+            pandoc_bin: fake_bin(&tmp, "pandoc", "echo 'pandoc 3.9.0.2'"),
+            latexml_bin: fake_bin(&tmp, "latexml", "echo 'latexml 0.8.8'"),
+            latexmlpost_bin: tmp.path().join("missing-latexmlpost").display().to_string(),
+            enable_latexml: true,
+            disable_latexml: false,
+        };
 
         let mut report = DoctorReport::new("test");
-        check_doc_converters(&mut report);
+        check_doc_converters_with(&mut report, &config);
 
         let latexml = report.latexml.expect("latexml check");
         assert_eq!(latexml.status, CheckStatus::Fail);

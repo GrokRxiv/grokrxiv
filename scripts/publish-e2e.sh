@@ -34,6 +34,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/.." && pwd)"
 cd "${REPO}"
 
+load_dotenv() {
+  local env_file="${REPO}/.env"
+  [[ -f "${env_file}" ]] || return 0
+  set -a
+  # shellcheck disable=SC1090
+  source "${env_file}"
+  set +a
+}
+
+load_dotenv
+
 step() { printf "\n\033[36m▸ %s\033[0m\n" "$*"; }
 ok()   { printf "  \033[32m✓\033[0m %s\n" "$*"; }
 fail() { printf "  \033[31m✗\033[0m %s\n" "$*"; exit 1; }

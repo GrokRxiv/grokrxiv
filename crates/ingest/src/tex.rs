@@ -59,9 +59,32 @@ pub struct TexExtract {
     pub semantic_ast: Option<Value>,
 }
 
+/// Editable main TeX source extracted from an arXiv source bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MainTexSource {
+    /// Relative path of the selected main TeX file inside the bundle.
+    pub path: String,
+    /// UTF-8 TeX contents of the selected main file.
+    pub contents: String,
+}
+
 /// Build the canonical source URL for an arXiv id.
 pub fn source_url(arxiv_id: &str) -> String {
     format!("{ARXIV_SOURCE}{arxiv_id}")
+}
+
+/// Extract the selected editable main `.tex` file from an arXiv source bundle.
+pub fn extract_main_tex_source(bytes: &Bytes) -> Result<MainTexSource> {
+    let files = unpack(bytes)?;
+    if files.is_empty() {
+        return Err(anyhow!("source bundle contained no .tex files"));
+    }
+    let path = pick_main(&files);
+    let contents = files
+        .get(&path)
+        .cloned()
+        .ok_or_else(|| anyhow!("selected main tex source {path} was not in bundle"))?;
+    Ok(MainTexSource { path, contents })
 }
 
 /// Parse an arXiv source bundle into a [`TexExtract`] via a Pandoc + LaTeXML
@@ -787,6 +810,45 @@ fn sanitize_inline(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static TEX_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TexEnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl TexEnvGuard {
+        fn new() -> Self {
+            const KEYS: &[&str] = &[
+                "GROKRXIV_TEX_ENABLE_LATEXML",
+                "GROKRXIV_TEX_DISABLE_LATEXML",
+                "GROKRXIV_LATEXML_BIN",
+                "GROKRXIV_LATEXMLPOST_BIN",
+            ];
+            let lock = TEX_ENV_LOCK.lock().unwrap();
+            let saved = KEYS
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect::<Vec<_>>();
+            for key in KEYS {
+                std::env::remove_var(key);
+            }
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for TexEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     fn have_bin(name: &str) -> bool {
         let path = match std::env::var_os("PATH") {
@@ -822,8 +884,25 @@ mod tests {
         Bytes::from(gz_buf)
     }
 
-    #[tokio::test]
+    #[test]
+    fn extract_main_tex_source_prefers_documentclass_file() {
+        let bundle = make_targz(&[
+            ("supplement.tex", "\\section{Supplement}\n"),
+            (
+                "paper/main.tex",
+                "\\documentclass{article}\n\\title{Main Paper}\n\\begin{document}\nBody\n\\end{document}\n",
+            ),
+            ("refs.bib", "@article{a,title={A}}\n"),
+        ]);
+
+        let main = extract_main_tex_source(&bundle).expect("main tex source");
+        assert_eq!(main.path, "paper/main.tex");
+        assert!(main.contents.contains("\\title{Main Paper}"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn pandoc_smoke() {
+        let _env = TexEnvGuard::new();
         if !have_bin(&pandoc_bin()) {
             eprintln!("skipping: pandoc not installed");
             return;
@@ -866,8 +945,9 @@ Some text.
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn latexml_preserves_theorem() {
+        let _env = TexEnvGuard::new();
         if !have_bin(&pandoc_bin()) || !have_bin(&latexml_bin()) {
             eprintln!("skipping: latexml not installed");
             return;
@@ -911,8 +991,9 @@ Let $n \ge 1$.
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pandoc_fallback_when_latexml_disabled() {
+        let _env = TexEnvGuard::new();
         if !have_bin(&pandoc_bin()) {
             eprintln!("skipping: pandoc not installed");
             return;
@@ -957,8 +1038,9 @@ World.
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn bibliography_parses_from_bibitem() {
+        let _env = TexEnvGuard::new();
         if !have_bin(&pandoc_bin()) {
             eprintln!("skipping: pandoc not installed");
             return;
@@ -991,6 +1073,7 @@ See~\cite{foo}.
 
     #[test]
     fn latexml_is_opt_in_by_default() {
+        let _env = TexEnvGuard::new();
         std::env::remove_var("GROKRXIV_TEX_ENABLE_LATEXML");
         std::env::remove_var("GROKRXIV_TEX_DISABLE_LATEXML");
         assert!(

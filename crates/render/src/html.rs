@@ -5,7 +5,7 @@
 //! client-side KaTeX rendering by the Next.js app.
 
 use anyhow::{Context, Result};
-use grokrxiv_schemas::{MetaReview, PaperExtract, Recommendation};
+use grokrxiv_schemas::{AgentRole, MetaReview, PaperExtract, Recommendation};
 use minijinja::{context, Environment};
 use once_cell::sync::Lazy;
 use serde_json::json;
@@ -34,6 +34,7 @@ pub fn render_html(
                 "role": crate::role_slug(a.role),
                 "model": a.model,
                 "verifier_status": verifier_status_str(&a.verifier),
+                "meta_review": agent_meta_review(a),
                 "output_pretty": serde_json::to_string_pretty(&a.output).unwrap_or_default(),
             })
         })
@@ -46,6 +47,8 @@ pub fn render_html(
         paper => paper,
         meta => meta,
         agents => agent_views,
+        source_label => crate::paper_source_label(&paper.arxiv_id),
+        source_url => crate::paper_source_url(&paper.arxiv_id),
         recommendation_label => recommendation_label(meta.recommendation),
         confidence_pct => (meta.confidence.clamp(0.0, 1.0) * 100.0).round() as i32,
     })
@@ -67,4 +70,19 @@ fn verifier_status_str(v: &grokrxiv_schemas::VerifierResult) -> &'static str {
         grokrxiv_schemas::VerifierStatus::Warn => "warn",
         grokrxiv_schemas::VerifierStatus::Fail => "fail",
     }
+}
+
+fn agent_meta_review(agent: &AgentRecord) -> Option<serde_json::Value> {
+    if agent.role != AgentRole::MetaReviewer {
+        return None;
+    }
+    let meta = serde_json::from_value::<MetaReview>(agent.output.clone()).ok()?;
+    Some(json!({
+        "summary": meta.summary,
+        "strengths": meta.strengths,
+        "weaknesses": meta.weaknesses,
+        "questions": meta.questions,
+        "recommendation_label": recommendation_label(meta.recommendation),
+        "confidence_pct": (meta.confidence.clamp(0.0, 1.0) * 100.0).round() as i32,
+    }))
 }

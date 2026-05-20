@@ -26,23 +26,25 @@ use serde_json::Value;
 use std::path::Path;
 use uuid::Uuid;
 
-const HTML_QUALITY_SCHEMA: &str =
-    include_str!("../../../schemas/html_quality_review.schema.json");
-const HTML_QUALITY_PROMPT_TEMPLATE: &str =
-    include_str!("../../../prompts/html_quality.md");
+const HTML_QUALITY_SCHEMA: &str = include_str!("../../../schemas/html_quality_review.schema.json");
+const HTML_QUALITY_PROMPT_TEMPLATE: &str = include_str!("../../../prompts/html_quality.md");
 const PR_TEXT_QUALITY_SCHEMA: &str =
     include_str!("../../../schemas/pr_text_quality_review.schema.json");
-const PR_TEXT_QUALITY_PROMPT_TEMPLATE: &str =
-    include_str!("../../../prompts/pr_text_quality.md");
+const PR_TEXT_QUALITY_PROMPT_TEMPLATE: &str = include_str!("../../../prompts/pr_text_quality.md");
 
 /// Cleaned PR title + body returned by [`clean_pr_text`]. Fields default to
 /// the inputs when codex declines to rewrite them.
 #[derive(Debug, Clone)]
 pub struct CleanedPrText {
+    /// Cleaned GitHub PR title.
     pub title: String,
+    /// Cleaned GitHub PR body.
     pub body: String,
+    /// Structured fix list returned by the formatter.
     pub fixes: serde_json::Value,
+    /// Short formatter summary.
     pub summary: String,
+    /// Formatter confidence score.
     pub confidence: f64,
 }
 
@@ -68,8 +70,8 @@ pub async fn clean_pr_text(
         summary: String::new(),
         confidence: 0.0,
     };
-    let model = std::env::var("GROKRXIV_HTML_QUALITY_MODEL")
-        .unwrap_or_else(|_| "gpt-5.5".to_string());
+    let model =
+        std::env::var("GROKRXIV_HTML_QUALITY_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
     let timeout_secs: u32 = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -208,15 +210,15 @@ pub async fn review_and_fix_html(
     };
     let original_html = String::from_utf8_lossy(&html_bytes).to_string();
 
-    let model = std::env::var("GROKRXIV_HTML_QUALITY_MODEL")
-        .unwrap_or_else(|_| "gpt-5.5".to_string());
+    let model =
+        std::env::var("GROKRXIV_HTML_QUALITY_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
     let timeout_secs: u32 = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(180);
 
-    let schema: Value = serde_json::from_str(HTML_QUALITY_SCHEMA)
-        .context("html_quality schema parse")?;
+    let schema: Value =
+        serde_json::from_str(HTML_QUALITY_SCHEMA).context("html_quality schema parse")?;
     let spec = AgentSpec {
         role: AgentRole::MetaReviewer, // closest existing role; not persisted to review_agents
         runner: AgentRunnerKind::Cli,
@@ -339,9 +341,12 @@ mod tests {
 
     #[test]
     fn html_quality_schema_parses_as_json() {
-        let v: serde_json::Value = serde_json::from_str(HTML_QUALITY_SCHEMA)
-            .expect("schema is valid JSON");
-        assert_eq!(v["$id"], "https://grokrxiv.org/schemas/html_quality_review.schema.json");
+        let v: serde_json::Value =
+            serde_json::from_str(HTML_QUALITY_SCHEMA).expect("schema is valid JSON");
+        assert_eq!(
+            v["$id"],
+            "https://grokrxiv.org/schemas/html_quality_review.schema.json"
+        );
         // required fields present
         let required = v["required"].as_array().expect("required is array");
         let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();

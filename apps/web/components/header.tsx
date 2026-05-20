@@ -35,10 +35,10 @@ export function Header() {
             </Link>
           ))}
           <Link
-            href="/#upload"
+            href="/#sample-review"
             className="rounded-md bg-[color:var(--color-primary)] px-3 py-1.5 text-[color:var(--color-primary-foreground)] hover:opacity-90"
           >
-            Upload
+            Sample
           </Link>
           <ThemeToggle />
         </nav>
@@ -46,10 +46,10 @@ export function Header() {
         {/* Mobile nav (< sm). <details>-based disclosure so it works without JS. */}
         <div className="flex items-center gap-2 sm:hidden">
           <Link
-            href="/#upload"
+            href="/#sample-review"
             className="rounded-md bg-[color:var(--color-primary)] px-3 py-1.5 text-sm text-[color:var(--color-primary-foreground)] hover:opacity-90"
           >
-            Upload
+            Sample
           </Link>
           <ThemeToggle />
           <details className="relative">

@@ -14,7 +14,7 @@ const STEPS = [
   {
     icon: GitPullRequest,
     title: "Publish",
-    body: "A human moderator approves, rejects, or requests changes before a public review appears on the site.",
+    body: "Reviews open on the site as In Review. A moderator approves, rejects, or requests changes before publication.",
   },
 ];
 

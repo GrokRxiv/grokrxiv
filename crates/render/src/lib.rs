@@ -62,3 +62,34 @@ pub fn role_slug(role: AgentRole) -> &'static str {
         AgentRole::MetaReviewer => "meta_reviewer",
     }
 }
+
+pub(crate) fn paper_source_label(arxiv_id: &str) -> String {
+    if looks_like_arxiv_id(arxiv_id) {
+        format!("arXiv:{arxiv_id}")
+    } else {
+        arxiv_id.to_string()
+    }
+}
+
+pub(crate) fn paper_source_url(arxiv_id: &str) -> Option<String> {
+    looks_like_arxiv_id(arxiv_id).then(|| format!("https://arxiv.org/abs/{arxiv_id}"))
+}
+
+fn looks_like_arxiv_id(id: &str) -> bool {
+    let core = match id.rfind('v') {
+        Some(idx) if idx > 0 && id[idx + 1..].chars().all(|c| c.is_ascii_digit()) => &id[..idx],
+        _ => id,
+    };
+    if let Some((archive, number)) = core.split_once('/') {
+        return !archive.is_empty()
+            && number.len() == 7
+            && number.chars().all(|c| c.is_ascii_digit());
+    }
+    let Some((yymm, number)) = core.split_once('.') else {
+        return false;
+    };
+    yymm.len() == 4
+        && yymm.chars().all(|c| c.is_ascii_digit())
+        && (number.len() == 4 || number.len() == 5 || number.len() == 6)
+        && number.chars().all(|c| c.is_ascii_digit())
+}

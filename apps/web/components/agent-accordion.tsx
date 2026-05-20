@@ -6,6 +6,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { AgentReviewDetails } from "@/components/agent-review-details";
 import { VerifierStatusBadge } from "@/components/review-status-badge";
 import type { AgentOutput, AgentRole } from "@/lib/types";
 
@@ -50,9 +51,11 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
             </div>
           </AccordionTrigger>
           <AccordionContent>
-            <pre className="overflow-x-auto rounded-md bg-slate-950/60 p-4 text-xs text-slate-100">
-              {JSON.stringify(agent.output, null, 2)}
-            </pre>
+            <AgentReviewDetails
+              role={agent.role}
+              output={agent.output}
+              verifierNotes={agent.verifier_notes}
+            />
           </AccordionContent>
         </AccordionItem>
       ))}

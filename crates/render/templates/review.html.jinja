@@ -42,7 +42,7 @@
     <h1>{{ paper.title }}</h1>
     <p class="muted">
       <span class="brand">GrokRxiv</span> review of
-      <a class="meta-link" href="https://arxiv.org/abs/{{ paper.arxiv_id }}">arXiv:{{ paper.arxiv_id }}</a>
+      {% if source_url %}<a class="meta-link" href="{{ source_url|safe }}">{{ source_label }}</a>{% else %}<span class="meta-link">{{ source_label }}</span>{% endif %}
       {% if paper.field %} · <span>{{ paper.field }}</span>{% endif %}
     </p>
     <p class="muted">
@@ -86,7 +86,24 @@
           {{ agent.role }} — <span class="muted">{{ agent.model }}</span>
           <span class="badge {{ agent.verifier_status }}">{{ agent.verifier_status }}</span>
         </summary>
+        {% if agent.meta_review %}
+        <p>{{ agent.meta_review.summary }}</p>
+        <p class="muted">Recommendation: <strong>{{ agent.meta_review.recommendation_label }}</strong> · Confidence: {{ agent.meta_review.confidence_pct }}%</p>
+        <h3>Strengths</h3>
+        <ul>
+          {% for s in agent.meta_review.strengths %}<li>{{ s }}</li>{% endfor %}
+        </ul>
+        <h3>Weaknesses</h3>
+        <ul>
+          {% for w in agent.meta_review.weaknesses %}<li>{{ w }}</li>{% endfor %}
+        </ul>
+        <h3>Questions</h3>
+        <ul>
+          {% for q in agent.meta_review.questions %}<li>{{ q }}</li>{% endfor %}
+        </ul>
+        {% else %}
         <pre>{{ agent.output_pretty }}</pre>
+        {% endif %}
       </details>
       {% endfor %}
     </div>
@@ -116,7 +133,7 @@
   </section>
 
   <footer class="footer-disclaimer">
-    <p class="muted">Rendered by <span class="brand">GrokRxiv</span>. Source: <a href="https://arxiv.org/abs/{{ paper.arxiv_id }}">arXiv:{{ paper.arxiv_id }}</a>.</p>
+    <p class="muted">Rendered by <span class="brand">GrokRxiv</span>. Source: {% if source_url %}<a href="{{ source_url|safe }}">{{ source_label }}</a>{% else %}<span>{{ source_label }}</span>{% endif %}.</p>
   </footer>
 </body>
 </html>
