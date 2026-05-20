@@ -861,6 +861,7 @@ async fn exec_and_capture(
         cmd.current_dir(cwd);
     }
     cmd.kill_on_drop(true);
+    configure_process_group(&mut cmd);
     scrub_provider_api_env(&mut cmd);
     if provider == "gemini" {
         // Extraction and review subprocesses run in isolated temp workdirs so
@@ -925,6 +926,7 @@ async fn exec_and_capture(
         Ok(Ok(status)) => status,
         Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
         Err(_) => {
+            kill_process_group(&child);
             let _ = timeout(Duration::from_secs(5), child.kill()).await;
             stdout_task.abort();
             stderr_task.abort();
@@ -973,6 +975,32 @@ async fn exec_and_capture(
     let stdout = String::from_utf8_lossy(&stdout).to_string();
     Ok(stdout)
 }
+
+#[cfg(unix)]
+fn configure_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(child: &tokio::process::Child) {
+    let Some(pid) = child.id() else {
+        return;
+    };
+    let target = format!("-{pid}");
+    // Best-effort group cleanup. The subsequent child.kill() still handles
+    // the direct child if setting or killing the process group was unavailable.
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &target])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_child: &tokio::process::Child) {}
 
 fn direct_provider_api_allowed() -> bool {
     matches!(
@@ -2922,11 +2950,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = dir.path().join("fake-cli.sh");
         let pid_file = dir.path().join("pid");
+        let child_pid_file = dir.path().join("child-pid");
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
-                pid_file.to_string_lossy()
+                "#!/bin/sh\necho $$ > '{}'\nsleep 30 &\necho $! > '{}'\nwait\n",
+                pid_file.to_string_lossy(),
+                child_pid_file.to_string_lossy()
             ),
         )
         .expect("write fake script");
@@ -2952,28 +2982,50 @@ mod tests {
         .expect_err("subprocess should time out");
         assert!(err.to_string().contains("timed out"), "{err:#}");
 
-        let mut pid = None;
+        let pid = read_pid_file(&pid_file).await.expect("pid file");
+        let child_pid = read_pid_file(&child_pid_file)
+            .await
+            .expect("child pid file");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let parent_alive = process_is_alive(&pid);
+        let child_alive = process_is_alive(&child_pid);
+        if parent_alive || child_alive {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid, &child_pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        assert!(
+            !parent_alive,
+            "timed-out child process {pid} should have been killed"
+        );
+        assert!(
+            !child_alive,
+            "timed-out grandchild process {child_pid} should have been killed"
+        );
+    }
+
+    #[cfg(unix)]
+    async fn read_pid_file(path: &std::path::Path) -> Option<String> {
         for _ in 0..20 {
-            match std::fs::read_to_string(&pid_file) {
-                Ok(value) => {
-                    pid = Some(value.trim().to_string());
-                    break;
-                }
+            match std::fs::read_to_string(path) {
+                Ok(value) => return Some(value.trim().to_string()),
                 Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
             }
         }
-        let pid = pid.expect("pid file");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let status = std::process::Command::new("kill")
-            .args(["-0", &pid])
+        None
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .expect("run kill -0");
-        assert!(
-            !status.success(),
-            "timed-out child process {pid} should have been killed"
-        );
+            .map(|status| status.success())
+            .unwrap_or(false)
     }
 
     #[cfg(unix)]
