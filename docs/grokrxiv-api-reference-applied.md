@@ -1,123 +1,36 @@
 # `grokrxiv` HTTP API reference — applied
 
 GrokRxiv's public HTTP API lives behind the Next.js web tier at `/api/v1/*`.
-The web tier forwards write requests to the orchestrator's internal HTTP
-API at `/internal/v1/*` after enforcing bearer authentication.
-
-```
-client → POST /api/v1/<action>          (Bearer GROKRXIV_SERVICE_TOKEN)
-       ↓
-       → POST <ORCHESTRATOR_INTERNAL_URL>/internal/v1/<action>
-       ↓
-       → orchestrator runtime
-```
+The public contract is read-only. Review creation, moderation, publishing, and
+rerendering remain CLI/operator workflows.
 
 ## Authentication
 
-Every `/api/v1/*` write endpoint requires:
-
-```
-Authorization: Bearer ${GROKRXIV_SERVICE_TOKEN}
-```
-
-The token is configured server-side via `GROKRXIV_SERVICE_TOKEN`. When the
-env var is unset the endpoint returns `503 service_unconfigured`. When the
-token is set but the request bearer doesn't match it returns `401 unauthorized`.
-
 Read endpoints (`GET /api/v1/reviews`, etc.) are unauthenticated and talk to
-Supabase directly.
+Supabase directly. They only return rows whose review is public visibility and
+in a public status.
 
 ## Endpoints
-
-### `POST /api/v1/review`
-
-Enqueue an end-to-end review run.
-
-```sh
-curl -X POST https://grokrxiv.org/api/v1/review \
-     -H "Authorization: Bearer $GROKRXIV_SERVICE_TOKEN" \
-     -H "content-type: application/json" \
-     -d '{"source": "2605.12484"}'
-```
-
-Body:
-```json
-{
-  "source": "2605.12484",                 // arxiv id | URL | path | "-" | "@file"
-  "type":   "arxiv",                       // optional; "arxiv" | "pdf" | "tex" | "mixed"
-  "mode":   "review_only",                 // optional
-  "runner": "api"                          // optional default-runner override
-}
-```
-
-Response (501): `{"error": "...", "status": "not_implemented", "source": "..."}`
-until the endpoint is backed by real supervisor dispatch. Use `grokrxiv review`
-for the synchronous path.
-
-### `POST /api/v1/reviews/:id/approve`
-
-```sh
-curl -X POST https://grokrxiv.org/api/v1/reviews/$REVIEW_ID/approve \
-     -H "Authorization: Bearer $GROKRXIV_SERVICE_TOKEN"
-```
-
-### `POST /api/v1/reviews/:id/reject`
-
-```json
-{"reason": "Insufficient experimental validation."}
-```
-
-### `POST /api/v1/reviews/:id/render`
-
-```json
-{"format": "html"}   // html | md | tex | pdf | zip
-```
-
-### `POST /api/v1/reviews/:id/apply-revisions`
-
-Body forwarded verbatim — schema TBD by Track F.
-
-### `POST /api/v1/reviews/:id/verify`
-
-Re-run the verifier ladder against a persisted review. No body.
-
-### `GET /api/v1/doctor`
-
-Proxies the orchestrator's preflight summary.
-
-```sh
-curl -H "Authorization: Bearer $GROKRXIV_SERVICE_TOKEN" \
-     https://grokrxiv.org/api/v1/doctor
-```
-
-### `GET /api/v1/search`
-
-Reserved for the cross-corpus search endpoint. Currently returns
-`501 not_implemented` (Track I follow-up).
-
-## Read endpoints (unauthenticated)
 
 - `GET /api/v1/reviews?status=published&page=1&limit=20&field=cs.AI`
 - `GET /api/v1/reviews/:id`  (also accepts an arXiv id)
 - `GET /api/v1/papers/:arxiv`
 
-These were not modified by Track I.
+`/api/v1/reviews` accepts `status=pr_open|published|corrected|rejected`; the
+default is `published`.
 
 ## Error shapes
 
 | Status | Body                                                            | When |
 |--------|-----------------------------------------------------------------|------|
-| 400    | `{"error":"bad_body","detail":{...}}`                           | zod validation fail |
-| 401    | `{"error":"unauthorized"}`                                       | bearer mismatch |
-| 501    | `{"error":"not_implemented","detail":"..."}`                    | search route |
-| 502    | `{"error":"orchestrator_unreachable","detail":"..."}`           | orchestrator down |
-| 503    | `{"error":"service_unconfigured","detail":"GROKRXIV_SERVICE_TOKEN is unset"}` | env not set |
+| 400    | `{"error":"bad_query","detail":{...}}` | query validation failure |
+| 404    | `{"error":"not_found"}` | no matching public row |
+| 500    | `{"error":"supabase_query_failed","detail":"..."}` | Supabase query failure |
+| 503    | `{"error":"not_configured"}` | web tier is missing Supabase config |
 
 ## Operator notes
 
-- The internal `/internal/v1/*` routes have no auth. They live on the
-  orchestrator's private network. Don't expose them publicly.
-- Set `GROKRXIV_SERVICE_TOKEN` on **both** the web and orchestrator deployments
-  if you want callers to talk via the proxy.
-- For local dev: `export GROKRXIV_SERVICE_TOKEN=dev-token` in `.env.local`
-  before `just dev`.
+- Use first-party CLI commands such as `grokrxiv review`, `grokrxiv approve`,
+  and `grokrxiv batch run` for write workflows.
+- The orchestrator's `/internal/v1/*` routes are private-network plumbing. Do
+  not expose them publicly.

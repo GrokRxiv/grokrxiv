@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export type UserRole = "user" | "moderator" | "admin";
+export type UserRole = "user" | "moderator" | "admin" | "super_admin";
 
 export type CurrentUser = {
   user: User | null;
@@ -33,10 +33,20 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 }
 
 export function canModerate(role: UserRole | null): boolean {
-  return role === "moderator" || role === "admin";
+  return role === "moderator" || canAdmin(role);
+}
+
+export function canAdmin(role: UserRole | null): boolean {
+  return role === "admin" || role === "super_admin";
+}
+
+export function canManageRoles(role: UserRole | null): boolean {
+  return role === "super_admin";
 }
 
 function normalizeRole(value: string): UserRole {
-  if (value === "moderator" || value === "admin") return value;
+  if (value === "moderator" || value === "admin" || value === "super_admin") {
+    return value;
+  }
   return "user";
 }

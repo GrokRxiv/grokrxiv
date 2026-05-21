@@ -458,6 +458,9 @@ pub enum BatchCommand {
         /// Maximum number of papers scheduled per day.
         #[arg(long, default_value_t = 30)]
         daily_limit: u32,
+        /// Maximum number of papers to schedule from the listing.
+        #[arg(long)]
+        max_items: Option<u32>,
         /// Open the GitHub review PR after each completed review.
         #[arg(long)]
         auto_pr: bool,
@@ -1534,6 +1537,7 @@ async fn batch_command(command: BatchCommand, dry_run: bool, json: bool) -> anyh
             category,
             month,
             daily_limit,
+            max_items,
             auto_pr,
             start_date,
         } => {
@@ -1541,6 +1545,7 @@ async fn batch_command(command: BatchCommand, dry_run: bool, json: bool) -> anyh
                 &category,
                 &month,
                 daily_limit,
+                max_items,
                 auto_pr,
                 start_date,
                 dry_run,
@@ -1563,6 +1568,7 @@ async fn batch_create(
     category: &str,
     month: &str,
     daily_limit: u32,
+    max_items: Option<u32>,
     auto_pr: bool,
     start_date: Option<chrono::NaiveDate>,
     dry_run: bool,
@@ -1570,6 +1576,9 @@ async fn batch_create(
 ) -> anyhow::Result<()> {
     if daily_limit == 0 {
         anyhow::bail!("batch create: --daily-limit must be greater than zero");
+    }
+    if max_items == Some(0) {
+        anyhow::bail!("batch create: --max-items must be greater than zero");
     }
     let (from, until) = crate::batch::parse_month_range(month)?;
     let today = chrono::Utc::now().date_naive();
@@ -1580,16 +1589,29 @@ async fn batch_create(
     let start_date = start_date.unwrap_or(from);
     let daily_limit_usize = daily_limit as usize;
     let config = super::Config::from_env();
-    crate::cli_status::emit(format!(
-        "batch create: fetching arXiv OAI listing category={category} from={from} until={until}"
-    ));
-    let records =
-        grokrxiv_ingest::fetch_listing(&[category], from, until, &config.arxiv_user_agent).await?;
+    let records = if let Some(max_items) = max_items {
+        crate::cli_status::emit(format!(
+            "batch create: fetching arXiv list page category={category} month={month} limit={max_items}"
+        ));
+        grokrxiv_ingest::fetch_list_page(
+            category,
+            month,
+            max_items as usize,
+            &config.arxiv_user_agent,
+        )
+        .await?
+    } else {
+        crate::cli_status::emit(format!(
+            "batch create: fetching arXiv OAI listing category={category} from={from} until={until}"
+        ));
+        grokrxiv_ingest::fetch_listing(&[category], from, until, &config.arxiv_user_agent).await?
+    };
     let options = crate::batch::BatchCreateOptions {
         category: category.to_string(),
         from,
         until,
         daily_limit: daily_limit_usize,
+        max_items: max_items.map(|value| value as usize),
         auto_pr,
         start_date,
     };
@@ -1638,6 +1660,7 @@ async fn batch_create(
     category: &str,
     month: &str,
     daily_limit: u32,
+    max_items: Option<u32>,
     auto_pr: bool,
     start_date: Option<chrono::NaiveDate>,
     dry_run: bool,
@@ -1647,6 +1670,7 @@ async fn batch_create(
         category,
         month,
         daily_limit,
+        max_items,
         auto_pr,
         start_date,
         dry_run,
@@ -5978,6 +6002,8 @@ mod tests {
             "2026-05",
             "--daily-limit",
             "30",
+            "--max-items",
+            "15",
             "--auto-pr",
         ])
         .expect("batch create should parse");
@@ -5989,6 +6015,7 @@ mod tests {
                         category,
                         month,
                         daily_limit,
+                        max_items,
                         auto_pr,
                         ..
                     },
@@ -5996,6 +6023,7 @@ mod tests {
                 assert_eq!(category, "math");
                 assert_eq!(month, "2026-05");
                 assert_eq!(daily_limit, 30);
+                assert_eq!(max_items, Some(15));
                 assert!(auto_pr);
             }
             other => panic!("expected batch create, got {other:?}"),

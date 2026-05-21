@@ -100,13 +100,14 @@ grokrxiv jobs list --kind review --state running --json
 ## Batch Reviews
 
 Batch reviews are for scheduled field sweeps such as 30 mathematics papers per
-day from an arXiv month listing. The implementation uses arXiv OAI-PMH category
-sets, not the human HTML listing pages.
+day from an arXiv month listing. Full-month scheduling uses arXiv OAI-PMH
+category sets; bounded `--max-items` pilots use the human month listing order.
 
 Create a May 2026 mathematics batch:
 
 ```sh
 grokrxiv batch create --category math --month 2026-05 --daily-limit 30 --auto-pr --json
+grokrxiv batch create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr --json
 ```
 
 Run due items:
@@ -122,10 +123,12 @@ grokrxiv batch status <BATCH_ID> --json
 grokrxiv batch list --json
 ```
 
-For a daily schedule, run `grokrxiv batch run <BATCH_ID> --json` from cron,
-launchd, GitHub Actions, or another scheduler with the repo `.env` loaded. The
-batch tables record `queued`, `running`, `reviewed`, `pr_open`, `failed`, and
-`skipped` item states so interrupted runs can be inspected and resumed.
+Use `--max-items` for a bounded smoke or pilot run before scheduling the whole
+month. For a daily schedule, run `grokrxiv batch run <BATCH_ID> --json` from
+cron, launchd, GitHub Actions, or another scheduler with the repo `.env`
+loaded. The batch tables record `queued`, `running`, `reviewed`, `pr_open`,
+`failed`, and `skipped` item states so interrupted runs can be inspected and
+resumed.
 
 ## Validation
 

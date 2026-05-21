@@ -49,7 +49,10 @@ export function ReviewCard({ review }: { review: ReviewWithPaper }) {
         </CardContent>
         <CardFooter className="flex items-center justify-between text-xs text-[color:var(--color-muted-foreground)]">
           <span className="font-mono">{source.detail}</span>
-          <AutomatedGateBadge recommendation={meta_review?.recommendation} />
+          <AutomatedGateBadge
+            status={review.status}
+            recommendation={meta_review?.recommendation}
+          />
         </CardFooter>
       </Card>
     </Link>

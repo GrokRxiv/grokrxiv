@@ -30,10 +30,16 @@ type AuthSettings = {
   };
 };
 
-export function LoginPanel({ nextPath }: { nextPath: string }) {
+export function LoginPanel({
+  nextPath,
+  initialMessage = null,
+}: {
+  nextPath: string;
+  initialMessage?: string | null;
+}) {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [email, setEmail] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(initialMessage);
   const [busy, setBusy] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>({
     state: "checking",

@@ -38,7 +38,7 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
 | `GROKRXIV_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
 | `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
-| `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Bearer expected by the web API `/api/v1/*` write endpoints |
+| `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Operator token for non-public web proxy routes; public `/api/v1` is read-only |
 | `GROKRXIV_AGENTS_DIR`          | _none_                      | Override `./agents` location |
 | `GROKRXIV_SUMMARY_MODEL`       | `claude-haiku-4-5-20251001` | Plain-language summary model; same role as `--model-for summary=...` |
 | `GROKRXIV_TECHNICAL_CORRECTNESS_MODEL` | `claude-opus-4-7`      | Technical correctness model; same role as `--model-for technical_correctness=...` |
@@ -136,11 +136,16 @@ settings.
 |--------------------------------------|-------|
 | `NEXT_PUBLIC_SITE_URL`               | Used by `grokrxiv open` |
 | `GROKRXIV_PUBLIC_URL`                | Canonical URL (defaults to `https://grokrxiv.org`) |
-| `ORCHESTRATOR_INTERNAL_URL`          | The web API proxies `/api/v1/*` here (default `http://localhost:8080`) |
-| `GROKRXIV_SERVICE_TOKEN`             | Bearer required on every `/api/v1/*` write endpoint |
+| `ORCHESTRATOR_INTERNAL_URL`          | Internal orchestrator URL (default `http://localhost:8080`) |
+| `GROKRXIV_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |
 | `NEXT_PUBLIC_SUPABASE_URL`           | Supabase URL for read endpoints |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`      | Supabase anon key |
 | `REVALIDATE_SECRET`                  | Required on the revalidate route |
+| `GROKRXIV_BILLING_ENABLED`           | Set to `1` only when Stripe checkout is configured |
+| `STRIPE_SECRET_KEY`                  | Stripe server key for checkout, portal, and webhooks |
+| `STRIPE_WEBHOOK_SECRET`              | Stripe webhook signing secret |
+| `STRIPE_SUPPORTER_PRICE_ID`          | Stripe recurring price id for the Supporter plan |
+| `STRIPE_RESEARCHER_PRICE_ID`         | Stripe recurring price id for the Researcher plan |
 
 ## Supabase Auth SMTP
 

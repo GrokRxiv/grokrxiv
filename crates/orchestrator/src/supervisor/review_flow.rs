@@ -98,11 +98,22 @@ pub(super) async fn run_review_dag_from_state(
     paper_id: Uuid,
     extract: grokrxiv_schemas::PaperExtract,
 ) -> anyhow::Result<Uuid> {
+    run_review_dag_from_state_with_context(state, pool, paper_id, extract, None).await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+pub(super) async fn run_review_dag_from_state_with_context(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+    submission: Option<ReviewSubmissionContext>,
+) -> anyhow::Result<Uuid> {
     let provider = state
         .providers
         .as_ref()
         .map(|registry| registry.default.clone());
-    run_review_dag_inner(state, pool, provider, paper_id, extract).await
+    run_review_dag_inner_with_context(state, pool, provider, paper_id, extract, submission).await
 }
 
 // CLI runner overrides are passed through environment variables before review dispatch.
@@ -282,6 +293,27 @@ pub(super) async fn run_review_dag_inner(
     paper_id: Uuid,
     extract: grokrxiv_schemas::PaperExtract,
 ) -> anyhow::Result<Uuid> {
+    run_review_dag_inner_with_context(state, pool, provider, paper_id, extract, None).await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+#[derive(Debug, Clone)]
+pub(super) struct ReviewSubmissionContext {
+    /// Account user that requested the review, if it came from the web app.
+    pub submitted_by: Option<Uuid>,
+    /// Review visibility to persist on the `reviews` row.
+    pub visibility: String,
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+pub(super) async fn run_review_dag_inner_with_context(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    provider: Option<std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>,
+    paper_id: Uuid,
+    extract: grokrxiv_schemas::PaperExtract,
+    submission: Option<ReviewSubmissionContext>,
+) -> anyhow::Result<Uuid> {
     use crate::agents::runners::api::ApiRunner;
     use crate::agents::{
         build_agent, AgentInput, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec,
@@ -380,7 +412,20 @@ pub(super) async fn run_review_dag_inner(
         "citation": cite_model,
         "meta_reviewer": meta_model,
     });
-    let review_id = crate::db::insert_review(pool, paper_id, models_used, None).await?;
+    let review_id = match submission.as_ref() {
+        Some(context) => {
+            crate::db::insert_review_with_submission(
+                pool,
+                paper_id,
+                models_used,
+                None,
+                context.submitted_by,
+                &context.visibility,
+            )
+            .await?
+        }
+        None => crate::db::insert_review(pool, paper_id, models_used, None).await?,
+    };
     // Every review entering moderation gets a pending queue row for admin actions.
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     tracing::info!(%review_id, "M1: review row created");
@@ -997,6 +1042,15 @@ pub(super) async fn run_review_for_paper_full(
     state: &AppState,
     paper_id: Uuid,
 ) -> anyhow::Result<Uuid> {
+    run_review_for_paper_full_with_context(state, paper_id, None).await
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+pub(super) async fn run_review_for_paper_full_with_context(
+    state: &AppState,
+    paper_id: Uuid,
+    submission: Option<ReviewSubmissionContext>,
+) -> anyhow::Result<Uuid> {
     let pool = state
         .db
         .as_ref()
@@ -1020,7 +1074,8 @@ pub(super) async fn run_review_for_paper_full(
             arxiv_id = %extract.arxiv_id,
             "review: loaded extract from latest persisted review_input"
         );
-        return run_review_dag_from_state(state, pool, paper_id, extract).await;
+        return run_review_dag_from_state_with_context(state, pool, paper_id, extract, submission)
+            .await;
     }
 
     // Prefer persisted review_input.json when staged extraction already produced it.
@@ -1050,8 +1105,8 @@ pub(super) async fn run_review_for_paper_full(
                                         git_path,
                                         "review: loaded extract from cached review_input.json"
                                     );
-                                    return run_review_dag_from_state(
-                                        state, pool, paper_id, extract,
+                                    return run_review_dag_from_state_with_context(
+                                        state, pool, paper_id, extract, submission,
                                     )
                                     .await;
                                 }
@@ -1088,7 +1143,7 @@ pub(super) async fn run_review_for_paper_full(
         }
     };
 
-    run_review_dag_from_state(state, pool, paper_id, extract).await
+    run_review_dag_from_state_with_context(state, pool, paper_id, extract, submission).await
 }
 
 #[cfg(feature = "grokrxiv-ingest")]

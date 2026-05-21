@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { LoginPanel } from "@/components/auth/login-panel";
 import { sanitizeNextPath } from "@/lib/auth/server";
 
-type SearchParams = { next?: string };
+type SearchParams = { next?: string; error?: string };
 
 export default function LoginPage({
   searchParams,
@@ -27,10 +27,10 @@ async function LoginPageContent({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const { next } = await searchParams;
+  const { next, error } = await searchParams;
   return (
     <div className="flex min-h-[60vh] items-center justify-center py-10">
-      <LoginPanel nextPath={sanitizeNextPath(next)} />
+      <LoginPanel nextPath={sanitizeNextPath(next)} initialMessage={error} />
     </div>
   );
 }

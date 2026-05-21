@@ -50,10 +50,13 @@ const GATE_LABEL: Record<Recommendation, string> = {
 };
 
 export function AutomatedGateBadge({
+  status,
   recommendation,
 }: {
+  status?: ReviewStatus | null;
   recommendation?: Recommendation | null;
 }) {
+  if (status === "published" || status === "corrected") return null;
   if (!recommendation) return null;
   return (
     <Badge variant={GATE_VARIANT[recommendation]}>

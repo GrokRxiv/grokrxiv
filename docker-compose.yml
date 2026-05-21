@@ -140,6 +140,12 @@ services:
       ORCHESTRATOR_INTERNAL_URL: "http://orchestrator:8080"
       REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
       GROKRXIV_PUBLIC_URL: "${GROKRXIV_PUBLIC_URL:-https://grokrxiv.org}"
+      GROKRXIV_BILLING_ENABLED: "${GROKRXIV_BILLING_ENABLED:-0}"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_SUPPORTER_PRICE_ID: "${STRIPE_SUPPORTER_PRICE_ID:-}"
+      STRIPE_RESEARCHER_PRICE_ID: "${STRIPE_RESEARCHER_PRICE_ID:-}"
+      GROKRXIV_SUPER_ADMIN_EMAIL: "${GROKRXIV_SUPER_ADMIN_EMAIL:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

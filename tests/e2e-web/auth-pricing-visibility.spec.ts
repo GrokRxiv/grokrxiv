@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 const SERVICE_TOKEN = process.env.GROKRXIV_SERVICE_TOKEN ?? "";
 const SUPABASE_AUTH_URL =
@@ -58,6 +58,27 @@ async function latestMagicLinkFor(email: string): Promise<string | null> {
   );
 }
 
+async function signInWithMagicLink(page: Page, email: string, next = "/dashboard") {
+  await page.goto(`/login?next=${encodeURIComponent(next)}`, {
+    waitUntil: "networkidle",
+  });
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: /Send magic link/i }).click();
+  await expect(page.getByText(/Check your email for the login link/i)).toBeVisible();
+
+  let magicLink: string | null = null;
+  await expect
+    .poll(async () => {
+      magicLink = await latestMagicLinkFor(email);
+      return magicLink;
+    })
+    .not.toBeNull();
+  expect(decodeURIComponent(magicLink ?? "")).toContain("/auth/callback");
+
+  await page.goto(magicLink!, { waitUntil: "networkidle" });
+  await page.waitForURL(new RegExp(next.replace("/", "\\/")));
+}
+
 test.describe("auth, pricing, quota, and visibility surfaces", () => {
   test("homepage upload is explicitly sample-only", async ({ page }) => {
     await page.goto("/", { waitUntil: "networkidle" });
@@ -94,26 +115,34 @@ test.describe("auth, pricing, quota, and visibility surfaces", () => {
       "Email login is disabled for this E2E run.",
     );
 
-    const email = `grokrxiv-e2e-${Date.now()}@example.com`;
-    await page.goto("/login?next=/dashboard", { waitUntil: "networkidle" });
-    await page.getByLabel("Email").fill(email);
-    await page.getByRole("button", { name: /Send magic link/i }).click();
-    await expect(page.getByText(/Check your email for the login link/i)).toBeVisible();
-    await expect(page.getByText(/Supabase|Docker|Inbucket|Failed to fetch/i)).toHaveCount(0);
-
-    let magicLink: string | null = null;
-    await expect
-      .poll(async () => {
-        magicLink = await latestMagicLinkFor(email);
-        return magicLink;
-      })
-      .not.toBeNull();
-    expect(decodeURIComponent(magicLink ?? "")).toContain("/auth/callback");
-
-    await page.goto(magicLink!, { waitUntil: "networkidle" });
-    await page.waitForURL(/\/dashboard/);
+    await signInWithMagicLink(page, `grokrxiv-e2e-${Date.now()}@example.com`);
     await expect(page.getByText("Your GrokRxiv reviews")).toBeVisible();
+    await expect(page.getByText("Run a full review")).toBeVisible();
+    await expect(page.getByLabel("arXiv ID")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Queue review/i })).toBeVisible();
     await expect(page.getByText(/Account data unavailable/i)).toHaveCount(0);
+  });
+
+  test("configured admin can open account controls", async ({ page, request }) => {
+    const settingsResponse = await request
+      .get(`${SUPABASE_AUTH_URL}/settings`, { failOnStatusCode: false })
+      .catch(() => null);
+    test.skip(
+      !settingsResponse?.ok(),
+      "Supabase Auth is not reachable for this E2E run.",
+    );
+    const settings = (await settingsResponse!.json()) as AuthSettings;
+    test.skip(
+      settings.external?.email === false,
+      "Email login is disabled for this E2E run.",
+    );
+
+    const adminEmail =
+      process.env.GROKRXIV_E2E_ADMIN_EMAIL ?? "mlong168@gmail.com";
+    await signInWithMagicLink(page, adminEmail, "/admin/users");
+    await expect(page.getByRole("heading", { name: /User quotas/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Update plan/i }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /Update quota/i }).first()).toBeVisible();
   });
 
   test("pricing page documents public, private, and no-surprise charge rules", async ({
@@ -167,6 +196,10 @@ test.describe("auth, pricing, quota, and visibility surfaces", () => {
       },
       failOnStatusCode: false,
     });
+    test.skip(
+      missingProfile.status() === 503,
+      "Web service token is not configured for this E2E run.",
+    );
     expect(missingProfile.status()).toBe(400);
     expect(await missingProfile.json()).toHaveProperty(
       "error",

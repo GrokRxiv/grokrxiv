@@ -15,14 +15,16 @@ use anyhow::Context;
 use chrono::NaiveDate;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use regex::Regex;
 use thiserror::Error;
 use tracing::warn;
 
-use crate::arxiv::ArxivMeta;
+use crate::arxiv::{fetch_metadata, ArxivMeta};
 use crate::download::rate_limited_get;
 use crate::types::Author;
 
 const OAI_BASE: &str = "https://export.arxiv.org/oai2";
+const ARXIV_LIST_BASE: &str = "https://arxiv.org/list";
 
 /// Every arXiv top-level group the GrokRxiv pipeline knows how to ingest.
 /// The `INGEST_CATEGORIES` env can pick any subset of this list. We refuse
@@ -112,6 +114,78 @@ pub async fn fetch_listing(
         }
     }
     Ok(out)
+}
+
+/// Fetch the human arXiv month listing and return papers in page order.
+pub async fn fetch_list_page(
+    category: &str,
+    month: &str,
+    limit: usize,
+    user_agent: &str,
+) -> Result<Vec<ArxivMeta>, IngestError> {
+    if !ALL_CATEGORIES.contains(&category) {
+        return Err(IngestError::UnknownCategory(category.to_string()));
+    }
+    if !user_agent.is_empty() {
+        std::env::set_var("ARXIV_USER_AGENT", user_agent);
+    }
+
+    let fallback_date = parse_month_first_day(month).ok();
+    let url = format!("{ARXIV_LIST_BASE}/{category}/{month}");
+    let bytes = rate_limited_get(&url).await?;
+    let html = std::str::from_utf8(&bytes).context("arXiv list page utf8")?;
+    let ids = parse_list_page_ids(html, limit)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        match fetch_metadata(&id).await {
+            Ok(mut meta) => {
+                if meta.submitted_date.is_none() {
+                    meta.submitted_date = fallback_date;
+                }
+                out.push(meta);
+            }
+            Err(error) => {
+                warn!(arxiv_id = id, %error, "list-page metadata fallback failed");
+                out.push(ArxivMeta {
+                    arxiv_id: id.clone(),
+                    title: format!("arXiv {id}"),
+                    source_url: Some(format!("https://arxiv.org/abs/{id}")),
+                    pdf_url: Some(format!("https://arxiv.org/pdf/{id}.pdf")),
+                    submitted_date: fallback_date,
+                    ..ArxivMeta::default()
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn parse_list_page_ids(html: &str, limit: usize) -> Result<Vec<String>, anyhow::Error> {
+    let re = Regex::new(r#"href\s*=\s*"/abs/([0-9]{4}\.[0-9]{5})"[^>]*title\s*=\s*"Abstract""#)?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for caps in re.captures_iter(html) {
+        let Some(id) = caps.get(1).map(|m| m.as_str().to_string()) else {
+            continue;
+        };
+        if seen.insert(id.clone()) {
+            out.push(id);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn parse_month_first_day(month: &str) -> Result<NaiveDate, anyhow::Error> {
+    let (year, month_num) = month
+        .split_once('-')
+        .ok_or_else(|| anyhow::anyhow!("month must be YYYY-MM"))?;
+    Ok(
+        NaiveDate::from_ymd_opt(year.parse()?, month_num.parse()?, 1)
+            .ok_or_else(|| anyhow::anyhow!("invalid month `{month}`"))?,
+    )
 }
 
 /// Parse an OAI-PMH response. Returns `(records, resumption_token)`.
@@ -315,5 +389,18 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, IngestError::UnknownCategory(_)));
+    }
+
+    #[test]
+    fn parse_list_page_ids_uses_abstract_links_only() {
+        let html = r#"
+          <a href="/abs/2605.00040" title="Abstract" id="2605.00040">arXiv:2605.00040</a>
+          <a href="https://arxiv.org/abs/2301.04252" data-arxiv-id="2301.04252">arXiv:2301.04252</a>
+          <a href="/abs/2605.00041" title="Abstract" id="2605.00041">arXiv:2605.00041</a>
+        "#;
+
+        let ids = parse_list_page_ids(html, 5).expect("parse ids");
+
+        assert_eq!(ids, vec!["2605.00040", "2605.00041"]);
     }
 }

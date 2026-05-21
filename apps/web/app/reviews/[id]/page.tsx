@@ -192,6 +192,7 @@ async function ReviewBody({ params }: { params: Promise<Params> }) {
             <div className="flex flex-wrap items-center gap-2">
               <ReviewStatusBadge status={review.status} />
               <AutomatedGateBadge
+                status={review.status}
                 recommendation={review.meta_review?.recommendation}
               />
               {field ? (

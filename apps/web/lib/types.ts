@@ -208,6 +208,7 @@ export interface ReviewSummary {
   paper_id: string;
   status: ReviewStatus;
   visibility: ReviewVisibility;
+  submitted_by?: string | null;
   github_pr_url?: string;
   github_review_url?: string;
   github_comment_url?: string | null;

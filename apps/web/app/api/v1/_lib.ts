@@ -1,7 +1,7 @@
-// Shared helpers for the /api/v1/* write endpoints.
+// Shared helpers for legacy operator write endpoints.
 //
-// All write endpoints require a bearer token (`GROKRXIV_SERVICE_TOKEN`) and
-// forward the request to the orchestrator's internal HTTP API. Read endpoints
+// These endpoints require a bearer token (`GROKRXIV_SERVICE_TOKEN`) and forward
+// requests to the orchestrator's internal HTTP API. Read endpoints
 // (e.g. /api/v1/reviews) talk to Supabase directly and don't go through here.
 
 import { NextResponse } from "next/server";

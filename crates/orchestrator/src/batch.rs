@@ -12,6 +12,7 @@ pub(crate) struct BatchCreateOptions {
     pub(crate) from: NaiveDate,
     pub(crate) until: NaiveDate,
     pub(crate) daily_limit: usize,
+    pub(crate) max_items: Option<usize>,
     pub(crate) auto_pr: bool,
     pub(crate) start_date: NaiveDate,
 }
@@ -101,7 +102,7 @@ pub(crate) fn preview_batch(
     let ordered = ordered_records(options, records);
     let first_items = ordered
         .iter()
-        .take(12)
+        .take(options.max_items.unwrap_or(12).min(50))
         .enumerate()
         .map(|(idx, meta)| preview_item(options, meta, idx))
         .collect();
@@ -452,6 +453,10 @@ fn ordered_records(
     records: &[grokrxiv_ingest::ArxivMeta],
 ) -> Vec<grokrxiv_ingest::ArxivMeta> {
     let mut ordered = records.to_vec();
+    if let Some(max_items) = options.max_items {
+        ordered.truncate(max_items);
+        return ordered;
+    }
     ordered.retain(|meta| {
         meta.submitted_date
             .map(|date| date >= options.from && date <= options.until)
@@ -662,6 +667,7 @@ mod tests {
             from: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
             until: NaiveDate::from_ymd_opt(2026, 5, 31).unwrap(),
             daily_limit: 30,
+            max_items: None,
             auto_pr: true,
             start_date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
         };
@@ -685,5 +691,49 @@ mod tests {
 
         assert_eq!(result.discovered, 1);
         assert_eq!(result.first_items[0].arxiv_id, "2605.00001");
+    }
+
+    #[cfg(feature = "grokrxiv-ingest")]
+    #[test]
+    fn preview_honors_max_items_and_preserves_list_page_order() {
+        let options = BatchCreateOptions {
+            category: "math".to_string(),
+            from: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+            until: NaiveDate::from_ymd_opt(2026, 5, 31).unwrap(),
+            daily_limit: 2,
+            max_items: Some(2),
+            auto_pr: false,
+            start_date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+        };
+        let records = vec![
+            grokrxiv_ingest::ArxivMeta {
+                arxiv_id: "2605.00003".to_string(),
+                title: "Third".to_string(),
+                ..Default::default()
+            },
+            grokrxiv_ingest::ArxivMeta {
+                arxiv_id: "2605.00001".to_string(),
+                title: "First".to_string(),
+                ..Default::default()
+            },
+            grokrxiv_ingest::ArxivMeta {
+                arxiv_id: "2605.00002".to_string(),
+                title: "Second".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let result = preview_batch(&options, &records);
+
+        assert_eq!(result.discovered, 2);
+        assert_eq!(
+            result
+                .first_items
+                .iter()
+                .map(|item| item.arxiv_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2605.00003", "2605.00001"]
+        );
+        assert_eq!(result.scheduled_days, 1);
     }
 }

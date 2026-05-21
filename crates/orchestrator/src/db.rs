@@ -352,6 +352,19 @@ pub async fn insert_review(
     models_used: Value,
     meta_review: Option<Value>,
 ) -> sqlx::Result<Uuid> {
+    insert_review_with_submission(pool, paper_id, models_used, meta_review, None, "public").await
+}
+
+/// Insert a review row with submitter and visibility metadata from the account
+/// workflow.
+pub async fn insert_review_with_submission(
+    pool: &PgPool,
+    paper_id: Uuid,
+    models_used: Value,
+    meta_review: Option<Value>,
+    submitted_by: Option<Uuid>,
+    visibility: &str,
+) -> sqlx::Result<Uuid> {
     let mut tx = pool.begin().await?;
 
     // Withdraw any active reviews for this paper. 'draft', 'in_review',
@@ -393,19 +406,68 @@ pub async fn insert_review(
     let id = Uuid::new_v4();
     let status = serde_plain(&ReviewStatus::AwaitingModeration);
     sqlx::query(
-        "insert into reviews (id, paper_id, status, models_used, meta_review) \
-         values ($1, $2, $3, $4, $5)",
+        "insert into reviews \
+         (id, paper_id, status, models_used, meta_review, submitted_by, visibility) \
+         values ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(id)
     .bind(paper_id)
     .bind(status)
     .bind(models_used)
     .bind(meta_review)
+    .bind(submitted_by)
+    .bind(visibility)
     .execute(&mut *tx)
     .await?;
 
     tx.commit().await?;
     Ok(id)
+}
+
+/// Mark a user-submitted review job as running.
+pub async fn mark_submission_running(
+    pool: &PgPool,
+    submission_id: Uuid,
+    paper_id: Option<Uuid>,
+) -> sqlx::Result<()> {
+    sqlx::query("select public.grokrxiv_mark_submission_running($1, $2)")
+        .bind(submission_id)
+        .bind(paper_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Attach the completed review to its user-facing submission row.
+pub async fn mark_submission_review_ready(
+    pool: &PgPool,
+    submission_id: Uuid,
+    review_id: Uuid,
+    paper_id: Uuid,
+    visibility: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("select public.grokrxiv_mark_submission_review_ready($1, $2, $3, $4)")
+        .bind(submission_id)
+        .bind(review_id)
+        .bind(paper_id)
+        .bind(visibility)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Mark a user-facing submission as failed and refund quota.
+pub async fn mark_submission_failed(
+    pool: &PgPool,
+    submission_id: Uuid,
+    error: &str,
+) -> sqlx::Result<()> {
+    sqlx::query("select public.grokrxiv_mark_submission_failed($1, $2, true)")
+        .bind(submission_id)
+        .bind(error)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Phase 3: fetch the latest moderator `--notes` recorded via

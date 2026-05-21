@@ -4,6 +4,7 @@ use super::{WorkItem, MAX_RETRIES};
 use crate::state::AppState;
 use grokrxiv_schemas::JobKind;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 const DEFAULT_SUPERVISOR_QUEUE_CAPACITY: usize = 4096;
 const MIN_SUPERVISOR_QUEUE_CAPACITY: usize = 128;
@@ -79,6 +80,18 @@ pub(super) async fn run_item(
             } else {
                 if let Some(pool) = state.db.as_ref() {
                     let error = e.to_string();
+                    if let Some(submission_id) = payload_uuid(item, "submission_id") {
+                        let _ = crate::db::mark_submission_failed(pool, submission_id, &error)
+                            .await
+                            .map_err(|mark_err| {
+                                tracing::warn!(
+                                    %submission_id,
+                                    err = %mark_err,
+                                    "could not mark submission failed"
+                                );
+                                mark_err
+                            });
+                    }
                     crate::db::mark_failed(pool, item.job_id, &error)
                         .await
                         .map_err(|mark_err| {
@@ -113,6 +126,10 @@ async fn run_ingest(
         .get("arxiv_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("run_ingest: payload.arxiv_id required"))?;
+    let submission_id = payload_uuid(item, "submission_id");
+    if let Some(id) = submission_id {
+        crate::db::mark_submission_running(pool, id, None).await?;
+    }
 
     // Politeness: hold the shared arXiv gate for the whole ingest.
     let extract = {
@@ -129,6 +146,9 @@ async fn run_ingest(
         .and_then(|v| v.as_str())
         .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
     let paper_id = crate::db::upsert_paper(pool, &extract, submitted_date).await?;
+    if let Some(id) = submission_id {
+        crate::db::mark_submission_running(pool, id, Some(paper_id)).await?;
+    }
     tracing::info!(arxiv_id, %paper_id, "ingest persisted papers row");
 
     // Auto-enqueue a Review job for papers in the auto-review window. arXiv
@@ -159,7 +179,7 @@ async fn run_ingest(
                 job_id,
                 kind: JobKind::Review,
                 ref_id: Some(paper_id),
-                payload: serde_json::Value::Null,
+                payload: item.payload.clone(),
                 attempt: 0,
             })
             .await
@@ -177,7 +197,30 @@ async fn run_review(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
     let paper_id = item
         .ref_id
         .ok_or_else(|| anyhow::anyhow!("run_review: ref_id (paper id) required"))?;
-    let review_id = super::review_flow::run_review_for_paper_full(state, paper_id).await?;
+    let submission_id = payload_uuid(item, "submission_id");
+    let submitted_by = payload_uuid(item, "submitted_by");
+    let visibility = payload_string(item, "visibility").unwrap_or_else(|| "public".to_string());
+    let context = if submitted_by.is_some() || visibility != "public" {
+        Some(super::review_flow::ReviewSubmissionContext {
+            submitted_by,
+            visibility: visibility.clone(),
+        })
+    } else {
+        None
+    };
+    let review_id =
+        super::review_flow::run_review_for_paper_full_with_context(state, paper_id, context)
+            .await?;
+    if let (Some(pool), Some(submission_id)) = (state.db.as_ref(), submission_id) {
+        crate::db::mark_submission_review_ready(
+            pool,
+            submission_id,
+            review_id,
+            paper_id,
+            &visibility,
+        )
+        .await?;
+    }
     tracing::info!(%review_id, "review job complete — awaiting_moderation");
     Ok(())
 }
@@ -208,4 +251,18 @@ pub(super) fn is_retryable(e: &anyhow::Error) -> bool {
 pub(super) fn exp_backoff(attempt: u32) -> Duration {
     let base = 500u64.saturating_mul(1u64 << attempt.min(6));
     Duration::from_millis(std::cmp::min(base, 30_000))
+}
+
+fn payload_uuid(item: &WorkItem, key: &str) -> Option<Uuid> {
+    item.payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
+fn payload_string(item: &WorkItem, key: &str) -> Option<String> {
+    item.payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }

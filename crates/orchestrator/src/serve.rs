@@ -53,9 +53,8 @@ pub async fn run() -> anyhow::Result<()> {
     let bind: SocketAddr = config.bind.parse()?;
     let scheduler_cfg = config.scheduler.clone();
     let state = AppState::from_config(config).await?;
-    let app = router(state.clone());
-
     let supervisor = Supervisor::spawn(state.clone());
+    let app = router(state.clone().with_supervisor_sender(supervisor.sender()));
     #[cfg(feature = "grokrxiv-publisher")]
     crate::supervisor::spawn_publish_reconcile(state.clone());
     let scheduler_disabled = scheduler_disabled_from_env();

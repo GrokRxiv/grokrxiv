@@ -57,21 +57,24 @@ grokrxiv review-extracted --force 2605.17307 --json
 
 ## Batch reviews
 
-Batch review is the field-sweep surface. It uses arXiv OAI-PMH category sets,
-persists a batch row, schedules item rows by `daily_limit`, and records every
-paper through `queued`, `running`, `reviewed`, `pr_open`, `failed`, or
-`skipped`.
+Batch review is the field-sweep surface. Full-month runs use arXiv OAI-PMH
+category sets; bounded `--max-items` pilots use the human month listing order.
+The command persists a batch row, schedules item rows by `daily_limit`, and
+records every paper through `queued`, `running`, `reviewed`, `pr_open`,
+`failed`, or `skipped`.
 
 ```sh
 grokrxiv batch create --category math --month 2026-05 --daily-limit 30 --auto-pr --json
+grokrxiv batch create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr --json
 grokrxiv batch run <BATCH_ID> --json
 grokrxiv batch status <BATCH_ID> --json
 grokrxiv batch list --json
 ```
 
-Use `batch run` from cron, launchd, GitHub Actions, or another scheduler for a
-daily review quota. With `--auto-pr`, each successfully reviewed item opens the
-same GitHub review PR that `grokrxiv review` opens.
+Use `--max-items` for bounded smoke runs before scheduling a whole month. Use
+`batch run` from cron, launchd, GitHub Actions, or another scheduler for a daily
+review quota. With `--auto-pr`, each successfully reviewed item opens the same
+GitHub review PR that `grokrxiv review` opens.
 
 ## Review lifecycle
 

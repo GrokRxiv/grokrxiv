@@ -8,6 +8,7 @@
     "start": "next start -p 3000",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "seed:super-admin": "node scripts/seed-super-admin.mjs",
     "test": "echo \"no tests yet\" && exit 0"
   },
   "dependencies": {

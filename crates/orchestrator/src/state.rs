@@ -7,6 +7,7 @@ use std::sync::Arc;
 use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
 use reqwest::Client;
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
 use crate::agents::runners::api::ApiRunner;
 use crate::agents::{
@@ -123,6 +124,9 @@ pub struct AppState {
     /// Per-`AgentRunnerKind` runner backends. RPT2 Track A registers only the
     /// `ApiRunner`; CLI/cloud/local-inference are filled by other tracks.
     pub runners: Arc<RunnerRegistry>,
+    /// Supervisor sender used by internal HTTP write endpoints to enqueue
+    /// durable work items.
+    pub supervisor_tx: Option<mpsc::Sender<crate::supervisor::WorkItem>>,
 }
 
 impl AppState {
@@ -216,7 +220,14 @@ impl AppState {
             verifiers,
             agents,
             runners,
+            supervisor_tx: None,
         })
+    }
+
+    /// Attach the live supervisor sender after the supervisor has been spawned.
+    pub fn with_supervisor_sender(mut self, tx: mpsc::Sender<crate::supervisor::WorkItem>) -> Self {
+        self.supervisor_tx = Some(tx);
+        self
     }
 }
 

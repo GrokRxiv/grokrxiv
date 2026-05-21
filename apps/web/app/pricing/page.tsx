@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { billingConfigured } from "@/lib/billing";
 
 const TIERS = [
   {
@@ -52,8 +54,7 @@ const TIERS = [
       "Higher queue priority than free",
       "No surprise usage charges",
     ],
-    cta: "View dashboard",
-    href: "/dashboard",
+    plan: "supporter",
   },
   {
     name: "Researcher",
@@ -67,12 +68,37 @@ const TIERS = [
       "Private dashboard access",
       "Optional extra review credits",
     ],
-    cta: "View dashboard",
-    href: "/dashboard",
+    plan: "researcher",
   },
 ] as const;
 
-export default function PricingPage() {
+type SearchParams = { billing?: string };
+
+export default function PricingPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-8 text-sm text-[color:var(--color-muted-foreground)]">
+          Loading pricing...
+        </div>
+      }
+    >
+      <PricingBody searchParams={searchParams} />
+    </Suspense>
+  );
+}
+
+async function PricingBody({
+  searchParams,
+}: {
+  searchParams?: Promise<SearchParams>;
+}) {
+  const billing = searchParams ? (await searchParams).billing : undefined;
+  const billingEnabled = billingConfigured();
   return (
     <div className="flex flex-col gap-10 py-8">
       <header className="flex max-w-3xl flex-col gap-4">
@@ -87,6 +113,7 @@ export default function PricingPage() {
           usage. Free full reviews are public; paid tiers add quota and private
           review access. Any extra-cost rerun is confirmed before it starts.
         </p>
+        <BillingNotice billing={billing} billingEnabled={billingEnabled} />
       </header>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -95,7 +122,9 @@ export default function PricingPage() {
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
                 <CardTitle>{tier.name}</CardTitle>
-                <Badge variant="secondary">{tier.badge}</Badge>
+                <Badge variant="secondary">
+                  {"plan" in tier && billingEnabled ? "Paid" : tier.badge}
+                </Badge>
               </div>
               <CardDescription>{tier.description}</CardDescription>
             </CardHeader>
@@ -109,9 +138,7 @@ export default function PricingPage() {
                   </li>
                 ))}
               </ul>
-              <Button asChild variant="outline" className="mt-auto">
-                <Link href={tier.href}>{tier.cta}</Link>
-              </Button>
+              <TierAction tier={tier} billingEnabled={billingEnabled} />
             </CardContent>
           </Card>
         ))}
@@ -128,5 +155,69 @@ export default function PricingPage() {
         </p>
       </section>
     </div>
+  );
+}
+
+function BillingNotice({
+  billing,
+  billingEnabled,
+}: {
+  billing: string | undefined;
+  billingEnabled: boolean;
+}) {
+  if (billing === "success") {
+    return (
+      <p className="rounded-md border border-emerald-700 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-100">
+        Checkout completed. Your dashboard will update after Stripe confirms the
+        subscription.
+      </p>
+    );
+  }
+  if (billing === "cancelled") {
+    return (
+      <p className="rounded-md border border-[color:var(--color-border)] px-4 py-3 text-sm text-[color:var(--color-muted-foreground)]">
+        Checkout was cancelled before any subscription was created.
+      </p>
+    );
+  }
+  if (billing === "disabled" || !billingEnabled) {
+    return (
+      <p className="rounded-md border border-amber-700 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+        Local checkout is disabled until Stripe test keys, webhook secret, and
+        monthly price IDs are configured.
+      </p>
+    );
+  }
+  return null;
+}
+
+function TierAction({
+  tier,
+  billingEnabled,
+}: {
+  tier: (typeof TIERS)[number];
+  billingEnabled: boolean;
+}) {
+  if ("plan" in tier) {
+    if (!billingEnabled) {
+      return (
+        <Button type="button" variant="outline" className="mt-auto" disabled>
+          Configure checkout
+        </Button>
+      );
+    }
+    return (
+      <form action="/api/billing/checkout" method="post" className="mt-auto">
+        <input type="hidden" name="plan" value={tier.plan} />
+        <Button type="submit" variant="outline" className="w-full">
+          Start {tier.name} checkout
+        </Button>
+      </form>
+    );
+  }
+  return (
+    <Button asChild variant="outline" className="mt-auto">
+      <Link href={tier.href}>{tier.cta}</Link>
+    </Button>
   );
 }

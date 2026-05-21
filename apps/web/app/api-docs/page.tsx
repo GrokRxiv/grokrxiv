@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Public API",
   description:
-    "Read-only JSON API for GrokRxiv reviews. CORS-open, no auth, paginated.",
+    "Read-only JSON API for GrokRxiv reviews. CORS-open for GET requests, no auth, paginated.",
 };
 
 const SAMPLE_LIST = `{
@@ -59,15 +59,17 @@ export default function ApiDocsPage() {
       <header>
         <h1 className="text-3xl font-bold tracking-tight">Public JSON API</h1>
         <p className="mt-2 text-[color:var(--color-muted-foreground)]">
-          Read-only, CORS-open, and paginated. Only public reviews are returned;
-          moderation-pending, withdrawn, and private reviews are never exposed.
+          Read-only, CORS-open for GET requests, and paginated. Only public
+          reviews are returned; moderation-pending, withdrawn, and private
+          reviews are never exposed. Review-start and moderation actions are
+          operator CLI/internal surfaces, not public API endpoints.
         </p>
       </header>
 
       <Endpoint
         method="GET"
         path="/api/v1/reviews"
-        body="List published reviews. Query params: page (1+), limit (≤50), field, status (default published)."
+        body="List public review summaries. Query params: page (1+), limit (≤50), field, status (default published; allowed public statuses are pr_open, published, corrected, rejected)."
         example={`curl https://grokrxiv.org/api/v1/reviews?limit=5\n\n${SAMPLE_LIST}`}
       />
       <Endpoint
@@ -85,7 +87,7 @@ export default function ApiDocsPage() {
       <Endpoint
         method="POST"
         path="/api/upload"
-        body="Multipart upload. Returns a sample, single-pass review preview — never indexed as a real GrokRxiv review."
+        body="Same-origin multipart upload from grokrxiv.org. Returns a sample, single-pass review preview — never indexed as a real GrokRxiv review."
         example={`curl -F file=@paper.pdf https://grokrxiv.org/api/upload`}
       />
 
