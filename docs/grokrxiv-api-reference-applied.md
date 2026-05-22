@@ -30,8 +30,8 @@ default is `published`.
 
 ## Operator notes
 
-- Use first-party CLI commands such as `agh grokrxiv review`,
-  `agh grokrxiv approve`, and
-  `agh grokrxiv batch-run` for write workflows.
+- Use first-party CLI commands such as `agh app run grokrxiv -- review`,
+  `agh app run grokrxiv -- approve`, and
+  `agh app run grokrxiv -- batch-run` for write workflows.
 - The orchestrator's `/internal/v1/*` routes are private-network plumbing. Do
   not expose them publicly.

@@ -35,9 +35,38 @@ fn render_extract_from_input(
         })
 }
 
+/// Caller-provided options for deterministic review artifact rendering.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderToDiskOptions {
+    /// Optional timeout passed to the HTML quality CLI role for this render.
+    pub html_quality_timeout_secs: Option<u32>,
+}
+
+/// Summary of non-essential render sub-stages.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderToDiskReport {
+    /// Whether HTML quality cleanup was enabled for this render.
+    pub html_quality_enabled: bool,
+    /// `Some(true)` when cleanup ran, `Some(false)` when it skipped/failed,
+    /// and `None` when cleanup was disabled.
+    pub html_quality_ran: Option<bool>,
+}
+
 /// Render persisted review state into HTML, Markdown, LaTeX, and ZIP artifacts.
 #[cfg(feature = "grokrxiv-render")]
 pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result<()> {
+    render_to_disk_with_options(state, review_id, RenderToDiskOptions::default())
+        .await
+        .map(|_| ())
+}
+
+/// Render persisted review state with caller-provided sub-stage options.
+#[cfg(feature = "grokrxiv-render")]
+pub async fn render_to_disk_with_options(
+    state: &AppState,
+    review_id: Uuid,
+    options: RenderToDiskOptions,
+) -> anyhow::Result<RenderToDiskReport> {
     use grokrxiv_render::AgentRecord;
     use grokrxiv_schemas::{MetaReview, VerifierResult, VerifierStatus};
 
@@ -163,9 +192,24 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
 
     // The HTML quality pass is observational and may rewrite review.html plus
     // a formatting_fixes.json sidecar when enabled.
-    if !html_quality_disabled() {
-        if let Err(e) = crate::html_review::review_and_fix_html(state, review_id, &dir).await {
-            tracing::warn!(%review_id, err = %e, "html_quality: stage errored — leaving review.html as-is");
+    let html_quality_enabled = !html_quality_disabled();
+    let mut html_quality_ran = None;
+    if html_quality_enabled {
+        match crate::html_review::review_and_fix_html_with_timeout(
+            state,
+            review_id,
+            &dir,
+            options.html_quality_timeout_secs,
+        )
+        .await
+        {
+            Ok(ran) => {
+                html_quality_ran = Some(ran);
+            }
+            Err(e) => {
+                html_quality_ran = Some(false);
+                tracing::warn!(%review_id, err = %e, "html_quality: stage errored — leaving review.html as-is");
+            }
         }
     }
 
@@ -179,7 +223,10 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     )
     .await;
 
-    Ok(())
+    Ok(RenderToDiskReport {
+        html_quality_enabled,
+        html_quality_ran,
+    })
 }
 
 #[cfg(test)]
@@ -237,4 +284,17 @@ fn fallback_meta(title: &str) -> grokrxiv_schemas::MetaReview {
 #[cfg(not(feature = "grokrxiv-render"))]
 pub async fn render_to_disk(_state: &AppState, _review_id: Uuid) -> anyhow::Result<()> {
     Ok(())
+}
+
+/// No-op render report when the render feature is not compiled.
+#[cfg(not(feature = "grokrxiv-render"))]
+pub async fn render_to_disk_with_options(
+    _state: &AppState,
+    _review_id: Uuid,
+    _options: RenderToDiskOptions,
+) -> anyhow::Result<RenderToDiskReport> {
+    Ok(RenderToDiskReport {
+        html_quality_enabled: false,
+        html_quality_ran: None,
+    })
 }

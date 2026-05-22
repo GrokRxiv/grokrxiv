@@ -30,7 +30,9 @@ mod verification;
 pub use publish::apply_revisions;
 #[cfg(feature = "grokrxiv-publisher")]
 pub use publish::spawn_publish_reconcile;
-pub use rendering::render_to_disk;
+pub use rendering::{
+    render_to_disk, render_to_disk_with_options, RenderToDiskOptions, RenderToDiskReport,
+};
 
 use jobs::{run_item, supervisor_queue_capacity, supervisor_worker_limit};
 

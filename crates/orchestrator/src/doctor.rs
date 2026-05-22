@@ -1,4 +1,4 @@
-//! `grokrxiv doctor` — preflight checks for env, DB, runners, publisher.
+//! `agh doctor` — preflight checks for env, DB, runners, publisher.
 //!
 //! Returns a structured `DoctorReport` so the CLI can emit JSON or human text.
 //! Critical checks (DB URL + at least one configured review runner) set the
@@ -73,6 +73,10 @@ pub struct DoctorReport {
     pub local_inference: LocalInferenceStatus,
     /// Publisher (GitHub) status.
     pub publisher: Option<CheckResult>,
+    /// Frontend revalidate endpoint reachability.
+    pub web_revalidate: Option<CheckResult>,
+    /// HTML quality cleanup configuration.
+    pub html_quality: Option<CheckResult>,
     /// Pandoc binary check (required for TeX→Markdown conversion).
     pub pandoc: Option<CheckResult>,
     /// LaTeXML binary check (optional; checked only when semantic AST is enabled).
@@ -203,7 +207,7 @@ impl DoctorReport {
 
     /// Pretty-print the report to stdout.
     pub fn print_human(&self) {
-        println!("GrokRxiv doctor (profile: {})", self.profile);
+        println!("AgentHero doctor (profile: {})", self.profile);
         println!();
         println!("Database:");
         print_line("DATABASE_URL", self.database_url.as_ref());
@@ -232,6 +236,10 @@ impl DoctorReport {
         println!();
         println!("Publisher:");
         print_line("github", self.publisher.as_ref());
+        println!();
+        println!("Refresh pipeline:");
+        print_line("web_revalidate", self.web_revalidate.as_ref());
+        print_line("html_quality", self.html_quality.as_ref());
         println!();
         println!("Document converters:");
         print_line("pandoc", self.pandoc.as_ref());
@@ -280,6 +288,7 @@ pub async fn doctor(profile: &str, json: bool) -> anyhow::Result<i32> {
     check_cloud_runners(&mut report).await;
     check_local_inference(&mut report).await;
     check_publisher(&mut report);
+    check_refresh_pipeline(&mut report).await;
     check_doc_converters(&mut report);
     check_supabase_storage(&mut report).await;
     check_data_repo(&mut report);
@@ -631,6 +640,89 @@ fn check_publisher(report: &mut DoctorReport) {
     });
 }
 
+struct RefreshPipelineConfig {
+    web_revalidate_url: Option<String>,
+    html_quality_disabled: bool,
+    html_quality_model: String,
+    html_quality_timeout_secs: u64,
+    web_probe_timeout: Duration,
+}
+
+impl RefreshPipelineConfig {
+    fn from_env() -> Self {
+        Self {
+            web_revalidate_url: nonblank_env("WEB_REVALIDATE_URL"),
+            html_quality_disabled: env_truthy("GROKRXIV_HTML_QUALITY_DISABLE"),
+            html_quality_model: nonblank_env("GROKRXIV_HTML_QUALITY_MODEL")
+                .unwrap_or_else(|| "gpt-5.5".to_string()),
+            html_quality_timeout_secs: std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|secs| *secs > 0)
+                .unwrap_or(180),
+            web_probe_timeout: std::env::var("AGENTHERO_DOCTOR_WEB_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|secs| *secs > 0)
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| Duration::from_secs(3)),
+        }
+    }
+}
+
+async fn check_refresh_pipeline(report: &mut DoctorReport) {
+    let config = RefreshPipelineConfig::from_env();
+    check_refresh_pipeline_with(report, &config).await;
+}
+
+async fn check_refresh_pipeline_with(report: &mut DoctorReport, config: &RefreshPipelineConfig) {
+    report.html_quality = Some(check_html_quality_with(config));
+    let client = match reqwest::Client::builder()
+        .timeout(config.web_probe_timeout)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            report.web_revalidate = Some(CheckResult::skipped(format!(
+                "could not build http client: {e}"
+            )));
+            return;
+        }
+    };
+    report.web_revalidate =
+        Some(check_web_revalidate_with(&client, config.web_revalidate_url.as_deref()).await);
+}
+
+fn check_html_quality_with(config: &RefreshPipelineConfig) -> CheckResult {
+    if config.html_quality_disabled {
+        return CheckResult::skipped(
+            "GROKRXIV_HTML_QUALITY_DISABLE set; HTML quality cleanup disabled",
+        );
+    }
+    CheckResult::ok(format!(
+        "enabled model={} timeout_secs={}",
+        config.html_quality_model, config.html_quality_timeout_secs
+    ))
+}
+
+async fn check_web_revalidate_with(client: &reqwest::Client, url: Option<&str>) -> CheckResult {
+    let Some(url) = url.filter(|url| !url.trim().is_empty()) else {
+        return CheckResult::skipped("WEB_REVALIDATE_URL unset");
+    };
+    match client.head(url).send().await {
+        Ok(r) if r.status().as_u16() < 500 => CheckResult::ok(format!(
+            "{url} reachable via HEAD (HTTP {}; POST auth not checked)",
+            r.status()
+        )),
+        Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
+        Err(e) if e.is_timeout() => {
+            CheckResult::fail(format!("{url} timed out during HEAD probe: {e}"))
+        }
+        Err(e) if e.is_connect() => CheckResult::fail(format!("{url} unreachable: {e}")),
+        Err(e) => CheckResult::fail(format!("{url} probe failed: {e}")),
+    }
+}
+
 fn nonblank_env(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -913,6 +1005,71 @@ mod tests {
         );
         std::env::remove_var("GROKRXIV_DOCTOR_TEST_BLANK");
         std::env::remove_var("GROKRXIV_DOCTOR_TEST_SET");
+    }
+
+    #[test]
+    fn html_quality_doctor_reports_enabled_config_without_running_llm() {
+        let config = RefreshPipelineConfig {
+            web_revalidate_url: None,
+            html_quality_disabled: false,
+            html_quality_model: "gemini-3-flash-preview".to_string(),
+            html_quality_timeout_secs: 42,
+            web_probe_timeout: Duration::from_millis(50),
+        };
+
+        let result = check_html_quality_with(&config);
+
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(
+            result.message.contains("gemini-3-flash-preview"),
+            "{}",
+            result.message
+        );
+        assert!(result.message.contains("timeout_secs=42"));
+    }
+
+    #[tokio::test]
+    async fn web_revalidate_doctor_reports_stopped_local_web() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(300))
+            .build()
+            .unwrap();
+
+        let result = check_web_revalidate_with(
+            &client,
+            Some(&format!("http://127.0.0.1:{port}/api/revalidate")),
+        )
+        .await;
+
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(result.message.contains("unreachable"), "{}", result.message);
+    }
+
+    #[tokio::test]
+    async fn web_revalidate_doctor_treats_http_response_as_reachable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/api/revalidate"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+
+        let result =
+            check_web_revalidate_with(&client, Some(&format!("{}/api/revalidate", server.uri())))
+                .await;
+
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(result.message.contains("HTTP 405"), "{}", result.message);
     }
 
     #[test]

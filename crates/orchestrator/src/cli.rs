@@ -143,7 +143,7 @@ pub struct Cli {
     pub dry_run_storage: bool,
 }
 
-/// Hint for `agh grokrxiv review <source>` when the source can't be inferred.
+/// Hint for `agh app run grokrxiv -- review <source>` when the source can't be inferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
@@ -162,60 +162,11 @@ pub enum SourceType {
 /// Top-level CLI subcommand variants.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List or inspect installed DAGOps apps.
-    Apps {
-        /// Optional app registry operation. Omit to list apps.
+    /// List, inspect, or run installed DAGOps apps.
+    App {
+        /// App registry operation.
         #[command(subcommand)]
-        command: Option<AppsCommand>,
-    },
-
-    /// Run the GrokRxiv DAG app.
-    #[command(
-        name = "grokrxiv",
-        after_help = "Actions:
-  extract <SOURCE>...
-  ingest <ARXIV_ID|URL>...
-  ingest-range --from <YYYY-MM-DD> --to <YYYY-MM-DD>
-  ingest-daily
-  review <SOURCE>
-  review-extracted <ARXIV_ID>
-  re-review <REVIEW_ID>
-  validate citations
-  verify <REVIEW_ID>
-  render <REVIEW_ID>
-  refresh-review <REVIEW_ID>
-  show <REVIEW_ID|ARXIV_ID>
-  list reviews|papers
-  open <REVIEW_ID|ARXIV_ID>
-  approve <REVIEW_ID>
-  request-revisions <REVIEW_ID>
-  request-changes <REVIEW_ID>
-  reject <REVIEW_ID>
-  close <REVIEW_ID>
-  withdraw <REVIEW_ID>
-  correct <REVIEW_ID>
-  html-review <REVIEW_ID>
-  feedback-loop-smoke <REVIEW_ID>
-  batch-create|batch-run|batch-status|batch-list
-"
-    )]
-    GrokRxiv {
-        /// GrokRxiv command path and action-specific arguments.
-        #[arg(num_args = 1.., allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Run the C2Rust migration DAG app.
-    #[command(
-        name = "c2rust",
-        after_help = "Actions:
-  migrate <C_SOURCE>
-"
-    )]
-    C2Rust {
-        /// C2Rust command path and action-specific arguments.
-        #[arg(num_args = 1.., allow_hyphen_values = true)]
-        args: Vec<String>,
+        command: AppCommand,
     },
 
     // ---------- service ----------
@@ -263,13 +214,23 @@ pub enum Command {
     },
 }
 
-/// Subcommands for product app registry operations.
+/// Subcommands for product app registry and execution operations.
 #[derive(Debug, Subcommand)]
-pub enum AppsCommand {
+pub enum AppCommand {
+    /// List installed DAGOps apps.
+    List,
     /// Show one app's available actions.
     Show {
         /// App id, e.g. `grokrxiv` or `c2rust`.
         app: String,
+    },
+    /// Run one installed app action. Canonical form: `agh app run <app> -- <action> ...`.
+    Run {
+        /// App id, e.g. `grokrxiv` or `c2rust`.
+        app: String,
+        /// App command path and action-specific arguments.
+        #[arg(num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
+        args: Vec<String>,
     },
     /// List app run records from the runtime database.
     Runs {
@@ -490,7 +451,7 @@ pub enum JobsCommand {
     },
 }
 
-/// Selector for `agh grokrxiv list`.
+/// Selector for `agh app run grokrxiv -- list`.
 #[derive(Debug, Subcommand)]
 pub enum ListKind {
     /// List reviews.
@@ -540,7 +501,7 @@ pub enum ListKind {
     },
 }
 
-/// Output format for `grokrxiv render`.
+/// Output format for `agh app run grokrxiv -- render`.
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum RenderFormat {
     /// Self-contained HTML.
@@ -668,20 +629,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let command = cli.command;
     let is_review_command = matches!(
         &command,
-        Command::GrokRxiv { args }
-            if args
+        Command::App {
+            command: AppCommand::Run { app, args },
+        } if app == "grokrxiv"
+            && args
                 .first()
                 .is_some_and(|action| matches!(action.as_str(), "extract" | "review" | "review-extracted" | "approve" | "request-revisions"))
-    ) || matches!(
-        &command,
-        Command::Apps {
-            command: Some(AppsCommand::Show { app }),
-        } if app == "grokrxiv"
     );
 
     if dry_run {
-        if let Command::GrokRxiv { args } = &command {
-            if args.first().is_some_and(|action| action == "approve") {
+        if let Command::App {
+            command: AppCommand::Run { app, args },
+        } = &command
+        {
+            if app == "grokrxiv" && args.first().is_some_and(|action| action == "approve") {
                 let review_id = parse_uuid_arg(args.get(1), "review_id")?;
                 if json {
                     println!(
@@ -702,9 +663,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let result = match command {
-        Command::Apps { command } => apps_command(command, json, dry_run).await,
-        Command::GrokRxiv { args } => app_args_command("grokrxiv", args, json, dry_run).await,
-        Command::C2Rust { args } => app_args_command("c2rust", args, json, dry_run).await,
+        Command::App { command } => app_command(command, json, dry_run).await,
         Command::Serve => super::serve::run().await,
         Command::Doctor => {
             let code = doctor_mod::doctor(&profile, json).await?;
@@ -735,16 +694,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     result
 }
 
-async fn apps_command(
-    command: Option<AppsCommand>,
-    json: bool,
-    _dry_run: bool,
-) -> anyhow::Result<()> {
+async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::Result<()> {
     match command {
-        None => app_list(json),
-        Some(AppsCommand::Show { app }) => app_show(&app, json),
-        Some(AppsCommand::Runs { app }) => app_runs(app.as_deref(), json).await,
-        Some(AppsCommand::Status { run_id }) => app_status(run_id, json).await,
+        AppCommand::List => app_list(json),
+        AppCommand::Show { app } => app_show(&app, json),
+        AppCommand::Run { app, args } => app_args_command(&app, args, json, dry_run).await,
+        AppCommand::Runs { app } => app_runs(app.as_deref(), json).await,
+        AppCommand::Status { run_id } => app_status(run_id, json).await,
     }
 }
 
@@ -3808,8 +3764,8 @@ fn existing_review_json(
         "review_id": review_id,
         "review_status": review_status,
         "pr_url": pr_url,
-        "show_command": format!("agh grokrxiv show {review_id}"),
-        "force_command": format!("agh grokrxiv review-extracted --force {arxiv_id}"),
+        "show_command": format!("agh app run grokrxiv -- show {review_id}"),
+        "force_command": format!("agh app run grokrxiv -- review-extracted --force {arxiv_id}"),
     })
 }
 
@@ -3826,9 +3782,11 @@ fn existing_review_text(
     if let Some(pr_url) = pr_url {
         out.push_str(&format!("pr_url={pr_url}\n"));
     }
-    out.push_str(&format!("show_command=agh grokrxiv show {review_id}\n"));
     out.push_str(&format!(
-        "force_command=agh grokrxiv review-extracted --force {arxiv_id}\n"
+        "show_command=agh app run grokrxiv -- show {review_id}\n"
+    ));
+    out.push_str(&format!(
+        "force_command=agh app run grokrxiv -- review-extracted --force {arxiv_id}\n"
     ));
     out
 }
@@ -3884,19 +3842,19 @@ async fn resolve_extracted_paper(
 
     let Some((paper_id, arxiv_id, title, status, git_path)) = row else {
         anyhow::bail!(
-            "review-extracted: no paper row for `{source}`; run `agh grokrxiv extract {source}` first"
+            "review-extracted: no paper row for `{source}`; run `agh app run grokrxiv -- extract {source}` first"
         );
     };
     if status.as_deref() != Some("ready") || git_path.is_none() {
         anyhow::bail!(
-            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `agh grokrxiv extract {arxiv_id}` first",
+            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `agh app run grokrxiv -- extract {arxiv_id}` first",
             status.as_deref().unwrap_or("pending")
         );
     }
     Ok((paper_id, arxiv_id, title))
 }
 
-/// Source resolution for `agh grokrxiv review <source>`.
+/// Source resolution for `agh app run grokrxiv -- review <source>`.
 #[derive(Debug, Clone)]
 enum ResolvedSource {
     /// arXiv id (already normalised).
@@ -4091,7 +4049,7 @@ async fn resolve_source(
     anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
 
-/// Canonical end-to-end entry point — `agh grokrxiv review <source>`.
+/// Canonical end-to-end entry point — `agh app run grokrxiv -- review <source>`.
 async fn review_source(
     source: &str,
     type_hint: Option<SourceType>,
@@ -5096,6 +5054,84 @@ async fn render(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RefreshStageResult {
+    name: &'static str,
+    status: String,
+    duration_ms: u128,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+fn refresh_stage_result(
+    name: &'static str,
+    status: impl Into<String>,
+    started: std::time::Instant,
+    message: Option<String>,
+    error: Option<String>,
+) -> RefreshStageResult {
+    RefreshStageResult {
+        name,
+        status: status.into(),
+        duration_ms: started.elapsed().as_millis(),
+        message,
+        error,
+    }
+}
+
+fn refresh_stage_timeout() -> std::time::Duration {
+    std::env::var("AGENTHERO_REFRESH_STAGE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(|| std::time::Duration::from_secs(15))
+}
+
+fn refresh_render_timeout() -> std::time::Duration {
+    std::env::var("AGENTHERO_REFRESH_RENDER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(|| {
+            let html_quality_secs = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|secs| *secs > 0)
+                .unwrap_or(180);
+            std::time::Duration::from_secs(html_quality_secs.saturating_add(30))
+        })
+}
+
+fn refresh_html_quality_timeout_secs(render_timeout: std::time::Duration) -> u32 {
+    render_timeout.as_secs().clamp(1, u32::MAX as u64) as u32
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RefreshRenderOutcome {
+    artifacts_refreshed: bool,
+    html_quality_enabled: bool,
+    html_quality_ran: Option<bool>,
+    html_quality_timeout_secs: Option<u32>,
+}
+
+impl RefreshRenderOutcome {
+    fn message(&self) -> String {
+        format!(
+            "artifacts_refreshed={} html_quality_enabled={} html_quality_ran={} html_quality_timeout_secs={}",
+            self.artifacts_refreshed,
+            self.html_quality_enabled,
+            self.html_quality_ran
+                .map(|ran| ran.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            self.html_quality_timeout_secs
+                .map(|secs| secs.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        )
+    }
+}
+
 async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
@@ -5103,8 +5139,24 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("refresh-review: DATABASE_URL not configured"))?;
+    let mut stages = Vec::new();
 
+    crate::cli_status::emit(format!(
+        "review {review_id}: repairing citation verifier metadata"
+    ));
+    let started = std::time::Instant::now();
     let citation_rows_repaired = repair_zero_checked_citation_agents(pool, review_id).await?;
+    stages.push(refresh_stage_result(
+        "citation_repair",
+        "ok",
+        started,
+        Some(format!("rows_repaired={citation_rows_repaired}")),
+        None,
+    ));
+
+    crate::cli_status::emit(format!(
+        "review {review_id}: loading persisted review context"
+    ));
     let row: Option<(
         Uuid,
         Option<serde_json::Value>,
@@ -5128,6 +5180,8 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
         anyhow::bail!("refresh-review: review {review_id} not found or missing meta_review");
     };
 
+    crate::cli_status::emit(format!("review {review_id}: enriching revision targets"));
+    let started = std::time::Instant::now();
     let specialist_roles = paper_review_specialist_roles()?;
     let agent_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
         "select distinct on (role) role, output \
@@ -5159,11 +5213,130 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
     if meta_review_updated {
         crate::db::set_review_meta_review(pool, review_id, &enriched).await?;
     }
+    stages.push(refresh_stage_result(
+        "meta_review_enrichment",
+        "ok",
+        started,
+        Some(format!("updated={meta_review_updated}")),
+        None,
+    ));
 
-    let artifacts_refreshed = refresh_rendered_artifacts(&state, review_id).await?;
-    revalidate_best_effort(&state, review_id).await;
-    let github_feedback =
-        refresh_gate_feedback_comment(&state, pool, review_id, github_pr_url.as_deref()).await?;
+    crate::cli_status::emit(format!(
+        "review {review_id}: rendering artifacts and running HTML quality if enabled"
+    ));
+    let started = std::time::Instant::now();
+    let render_timeout = refresh_render_timeout();
+    let html_quality_timeout_secs = refresh_html_quality_timeout_secs(render_timeout);
+    let render_watchdog_timeout = render_timeout.saturating_add(std::time::Duration::from_secs(5));
+    let render_outcome = match tokio::time::timeout(
+        render_watchdog_timeout,
+        refresh_rendered_artifacts(&state, review_id, Some(html_quality_timeout_secs)),
+    )
+    .await
+    {
+        Ok(Ok(outcome)) => {
+            stages.push(refresh_stage_result(
+                "render_artifacts",
+                "ok",
+                started,
+                Some(outcome.message()),
+                None,
+            ));
+            outcome
+        }
+        Ok(Err(e)) => {
+            stages.push(refresh_stage_result(
+                "render_artifacts",
+                "failed",
+                started,
+                Some("artifacts_refreshed=false".to_string()),
+                Some(e.to_string()),
+            ));
+            RefreshRenderOutcome {
+                artifacts_refreshed: false,
+                html_quality_enabled: false,
+                html_quality_ran: None,
+                html_quality_timeout_secs: Some(html_quality_timeout_secs),
+            }
+        }
+        Err(_) => {
+            stages.push(refresh_stage_result(
+                "render_artifacts",
+                "timeout",
+                started,
+                Some("artifacts_refreshed=false".to_string()),
+                Some(format!(
+                    "render/html_quality watchdog exceeded {}s",
+                    render_watchdog_timeout.as_secs()
+                )),
+            ));
+            RefreshRenderOutcome {
+                artifacts_refreshed: false,
+                html_quality_enabled: false,
+                html_quality_ran: None,
+                html_quality_timeout_secs: Some(html_quality_timeout_secs),
+            }
+        }
+    };
+    let artifacts_refreshed = render_outcome.artifacts_refreshed;
+
+    crate::cli_status::emit(format!(
+        "review {review_id}: revalidating configured web endpoint"
+    ));
+    let web_revalidate = refresh_web_revalidate(
+        &state.http,
+        state.config.web_revalidate_url.as_deref(),
+        state.config.revalidate_secret.as_deref(),
+        review_id,
+        refresh_stage_timeout(),
+    )
+    .await;
+    stages.push(web_revalidate.clone());
+
+    crate::cli_status::emit(format!(
+        "review {review_id}: updating GitHub gate feedback comment"
+    ));
+    let started = std::time::Instant::now();
+    let github_feedback = match tokio::time::timeout(
+        refresh_stage_timeout(),
+        refresh_gate_feedback_comment(&state, pool, review_id, github_pr_url.as_deref()),
+    )
+    .await
+    {
+        Ok(Ok(status)) => {
+            stages.push(refresh_stage_result(
+                "github_feedback",
+                status.clone(),
+                started,
+                None,
+                None,
+            ));
+            status
+        }
+        Ok(Err(e)) => {
+            stages.push(refresh_stage_result(
+                "github_feedback",
+                "failed",
+                started,
+                None,
+                Some(e.to_string()),
+            ));
+            "failed".to_string()
+        }
+        Err(_) => {
+            stages.push(refresh_stage_result(
+                "github_feedback",
+                "timeout",
+                started,
+                None,
+                Some(format!(
+                    "GitHub feedback update exceeded {}s",
+                    refresh_stage_timeout().as_secs()
+                )),
+            ));
+            "timeout".to_string()
+        }
+    };
 
     if json {
         println!(
@@ -5173,15 +5346,86 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
                 "citation_rows_repaired": citation_rows_repaired,
                 "meta_review_updated": meta_review_updated,
                 "artifacts_refreshed": artifacts_refreshed,
+                "web_revalidate": web_revalidate.status,
                 "github_feedback": github_feedback,
+                "stages": stages,
             })
         );
     } else {
         println!(
-            "refreshed={review_id} citation_rows_repaired={citation_rows_repaired} meta_review_updated={meta_review_updated} artifacts_refreshed={artifacts_refreshed} github_feedback={github_feedback}"
+            "refreshed={review_id} citation_rows_repaired={citation_rows_repaired} meta_review_updated={meta_review_updated} artifacts_refreshed={artifacts_refreshed} web_revalidate={} github_feedback={github_feedback}",
+            web_revalidate.status
         );
     }
     Ok(())
+}
+
+async fn refresh_web_revalidate(
+    http: &reqwest::Client,
+    url: Option<&str>,
+    secret: Option<&str>,
+    review_id: Uuid,
+    timeout_dur: std::time::Duration,
+) -> RefreshStageResult {
+    let started = std::time::Instant::now();
+    let Some(url) = url.filter(|url| !url.trim().is_empty()) else {
+        return refresh_stage_result(
+            "web_revalidate",
+            "skipped_unset",
+            started,
+            Some("WEB_REVALIDATE_URL is unset".to_string()),
+            None,
+        );
+    };
+    let mut req = http
+        .post(url)
+        .json(&serde_json::json!({ "review_id": review_id }));
+    if let Some(secret) = secret.filter(|secret| !secret.trim().is_empty()) {
+        req = req.header("x-revalidate-secret", secret);
+    }
+
+    match tokio::time::timeout(timeout_dur, req.send()).await {
+        Err(_) => refresh_stage_result(
+            "web_revalidate",
+            "timeout",
+            started,
+            None,
+            Some(format!(
+                "revalidate POST exceeded {}s for {url}",
+                timeout_dur.as_secs_f32()
+            )),
+        ),
+        Ok(Err(e)) if e.is_connect() => refresh_stage_result(
+            "web_revalidate",
+            "skipped_unreachable",
+            started,
+            Some(format!(
+                "configured revalidate endpoint is unreachable: {url}"
+            )),
+            Some(e.to_string()),
+        ),
+        Ok(Err(e)) => refresh_stage_result(
+            "web_revalidate",
+            "failed",
+            started,
+            None,
+            Some(e.to_string()),
+        ),
+        Ok(Ok(resp)) if resp.status().is_success() => refresh_stage_result(
+            "web_revalidate",
+            "updated",
+            started,
+            Some(format!("HTTP {}", resp.status())),
+            None,
+        ),
+        Ok(Ok(resp)) => refresh_stage_result(
+            "web_revalidate",
+            "failed_http_status",
+            started,
+            None,
+            Some(format!("HTTP {}", resp.status())),
+        ),
+    }
 }
 
 async fn repair_zero_checked_citation_agents(
@@ -5315,16 +5559,34 @@ fn refresh_revision_source_path_hint(
 async fn refresh_rendered_artifacts(
     state: &super::AppState,
     review_id: Uuid,
-) -> anyhow::Result<bool> {
+    html_quality_timeout_secs: Option<u32>,
+) -> anyhow::Result<RefreshRenderOutcome> {
     #[cfg(feature = "grokrxiv-render")]
     {
-        super::supervisor::render_to_disk(state, review_id).await?;
-        Ok(true)
+        let report = super::supervisor::render_to_disk_with_options(
+            state,
+            review_id,
+            super::supervisor::RenderToDiskOptions {
+                html_quality_timeout_secs,
+            },
+        )
+        .await?;
+        Ok(RefreshRenderOutcome {
+            artifacts_refreshed: true,
+            html_quality_enabled: report.html_quality_enabled,
+            html_quality_ran: report.html_quality_ran,
+            html_quality_timeout_secs,
+        })
     }
     #[cfg(not(feature = "grokrxiv-render"))]
     {
         let _ = (state, review_id);
-        Ok(false)
+        Ok(RefreshRenderOutcome {
+            artifacts_refreshed: false,
+            html_quality_enabled: false,
+            html_quality_ran: None,
+            html_quality_timeout_secs,
+        })
     }
 }
 
@@ -5552,8 +5814,8 @@ async fn open_publication_pr_impl(
         }
         anyhow::bail!(
             "review {review_id} is not cleanly publishable: {} \
-             Use `agh grokrxiv request-revisions {review_id}`, \
-             `agh grokrxiv reject {review_id} --reason …`, \
+             Use `agh app run grokrxiv -- request-revisions {review_id}`, \
+             `agh app run grokrxiv -- reject {review_id} --reason …`, \
              or re-run approve with `--force` to override.",
             publication_gate.reason
         );
@@ -5596,7 +5858,7 @@ async fn open_publication_pr_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh grokrxiv ingest <arxiv_id>` to regenerate."
+             re-run `agh app run grokrxiv -- ingest <arxiv_id>` to regenerate."
         );
     }
 
@@ -5614,14 +5876,14 @@ async fn open_publication_pr_impl(
     let raw_pr_title = format!("Review: {} ({})", title, source_ref);
     let raw_pr_body = if visibility == "private" {
         format!(
-            "Opened by `agh grokrxiv review ...`.\n\n\
+            "Opened by `agh app run grokrxiv -- review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview."
         )
     } else {
         format!(
-            "Opened by `agh grokrxiv review ...`.\n\n\
+            "Opened by `agh app run grokrxiv -- review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
@@ -5799,7 +6061,7 @@ async fn request_revisions_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh grokrxiv review ...` to regenerate."
+             re-run `agh app run grokrxiv -- review ...` to regenerate."
         );
     }
 
@@ -5829,7 +6091,7 @@ async fn request_revisions_impl(
     };
     let raw_pr_title = format!("Needs revision: {} ({})", title, source_ref);
     let raw_pr_body = format!(
-        "Opened by `agh grokrxiv request-revisions {review_id}`.\n\n\
+        "Opened by `agh app run grokrxiv -- request-revisions {review_id}`.\n\n\
          **Automated gate:** Needs revision (`{recommendation}`).\n\n\
          **Public review details:** {public_url}/reviews/{review_id}\n\n\
          This review is not approved for publication yet. {correction_instruction} Each push triggers GrokRxiv automated re-review through the `pull_request.synchronize` webhook. GrokRxiv updates the stable gate comment with pass/fail status and concrete correction notes until automation accepts the fixes.{note_block}{citation_block}\n\n\
@@ -6643,7 +6905,7 @@ async fn request_revisions_impl(
 }
 
 /// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
-/// `agh grokrxiv approve` command (which doesn't go through the supervisor
+/// `agh app run grokrxiv -- approve` command (which doesn't go through the supervisor
 /// background worker) also closes the prior PR on supersede.
 #[cfg(feature = "grokrxiv-publisher")]
 async fn close_superseded_pr_if_any_cli(
@@ -6776,7 +7038,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
             .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let pr_url = pr_url.ok_or_else(|| {
         anyhow::anyhow!(
-            "review {review_id} has no github_pr_url; run `agh grokrxiv review ...` first"
+            "review {review_id} has no github_pr_url; run `agh app run grokrxiv -- review ...` first"
         )
     })?;
 
@@ -6799,7 +7061,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
         anyhow::bail!(
             "approve refused: latest automated gate for review {review_id} is not pass: {} \
-             Push fixes to the PR and wait for re-review, or run `agh grokrxiv approve {review_id} --force`.",
+             Push fixes to the PR and wait for re-review, or run `agh app run grokrxiv -- approve {review_id} --force`.",
             publication_gate.reason
         );
     }
@@ -6814,7 +7076,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
-             Re-run `agh grokrxiv review ...` with GITHUB_TOKEN set."
+             Re-run `agh app run grokrxiv -- review ...` with GITHUB_TOKEN set."
         )
     })?;
 
@@ -6869,7 +7131,7 @@ async fn publish_cmd(review_id: Uuid, _force: bool, _json: bool) -> anyhow::Resu
     )
 }
 
-/// `grokrxiv html-review [<id>|--all]`. Re-runs the post-render html_quality
+/// `agh app run grokrxiv -- html-review [<id>|--all]`. Re-runs the post-render html_quality
 /// harness on already-rendered reviews. Used to backfill existing reviews
 /// after the harness lands, or to re-run after prompt iteration.
 async fn html_review_cmd(review_id: Option<Uuid>, all: bool, json: bool) -> anyhow::Result<()> {
@@ -7051,7 +7313,8 @@ async fn close_review_github_pr(
         .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
     let publisher = GithubPublisher::new(client, plan.owner.clone(), plan.repo.clone());
     let admin = AdminCaller::from_admin_endpoint();
-    let comment = format!("Closed by `grokrxiv close {review_id}`.\n\nReason:\n\n{reason}");
+    let comment =
+        format!("Closed by `agh app run grokrxiv -- close {review_id}`.\n\nReason:\n\n{reason}");
     publisher
         .close_pr_with_comment(&admin, plan.pr_number, &comment)
         .await
@@ -7070,7 +7333,7 @@ async fn close_review_github_pr(
     )
 }
 
-/// `agh grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
+/// `agh app run grokrxiv -- reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
 /// public terminal state. Writes `moderation_queue` like before but ALSO:
 ///   - inserts a `rejections` row with the reason as `rationale_md`,
 ///   - flips `reviews.status` to `rejected`,
@@ -7151,7 +7414,7 @@ async fn auto_moderate_review(
     Ok(())
 }
 
-/// `agh grokrxiv request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
+/// `agh app run grokrxiv -- request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
 /// moderator's notes in `moderation_queue.notes`, then trigger a fresh
 /// review of the same paper. The agents see the notes via
 /// `db::fetch_latest_changes_request_notes` on the next pass.
@@ -7200,7 +7463,7 @@ async fn request_changes(review_id: Uuid, notes: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `grokrxiv withdraw <REVIEW_ID> --reason TEXT`. Inserts a withdrawal row in
+/// `agh app run grokrxiv -- withdraw <REVIEW_ID> --reason TEXT`. Inserts a withdrawal row in
 /// `corrections`, flips `reviews.status` to `withdrawn`, fires a best-effort
 /// revalidate on the configured frontend.
 async fn withdraw(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
@@ -7222,7 +7485,7 @@ async fn withdraw(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `grokrxiv correct <REVIEW_ID> --rationale-md PATH`. Reads the markdown
+/// `agh app run grokrxiv -- correct <REVIEW_ID> --rationale-md PATH`. Reads the markdown
 /// rationale, inserts a `correction` row, flips `reviews.status` to
 /// `corrected`, fires a best-effort revalidate.
 async fn correct(review_id: Uuid, rationale_md: &std::path::Path) -> anyhow::Result<()> {
@@ -7292,8 +7555,7 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("Usage: agh"));
         assert!(text.contains("Commands:"));
-        assert!(text.contains("grokrxiv"));
-        assert!(text.contains("c2rust"));
+        assert!(text.contains("app"));
         assert!(text.contains("serve"));
     }
 
@@ -7302,9 +7564,7 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_long_help().to_string();
 
-        for visible in [
-            "apps", "grokrxiv", "c2rust", "serve", "doctor", "config", "dag", "agent", "jobs",
-        ] {
+        for visible in ["app", "serve", "doctor", "config", "dag", "agent", "jobs"] {
             assert!(
                 help.contains(visible),
                 "expected `{visible}` in help:\n{help}"
@@ -7332,6 +7592,8 @@ mod tests {
             "migrate",
             "ingest-range",
             "ingest-daily",
+            "grokrxiv",
+            "c2rust",
         ] {
             assert!(
                 !help.contains(&format!("\n  {hidden}")),
@@ -7418,6 +7680,60 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn refresh_revalidate_reports_stopped_local_web_as_unreachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        let result = refresh_web_revalidate(
+            &client,
+            Some(&format!("http://127.0.0.1:{port}/api/revalidate")),
+            Some("secret"),
+            Uuid::nil(),
+            std::time::Duration::from_millis(300),
+        )
+        .await;
+
+        assert_eq!(result.status, "skipped_unreachable");
+        assert!(result.duration_ms < 1_000, "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn refresh_revalidate_times_out_slow_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/revalidate"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true}))
+                    .set_delay(std::time::Duration::from_secs(2)),
+            )
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        let result = refresh_web_revalidate(
+            &client,
+            Some(&format!("{}/api/revalidate", server.uri())),
+            None,
+            Uuid::nil(),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+
+        assert_eq!(result.status, "timeout");
+        assert!(result.duration_ms < 1_000, "{result:?}");
+    }
+
     #[test]
     fn real_existing_pr_url_accepts_only_real_github_pull_urls() {
         let real = "https://github.com/GrokRxiv/grokrxiv-reviews/pull/123";
@@ -7448,15 +7764,18 @@ mod tests {
         let cli = Cli::try_parse_from([
             "agh",
             "--dry-run",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "approve",
             &review_id.to_string(),
         ])
-        .expect("agh grokrxiv approve --dry-run should parse");
+        .expect("agh app run grokrxiv -- approve --dry-run should parse");
 
         run(cli)
             .await
-            .expect("agh grokrxiv approve --dry-run should not require DB or GitHub");
+            .expect("agh app run grokrxiv -- approve --dry-run should not require DB or GitHub");
     }
 
     #[test]
@@ -7506,7 +7825,10 @@ mod tests {
             "--extractor",
             "cli",
             "--status",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "extract",
             "2605.00561",
         ])
@@ -7515,8 +7837,13 @@ mod tests {
         assert_eq!(parsed.extractor, Some(ExtractorKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::GrokRxiv { args } => assert_eq!(args, vec!["extract", "2605.00561"]),
-            other => panic!("expected agh grokrxiv extract, got {other:?}"),
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(args, vec!["extract", "2605.00561"]);
+            }
+            other => panic!("expected agh app run grokrxiv -- extract, got {other:?}"),
         }
     }
 
@@ -7525,7 +7852,10 @@ mod tests {
         let parsed = Cli::try_parse_from([
             "agh",
             "--json",
+            "app",
+            "run",
             "c2rust",
+            "--",
             "migrate",
             "--input",
             "src/main.c",
@@ -7534,8 +7864,13 @@ mod tests {
 
         assert!(parsed.json);
         match parsed.command {
-            Command::C2Rust { args } => assert_eq!(args, vec!["migrate", "--input", "src/main.c"]),
-            other => panic!("expected agh c2rust migrate, got {other:?}"),
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "c2rust");
+                assert_eq!(args, vec!["migrate", "--input", "src/main.c"]);
+            }
+            other => panic!("expected agh app run c2rust -- migrate, got {other:?}"),
         }
     }
 
@@ -7780,7 +8115,10 @@ mod tests {
         let batch = Cli::try_parse_from([
             "agh",
             "--json",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "batch-create",
             "--category",
             "math",
@@ -7795,7 +8133,10 @@ mod tests {
         .expect("batch create should parse");
         assert!(batch.json);
         match batch.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(
                     args,
                     vec![
@@ -7818,7 +8159,10 @@ mod tests {
         let batch_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
         let run = Cli::try_parse_from([
             "agh",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "batch-run",
             &batch_id.to_string(),
             "--limit",
@@ -7826,7 +8170,10 @@ mod tests {
         ])
         .expect("batch run should parse");
         match run.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(
                     args,
                     vec![
@@ -7863,7 +8210,10 @@ mod tests {
             "--runner",
             "cli",
             "--status",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "review-extracted",
             "2605.00561",
         ])
@@ -7872,20 +8222,31 @@ mod tests {
         assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::GrokRxiv { args } => assert_eq!(args, vec!["review-extracted", "2605.00561"]),
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(args, vec!["review-extracted", "2605.00561"]);
+            }
             other => panic!("expected review-extracted command, got {other:?}"),
         }
 
         let forced = Cli::try_parse_from([
             "agh",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "review-extracted",
             "--force",
             "2605.00561",
         ])
         .unwrap();
         match forced.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(args, vec!["review-extracted", "--force", "2605.00561"])
             }
             other => panic!("expected forced review-extracted command, got {other:?}"),
@@ -7902,10 +8263,11 @@ mod tests {
         assert!(text.contains("already_reviewed=true"));
         assert!(text.contains("review_status=pr_open"));
         assert!(text.contains("pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/19"));
-        assert!(
-            text.contains("show_command=agh grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8")
-        );
-        assert!(text.contains("force_command=agh grokrxiv review-extracted --force 2605.00561"));
+        assert!(text.contains(
+            "show_command=agh app run grokrxiv -- show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
+        ));
+        assert!(text
+            .contains("force_command=agh app run grokrxiv -- review-extracted --force 2605.00561"));
 
         let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
         assert_eq!(json["status"], "already_reviewed");
@@ -7915,19 +8277,35 @@ mod tests {
 
     #[test]
     fn cli_parses_agh_grokrxiv_list_args() {
-        let listed =
-            Cli::try_parse_from(["agh", "grokrxiv", "list", "extracted", "--limit", "50"]).unwrap();
+        let listed = Cli::try_parse_from([
+            "agh",
+            "app",
+            "run",
+            "grokrxiv",
+            "--",
+            "list",
+            "extracted",
+            "--limit",
+            "50",
+        ])
+        .unwrap();
         match listed.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(args, vec!["list", "extracted", "--limit", "50"])
             }
-            other => panic!("expected agh grokrxiv list extracted, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv -- list extracted, got {other:?}"),
         }
 
         let reviews = Cli::try_parse_from([
             "agh",
             "--json",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "list",
             "reviews",
             "--review-status",
@@ -7936,13 +8314,16 @@ mod tests {
         .unwrap();
         assert!(reviews.json);
         match reviews.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(
                     args,
                     vec!["list", "reviews", "--review-status", "awaiting_moderation"]
                 );
             }
-            other => panic!("expected agh grokrxiv list reviews, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv -- list reviews, got {other:?}"),
         }
     }
 
@@ -8020,7 +8401,10 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             "cli",
             "--extractor",
             "cli",
+            "app",
+            "run",
             "grokrxiv",
+            "--",
             "review",
             "https://github.com/MagnetonIO/emergent_spacetime",
             "--type",
@@ -8040,7 +8424,10 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
         .expect("git corpus review command should parse");
 
         match cli.command {
-            Command::GrokRxiv { args } => {
+            Command::App {
+                command: AppCommand::Run { app, args },
+            } => {
+                assert_eq!(app, "grokrxiv");
                 assert_eq!(
                     args,
                     vec![
@@ -8062,7 +8449,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
                     ]
                 );
             }
-            other => panic!("expected agh grokrxiv review, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv -- review, got {other:?}"),
         }
     }
 

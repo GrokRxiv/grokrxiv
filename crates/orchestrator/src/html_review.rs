@@ -191,6 +191,18 @@ pub async fn review_and_fix_html(
     review_id: Uuid,
     artifacts_dir: &Path,
 ) -> Result<bool> {
+    review_and_fix_html_with_timeout(state, review_id, artifacts_dir, None).await
+}
+
+/// Run HTML quality with an optional caller-owned timeout. Refresh-review uses
+/// the override with a distinct role id so `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS`
+/// does not hide the refresh watchdog timeout.
+pub async fn review_and_fix_html_with_timeout(
+    state: &AppState,
+    review_id: Uuid,
+    artifacts_dir: &Path,
+    timeout_secs_override: Option<u32>,
+) -> Result<bool> {
     let html_path = artifacts_dir.join("review.html");
     let html_bytes = match tokio::fs::read(&html_path).await {
         Ok(b) => b,
@@ -212,11 +224,17 @@ pub async fn review_and_fix_html(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(180);
+    let timeout_secs = timeout_secs_override.unwrap_or(timeout_secs);
 
     let schema: Value =
         serde_json::from_str(HTML_QUALITY_SCHEMA).context("html_quality schema parse")?;
+    let role = if timeout_secs_override.is_some() {
+        "html_quality_refresh"
+    } else {
+        "html_quality"
+    };
     let spec = AgentSpec {
-        role: "html_quality".to_string(),
+        role: role.to_string(),
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
         provider: "openai".to_string(),
@@ -230,7 +248,7 @@ pub async fn review_and_fix_html(
     let input = AgentInput {
         paper_id: Uuid::nil(),
         review_id,
-        role: "html_quality".to_string(),
+        role: role.to_string(),
         content_hash_material: Value::String("html_quality".into()),
         artifact: Value::String(original_html.clone()),
         system_prompt: "You are the HTML Quality harness. Output strict JSON only.".into(),

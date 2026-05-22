@@ -50,9 +50,9 @@ Use `agh dag run --dag-type <dag> --json` for executor-path smoke tests.
 The c2rust DAG app is the required non-paper proof path for generic DAG
 changes.
 
-The operator CLI is app-scoped. Use `agh grokrxiv review ...`,
-`agh grokrxiv approve ...`, and
-`agh c2rust migrate ...`; do not add new GrokRxiv lifecycle
+The operator CLI is app-scoped. Use `agh app run grokrxiv -- review ...`,
+`agh app run grokrxiv -- approve ...`, and
+`agh app run c2rust -- migrate ...`; do not add new GrokRxiv lifecycle
 commands at the root.
 
 LLM readability is a product requirement: prefer explicit names and small

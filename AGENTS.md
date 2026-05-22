@@ -70,18 +70,18 @@ Manifest rules:
 The operator CLI is app-scoped:
 
 ```bash
-agh apps
-agh apps show grokrxiv
-agh grokrxiv extract 2605.17307
-agh grokrxiv review 2605.17307 --type arxiv
-agh grokrxiv approve <REVIEW_ID>
-agh c2rust migrate --input src/main.c
+agh app list
+agh app show grokrxiv
+agh app run grokrxiv -- extract 2605.17307
+agh app run grokrxiv -- review 2605.17307 --type arxiv
+agh app run grokrxiv -- approve <REVIEW_ID>
+agh app run c2rust -- migrate --input src/main.c
 ```
 
 Do not add new unscoped root commands such as `agh review` or `agh approve`.
 Add an app action in `crates/orchestrator/src/dag_apps.rs`, route it through
 the generic app runner/adapter, and keep the action mapped to a DAG type. Root
-commands are reserved for platform operations such as `apps`, `serve`, `doctor`,
+commands are reserved for platform operations such as `app`, `serve`, `doctor`,
 `config`, `dag`, `agent`, and `jobs`.
 
 ## Runtime Database Shape
@@ -156,7 +156,7 @@ must emit raw JSON; the first character of stdout is `{`.
 ## Adding A Rust Tool
 
 1. Add or scaffold the manifest tool:
-   `grokrxiv dag add-tool --dag-type <dag> --tool-id <id> --executor rust --handler <module>::<function> --after <node> --before <node> --input <artifact> --output <artifact> --write`
+   `agh dag add-tool --dag-type <dag> --tool-id <id> --executor rust --handler <module>::<function> --after <node> --before <node> --input <artifact> --output <artifact> --write`
 2. Register the handler in `crates/orchestrator/src/dag_tools.rs`.
 3. Implement the function in the owning Rust module.
 4. Add tests for the function and manifest validation.
@@ -169,7 +169,7 @@ must emit raw JSON; the first character of stdout is `{`.
 3. Add the crate to the workspace.
 4. Register the app in `crates/orchestrator/src/dag_apps.rs`.
 5. Register the product app/action surface in `crates/orchestrator/src/dag_apps.rs`
-   if it should be callable through `agh <app> <action>`.
+   if it should be callable through `agh app run <app> -- <action>`.
 6. Add a smoke test that runs the manifest through
    `agenthero_dag_executor::DagExecutor`.
 7. Run `agh dag run --dag-type <dag-type> --json`.

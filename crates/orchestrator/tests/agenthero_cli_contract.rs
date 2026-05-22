@@ -1,7 +1,7 @@
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
 
-use agenthero_orchestrator::cli::{Cli, Command};
+use agenthero_orchestrator::cli::{AppCommand, Cli, Command};
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -40,47 +40,86 @@ fn cargo_installs_agh_primary_and_agenthero_alias() {
 }
 
 #[test]
-fn direct_grokrxiv_app_command_parses_without_legacy_app_run() {
+fn app_run_grokrxiv_command_parses_as_canonical_app_execution() {
     let cli = Cli::try_parse_from([
         "agh",
+        "app",
+        "run",
         "grokrxiv",
+        "--",
         "review",
         "https://arxiv.org/abs/2509.09915v1",
     ])
-    .expect("direct grokrxiv review command should parse");
+    .expect("app run grokrxiv review command should parse");
 
     match cli.command {
-        Command::GrokRxiv { args } => {
-            assert_eq!(args, vec!["review", "https://arxiv.org/abs/2509.09915v1"]);
-        }
-        other => panic!("expected GrokRxiv command, got {other:?}"),
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(args, vec!["review", "https://arxiv.org/abs/2509.09915v1"]);
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
     }
 }
 
 #[test]
-fn direct_nested_grokrxiv_validation_command_parses() {
-    let cli = Cli::try_parse_from(["agh", "--json", "grokrxiv", "validate", "citations"])
-        .expect("direct grokrxiv validate citations command should parse");
+fn app_run_grokrxiv_command_parses_without_separator() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "--json",
+        "app",
+        "run",
+        "grokrxiv",
+        "validate",
+        "citations",
+    ])
+    .expect("app run grokrxiv validate citations command should parse without --");
 
     assert!(cli.json);
     match cli.command {
-        Command::GrokRxiv { args } => assert_eq!(args, vec!["validate", "citations"]),
-        other => panic!("expected GrokRxiv command, got {other:?}"),
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(args, vec!["validate", "citations"]);
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
     }
 }
 
 #[test]
-fn direct_c2rust_command_parses_and_legacy_c_to_rust_does_not() {
-    let cli = Cli::try_parse_from(["agh", "c2rust", "migrate", "fixtures/kernel.c"])
-        .expect("direct c2rust migrate command should parse");
+fn app_run_c2rust_command_parses_and_direct_app_commands_do_not() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "app",
+        "run",
+        "c2rust",
+        "--",
+        "migrate",
+        "fixtures/kernel.c",
+    ])
+    .expect("app run c2rust migrate command should parse");
     match cli.command {
-        Command::C2Rust { args } => assert_eq!(args, vec!["migrate", "fixtures/kernel.c"]),
-        other => panic!("expected C2Rust command, got {other:?}"),
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "c2rust");
+                assert_eq!(args, vec!["migrate", "fixtures/kernel.c"]);
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
     }
 
     assert!(
-        Cli::try_parse_from(["agh", "app", "run", "c2rust", "migrate"]).is_err(),
-        "legacy app/run c2rust path must not remain callable"
+        Cli::try_parse_from(["agh", "grokrxiv", "review", "2605.17307"]).is_err(),
+        "direct grokrxiv app path must not remain callable"
+    );
+    assert!(
+        Cli::try_parse_from(["agh", "c2rust", "migrate", "fixtures/kernel.c"]).is_err(),
+        "direct c2rust app path must not remain callable"
     );
 }
 
@@ -115,22 +154,32 @@ fn every_grokrxiv_manifest_action_has_parseable_cli_shape() {
     let review_id = "03c0843f-80f8-46b4-8d7a-ad7292c449f8";
 
     for action in manifest.actions {
-        let mut argv = vec!["agh".to_string(), "grokrxiv".to_string()];
+        let mut argv = vec![
+            "agh".to_string(),
+            "app".to_string(),
+            "run".to_string(),
+            "grokrxiv".to_string(),
+            "--".to_string(),
+        ];
         argv.extend(action.command.iter().cloned());
         argv.extend(sample_grokrxiv_args(&action.id, review_id));
 
         let cli = Cli::try_parse_from(argv.iter().map(String::as_str))
             .unwrap_or_else(|err| panic!("{} should parse: {err}", action.id));
         match cli.command {
-            Command::GrokRxiv { args } => {
-                assert!(
-                    args.starts_with(&action.command),
-                    "{} should preserve command path {:?}, got {:?}",
-                    action.id,
-                    action.command,
-                    args
-                );
-            }
+            Command::App { command } => match command {
+                AppCommand::Run { app, args } => {
+                    assert_eq!(app, "grokrxiv");
+                    assert!(
+                        args.starts_with(&action.command),
+                        "{} should preserve command path {:?}, got {:?}",
+                        action.id,
+                        action.command,
+                        args
+                    );
+                }
+                other => panic!("{} parsed to wrong app command: {other:?}", action.id),
+            },
             other => panic!("{} parsed to wrong command: {other:?}", action.id),
         }
     }

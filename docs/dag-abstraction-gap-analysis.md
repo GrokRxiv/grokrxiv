@@ -27,8 +27,8 @@ Registered DAG apps:
 
 Registered product apps:
 
-- `research`, with app actions under `agh grokrxiv ...`.
-- `c2rust`, with `agenthero run c2rust migrate ...`.
+- `research`, with app actions under `agh app run grokrxiv -- ...`.
+- `c2rust`, with `agenthero app run c2rust -- migrate ...`.
 
 `paper-extract` now starts with a `dag_call` to `paper-ingest`. `c2rust`
 runs through the same generic executor path and is the non-paper proof that the
@@ -44,9 +44,9 @@ The live review pipeline must migrate to the executor path. Review-specific
 code may remain only as app adapter behavior while it is being moved behind
 node handlers. It must not be treated as the permanent executor shape.
 
-The public operator surface is `agh <app> <action>`. Do not add new root research
-lifecycle commands. Add or change research behavior by adding app actions and
-mapping those actions to DAG types.
+The public operator surface is `agh app run <app> -- <action>`. Do not add new
+root research lifecycle commands. Add or change research behavior by adding app
+actions and mapping those actions to DAG types.
 
 ## Database Boundary
 

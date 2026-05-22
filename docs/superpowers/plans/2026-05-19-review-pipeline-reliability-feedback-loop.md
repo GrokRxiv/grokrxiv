@@ -13,7 +13,7 @@
 ## Current Findings
 
 - `GITHUB_TOKEN` is available from repo `.env`; `gh repo view GrokRxiv/grokrxiv-reviews` reports `ADMIN`.
-- `grokrxiv doctor --json` reports publisher OK when `.env` is loaded.
+- `agh --json doctor` reports publisher OK when `.env` is loaded.
 - Existing local DB has reviewed papers, but current `pr_open` examples have `github_pr_url = null`, so a live feedback-loop test needs to open a fresh real PR before pushing.
 - Current `request-revisions` opens a PR containing rendered review artifacts, not the paper source.
 - Current `pull_request.synchronize` re-review clones the PR head repo and tries to prepare it as a corrected `git_repo` manuscript.
@@ -387,7 +387,7 @@ In `cli.rs::approve_impl`, keep human `--force`, but make non-force approval req
 ```rust
 if gate.verdict != crate::review_gate::GateVerdict::Pass {
     anyhow::bail!(
-        "review {review_id} is not cleanly publishable: {}. Use `agh grokrxiv request-revisions {review_id}` or `agh grokrxiv approve --force {review_id}`.",
+        "review {review_id} is not cleanly publishable: {}. Use `agh app run grokrxiv -- request-revisions {review_id}` or `agh app run grokrxiv -- approve --force {review_id}`.",
         gate.reason
     );
 }

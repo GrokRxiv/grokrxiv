@@ -1,10 +1,10 @@
-# `grokrxiv` env-var reference — applied
+# `agh` env-var reference — applied
 
-Env vars consumed by the orchestrator binary (`grokrxiv` / `agenthero-orchestrator`)
-and the Next.js web tier. Layered config order is: CLI flags > process ENV /
-root `.env` / included `.env_*` files > TOML profile > built-in defaults. The
-CLI's `--profile <name>` and `--config <path>` flags pick the TOML file/profile
-that ENV then overrides.
+Env vars consumed by the AgentHero orchestrator binary (`agh` / `agenthero`) and
+the Next.js web tier. Layered config order is: CLI flags > process ENV / root
+`.env` / included `.env_*` files > TOML profile > built-in defaults. The CLI's
+`--profile <name>` and `--config <path>` flags pick the TOML file/profile that
+ENV then overrides.
 
 ## Env Files
 
@@ -58,6 +58,17 @@ files are gitignored.
 | `GITHUB_WEBHOOK_SECRET`        | _unset_                                      | HMAC secret for `/webhook/github` |
 | `WEB_REVALIDATE_URL`           | _unset_                                      | Frontend revalidate endpoint |
 | `REVALIDATE_SECRET`            | _unset_                                      | Bearer for the revalidate endpoint |
+| `AGENTHERO_DOCTOR_WEB_TIMEOUT_SECS` | `3`                                    | Timeout for `agh doctor` revalidate endpoint reachability probe |
+
+## Refresh and render quality
+
+| Env                            | Default                                      | Notes |
+|--------------------------------|----------------------------------------------|-------|
+| `AGENTHERO_REFRESH_STAGE_TIMEOUT_SECS` | `15`                                | Per-stage timeout for refresh-review web revalidate and GitHub feedback updates |
+| `AGENTHERO_REFRESH_RENDER_TIMEOUT_SECS` | `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS + 30` | Timeout for refresh-review render plus HTML quality cleanup |
+| `GROKRXIV_HTML_QUALITY_DISABLE` | _unset_                                     | Set `1`/`true` to skip HTML/PR text cleanup; leave unset for normal refresh-review behavior |
+| `GROKRXIV_HTML_QUALITY_MODEL`   | `gpt-5.5`                                  | Model used by HTML quality and PR text cleanup agents |
+| `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS` | `180`                                | HTML quality cleanup timeout; PR text cleanup uses 120 seconds when unset |
 
 ## Layered runtime (Track I)
 
@@ -74,7 +85,7 @@ files are gitignored.
 | `GROKRXIV_FREE_REVIEW_LIMIT`   | _none_                      | Lifetime free full-review cap per logged-in user; default `3` |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
 | `AGENTHERO_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
-| `AGENTHERO_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
+| `AGENTHERO_ALLOW_PROVIDER_API`  | _internal_                  | Set by `agh`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
 | `AGENTHERO_SERVICE_TOKEN`       | _none_                      | Operator token for non-public web proxy routes; public `/api/v1` is read-only |
 | `AGENTHERO_AGENTS_DIR`          | _none_                      | Override `./agents` location |
 | `GROKRXIV_SUMMARY_MODEL`       | `claude-haiku-4-5-20251001` | Plain-language summary model; same role as `--model-for summary=...` |
@@ -161,7 +172,7 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 
 | Env                          | Notes |
 |------------------------------|-------|
-| `GITHUB_TOKEN`               | PAT used by `agh grokrxiv approve`; required for live PR creation |
+| `GITHUB_TOKEN`               | PAT used by `agh app run grokrxiv -- approve`; required for live PR creation |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
 | `GROKRXIV_REVIEWS_REPO`      | Backward-compatible public repo alias; default `grokrxiv-reviews` |
 | `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |
@@ -171,7 +182,7 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 
 | Env                                  | Notes |
 |--------------------------------------|-------|
-| `NEXT_PUBLIC_SITE_URL`               | Used by `agh grokrxiv open` |
+| `NEXT_PUBLIC_SITE_URL`               | Used by `agh app run grokrxiv -- open` |
 | `GROKRXIV_PUBLIC_URL`                | Canonical URL (defaults to `https://grokrxiv.org`) |
 | `ORCHESTRATOR_INTERNAL_URL`          | Internal orchestrator URL (default `http://localhost:8080`) |
 | `AGENTHERO_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |
