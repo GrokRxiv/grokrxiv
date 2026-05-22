@@ -2,8 +2,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use grokrxiv_dag_runtime::DagManifest;
 use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
 use reqwest::Client;
 use sqlx::PgPool;
@@ -231,7 +233,7 @@ impl AppState {
     }
 }
 
-/// Minimal YAML shape we read from `agents/*.yaml`. Captures the per-role
+/// Minimal YAML shape we read from agent YAML. Captures the per-role
 /// fields the orchestrator cares about: the routing target (`provider`,
 /// `model`), the optional runner backend, and the agent-level timeout /
 /// retry caps used to build [`AgentSpec`].
@@ -251,8 +253,12 @@ struct AgentRouting {
 /// malformed; the consumer falls back to the default provider/model.
 type RoleYamlMap = HashMap<grokrxiv_schemas::AgentRole, Option<AgentRouting>>;
 
-/// Roles the orchestrator wires up at boot.
-const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
+const PAPER_REVIEW_DAG_ID: &str = "paper-review";
+
+/// Legacy root-level review agent YAML names, retained as a fallback for tests
+/// and older local layouts. Normal runtime loading goes through
+/// `dags/paper-review.yaml`.
+const LEGACY_ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
     (grokrxiv_schemas::AgentRole::Summary, "summary.yaml"),
     (
         grokrxiv_schemas::AgentRole::TechnicalCorrectness,
@@ -270,29 +276,26 @@ const ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
     ),
 ];
 
-/// Read each `agents/<role>.yaml` once for the configured-agent registry.
-fn load_role_configs() -> RoleYamlMap {
-    // Resolve the default relative to this crate, not process cwd. Some tests
-    // deliberately chdir into temp directories before constructing AppState.
-    let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("agents")
-        });
+#[derive(Debug, Clone)]
+struct RoleConfigRef {
+    role: grokrxiv_schemas::AgentRole,
+    label: String,
+    path: PathBuf,
+}
 
+/// Read each configured review role YAML once for the configured-agent
+/// registry. `paper-review.yaml` is the source of truth; the legacy root-level
+/// layout is only a compatibility path for older test/local layouts.
+fn load_role_configs() -> RoleYamlMap {
     let mut out: RoleYamlMap = HashMap::new();
-    for (role, filename) in ROLE_FILES {
-        let path = agents_dir.join(filename);
-        let cfg = match std::fs::read_to_string(&path) {
+    for config_ref in review_role_config_refs() {
+        let cfg = match std::fs::read_to_string(&config_ref.path) {
             Ok(s) => match serde_yaml::from_str::<AgentRouting>(&s) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     tracing::warn!(
-                        role = ?role,
-                        path = %path.display(),
+                        role = ?config_ref.role,
+                        path = %config_ref.path.display(),
                         err = %e,
                         "could not parse agent yaml; startup validation will fail"
                     );
@@ -301,25 +304,25 @@ fn load_role_configs() -> RoleYamlMap {
             },
             Err(e) => {
                 tracing::warn!(
-                    role = ?role,
-                    path = %path.display(),
+                    role = ?config_ref.role,
+                    path = %config_ref.path.display(),
                     err = %e,
                     "agent yaml missing; startup validation will fail"
                 );
                 None
             }
         };
-        out.insert(*role, cfg);
+        out.insert(config_ref.role, cfg);
     }
     out
 }
 
 fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
-    let missing: Vec<String> = ROLE_FILES
-        .iter()
-        .filter_map(|(role, filename)| match role_yaml.get(role) {
+    let missing: Vec<String> = review_role_config_refs()
+        .into_iter()
+        .filter_map(|config_ref| match role_yaml.get(&config_ref.role) {
             Some(Some(_)) => None,
-            _ => Some(format!("{role:?} ({filename})")),
+            _ => Some(format!("{:?} ({})", config_ref.role, config_ref.label)),
         })
         .collect();
     if missing.is_empty() {
@@ -376,27 +379,139 @@ fn required_cli_bins(role_yaml: &RoleYamlMap) -> anyhow::Result<BTreeSet<String>
 #[cfg(feature = "grokrxiv-verifier")]
 fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();
-    for (role, _filename) in ROLE_FILES {
-        let Some(cfg) = role_yaml.get(role).and_then(|c| c.as_ref()) else {
+    for config_ref in review_role_config_refs() {
+        let role = config_ref.role;
+        let Some(cfg) = role_yaml.get(&role).and_then(|c| c.as_ref()) else {
             continue;
         };
         let schema = schemas
-            .get(role)
+            .get(&role)
             .cloned()
             .expect("role schema loaded for configured role");
         let spec = AgentSpec {
-            role: *role,
+            role,
             runner: cfg.runner.unwrap_or_default(),
             sandbox: SandboxPolicy::None,
             provider: cfg.provider.clone(),
-            model: model_override_for_role(*role).unwrap_or_else(|| cfg.model.clone()),
+            model: model_override_for_role(role).unwrap_or_else(|| cfg.model.clone()),
             schema,
             max_retries: cfg.max_retries.unwrap_or(2),
             timeout_secs: cfg.timeout_secs.unwrap_or(180),
         };
-        out.insert(*role, Arc::new(build_agent(spec)));
+        out.insert(role, Arc::new(build_agent(spec)));
     }
     out
+}
+
+fn review_role_config_refs() -> Vec<RoleConfigRef> {
+    match manifest_role_config_refs() {
+        Ok(refs) if refs.iter().all(|config_ref| config_ref.path.exists()) => refs,
+        Ok(refs) => {
+            if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
+                tracing::warn!(
+                    "paper-review DAG config paths did not exist under GROKRXIV_AGENTS_DIR; using legacy agent YAML paths"
+                );
+                legacy_role_config_refs(&agents_dir)
+            } else {
+                refs
+            }
+        }
+        Err(err) => {
+            tracing::warn!(err = %err, "could not load paper-review DAG manifest; using legacy agent YAML paths");
+            legacy_role_config_refs(&default_agents_dir())
+        }
+    }
+}
+
+fn legacy_role_config_refs(agents_dir: &Path) -> Vec<RoleConfigRef> {
+    LEGACY_ROLE_FILES
+        .iter()
+        .map(|(role, filename)| RoleConfigRef {
+            role: *role,
+            label: (*filename).to_string(),
+            path: agents_dir.join(filename),
+        })
+        .collect()
+}
+
+fn manifest_role_config_refs() -> anyhow::Result<Vec<RoleConfigRef>> {
+    let manifest_path = paper_review_manifest_path();
+    let repo_root = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_repo_root);
+    let manifest = DagManifest::from_path(&manifest_path)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", manifest_path.display()))?;
+    if manifest.id.as_str() != PAPER_REVIEW_DAG_ID {
+        anyhow::bail!(
+            "expected DAG id `{PAPER_REVIEW_DAG_ID}`, found `{}`",
+            manifest.id
+        );
+    }
+
+    let mut refs = Vec::new();
+    for role in manifest.roles {
+        let Some(known_role) = agent_role_from_manifest_id(role.id.as_str()) else {
+            continue;
+        };
+        let Some(config) = role.config else {
+            anyhow::bail!("manifest role `{}` has no config path", role.id);
+        };
+        let path = resolve_agent_config_path(&repo_root, &config);
+        refs.push(RoleConfigRef {
+            role: known_role,
+            label: config,
+            path,
+        });
+    }
+
+    if refs.is_empty() {
+        anyhow::bail!("paper-review manifest did not define any known executable review roles");
+    }
+    Ok(refs)
+}
+
+fn paper_review_manifest_path() -> PathBuf {
+    if let Some(dags_dir) = std::env::var_os("GROKRXIV_DAGS_DIR").map(PathBuf::from) {
+        return dags_dir.join("paper-review.yaml");
+    }
+    default_repo_root().join("dags").join("paper-review.yaml")
+}
+
+fn default_agents_dir() -> PathBuf {
+    default_repo_root().join("agents")
+}
+
+fn default_repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
+    let path = PathBuf::from(config);
+    if path.is_absolute() {
+        return path;
+    }
+    if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
+        if let Ok(stripped) = path.strip_prefix("agents") {
+            return agents_dir.join(stripped);
+        }
+    }
+    repo_root.join(path)
+}
+
+fn agent_role_from_manifest_id(id: &str) -> Option<grokrxiv_schemas::AgentRole> {
+    match id {
+        "summary" => Some(grokrxiv_schemas::AgentRole::Summary),
+        "technical_correctness" => Some(grokrxiv_schemas::AgentRole::TechnicalCorrectness),
+        "novelty" => Some(grokrxiv_schemas::AgentRole::Novelty),
+        "reproducibility" => Some(grokrxiv_schemas::AgentRole::Reproducibility),
+        "citation" => Some(grokrxiv_schemas::AgentRole::Citation),
+        "meta_reviewer" => Some(grokrxiv_schemas::AgentRole::MetaReviewer),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "grokrxiv-verifier")]
@@ -661,7 +776,7 @@ mod tests {
     }
 
     fn write_api_role_configs(dir: &std::path::Path) {
-        for (_role, filename) in ROLE_FILES {
+        for (_role, filename) in LEGACY_ROLE_FILES {
             std::fs::write(
                 dir.join(filename),
                 "provider: claude\nmodel: claude-haiku-4-5-20251001\nrunner: api\n",

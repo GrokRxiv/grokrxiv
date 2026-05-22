@@ -1,4 +1,5 @@
 id: macro_expander
+kind: extractor
 role: "Stage 4 — expand user-defined LaTeX macros (\\newcommand / \\def / \\renewcommand / \\DeclareMathOperator) so downstream tools see standard LaTeX."
 provider: gemini
 # Macro expansion is mechanical bookkeeping over short TeX snippets. Keep it on

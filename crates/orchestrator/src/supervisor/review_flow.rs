@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::jobs::{exp_backoff, is_retryable};
@@ -17,6 +18,7 @@ use super::verification::{
 use super::{MAX_RETRIES, MIN_SPECIALIST_QUORUM};
 use crate::cli_status::StatusMark;
 use crate::state::AppState;
+use grokrxiv_dag_runtime::DagManifest;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -286,6 +288,78 @@ pub(super) fn review_concurrency_limit_from(
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
+#[derive(Debug, Clone)]
+struct ReviewDagRuntimeConfig {
+    node_count: usize,
+    layers: Vec<Vec<String>>,
+    specialist_roles: Vec<grokrxiv_schemas::AgentRole>,
+    min_specialist_quorum: usize,
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
+    use grokrxiv_schemas::AgentRole;
+
+    let manifest_path = review_dag_manifest_path();
+    let manifest = DagManifest::from_path(&manifest_path)
+        .map_err(|e| anyhow::anyhow!("validate {}: {e}", manifest_path.display()))?;
+    let layers = manifest.execution_layers()?;
+    let mut specialist_roles = Vec::new();
+    let mut has_meta_reviewer = false;
+
+    for node in &manifest.nodes {
+        let Some(role_id) = node.role.as_ref().map(|role| role.as_str()) else {
+            continue;
+        };
+        match role_id {
+            "summary" if node.kind == "agent" => specialist_roles.push(AgentRole::Summary),
+            "technical_correctness" if node.kind == "agent" => {
+                specialist_roles.push(AgentRole::TechnicalCorrectness)
+            }
+            "novelty" if node.kind == "agent" => specialist_roles.push(AgentRole::Novelty),
+            "reproducibility" if node.kind == "agent" => {
+                specialist_roles.push(AgentRole::Reproducibility)
+            }
+            "citation" if node.kind == "agent" => specialist_roles.push(AgentRole::Citation),
+            "meta_reviewer" => has_meta_reviewer = true,
+            other if node.kind == "agent" || node.kind == "synthesizer" => {
+                anyhow::bail!(
+                    "DAG role `{other}` is configured as executable, but the legacy runner adapter still requires a built-in AgentRole; add a runner/schema adapter for this role before enabling it"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if specialist_roles.is_empty() {
+        anyhow::bail!("paper-review DAG must define at least one specialist agent node");
+    }
+    if !has_meta_reviewer {
+        anyhow::bail!("paper-review DAG must define a meta_reviewer synthesizer node");
+    }
+
+    let min_specialist_quorum = MIN_SPECIALIST_QUORUM.min(specialist_roles.len());
+    Ok(ReviewDagRuntimeConfig {
+        node_count: manifest.nodes.len(),
+        layers,
+        specialist_roles,
+        min_specialist_quorum,
+    })
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_dag_manifest_path() -> PathBuf {
+    if let Some(dags_dir) = std::env::var_os("GROKRXIV_DAGS_DIR").map(PathBuf::from) {
+        return dags_dir.join("paper-review.yaml");
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("dags")
+        .join("paper-review.yaml")
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
 pub(super) async fn run_review_dag_inner(
     state: &AppState,
     pool: &sqlx::PgPool,
@@ -395,23 +469,27 @@ pub(super) async fn run_review_dag_inner_with_context(
         make_fallback(role, schema)
     };
 
+    let review_dag = load_review_dag_runtime_config()?;
+    tracing::debug!(
+        nodes = review_dag.node_count,
+        layers = review_dag.layers.len(),
+        "review: loaded paper-review DAG manifest"
+    );
+
     // Pre-create the review row. `models_used` records the per-role model so
     // the moderation UI + the m1-pipeline `distinct model` assertion can show
     // which model each specialist used.
-    let summary_model = resolve_agent(AgentRole::Summary)?.2;
-    let tech_model = resolve_agent(AgentRole::TechnicalCorrectness)?.2;
-    let novelty_model = resolve_agent(AgentRole::Novelty)?.2;
-    let repro_model = resolve_agent(AgentRole::Reproducibility)?.2;
-    let cite_model = resolve_agent(AgentRole::Citation)?.2;
-    let meta_model = resolve_agent(AgentRole::MetaReviewer)?.2;
-    let models_used = json!({
-        "summary": summary_model,
-        "technical_correctness": tech_model,
-        "novelty": novelty_model,
-        "reproducibility": repro_model,
-        "citation": cite_model,
-        "meta_reviewer": meta_model,
-    });
+    let mut models_used_map = serde_json::Map::new();
+    for role in review_dag
+        .specialist_roles
+        .iter()
+        .copied()
+        .chain(std::iter::once(AgentRole::MetaReviewer))
+    {
+        let model = resolve_agent(role)?.2;
+        models_used_map.insert(super::role_slug(role).to_string(), json!(model));
+    }
+    let models_used = serde_json::Value::Object(models_used_map);
     let review_id = match submission.as_ref() {
         Some(context) => {
             crate::db::insert_review_with_submission(
@@ -435,23 +513,12 @@ pub(super) async fn run_review_dag_inner_with_context(
     // transition the review row off the stale `awaiting_moderation` state.
     // We use `withdrawn` because the DB enum has no `failed` value.
     let dag_result: anyhow::Result<()> = async {
-    // The canonical topology remains data-backed while this function executes
-    // the specialist fan-out, quorum gate, meta-reviewer, and render tail.
-    let review_dag = crate::review_dag::ReviewDag::canonical();
-    review_dag
-        .validate()
-        .map_err(|e| anyhow::anyhow!("invalid review DAG topology: {e}"))?;
-    let review_dag_layers = review_dag
-        .execution_layers()
-        .map_err(|e| anyhow::anyhow!("invalid review DAG execution layers: {e}"))?;
-    tracing::debug!(
-        nodes = review_dag.nodes().len(),
-        layers = review_dag_layers.len(),
-        "review: loaded canonical DAG topology"
-    );
-    let specialist_roles = review_dag.specialist_roles();
-    let specialist_total = review_dag.specialist_count();
-    let min_specialist_quorum = review_dag.min_specialist_quorum();
+    // This function still owns the concrete review-stage behavior, but the
+    // executable specialist set comes from the DAG manifest instead of the old
+    // canonical Rust topology.
+    let specialist_roles = review_dag.specialist_roles.clone();
+    let specialist_total = specialist_roles.len();
+    let min_specialist_quorum = review_dag.min_specialist_quorum;
 
     let review_concurrency = specialist_review_concurrency_limit(&specialist_roles);
     crate::cli_status::emit_stage(
@@ -553,7 +620,14 @@ pub(super) async fn run_review_dag_inner_with_context(
             // Only passed verifier rows are reused from cache.
             if !skip_review_cache {
                 if let Ok(Some(hit)) =
-                    crate::db::lookup_cache(&pool_cloned, paper_id, role, &cache_hash).await
+                    crate::db::lookup_cache(
+                        &pool_cloned,
+                        paper_id,
+                        "paper-review",
+                        super::role_slug(role),
+                        &cache_hash,
+                    )
+                    .await
                 {
                     if hit.verifier_status == "pass" {
                         tracing::info!(
@@ -701,7 +775,11 @@ pub(super) async fn run_review_dag_inner_with_context(
             pool,
             crate::db::ReviewAgentInsert {
                 review_id,
-                role: *role,
+                dag_type: "paper-review".to_string(),
+                role: super::role_slug(*role).to_string(),
+                node_id: Some(super::role_slug(*role).to_string()),
+                agent_type: Some("critic".to_string()),
+                node_kind: Some("agent".to_string()),
                 runner: *used_runner,
                 model: used_model,
                 output: output_to_persist,
@@ -719,7 +797,8 @@ pub(super) async fn run_review_dag_inner_with_context(
             let _ = crate::db::insert_cache(
                 pool,
                 paper_id,
-                *role,
+                "paper-review",
+                super::role_slug(*role),
                 &specialist_content_hash,
                 output,
                 "pass",
@@ -844,7 +923,13 @@ pub(super) async fn run_review_dag_inner_with_context(
         match if skip_review_cache {
             Ok(None)
         } else {
-            crate::db::lookup_cache(pool, paper_id, AgentRole::MetaReviewer, &meta_content_hash)
+            crate::db::lookup_cache(
+                pool,
+                paper_id,
+                "paper-review",
+                super::role_slug(AgentRole::MetaReviewer),
+                &meta_content_hash,
+            )
                 .await
         } {
             Ok(Some(hit)) if hit.verifier_status == "pass" => {
@@ -937,7 +1022,11 @@ pub(super) async fn run_review_dag_inner_with_context(
         pool,
         crate::db::ReviewAgentInsert {
             review_id,
-            role: AgentRole::MetaReviewer,
+            dag_type: "paper-review".to_string(),
+            role: super::role_slug(AgentRole::MetaReviewer).to_string(),
+            node_id: Some(super::role_slug(AgentRole::MetaReviewer).to_string()),
+            agent_type: Some("synthesizer".to_string()),
+            node_kind: Some("synthesizer".to_string()),
             runner: meta_runner_recorded,
             model: &meta_model_recorded,
             output: meta_value.clone(),
@@ -960,7 +1049,8 @@ pub(super) async fn run_review_dag_inner_with_context(
         let _ = crate::db::insert_cache(
             pool,
             paper_id,
-            AgentRole::MetaReviewer,
+            "paper-review",
+            super::role_slug(AgentRole::MetaReviewer),
             &meta_content_hash,
             &meta_value,
             "pass",

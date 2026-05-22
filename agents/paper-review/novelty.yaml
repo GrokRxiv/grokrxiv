@@ -1,4 +1,5 @@
 id: novelty
+kind: critic
 role: "Assess novelty against related work; figure-aware (multimodal)."
 provider: gemini
 # Default can be overridden with GROKRXIV_NOVELTY_MODEL or

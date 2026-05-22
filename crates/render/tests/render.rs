@@ -2,7 +2,7 @@
 
 use grokrxiv_render::{build_zip, render_html, render_latex, render_markdown, AgentRecord};
 use grokrxiv_schemas::{
-    AgentRole, Author, Citation, MetaReview, PaperExtract, Recommendation, Section, VerifierResult,
+    Author, Citation, MetaReview, PaperExtract, Recommendation, Section, VerifierResult,
     VerifierStatus,
 };
 use serde_json::json;
@@ -54,7 +54,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
 
     let agents = vec![
         AgentRecord {
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             model: "claude-opus-4-7".into(),
             output: json!({"plain_summary": "Short summary."}),
             verifier: VerifierResult {
@@ -63,7 +63,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
             },
         },
         AgentRecord {
-            role: AgentRole::TechnicalCorrectness,
+            role: "technical_correctness".to_string(),
             model: "claude-opus-4-7".into(),
             output: json!({"soundness_score": 4}),
             verifier: VerifierResult {
@@ -129,7 +129,7 @@ fn local_source_artifacts_do_not_render_arxiv_prefix() {
 fn html_renders_meta_reviewer_as_human_text_not_json() {
     let (meta, paper, _) = fixture();
     let agents = vec![AgentRecord {
-        role: AgentRole::MetaReviewer,
+        role: "meta_reviewer".to_string(),
         model: "preview".into(),
         output: serde_json::to_value(&meta).expect("meta review json"),
         verifier: VerifierResult {

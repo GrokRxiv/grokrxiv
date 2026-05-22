@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate agents/*.yaml provider/model routing before an expensive DAG run.
+# Validate agents/**/*.yaml provider/model routing before an expensive DAG run.
 
 set -euo pipefail
 
@@ -12,9 +12,11 @@ fail() { printf '✗ %s\n' "$*" >&2; exit 1; }
 ok() { printf '✓ %s\n' "$*"; }
 warn() { printf '→ %s\n' "$*" >&2; }
 
-shopt -s nullglob
-files=(agents/*.yaml)
-[[ "${#files[@]}" -gt 0 ]] || fail "no agents/*.yaml files found"
+files=()
+while IFS= read -r file; do
+  files+=("${file}")
+done < <(find agents -type f -name '*.yaml' | sort)
+[[ "${#files[@]}" -gt 0 ]] || fail "no agents/**/*.yaml files found"
 
 for file in "${files[@]}"; do
   provider="$(awk '/^provider:/ {print $2; exit}' "${file}")"

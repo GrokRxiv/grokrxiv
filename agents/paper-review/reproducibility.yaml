@@ -1,4 +1,5 @@
 id: reproducibility
+kind: critic
 role: "Assess code/data availability and reproducibility of empirical claims."
 provider: openai
 # Default can be overridden with GROKRXIV_REPRODUCIBILITY_MODEL or

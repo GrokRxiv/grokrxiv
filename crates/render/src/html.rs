@@ -5,7 +5,7 @@
 //! client-side KaTeX rendering by the Next.js app.
 
 use anyhow::{Context, Result};
-use grokrxiv_schemas::{AgentRole, MetaReview, PaperExtract, Recommendation};
+use grokrxiv_schemas::{MetaReview, PaperExtract, Recommendation};
 use minijinja::{context, Environment};
 use once_cell::sync::Lazy;
 use serde_json::json;
@@ -31,7 +31,7 @@ pub fn render_html(
         .iter()
         .map(|a| {
             json!({
-                "role": crate::role_slug(a.role),
+                "role": crate::role_slug(&a.role),
                 "model": a.model,
                 "verifier_status": verifier_status_str(&a.verifier),
                 "meta_review": agent_meta_review(a),
@@ -73,7 +73,7 @@ fn verifier_status_str(v: &grokrxiv_schemas::VerifierResult) -> &'static str {
 }
 
 fn agent_meta_review(agent: &AgentRecord) -> Option<serde_json::Value> {
-    if agent.role != AgentRole::MetaReviewer {
+    if agent.role != "meta_reviewer" {
         return None;
     }
     let meta = serde_json::from_value::<MetaReview>(agent.output.clone()).ok()?;

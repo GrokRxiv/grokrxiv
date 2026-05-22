@@ -1,0 +1,16 @@
+[package]
+name = "grokrxiv-dag-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Data-driven DAG manifest loading and validation for GrokRxiv agent workflows."
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

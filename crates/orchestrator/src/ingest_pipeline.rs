@@ -804,8 +804,9 @@ impl ExtractionRouting {
     }
 }
 
-/// Load `agents/extraction/<stage>.yaml`. Lazy-cached per-stage so repeated
-/// agent invocations within a single ingest don't re-read the file each time.
+/// Load extraction routing through `dags/paper-extract.yaml`, falling back to
+/// the legacy `agents/extraction/<stage>.yaml` path. Lazy-cached per-stage so
+/// repeated agent invocations within a single ingest don't re-read files.
 fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
@@ -818,13 +819,7 @@ fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
         }
     }
 
-    // Stage names from ingest_pipeline use short forms ("macros", "equations",
-    // "theorems", "citations", "vlm"); the YAML files use the same. Resolve
-    // relative to `GROKRXIV_AGENTS_DIR` (matching state.rs) or `./agents/`.
-    let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
-    let path = agents_dir.join("extraction").join(format!("{stage}.yaml"));
+    let path = extraction_routing_path(stage);
     let parsed = match std::fs::read_to_string(&path) {
         Ok(s) => match serde_yaml::from_str::<ExtractionRouting>(&s) {
             Ok(r) => Some(r),
@@ -853,6 +848,69 @@ fn load_extraction_routing(stage: &str) -> Option<ExtractionRouting> {
         guard.insert(stage.to_string(), parsed.clone());
     }
     parsed
+}
+
+fn extraction_routing_path(stage: &str) -> std::path::PathBuf {
+    if let Some(path) = extraction_routing_path_from_manifest(stage) {
+        return path;
+    }
+    let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
+    agents_dir.join("extraction").join(format!("{stage}.yaml"))
+}
+
+fn extraction_routing_path_from_manifest(stage: &str) -> Option<std::path::PathBuf> {
+    let role_id = extraction_manifest_role_id(stage)?;
+    let dags_dir = std::env::var("GROKRXIV_DAGS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let cwd_dags = cwd.join("dags");
+            if cwd_dags.is_dir() {
+                cwd_dags
+            } else {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("dags")
+            }
+        });
+    let manifest_path = dags_dir.join("paper-extract.yaml");
+    let manifest = grokrxiv_dag_runtime::DagManifest::from_path(&manifest_path).ok()?;
+    let config = manifest
+        .roles
+        .iter()
+        .find(|role| role.id.as_str() == role_id)?
+        .config
+        .as_deref()?;
+    let config_path = std::path::PathBuf::from(config);
+    if config_path.is_absolute() {
+        Some(config_path)
+    } else if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .and_then(|agents_dir| {
+            config_path
+                .strip_prefix("agents")
+                .ok()
+                .map(|stripped| agents_dir.join(stripped))
+        })
+    {
+        Some(agents_dir)
+    } else {
+        Some(dags_dir.parent()?.join(config_path))
+    }
+}
+
+fn extraction_manifest_role_id(stage: &str) -> Option<&'static str> {
+    match stage {
+        "vlm" => Some("vlm_extractor"),
+        "macros" => Some("macro_expander"),
+        "equations" => Some("equation_canonicalizer"),
+        "theorems" => Some("theorem_graph_extractor"),
+        "citations" => Some("citation_contextualizer"),
+        _ => None,
+    }
 }
 
 /// Per-stage budget bundle (resolved from YAML with fallbacks). Surfaced

@@ -1,4 +1,5 @@
 id: vlm_extractor
+kind: extractor
 role: "Stage 3: extract paper structure from a PDF when no TeX source is available."
 provider: gemini
 model: gemini-2.5-pro

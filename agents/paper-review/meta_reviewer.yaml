@@ -1,4 +1,5 @@
 id: meta_reviewer
+kind: synthesizer
 role: "Synthesize the five specialist reviews into a final, human-readable review with recommendation."
 provider: claude
 # Synthesis of the 5 specialist outputs — Sonnet 4.6 handles it at ~5× lower

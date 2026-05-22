@@ -1,4 +1,5 @@
 id: summary
+kind: critic
 role: "Plain-language summary of the paper for a literate non-expert."
 provider: claude
 # Plain-language TL;DR is a Haiku-class task — ~15× cheaper than Opus per

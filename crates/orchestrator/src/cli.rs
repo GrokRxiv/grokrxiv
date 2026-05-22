@@ -6,6 +6,7 @@
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use grokrxiv_dag_runtime::{AgentKind, DagEdge, DagManifest, DagNode, DagRole, OneOrMany, RoleId};
 use grokrxiv_schemas::AgentRole;
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
@@ -160,6 +161,18 @@ pub enum Command {
     Serve,
     /// Print which env vars / external deps / DB / LLM providers are reachable.
     Doctor,
+    /// Validate and inspect DAG-type manifests.
+    Dag {
+        /// DAG operation to run.
+        #[command(subcommand)]
+        command: DagCommand,
+    },
+    /// Place or scaffold agent configs.
+    Agent {
+        /// Agent operation to run.
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Print the resolved orchestrator config (legacy env-only view + the
     /// layered RuntimeConfig). Secrets are redacted unless `--show-secrets`.
     Config {
@@ -444,6 +457,63 @@ pub enum Command {
     },
 }
 
+/// Subcommands for DAG manifest inspection.
+#[derive(Debug, Subcommand)]
+pub enum DagCommand {
+    /// Validate all DAG manifests, or one selected DAG type.
+    Validate {
+        /// DAG type id to validate, e.g. `paper-review`.
+        #[arg(long = "dag-type")]
+        dag_type: Option<String>,
+    },
+    /// Add an agent role/node to one DAG manifest.
+    AddAgent {
+        /// DAG type id to edit, e.g. `paper-review`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+        /// DAG-scoped role id, e.g. `type_theory_validator`.
+        #[arg(long = "role-id")]
+        role_id: String,
+        /// Agent capability kind, e.g. `critic`, `code_generator`.
+        #[arg(long)]
+        kind: String,
+        /// Agent config path. Defaults to `agents/<dag-type>/<role-id>.yaml`.
+        #[arg(id = "agent_config", long = "agent-config")]
+        config: Option<String>,
+        /// Add an edge from this existing node to the new node. Repeatable.
+        #[arg(long = "after")]
+        after: Vec<String>,
+        /// Add an edge from the new node to this existing node. Repeatable.
+        #[arg(long = "before")]
+        before: Vec<String>,
+        /// Write the manifest. Without this, print the updated YAML.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Remove an agent role/node from one DAG manifest.
+    RemoveAgent {
+        /// DAG type id to edit, e.g. `paper-review`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+        /// DAG-scoped role id to remove.
+        #[arg(long = "role-id")]
+        role_id: String,
+        /// Write the manifest. Without this, print the updated YAML.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+/// Subcommands for agent config placement/scaffolding.
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// Print DAG types compatible with an agent YAML's `kind`.
+    Place {
+        /// Path to an agent YAML file containing a `kind` field.
+        path: PathBuf,
+    },
+}
+
 /// Subcommands for scheduled review batches.
 #[derive(Debug, Subcommand)]
 pub enum BatchCommand {
@@ -725,6 +795,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Dag { command } => dag_command(command, json).await,
+        Command::Agent { command } => agent_command(command, json).await,
         Command::Config {
             show_secrets: cmd_show,
         } => print_config(show_secrets || cmd_show, runtime_cfg.as_ref(), json),
@@ -865,6 +937,364 @@ fn emit_pipeline_header(command: &str, subject: &str) {
 // (serve, ingest one paper, approve) we wire through; the rest emit a clear
 // "not yet implemented in stub build" message that points at the right task.
 // ---------------------------------------------------------------------------
+
+async fn dag_command(command: DagCommand, json: bool) -> anyhow::Result<()> {
+    match command {
+        DagCommand::Validate { dag_type } => validate_dag_manifests(dag_type.as_deref(), json),
+        DagCommand::AddAgent {
+            dag_type,
+            role_id,
+            kind,
+            config,
+            after,
+            before,
+            write,
+        } => add_agent_to_dag(
+            &dag_type, &role_id, &kind, config, after, before, write, json,
+        ),
+        DagCommand::RemoveAgent {
+            dag_type,
+            role_id,
+            write,
+        } => remove_agent_from_dag(&dag_type, &role_id, write, json),
+    }
+}
+
+async fn agent_command(command: AgentCommand, json: bool) -> anyhow::Result<()> {
+    match command {
+        AgentCommand::Place { path } => place_agent(&path, json),
+    }
+}
+
+fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let manifests = load_repo_dag_manifests(dag_type)?;
+    let dags_dir = dags_dir();
+    for manifest in &manifests {
+        validate_declared_agent_configs(manifest, &dags_dir)?;
+    }
+    if json {
+        let rows: Vec<serde_json::Value> = manifests
+            .iter()
+            .map(|manifest| {
+                serde_json::json!({
+                    "id": manifest.id.as_str(),
+                    "version": manifest.version,
+                    "roles": manifest.roles.len(),
+                    "nodes": manifest.nodes.len(),
+                    "layers": manifest.execution_layers().map(|layers| layers.len()).unwrap_or(0),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "dags": rows }))?
+        );
+    } else {
+        for manifest in &manifests {
+            let layer_count = manifest.execution_layers()?.len();
+            println!(
+                "ok {} version={} roles={} nodes={} layers={}",
+                manifest.id.as_str(),
+                manifest.version,
+                manifest.roles.len(),
+                manifest.nodes.len(),
+                layer_count
+            );
+        }
+    }
+    Ok(())
+}
+
+fn add_agent_to_dag(
+    dag_type: &str,
+    role_id: &str,
+    kind: &str,
+    config: Option<String>,
+    after: Vec<String>,
+    before: Vec<String>,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let path = dag_manifest_path(dag_type);
+    let mut manifest = DagManifest::from_path(&path)
+        .with_context(|| format!("load DAG manifest {}", path.display()))?;
+    let kind = parse_agent_kind_arg(kind)?;
+    if manifest
+        .roles
+        .iter()
+        .any(|role| role.id.as_str() == role_id)
+    {
+        anyhow::bail!("DAG `{dag_type}` already has role `{role_id}`");
+    }
+    if manifest.nodes.iter().any(|node| node.id == role_id) {
+        anyhow::bail!("DAG `{dag_type}` already has node `{role_id}`");
+    }
+
+    manifest.roles.push(DagRole {
+        id: RoleId::new(role_id),
+        kind: kind.clone(),
+        config: Some(config.unwrap_or_else(|| format!("agents/{dag_type}/{role_id}.yaml"))),
+    });
+    manifest.nodes.push(DagNode {
+        id: role_id.to_string(),
+        kind: default_node_kind_for_agent_kind(&kind).to_string(),
+        role: Some(RoleId::new(role_id)),
+    });
+    for source in after {
+        manifest.edges.push(DagEdge {
+            from: OneOrMany::One(source),
+            to: OneOrMany::One(role_id.to_string()),
+        });
+    }
+    for target in before {
+        manifest.edges.push(DagEdge {
+            from: OneOrMany::One(role_id.to_string()),
+            to: OneOrMany::One(target),
+        });
+    }
+    manifest.validate()?;
+    emit_or_write_manifest(&path, &manifest, write, json)
+}
+
+fn remove_agent_from_dag(
+    dag_type: &str,
+    role_id: &str,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let path = dag_manifest_path(dag_type);
+    let mut manifest = DagManifest::from_path(&path)
+        .with_context(|| format!("load DAG manifest {}", path.display()))?;
+    let before_roles = manifest.roles.len();
+    manifest.roles.retain(|role| role.id.as_str() != role_id);
+    if before_roles == manifest.roles.len() {
+        anyhow::bail!("DAG `{dag_type}` has no role `{role_id}`");
+    }
+    let removed_node_ids: std::collections::HashSet<String> = manifest
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.role
+                .as_ref()
+                .map(|role| role.as_str() == role_id)
+                .unwrap_or(false)
+        })
+        .map(|node| node.id.clone())
+        .collect();
+    manifest
+        .nodes
+        .retain(|node| !removed_node_ids.contains(&node.id));
+    manifest.edges = manifest
+        .edges
+        .into_iter()
+        .filter_map(|edge| {
+            Some(DagEdge {
+                from: strip_one_or_many(edge.from, &removed_node_ids)?,
+                to: strip_one_or_many(edge.to, &removed_node_ids)?,
+            })
+        })
+        .collect();
+    manifest.validate()?;
+    emit_or_write_manifest(&path, &manifest, write, json)
+}
+
+fn parse_agent_kind_arg(raw: &str) -> anyhow::Result<AgentKind> {
+    serde_yaml::from_value(serde_yaml::Value::String(raw.to_string()))
+        .with_context(|| format!("unknown agent kind `{raw}`"))
+}
+
+fn default_node_kind_for_agent_kind(kind: &AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Synthesizer => "synthesizer",
+        AgentKind::Renderer => "render_artifacts",
+        AgentKind::Verifier => "verify",
+        AgentKind::Extractor
+        | AgentKind::Critic
+        | AgentKind::TypeTheoryValidator
+        | AgentKind::CodeGenerator => "agent",
+    }
+}
+
+fn strip_one_or_many(
+    values: OneOrMany,
+    needles: &std::collections::HashSet<String>,
+) -> Option<OneOrMany> {
+    match values {
+        OneOrMany::One(value) => (!needles.contains(&value)).then_some(OneOrMany::One(value)),
+        OneOrMany::Many(values) => {
+            let kept: Vec<String> = values
+                .into_iter()
+                .filter(|value| !needles.contains(value))
+                .collect();
+            match kept.len() {
+                0 => None,
+                1 => kept.into_iter().next().map(OneOrMany::One),
+                _ => Some(OneOrMany::Many(kept)),
+            }
+        }
+    }
+}
+
+fn emit_or_write_manifest(
+    path: &Path,
+    manifest: &DagManifest,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let text = serde_yaml::to_string(manifest)?;
+    if write {
+        std::fs::write(path, text).with_context(|| format!("write {}", path.display()))?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "updated": path.display().to_string(),
+                    "dag_type": manifest.id.as_str(),
+                }))?
+            );
+        } else {
+            println!("updated {}", path.display());
+        }
+    } else {
+        println!("{text}");
+    }
+    Ok(())
+}
+
+fn validate_declared_agent_configs(manifest: &DagManifest, dags_dir: &Path) -> anyhow::Result<()> {
+    let repo_root = dags_dir.parent().unwrap_or_else(|| Path::new("."));
+    for role in &manifest.roles {
+        let Some(config) = role.config.as_deref() else {
+            continue;
+        };
+        let path = resolve_agent_config_path(repo_root, config);
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "DAG `{}` role `{}` config {}",
+                manifest.id,
+                role.id,
+                path.display()
+            )
+        })?;
+        let value: serde_yaml::Value = serde_yaml::from_str(&text)
+            .with_context(|| format!("parse agent YAML {}", path.display()))?;
+        let Some(kind_value) = value.get("kind").cloned() else {
+            anyhow::bail!(
+                "DAG `{}` role `{}` config {} is missing `kind`",
+                manifest.id,
+                role.id,
+                path.display()
+            );
+        };
+        let actual_kind: AgentKind = serde_yaml::from_value(kind_value)
+            .with_context(|| format!("parse `kind` in {}", path.display()))?;
+        if actual_kind != role.kind {
+            anyhow::bail!(
+                "DAG `{}` role `{}` declares kind `{}`, but {} declares `{}`",
+                manifest.id,
+                role.id,
+                role.kind,
+                path.display(),
+                actual_kind
+            );
+        }
+    }
+    Ok(())
+}
+
+fn place_agent(path: &Path, json: bool) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read agent YAML {}", path.display()))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&text)
+        .with_context(|| format!("parse agent YAML {}", path.display()))?;
+    let kind_value = value
+        .get("kind")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("agent YAML {} is missing `kind`", path.display()))?;
+    let kind: AgentKind = serde_yaml::from_value(kind_value)
+        .with_context(|| format!("parse `kind` in {}", path.display()))?;
+    let manifests = load_repo_dag_manifests(None)?;
+    let compatible = DagManifest::compatible_dag_ids(&manifests, kind.clone());
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "kind": kind.to_string(),
+                "compatible_dags": compatible,
+            }))?
+        );
+    } else {
+        println!("kind={kind}");
+        for dag in compatible {
+            println!("{dag}");
+        }
+    }
+    Ok(())
+}
+
+fn load_repo_dag_manifests(dag_type: Option<&str>) -> anyhow::Result<Vec<DagManifest>> {
+    let dags_dir = dags_dir();
+    let mut paths = Vec::new();
+    if let Some(id) = dag_type {
+        paths.push(dag_manifest_path_in(&dags_dir, id));
+    } else {
+        for entry in std::fs::read_dir(&dags_dir)
+            .with_context(|| format!("read DAG manifest directory {}", dags_dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+    }
+
+    paths
+        .into_iter()
+        .map(|path| {
+            DagManifest::from_path(&path)
+                .with_context(|| format!("validate DAG manifest {}", path.display()))
+        })
+        .collect()
+}
+
+fn dag_manifest_path(dag_type: &str) -> PathBuf {
+    dag_manifest_path_in(&dags_dir(), dag_type)
+}
+
+fn dag_manifest_path_in(dags_dir: &Path, dag_type: &str) -> PathBuf {
+    dags_dir.join(format!("{dag_type}.yaml"))
+}
+
+fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
+    let path = PathBuf::from(config);
+    if path.is_absolute() {
+        return path;
+    }
+    if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
+        if let Ok(stripped) = path.strip_prefix("agents") {
+            return agents_dir.join(stripped);
+        }
+    }
+    repo_root.join(path)
+}
+
+fn dags_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("GROKRXIV_DAGS_DIR") {
+        return PathBuf::from(path);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd_dags = cwd.join("dags");
+    if cwd_dags.is_dir() {
+        return cwd_dags;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("dags")
+}
 
 fn print_config(
     show_secrets: bool,
@@ -5986,6 +6416,109 @@ mod tests {
         match parsed.command {
             Command::Extract { arxiv_ids } => assert_eq!(arxiv_ids, vec!["2605.00561"]),
             other => panic!("expected extract command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_dag_validate_command() {
+        let parsed = Cli::try_parse_from([
+            "grokrxiv",
+            "--json",
+            "dag",
+            "validate",
+            "--dag-type",
+            "paper-review",
+        ])
+        .unwrap();
+
+        match parsed.command {
+            Command::Dag {
+                command: DagCommand::Validate { dag_type },
+            } => assert_eq!(dag_type.as_deref(), Some("paper-review")),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_agent_place_command() {
+        let parsed = Cli::try_parse_from(["grokrxiv", "agent", "place", "agent.yaml"]).unwrap();
+
+        match parsed.command {
+            Command::Agent {
+                command: AgentCommand::Place { path },
+            } => assert_eq!(path, std::path::PathBuf::from("agent.yaml")),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_dag_add_and_remove_agent_commands() {
+        let add = Cli::try_parse_from([
+            "grokrxiv",
+            "dag",
+            "add-agent",
+            "--dag-type",
+            "paper-review",
+            "--role-id",
+            "type_theory_validator",
+            "--kind",
+            "type_theory_validator",
+            "--after",
+            "specialist_quorum",
+            "--before",
+            "meta_reviewer",
+            "--write",
+        ])
+        .unwrap();
+
+        match add.command {
+            Command::Dag {
+                command:
+                    DagCommand::AddAgent {
+                        dag_type,
+                        role_id,
+                        kind,
+                        after,
+                        before,
+                        write,
+                        ..
+                    },
+            } => {
+                assert_eq!(dag_type, "paper-review");
+                assert_eq!(role_id, "type_theory_validator");
+                assert_eq!(kind, "type_theory_validator");
+                assert_eq!(after, vec!["specialist_quorum"]);
+                assert_eq!(before, vec!["meta_reviewer"]);
+                assert!(write);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let remove = Cli::try_parse_from([
+            "grokrxiv",
+            "dag",
+            "remove-agent",
+            "--dag-type",
+            "paper-review",
+            "--role-id",
+            "type_theory_validator",
+        ])
+        .unwrap();
+
+        match remove.command {
+            Command::Dag {
+                command:
+                    DagCommand::RemoveAgent {
+                        dag_type,
+                        role_id,
+                        write,
+                    },
+            } => {
+                assert_eq!(dag_type, "paper-review");
+                assert_eq!(role_id, "type_theory_validator");
+                assert!(!write);
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
     }
 

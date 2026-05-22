@@ -1,4 +1,5 @@
 id: technical_correctness
+kind: critic
 role: "Verify mathematical, logical, and empirical claims of the paper."
 provider: claude
 # Claim-by-claim audit gets the flagship model — subtle math/logic bugs are

@@ -1,4 +1,5 @@
 id: citation
+kind: critic
 role: "Verify each bibliography entry exists and is relevantly cited."
 provider: gemini
 # Default can be overridden with GROKRXIV_CITATION_MODEL or

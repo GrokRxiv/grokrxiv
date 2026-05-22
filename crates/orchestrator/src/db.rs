@@ -186,7 +186,9 @@ pub(crate) async fn load_specialist_gate_for_review(
 ) -> sqlx::Result<crate::review_gate::SpecialistGate> {
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "select role, verifier_status from review_agents \
-         where review_id = $1 and role <> 'meta_reviewer' \
+         where review_id = $1 \
+           and dag_type = coalesce((select dag_type from reviews where id = $1), 'paper-review') \
+           and coalesce(node_kind, 'agent') = 'agent' \
          order by role",
     )
     .bind(review_id)
@@ -203,10 +205,11 @@ pub(crate) async fn load_specialist_gate_for_review(
             })
         })
         .collect();
+    let expected_total = statuses.len();
     Ok(crate::review_gate::SpecialistGate::evaluate(
         &statuses,
-        crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM,
-        crate::review_dag::canonical_specialist_roles().len(),
+        crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM.min(expected_total),
+        expected_total,
     ))
 }
 
@@ -528,8 +531,17 @@ pub async fn fetch_superseded_pr_url(
 pub struct ReviewAgentInsert<'a> {
     /// Review id owning this agent row.
     pub review_id: Uuid,
-    /// Agent role.
-    pub role: AgentRole,
+    /// DAG type owning this agent row.
+    pub dag_type: String,
+    /// DAG-scoped agent id. Legacy paper-review rows use the former role slug
+    /// values such as `summary` and `meta_reviewer`.
+    pub role: String,
+    /// DAG node id that emitted this row. Defaults to `role` for legacy rows.
+    pub node_id: Option<String>,
+    /// Agent capability/type from the DAG manifest.
+    pub agent_type: Option<String>,
+    /// DAG node kind that emitted this row.
+    pub node_kind: Option<String>,
     /// Runner backend that actually executed this role.
     pub runner: AgentRunnerKind,
     /// Model id used for the call.
@@ -555,18 +567,22 @@ pub struct ReviewAgentInsert<'a> {
 /// now lives on `review_inputs` and is written exactly once per review.
 pub async fn insert_review_agent(pool: &PgPool, row: ReviewAgentInsert<'_>) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
-    let role_str = serde_plain(&row.role);
     let runner_str = serde_plain(&row.runner);
     let vstatus = row.verifier_status.as_ref().map(serde_plain);
     sqlx::query(
         "insert into review_agents \
-           (id, review_id, role, runner, model, output, verifier_status, \
-            verifier_notes, tokens_in, tokens_out, latency_ms) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+           (id, review_id, dag_type, role, node_id, agent_type, node_kind, runner, model, output, \
+            verifier_status, verifier_notes, tokens_in, tokens_out, latency_ms) \
+         values ($1, $2, $3, $4, coalesce($5, $4), coalesce($6, 'critic'), coalesce($7, 'agent'), \
+                 $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(row.review_id)
-    .bind(role_str)
+    .bind(&row.dag_type)
+    .bind(&row.role)
+    .bind(row.node_id)
+    .bind(row.agent_type)
+    .bind(row.node_kind)
     .bind(runner_str)
     .bind(row.model)
     .bind(row.output)
@@ -590,9 +606,11 @@ pub async fn insert_review_input(
     artifact: &Value,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "insert into review_inputs (review_id, paper_id, artifact) \
-         values ($1, $2, $3) \
-         on conflict (review_id) do update set artifact = excluded.artifact",
+        "insert into review_inputs (review_id, paper_id, dag_type, artifact) \
+         values ($1, $2, coalesce((select dag_type from reviews where id = $1), 'paper-review'), $3) \
+         on conflict (review_id) do update set \
+           dag_type = excluded.dag_type, \
+           artifact = excluded.artifact",
     )
     .bind(review_id)
     .bind(paper_id)
@@ -638,19 +656,20 @@ pub struct CachedOutput {
 pub async fn lookup_cache(
     pool: &PgPool,
     paper_id: Uuid,
-    role: AgentRole,
+    dag_type: &str,
+    role: &str,
     content_hash: &str,
 ) -> sqlx::Result<Option<CachedOutput>> {
-    let role_str = serde_plain(&role);
     let row: Option<(Value, String, String, String, Option<i32>, Option<i32>)> = sqlx::query_as(
         "select output, verifier_status, model, runner, tokens_in, tokens_out \
          from review_cache \
-         where paper_id = $1 and role = $2 and content_hash = $3 \
+         where paper_id = $1 and dag_type = $2 and role = $3 and content_hash = $4 \
            and expires_at > now() \
          limit 1",
     )
     .bind(paper_id)
-    .bind(role_str)
+    .bind(dag_type)
+    .bind(role)
     .bind(content_hash)
     .fetch_optional(pool)
     .await?;
@@ -672,7 +691,8 @@ pub async fn lookup_cache(
 pub async fn insert_cache(
     pool: &PgPool,
     paper_id: Uuid,
-    role: AgentRole,
+    dag_type: &str,
+    role: &str,
     content_hash: &str,
     output: &Value,
     verifier_status: &str,
@@ -681,13 +701,12 @@ pub async fn insert_cache(
     tokens_in: Option<i32>,
     tokens_out: Option<i32>,
 ) -> sqlx::Result<()> {
-    let role_str = serde_plain(&role);
     let runner_str = serde_plain(&runner);
     sqlx::query(
         "insert into review_cache \
-           (paper_id, role, content_hash, output, verifier_status, model, runner, tokens_in, tokens_out) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-         on conflict (paper_id, role, content_hash) do update set \
+           (paper_id, dag_type, role, content_hash, output, verifier_status, model, runner, tokens_in, tokens_out) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         on conflict (dag_type, paper_id, role, content_hash) do update set \
            output = excluded.output, \
            verifier_status = excluded.verifier_status, \
            model = excluded.model, \
@@ -698,7 +717,8 @@ pub async fn insert_cache(
            expires_at = now() + interval '30 days'",
     )
     .bind(paper_id)
-    .bind(role_str)
+    .bind(dag_type)
+    .bind(role)
     .bind(content_hash)
     .bind(output)
     .bind(verifier_status)
@@ -739,8 +759,8 @@ pub async fn set_review_artifacts(
 pub async fn insert_moderation_pending(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
-        "insert into moderation_queue (id, review_id, state) \
-         values ($1, $2, 'pending')",
+        "insert into moderation_queue (id, review_id, dag_type, state) \
+         values ($1, $2, coalesce((select dag_type from reviews where id = $2), 'paper-review'), 'pending')",
     )
     .bind(id)
     .bind(review_id)
@@ -1676,6 +1696,32 @@ mod tests {
             Some(AgentRunnerKind::LocalInference)
         );
         assert_eq!(agent_runner_from_db_str("api_fallback"), None);
+    }
+
+    #[test]
+    fn review_agent_insert_accepts_custom_agent_id() {
+        let row = ReviewAgentInsert {
+            review_id: Uuid::nil(),
+            dag_type: "paper-review".to_string(),
+            role: "type_theory_validator".to_string(),
+            node_id: Some("type_theory_validator".to_string()),
+            agent_type: Some("type_theory_validator".to_string()),
+            node_kind: Some("agent".to_string()),
+            runner: AgentRunnerKind::Cli,
+            model: "gpt-5.5",
+            output: serde_json::json!({ "status": "ok" }),
+            verifier_status: Some(VerifierStatus::Pass),
+            verifier_notes: None,
+            tokens_in: None,
+            tokens_out: None,
+            latency_ms: None,
+        };
+
+        assert_eq!(row.role, "type_theory_validator");
+        assert_eq!(row.dag_type, "paper-review");
+        assert_eq!(row.node_id.as_deref(), Some("type_theory_validator"));
+        assert_eq!(row.agent_type.as_deref(), Some("type_theory_validator"));
+        assert_eq!(row.node_kind.as_deref(), Some("agent"));
     }
 
     /// FP-RPT3b B6: when a fresh review supersedes a prior active review,

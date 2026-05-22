@@ -48,13 +48,15 @@ export type RevisionTargetStatus =
   | "superseded"
   | "unknown";
 
-export type AgentRole =
+export type KnownAgentRole =
   | "summary"
   | "technical_correctness"
   | "novelty"
   | "reproducibility"
   | "citation"
   | "meta_reviewer";
+
+export type AgentRole = KnownAgentRole | string;
 
 export interface Author {
   name: string;
@@ -90,7 +92,7 @@ export interface MetaReview {
 export interface RevisionTarget {
   id: string;
   weakness_index: number;
-  source_role: AgentRole | null;
+  source_role: string | null;
   target_kind: RevisionTargetKind;
   source_path: string | null;
   locator: string | null;
@@ -102,6 +104,9 @@ export interface RevisionTarget {
 
 export interface AgentOutput {
   role: AgentRole;
+  dag_type?: string | null;
+  node_id?: string | null;
+  agent_type?: string | null;
   model: string;
   output: unknown;
   verifier_status: VerifierStatus;

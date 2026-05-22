@@ -1713,6 +1713,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "grokrxiv-dag-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "grokrxiv-ingest"
 version = "0.1.0"
 dependencies = [
@@ -1772,6 +1782,7 @@ dependencies = [
  "dotenvy",
  "flate2",
  "futures",
+ "grokrxiv-dag-runtime",
  "grokrxiv-ingest",
  "grokrxiv-llm-adapter",
  "grokrxiv-publisher",

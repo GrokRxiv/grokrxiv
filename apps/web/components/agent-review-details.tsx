@@ -72,7 +72,25 @@ function renderRoleDetails(
       );
     case "meta_reviewer":
       return <MetaReviewerDetails review={parseMetaReviewer(output)} />;
+    default:
+      return <GenericAgentDetails output={output} />;
   }
+}
+
+function GenericAgentDetails({ output }: { output: unknown }) {
+  const record = isRecord(output) ? output : null;
+  const summary = record
+    ? (stringField(record, "summary") ??
+      stringField(record, "tldr") ??
+      stringField(record, "verdict") ??
+      null)
+    : null;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field label="Summary" value={summary} />
+    </div>
+  );
 }
 
 function SummaryDetails({ review }: { review: SummaryReviewOutput }) {
@@ -884,19 +902,8 @@ function metaRecommendation(
 function agentRoleField(
   record: Record<string, unknown>,
   key: string,
-): AgentRole | null {
-  const value = stringField(record, key);
-  if (
-    value === "summary" ||
-    value === "technical_correctness" ||
-    value === "novelty" ||
-    value === "reproducibility" ||
-    value === "citation" ||
-    value === "meta_reviewer"
-  ) {
-    return value;
-  }
-  return null;
+): string | null {
+  return stringField(record, key);
 }
 
 function revisionTargetKind(

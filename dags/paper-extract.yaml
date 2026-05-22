@@ -1,0 +1,50 @@
+id: paper-extract
+version: 1
+accepts:
+  - extractor
+concurrency: 1
+roles:
+  - id: vlm_extractor
+    kind: extractor
+    config: agents/extraction/vlm.yaml
+  - id: macro_expander
+    kind: extractor
+    config: agents/extraction/macros.yaml
+  - id: equation_canonicalizer
+    kind: extractor
+    config: agents/extraction/equations.yaml
+  - id: theorem_graph_extractor
+    kind: extractor
+    config: agents/extraction/theorems.yaml
+  - id: citation_contextualizer
+    kind: extractor
+    config: agents/extraction/citations.yaml
+nodes:
+  - id: prepare_source
+    kind: prepare_inputs
+  - id: vlm_extractor
+    kind: agent
+    role: vlm_extractor
+  - id: macro_expander
+    kind: agent
+    role: macro_expander
+  - id: equation_canonicalizer
+    kind: agent
+    role: equation_canonicalizer
+  - id: theorem_graph_extractor
+    kind: agent
+    role: theorem_graph_extractor
+  - id: citation_contextualizer
+    kind: agent
+    role: citation_contextualizer
+edges:
+  - from: prepare_source
+    to: vlm_extractor
+  - from: prepare_source
+    to: macro_expander
+  - from: macro_expander
+    to: equation_canonicalizer
+  - from: equation_canonicalizer
+    to: theorem_graph_extractor
+  - from: theorem_graph_extractor
+    to: citation_contextualizer

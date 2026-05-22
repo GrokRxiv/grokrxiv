@@ -83,7 +83,7 @@ pub fn render_latex(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentReco
     for agent in agents {
         out.push_str(&format!(
             "\\subsection*{{{} (\\texttt{{{}}})}}\n",
-            crate::role_slug(agent.role),
+            crate::role_slug(&agent.role),
             latex_escape(&agent.model)
         ));
         out.push_str("\\begin{verbatim}\n");

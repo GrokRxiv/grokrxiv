@@ -488,7 +488,7 @@ async fn render_bundle(meta: &MetaReview, paper: &PaperExtract) -> anyhow::Resul
     // For the preview the agent list is just the synthesized meta-reviewer
     // output, so we expose a single agent record for the renderer.
     let agent = grokrxiv_render::AgentRecord {
-        role: grokrxiv_schemas::AgentRole::MetaReviewer,
+        role: "meta_reviewer".to_string(),
         model: "preview".to_string(),
         output: serde_json::to_value(meta).unwrap_or(json!({})),
         verifier: grokrxiv_schemas::VerifierResult {

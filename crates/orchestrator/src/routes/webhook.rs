@@ -764,11 +764,7 @@ async fn post_rereview_gate_feedback(
         Ok(gate) => gate,
         Err(e) => {
             tracing::warn!(%new_review_id, err = %e, "failed to load specialist gate for re-review feedback");
-            crate::review_gate::SpecialistGate::evaluate(
-                &[],
-                crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM,
-                crate::review_dag::canonical_specialist_roles().len(),
-            )
+            crate::review_gate::SpecialistGate::evaluate(&[], 0, 0)
         }
     };
     let (body, failure) = rereview_gate_comment_body(

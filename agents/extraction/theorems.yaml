@@ -1,4 +1,5 @@
 id: theorem_graph_extractor
+kind: extractor
 role: "Build a dependency graph over theorem-like blocks (theorem/lemma/proposition/corollary/definition/proof). Resolves \\ref{} edges."
 provider: gemini
 # Keep theorem graph extraction on the local Gemini CLI path by default.

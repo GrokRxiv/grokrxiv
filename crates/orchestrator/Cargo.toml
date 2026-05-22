@@ -55,6 +55,7 @@ pdfium-render = { version = "0.8", default-features = false, features = ["pdfium
 image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { path = "../schemas" }
+grokrxiv-dag-runtime = { path = "../dag-runtime" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }
 tempfile = "3"
 tar = "0.4"

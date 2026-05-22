@@ -16,7 +16,7 @@ pub mod md;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 
-use grokrxiv_schemas::{AgentRole, VerifierResult};
+use grokrxiv_schemas::VerifierResult;
 use serde::{Deserialize, Serialize};
 
 pub use bundle::build_zip;
@@ -34,8 +34,8 @@ pub const PUBLIC_DISCLAIMER: &str = "";
 /// `review_agents` table without the database-only columns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
-    /// Specialist role this run belongs to.
-    pub role: AgentRole,
+    /// DAG-scoped agent id this run belongs to.
+    pub role: String,
     /// LLM model identifier (e.g. `claude-opus-4-7`).
     pub model: String,
     /// Raw agent output as JSON; renderers display it pretty-printed.
@@ -47,20 +47,13 @@ pub struct AgentRecord {
 impl AgentRecord {
     /// Stable filename for this record inside the zip bundle.
     pub fn filename(&self) -> String {
-        format!("agents/{}.json", role_slug(self.role))
+        format!("agents/{}.json", role_slug(&self.role))
     }
 }
 
-/// Stable snake_case label for an [`AgentRole`].
-pub fn role_slug(role: AgentRole) -> &'static str {
-    match role {
-        AgentRole::Summary => "summary",
-        AgentRole::TechnicalCorrectness => "technical_correctness",
-        AgentRole::Novelty => "novelty",
-        AgentRole::Reproducibility => "reproducibility",
-        AgentRole::Citation => "citation",
-        AgentRole::MetaReviewer => "meta_reviewer",
-    }
+/// Stable label for a DAG-scoped agent id.
+pub fn role_slug(role: impl AsRef<str>) -> String {
+    role.as_ref().to_string()
 }
 
 pub(crate) fn paper_source_label(arxiv_id: &str) -> String {

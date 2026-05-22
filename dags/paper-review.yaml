@@ -1,0 +1,106 @@
+id: paper-review
+version: 1
+accepts:
+  - critic
+  - type_theory_validator
+  - synthesizer
+  - renderer
+  - verifier
+concurrency: 4
+roles:
+  - id: summary
+    kind: critic
+    config: agents/paper-review/summary.yaml
+  - id: technical_correctness
+    kind: critic
+    config: agents/paper-review/technical_correctness.yaml
+  - id: novelty
+    kind: critic
+    config: agents/paper-review/novelty.yaml
+  - id: reproducibility
+    kind: critic
+    config: agents/paper-review/reproducibility.yaml
+  - id: citation
+    kind: critic
+    config: agents/paper-review/citation.yaml
+  - id: meta_reviewer
+    kind: synthesizer
+    config: agents/paper-review/meta_reviewer.yaml
+nodes:
+  - id: prepare
+    kind: prepare_inputs
+  - id: summary
+    kind: agent
+    role: summary
+  - id: technical_correctness
+    kind: agent
+    role: technical_correctness
+  - id: novelty
+    kind: agent
+    role: novelty
+  - id: reproducibility
+    kind: agent
+    role: reproducibility
+  - id: citation
+    kind: agent
+    role: citation
+  - id: verify_summary
+    kind: verify
+    role: summary
+  - id: verify_technical_correctness
+    kind: verify
+    role: technical_correctness
+  - id: verify_novelty
+    kind: verify
+    role: novelty
+  - id: verify_reproducibility
+    kind: verify
+    role: reproducibility
+  - id: verify_citation
+    kind: verify
+    role: citation
+  - id: specialist_quorum
+    kind: gate
+  - id: meta_reviewer
+    kind: synthesizer
+    role: meta_reviewer
+  - id: verify_meta_reviewer
+    kind: verify
+    role: meta_reviewer
+  - id: render
+    kind: render_artifacts
+  - id: moderation_ready
+    kind: moderation_ready
+edges:
+  - from: prepare
+    to:
+      - summary
+      - technical_correctness
+      - novelty
+      - reproducibility
+      - citation
+  - from: summary
+    to: verify_summary
+  - from: technical_correctness
+    to: verify_technical_correctness
+  - from: novelty
+    to: verify_novelty
+  - from: reproducibility
+    to: verify_reproducibility
+  - from: citation
+    to: verify_citation
+  - from:
+      - verify_summary
+      - verify_technical_correctness
+      - verify_novelty
+      - verify_reproducibility
+      - verify_citation
+    to: specialist_quorum
+  - from: specialist_quorum
+    to: meta_reviewer
+  - from: meta_reviewer
+    to: verify_meta_reviewer
+  - from: verify_meta_reviewer
+    to: render
+  - from: render
+    to: moderation_ready

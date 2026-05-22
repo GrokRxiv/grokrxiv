@@ -89,7 +89,7 @@ export async function getReviewById(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, submitted_by, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, model, output, verifier_status, verifier_notes)",
+      "id, paper_id, status, visibility, submitted_by, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes)",
     )
     .eq("id", id)
     .single();

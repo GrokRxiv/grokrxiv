@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/accordion";
 import { AgentReviewDetails } from "@/components/agent-review-details";
 import { VerifierStatusBadge } from "@/components/review-status-badge";
-import type { AgentOutput, AgentRole } from "@/lib/types";
+import type { AgentOutput, KnownAgentRole } from "@/lib/types";
 
-const ROLE_LABEL: Record<AgentRole, string> = {
+const ROLE_LABEL: Record<KnownAgentRole, string> = {
   summary: "Summary",
   technical_correctness: "Technical correctness",
   novelty: "Novelty",
@@ -19,7 +19,7 @@ const ROLE_LABEL: Record<AgentRole, string> = {
   meta_reviewer: "Overall reviewer",
 };
 
-const ROLE_ORDER: AgentRole[] = [
+const ROLE_ORDER: KnownAgentRole[] = [
   "summary",
   "technical_correctness",
   "novelty",
@@ -29,22 +29,20 @@ const ROLE_ORDER: AgentRole[] = [
 ];
 
 export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
-  const ordered = [...agents].sort(
-    (a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role),
-  );
+  const ordered = [...agents].sort((a, b) => roleRank(a.role) - roleRank(b.role));
   return (
     <Accordion type="multiple" className="flex w-full flex-col gap-2">
       {ordered.map((agent) => (
         <AccordionItem
-          key={agent.role}
-          value={agent.role}
+          key={`${agent.dag_type ?? "paper-review"}:${agent.node_id ?? agent.role}`}
+          value={`${agent.dag_type ?? "paper-review"}:${agent.node_id ?? agent.role}`}
           className="rounded-lg border border-[color:var(--color-border)] bg-slate-900/40 px-4 [&]:border-b"
         >
           <AccordionTrigger className="py-3 hover:no-underline">
             <div className="flex flex-1 flex-wrap items-center justify-between gap-3 pr-2">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="text-sm font-semibold text-slate-100">
-                  {ROLE_LABEL[agent.role] ?? agent.role}
+                  {roleLabel(agent.role)}
                 </span>
               </div>
               <VerifierStatusBadge
@@ -64,6 +62,15 @@ export function AgentAccordion({ agents }: { agents: AgentOutput[] }) {
       ))}
     </Accordion>
   );
+}
+
+function roleRank(role: string): number {
+  const known = ROLE_ORDER.indexOf(role as KnownAgentRole);
+  return known >= 0 ? known : ROLE_ORDER.length;
+}
+
+function roleLabel(role: string): string {
+  return ROLE_LABEL[role as KnownAgentRole] ?? role;
 }
 
 function displayVerifierStatus(agent: AgentOutput): {

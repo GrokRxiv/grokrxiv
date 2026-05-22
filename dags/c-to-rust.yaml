@@ -1,0 +1,36 @@
+id: c-to-rust
+version: 1
+accepts:
+  - extractor
+  - code_generator
+  - verifier
+concurrency: 1
+roles:
+  - id: ast_extract
+    kind: extractor
+  - id: idiom_translate
+    kind: code_generator
+  - id: compile_check
+    kind: verifier
+  - id: lint_pass
+    kind: verifier
+nodes:
+  - id: ast_extract
+    kind: agent
+    role: ast_extract
+  - id: idiom_translate
+    kind: agent
+    role: idiom_translate
+  - id: compile_check
+    kind: verify
+    role: compile_check
+  - id: lint_pass
+    kind: verify
+    role: lint_pass
+edges:
+  - from: ast_extract
+    to: idiom_translate
+  - from: idiom_translate
+    to: compile_check
+  - from: compile_check
+    to: lint_pass

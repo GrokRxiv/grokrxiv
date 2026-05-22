@@ -79,43 +79,41 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     let mut agent_jsons: Vec<(String, Vec<u8>)> = Vec::with_capacity(bundle.agents.len());
     for row in bundle.agents {
         let role_slug = row.role.clone();
-        if let Some(role) = parse_role_slug(&role_slug) {
-            let status = row
-                .verifier_status
-                .as_deref()
-                .and_then(crate::db::verifier_status_from_db_str)
-                .unwrap_or(VerifierStatus::Pass);
-            let notes = row.verifier_notes.unwrap_or(serde_json::Value::Null);
-            let verifier = VerifierResult {
-                status,
-                notes: notes.clone(),
-            };
-            let input_artifact = if role_slug == "meta_reviewer" {
-                meta_input_for_render.clone()
-            } else {
-                specialist_input.clone()
-            };
-            let artifact = serde_json::json!({
-                "role": role_slug,
-                "model": row.model.clone(),
-                "input_artifact": input_artifact,
-                "output": row.output.clone(),
-                "verifier": {
-                    "status": status,
-                    "notes": notes,
-                },
-            });
-            let path = format!("agents/{role_slug}.json");
-            let bytes = serde_json::to_vec_pretty(&artifact)
-                .map_err(|e| anyhow::anyhow!("serialize {path}: {e}"))?;
-            agent_jsons.push((path, bytes));
-            agents.push(AgentRecord {
-                role,
-                model: row.model,
-                output: row.output,
-                verifier,
-            });
-        }
+        let status = row
+            .verifier_status
+            .as_deref()
+            .and_then(crate::db::verifier_status_from_db_str)
+            .unwrap_or(VerifierStatus::Pass);
+        let notes = row.verifier_notes.unwrap_or(serde_json::Value::Null);
+        let verifier = VerifierResult {
+            status,
+            notes: notes.clone(),
+        };
+        let input_artifact = if role_slug == "meta_reviewer" {
+            meta_input_for_render.clone()
+        } else {
+            specialist_input.clone()
+        };
+        let artifact = serde_json::json!({
+            "role": role_slug,
+            "model": row.model.clone(),
+            "input_artifact": input_artifact,
+            "output": row.output.clone(),
+            "verifier": {
+                "status": status,
+                "notes": notes,
+            },
+        });
+        let path = format!("agents/{role_slug}.json");
+        let bytes = serde_json::to_vec_pretty(&artifact)
+            .map_err(|e| anyhow::anyhow!("serialize {path}: {e}"))?;
+        agent_jsons.push((path, bytes));
+        agents.push(AgentRecord {
+            role: role_slug,
+            model: row.model,
+            output: row.output,
+            verifier,
+        });
     }
 
     let extract = render_extract_from_input(
@@ -214,20 +212,6 @@ fn fallback_meta(title: &str) -> grokrxiv_schemas::MetaReview {
         recommendation: Recommendation::MinorRevision,
         confidence: 0.5,
     }
-}
-
-#[cfg(feature = "grokrxiv-render")]
-fn parse_role_slug(s: &str) -> Option<grokrxiv_schemas::AgentRole> {
-    use grokrxiv_schemas::AgentRole;
-    Some(match s {
-        "summary" => AgentRole::Summary,
-        "technical_correctness" => AgentRole::TechnicalCorrectness,
-        "novelty" => AgentRole::Novelty,
-        "reproducibility" => AgentRole::Reproducibility,
-        "citation" => AgentRole::Citation,
-        "meta_reviewer" => AgentRole::MetaReviewer,
-        _ => return None,
-    })
 }
 
 #[cfg(not(feature = "grokrxiv-render"))]

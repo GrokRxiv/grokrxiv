@@ -1,0 +1,181 @@
+use std::fs;
+use std::path::PathBuf;
+
+use grokrxiv_dag_runtime::{AgentKind, DagManifest};
+
+fn write_temp_file(name: &str, contents: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join(name), contents).expect("write manifest");
+    dir
+}
+
+#[test]
+fn loads_manifest_and_computes_execution_layers() {
+    let dir = write_temp_file(
+        "paper-review.yaml",
+        r#"
+id: paper-review
+version: 1
+accepts: [critic, synthesizer]
+concurrency: 4
+roles:
+  - id: summary
+    kind: critic
+    config: agents/paper-review/summary.yaml
+  - id: meta_reviewer
+    kind: synthesizer
+    config: agents/paper-review/meta_reviewer.yaml
+nodes:
+  - id: prepare
+    kind: prepare_inputs
+  - id: summary
+    kind: agent
+    role: summary
+  - id: meta_reviewer
+    kind: synthesizer
+    role: meta_reviewer
+edges:
+  - from: prepare
+    to: [summary]
+  - from: summary
+    to: [meta_reviewer]
+"#,
+    );
+
+    let manifest = DagManifest::from_path(dir.path().join("paper-review.yaml")).unwrap();
+
+    assert_eq!(manifest.id.as_str(), "paper-review");
+    assert_eq!(
+        manifest.accepts,
+        vec![AgentKind::Critic, AgentKind::Synthesizer]
+    );
+    assert_eq!(
+        manifest.execution_layers().unwrap(),
+        vec![
+            vec!["prepare".to_string()],
+            vec!["summary".to_string()],
+            vec!["meta_reviewer".to_string()],
+        ]
+    );
+}
+
+#[test]
+fn rejects_agent_kind_not_accepted_by_dag() {
+    let dir = write_temp_file(
+        "paper-review.yaml",
+        r#"
+id: paper-review
+version: 1
+accepts: [critic]
+roles:
+  - id: patch_author
+    kind: code_generator
+    config: agents/paper-review/patch_author.yaml
+nodes:
+  - id: patch_author
+    kind: agent
+    role: patch_author
+"#,
+    );
+
+    let err = DagManifest::from_path(dir.path().join("paper-review.yaml"))
+        .expect_err("kind should be rejected");
+
+    assert!(err.to_string().contains("code_generator"));
+    assert!(err.to_string().contains("paper-review"));
+}
+
+#[test]
+fn rejects_cycles() {
+    let dir = write_temp_file(
+        "bad.yaml",
+        r#"
+id: bad
+version: 1
+accepts: [critic]
+roles:
+  - id: a
+    kind: critic
+    config: agents/bad/a.yaml
+nodes:
+  - id: a
+    kind: agent
+    role: a
+  - id: b
+    kind: action
+edges:
+  - from: a
+    to: [b]
+  - from: b
+    to: [a]
+"#,
+    );
+
+    let err = DagManifest::from_path(dir.path().join("bad.yaml")).expect_err("cycle rejected");
+
+    assert!(err.to_string().contains("cycle"));
+}
+
+#[test]
+fn compatible_dags_are_selected_by_agent_kind() {
+    let review = DagManifest::from_str(
+        r#"
+id: paper-review
+version: 1
+accepts: [critic, type_theory_validator]
+roles: []
+nodes: []
+"#,
+    )
+    .unwrap();
+    let revise = DagManifest::from_str(
+        r#"
+id: paper-revise
+version: 1
+accepts: [code_generator, synthesizer]
+roles: []
+nodes: []
+"#,
+    )
+    .unwrap();
+
+    let manifests = vec![review, revise];
+
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::TypeTheoryValidator),
+        vec!["paper-review".to_string()]
+    );
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::CodeGenerator),
+        vec!["paper-revise".to_string()]
+    );
+}
+
+#[test]
+fn repo_manifests_validate_and_expose_expected_capabilities() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest_paths = [
+        root.join("dags/paper-review.yaml"),
+        root.join("dags/paper-extract.yaml"),
+        root.join("dags/paper-revise.yaml"),
+        root.join("dags/c-to-rust.yaml"),
+    ];
+    let manifests = manifest_paths
+        .iter()
+        .map(DagManifest::from_path)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::TypeTheoryValidator),
+        vec!["paper-review".to_string()]
+    );
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::CodeGenerator),
+        vec!["paper-revise".to_string(), "c-to-rust".to_string()]
+    );
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::Extractor),
+        vec!["paper-extract".to_string(), "c-to-rust".to_string()]
+    );
+}

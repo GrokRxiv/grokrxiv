@@ -1,4 +1,5 @@
 id: render_agent
+kind: renderer
 role: "Render the final review.{html,md,tex} artifacts from the 6 review outputs."
 provider: claude
 # Render is a polish pass — Haiku is sufficient; promote to Sonnet if quality drops.

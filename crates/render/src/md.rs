@@ -74,7 +74,7 @@ pub fn render_markdown(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentR
     for agent in agents {
         out.push_str(&format!(
             "### {} (`{}`) — status: `{}`\n\n",
-            crate::role_slug(agent.role),
+            crate::role_slug(&agent.role),
             agent.model,
             match agent.verifier.status {
                 grokrxiv_schemas::VerifierStatus::Pass => "pass",

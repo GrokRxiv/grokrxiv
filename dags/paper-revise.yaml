@@ -1,0 +1,35 @@
+id: paper-revise
+version: 1
+accepts:
+  - code_generator
+  - synthesizer
+  - renderer
+concurrency: 2
+roles:
+  - id: patch_author
+    kind: code_generator
+  - id: revision_summary
+    kind: synthesizer
+  - id: pr_renderer
+    kind: renderer
+nodes:
+  - id: prepare_revision
+    kind: prepare_inputs
+  - id: patch_author
+    kind: agent
+    role: patch_author
+  - id: revision_summary
+    kind: synthesizer
+    role: revision_summary
+  - id: pr_renderer
+    kind: render_artifacts
+    role: pr_renderer
+edges:
+  - from: prepare_revision
+    to:
+      - patch_author
+      - revision_summary
+  - from:
+      - patch_author
+      - revision_summary
+    to: pr_renderer
