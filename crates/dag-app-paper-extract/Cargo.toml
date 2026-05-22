@@ -1,0 +1,16 @@
+[package]
+name = "grokrxiv-dag-app-paper-extract"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Paper extraction DAG app adapter for the generic GrokRxiv executor."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+grokrxiv-dag-executor = { path = "../dag-executor" }
+serde_json = { workspace = true }
+grokrxiv-ingest = { path = "../ingest" }
+grokrxiv-schemas = { path = "../schemas" }

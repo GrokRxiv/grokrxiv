@@ -1,0 +1,18 @@
+[package]
+name = "grokrxiv-dag-app-c-to-rust"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "c-to-rust DAG app proving the generic executor is not paper-review shaped."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+grokrxiv-dag-executor = { path = "../dag-executor" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+grokrxiv-dag-runtime = { path = "../dag-runtime" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

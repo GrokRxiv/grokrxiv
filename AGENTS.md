@@ -20,6 +20,8 @@ Rust-controlled DAG nodes. The research review/revise pipeline is the first DAG
 app, not the orchestration contract itself.
 
 - DAG manifests live in `dags/*.yaml`.
+- Generic execution contracts live in `crates/dag-executor`.
+- Concrete DAG apps live in `crates/dag-app-*`.
 - Agent configs live in `agents/<dag-type>/*.yaml`.
 - Prompt templates live in `prompts/`.
 - Output contracts live in `schemas/*.schema.json` and must be
@@ -31,6 +33,9 @@ app, not the orchestration contract itself.
   agent module.
 - Role identity is a DAG/YAML string contract. Do not introduce Rust enums for
   app-specific agent roles.
+- Node I/O at the executor boundary is named JSON values plus artifact
+  references. App crates may convert those values into typed Rust structs, but
+  generic executor code must not depend on paper/review/arXiv types.
 
 Manifest rules:
 
@@ -44,6 +49,8 @@ Manifest rules:
   manifests, not by hardcoding supervisor control flow.
 - `dag_call` composes DAGs. Prefer a separate DAG plus `dag_call` when a
   pipeline can stand alone, such as citation validation.
+- A new DAG app needs a manifest plus an app crate. Register the app through
+  the orchestrator DAG app registry; do not add a one-off supervisor branch.
 - The scheduler/executor may place work on local Tokio tasks, local CLI
   subprocesses, Rust handlers, cloud runners, local inference, or future remote
   GrokRxiv service nodes. DAG apps must not depend on a paper-review-specific
@@ -78,6 +85,16 @@ Rules:
 4. Add tests for the function and manifest validation.
 5. Run `grokrxiv dag validate --dag-type <dag>`.
 
+## Adding A DAG App
+
+1. Add `dags/<dag-type>.yaml`.
+2. Add `crates/dag-app-<dag-type>/` implementing `grokrxiv_dag_executor::DagApp`.
+3. Add the crate to the workspace.
+4. Register the app in `crates/orchestrator/src/dag_apps.rs`.
+5. Add a smoke test that runs the manifest through
+   `grokrxiv_dag_executor::DagExecutor`.
+6. Run `grokrxiv dag run --dag-type <dag-type> --json`.
+
 ## Adding A CLI Tool
 
 1. Add the manifest tool with `executor: cli` and `command: [...]`.
@@ -103,9 +120,12 @@ Minimum checks for DAG/tool work:
 
 ```bash
 cargo test -p grokrxiv-dag-runtime --test manifest
+cargo test -p grokrxiv-dag-executor
+cargo test -p grokrxiv-orchestrator --test dag_app_registry
 cargo test -p grokrxiv-orchestrator --lib --features full -- --test-threads=1
 cargo check -p grokrxiv-ingest -p grokrxiv-dag-runtime -p grokrxiv-storage -p grokrxiv-orchestrator --features full
 cargo run -p grokrxiv-orchestrator --features full --bin grokrxiv -- dag validate --dag-type <dag>
+cargo run -p grokrxiv-orchestrator --features full --bin grokrxiv -- --json dag run --dag-type <dag>
 ```
 
 Update or remove tests that encode obsolete fixed-pipeline assumptions. Keep

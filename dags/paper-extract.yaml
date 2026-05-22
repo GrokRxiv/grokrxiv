@@ -39,8 +39,11 @@ roles:
     kind: extractor
     config: agents/extraction/citations.yaml
 nodes:
-  - id: acquire_source
-    kind: ingest_source
+  - id: paper_ingest
+    kind: dag_call
+    dag_type: paper-ingest
+    outputs: [source.tar.gz, original.pdf, source_manifest.json]
+    required: true
   - id: source_to_body
     kind: tool
     tool: source_to_body
@@ -102,7 +105,7 @@ nodes:
     kind: dag_call
     dag_type: paper-review
 edges:
-  - from: acquire_source
+  - from: paper_ingest
     to: source_to_body
   - from: source_to_body
     to:
@@ -120,7 +123,7 @@ edges:
     to: materialize_review_input
   - from: derive_references
     to: citation_validation
-  - from: acquire_source
+  - from: paper_ingest
     to: vlm_extractor
   - from: source_to_body
     to: macro_expander
