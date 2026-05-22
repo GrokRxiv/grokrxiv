@@ -287,7 +287,7 @@ pub struct RevisionTarget {
     /// Zero-based index of the corresponding `weaknesses` entry.
     pub weakness_index: u32,
     /// Specialist role whose output supplied the target, if known.
-    pub source_role: Option<AgentRole>,
+    pub source_role: Option<String>,
     /// Kind of artifact or text that should be updated.
     pub target_kind: RevisionTargetKind,
     /// Best-known file or repo path for the target, when available.
@@ -481,6 +481,9 @@ pub enum ReviewStatus {
     /// rationale lives on the `rejections` table and the web `/reviews/<id>`
     /// page renders it with a red "Rejected" badge.
     Rejected,
+    /// The review DAG or surrounding system failed before reaching a
+    /// publishable/moderatable terminal state.
+    SystemFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +550,30 @@ mod tests {
         assert_eq!(r, serde_json::Value::String("awaiting_moderation".into()));
         let r = serde_json::to_value(ReviewStatus::PrOpen).unwrap();
         assert_eq!(r, serde_json::Value::String("pr_open".into()));
+        let r = serde_json::to_value(ReviewStatus::SystemFailed).unwrap();
+        assert_eq!(r, serde_json::Value::String("system_failed".into()));
+    }
+
+    #[test]
+    fn revision_target_source_role_accepts_custom_role_string() {
+        let target: RevisionTarget = serde_json::from_value(serde_json::json!({
+            "id": "target-1",
+            "weakness_index": 0,
+            "source_role": "paper-review.type_theory_validator",
+            "target_kind": "paper_tex",
+            "source_path": "paper.tex",
+            "locator": "thm:main",
+            "evidence": "The validator found a missing hypothesis.",
+            "required_update": "State the missing hypothesis.",
+            "verification_check": "Re-run the type theory validator.",
+            "status": "open"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            target.source_role.as_deref(),
+            Some("paper-review.type_theory_validator")
+        );
     }
 
     #[test]

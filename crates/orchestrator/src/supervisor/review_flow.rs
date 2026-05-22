@@ -18,7 +18,7 @@ use super::verification::{
 use super::{MAX_RETRIES, MIN_SPECIALIST_QUORUM};
 use crate::cli_status::StatusMark;
 use crate::state::AppState;
-use grokrxiv_dag_runtime::DagManifest;
+use grokrxiv_dag_runtime::{DagManifest, DagNodeKind};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -312,17 +312,23 @@ fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
             continue;
         };
         match role_id {
-            "summary" if node.kind == "agent" => specialist_roles.push(AgentRole::Summary),
-            "technical_correctness" if node.kind == "agent" => {
+            "summary" if node.kind == DagNodeKind::Agent => {
+                specialist_roles.push(AgentRole::Summary)
+            }
+            "technical_correctness" if node.kind == DagNodeKind::Agent => {
                 specialist_roles.push(AgentRole::TechnicalCorrectness)
             }
-            "novelty" if node.kind == "agent" => specialist_roles.push(AgentRole::Novelty),
-            "reproducibility" if node.kind == "agent" => {
+            "novelty" if node.kind == DagNodeKind::Agent => {
+                specialist_roles.push(AgentRole::Novelty)
+            }
+            "reproducibility" if node.kind == DagNodeKind::Agent => {
                 specialist_roles.push(AgentRole::Reproducibility)
             }
-            "citation" if node.kind == "agent" => specialist_roles.push(AgentRole::Citation),
+            "citation" if node.kind == DagNodeKind::Agent => {
+                specialist_roles.push(AgentRole::Citation)
+            }
             "meta_reviewer" => has_meta_reviewer = true,
-            other if node.kind == "agent" || node.kind == "synthesizer" => {
+            other if node.kind == DagNodeKind::Agent || node.kind == DagNodeKind::Synthesizer => {
                 anyhow::bail!(
                     "DAG role `{other}` is configured as executable, but the legacy runner adapter still requires a built-in AgentRole; add a runner/schema adapter for this role before enabling it"
                 );
@@ -338,7 +344,15 @@ fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
         anyhow::bail!("paper-review DAG must define a meta_reviewer synthesizer node");
     }
 
-    let min_specialist_quorum = MIN_SPECIALIST_QUORUM.min(specialist_roles.len());
+    let manifest_min_quorum = manifest
+        .nodes
+        .iter()
+        .find(|node| node.kind == DagNodeKind::Gate)
+        .and_then(|node| node.gate.as_ref())
+        .and_then(|gate| gate.min_usable)
+        .map(|value| value as usize)
+        .unwrap_or(MIN_SPECIALIST_QUORUM);
+    let min_specialist_quorum = manifest_min_quorum.min(specialist_roles.len()).max(1);
     Ok(ReviewDagRuntimeConfig {
         node_count: manifest.nodes.len(),
         layers,
@@ -357,6 +371,100 @@ fn review_dag_manifest_path() -> PathBuf {
         .join("..")
         .join("dags")
         .join("paper-review.yaml")
+}
+
+#[cfg(all(test, feature = "grokrxiv-ingest"))]
+mod tests {
+    use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn review_dag_runtime_config_uses_manifest_gate_min_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("paper-review.yaml"),
+            r#"
+id: paper-review
+version: 1
+accepts: [critic, synthesizer]
+roles:
+  - id: summary
+    kind: critic
+    config: agents/paper-review/summary.yaml
+  - id: technical_correctness
+    kind: critic
+    config: agents/paper-review/technical_correctness.yaml
+  - id: novelty
+    kind: critic
+    config: agents/paper-review/novelty.yaml
+  - id: reproducibility
+    kind: critic
+    config: agents/paper-review/reproducibility.yaml
+  - id: citation
+    kind: critic
+    config: agents/paper-review/citation.yaml
+  - id: meta_reviewer
+    kind: synthesizer
+    config: agents/paper-review/meta_reviewer.yaml
+nodes:
+  - id: summary
+    kind: agent
+    role: summary
+  - id: technical_correctness
+    kind: agent
+    role: technical_correctness
+  - id: novelty
+    kind: agent
+    role: novelty
+  - id: reproducibility
+    kind: agent
+    role: reproducibility
+  - id: citation
+    kind: agent
+    role: citation
+  - id: specialist_quorum
+    kind: gate
+    gate:
+      min_usable: 4
+      sources: [summary, technical_correctness, novelty, reproducibility, citation]
+  - id: meta_reviewer
+    kind: synthesizer
+    role: meta_reviewer
+edges:
+  - from: [summary, technical_correctness, novelty, reproducibility, citation]
+    to: specialist_quorum
+  - from: specialist_quorum
+    to: meta_reviewer
+"#,
+        )
+        .expect("write manifest");
+        let _guard = EnvGuard::set("GROKRXIV_DAGS_DIR", dir.path().to_str().unwrap());
+
+        let cfg = load_review_dag_runtime_config().expect("runtime config");
+
+        assert_eq!(cfg.min_specialist_quorum, 4);
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -504,14 +612,13 @@ pub(super) async fn run_review_dag_inner_with_context(
         }
         None => crate::db::insert_review(pool, paper_id, models_used, None).await?,
     };
-    // Every review entering moderation gets a pending queue row for admin actions.
-    let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     tracing::info!(%review_id, "M1: review row created");
     crate::cli_status::emit(format!("review_id={review_id}"));
 
     // Drive the DAG inside an inner async block so any error path can
     // transition the review row off the stale `awaiting_moderation` state.
-    // We use `withdrawn` because the DB enum has no `failed` value.
+    // Fatal DAG/runtime failures are terminal but distinct from moderator
+    // withdrawal so operators can remediate and retry explicitly.
     let dag_result: anyhow::Result<()> = async {
     // This function still owns the concrete review-stage behavior, but the
     // executable specialist set comes from the DAG manifest instead of the old
@@ -1094,12 +1201,12 @@ pub(super) async fn run_review_dag_inner_with_context(
         tracing::error!(
             %review_id,
             err = %format!("{e:#}"),
-            "review DAG bailed; transitioning review row to withdrawn"
+            "review DAG bailed; transitioning review row to system_failed"
         );
         let _ = crate::db::set_review_status(
             pool,
             review_id,
-            grokrxiv_schemas::ReviewStatus::Withdrawn,
+            grokrxiv_schemas::ReviewStatus::SystemFailed,
             None,
         )
         .await;
@@ -1108,11 +1215,14 @@ pub(super) async fn run_review_dag_inner_with_context(
             6,
             "Moderation",
             StatusMark::Fail,
-            "review withdrawn after DAG failure",
+            "review marked system_failed after DAG failure",
         );
         return Err(e);
     }
 
+    // Only completed reviews enter the moderation queue. Failed DAG runs move
+    // to `system_failed` above and must not remain actionable in admin review.
+    let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     crate::cli_status::emit_stage(6, 6, "Moderation", StatusMark::Ok, "awaiting moderation");
     crate::cli_status::emit(format!("next: grokrxiv show {review_id}"));
     Ok(review_id)

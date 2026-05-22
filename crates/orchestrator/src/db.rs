@@ -144,6 +144,7 @@ pub(crate) fn review_status_from_db_str(s: &str) -> Option<ReviewStatus> {
         "corrected" => Some(ReviewStatus::Corrected),
         "withdrawn" => Some(ReviewStatus::Withdrawn),
         "rejected" => Some(ReviewStatus::Rejected),
+        "system_failed" => Some(ReviewStatus::SystemFailed),
         _ => None,
     }
 }
@@ -754,8 +755,8 @@ pub async fn set_review_artifacts(
 // ---------------------------------------------------------------------------
 
 /// Insert a `pending` row into `moderation_queue` for a freshly-landed review.
-/// Returns the new moderation row id. Called immediately after `insert_review`
-/// so every review awaiting moderation has a matching queue entry.
+/// Returns the new moderation row id. Call this after the review DAG has
+/// completed successfully; system-failed reviews must not enter moderation.
 pub async fn insert_moderation_pending(pool: &PgPool, review_id: Uuid) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
@@ -1664,6 +1665,10 @@ mod tests {
         assert_eq!(
             review_status_from_db_str(&serde_plain(&ReviewStatus::PrOpen)),
             Some(ReviewStatus::PrOpen)
+        );
+        assert_eq!(
+            review_status_from_db_str(&serde_plain(&ReviewStatus::SystemFailed)),
+            Some(ReviewStatus::SystemFailed)
         );
         assert_eq!(
             verifier_status_from_db_str(&serde_plain(&VerifierStatus::Pass)),

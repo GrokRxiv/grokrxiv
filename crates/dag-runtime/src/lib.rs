@@ -46,6 +46,37 @@ impl fmt::Display for RoleId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DagRoleKey(String);
+
+impl DagRoleKey {
+    pub fn new(dag_type: DagTypeId, role_id: RoleId) -> Self {
+        Self(format!("{}.{}", dag_type.as_str(), role_id.as_str()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn dag_type(&self) -> &str {
+        self.0.split_once('.').map(|(dag, _)| dag).unwrap_or("")
+    }
+
+    pub fn role_id(&self) -> &str {
+        self.0
+            .split_once('.')
+            .map(|(_, role)| role)
+            .unwrap_or(self.0.as_str())
+    }
+}
+
+impl fmt::Display for DagRoleKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
@@ -73,6 +104,64 @@ impl fmt::Display for AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagNodeKind {
+    PrepareInputs,
+    Agent,
+    Synthesizer,
+    Verify,
+    Gate,
+    RenderArtifacts,
+    ModerationReady,
+    IngestSource,
+    Tool,
+    Artifact,
+    DagCall,
+}
+
+impl fmt::Display for DagNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::PrepareInputs => "prepare_inputs",
+            Self::Agent => "agent",
+            Self::Synthesizer => "synthesizer",
+            Self::Verify => "verify",
+            Self::Gate => "gate",
+            Self::RenderArtifacts => "render_artifacts",
+            Self::ModerationReady => "moderation_ready",
+            Self::IngestSource => "ingest_source",
+            Self::Tool => "tool",
+            Self::Artifact => "artifact",
+            Self::DagCall => "dag_call",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagExecutionMode {
+    OneShot,
+    ToolLoop,
+}
+
+impl Default for DagExecutionMode {
+    fn default() -> Self {
+        Self::OneShot
+    }
+}
+
+impl fmt::Display for DagExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::OneShot => "one_shot",
+            Self::ToolLoop => "tool_loop",
+        };
+        f.write_str(s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagRole {
     pub id: RoleId,
@@ -81,9 +170,17 @@ pub struct DagRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagGate {
+    #[serde(default)]
+    pub min_usable: Option<u32>,
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagNode {
     pub id: String,
-    pub kind: String,
+    pub kind: DagNodeKind,
     #[serde(default)]
     pub role: Option<RoleId>,
     #[serde(default)]
@@ -96,6 +193,10 @@ pub struct DagNode {
     pub outputs: Vec<String>,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub feeds_meta: bool,
+    #[serde(default)]
+    pub gate: Option<DagGate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +293,9 @@ impl DagManifest {
             if !node_ids.insert(node.id.clone()) {
                 return Err(DagError::DuplicateNode(node.id.clone()));
             }
+            if node.kind == DagNodeKind::Tool && node.tool.is_none() {
+                return Err(DagError::ToolNodeMissingTool(node.id.clone()));
+            }
             if let Some(role) = &node.role {
                 if !role_ids.contains(role) {
                     return Err(DagError::MissingRole {
@@ -208,12 +312,32 @@ impl DagManifest {
                     });
                 }
             }
+            if node.kind == DagNodeKind::Gate {
+                let Some(gate) = &node.gate else {
+                    return Err(DagError::GateNodeMissingPolicy(node.id.clone()));
+                };
+                if let Some(min_usable) = gate.min_usable {
+                    if min_usable == 0 {
+                        return Err(DagError::GateNodeInvalidMinUsable(node.id.clone()));
+                    }
+                }
+            }
         }
 
         for edge in &self.edges {
             for id in edge.from.values().into_iter().chain(edge.to.values()) {
                 if !node_ids.contains(&id) {
                     return Err(DagError::MissingNode(id));
+                }
+            }
+        }
+
+        for node in &self.nodes {
+            if let Some(gate) = &node.gate {
+                for source in &gate.sources {
+                    if !node_ids.contains(source) {
+                        return Err(DagError::MissingNode(source.clone()));
+                    }
                 }
             }
         }
@@ -332,6 +456,12 @@ pub enum DagError {
     MissingNode(String),
     #[error("node `{node}` references missing tool `{tool}`")]
     MissingTool { node: String, tool: String },
+    #[error("tool node `{0}` must reference a registered tool")]
+    ToolNodeMissingTool(String),
+    #[error("gate node `{0}` must define a gate policy")]
+    GateNodeMissingPolicy(String),
+    #[error("gate node `{0}` has invalid min_usable; value must be >= 1")]
+    GateNodeInvalidMinUsable(String),
     #[error("agent kind `{kind}` for role `{role}` is not accepted by DAG `{dag}`")]
     KindNotAccepted {
         dag: String,

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use grokrxiv_dag_runtime::{AgentKind, DagManifest};
+use grokrxiv_dag_runtime::{AgentKind, DagManifest, DagNodeKind, DagRoleKey, DagTypeId, RoleId};
 
 fn write_temp_file(name: &str, contents: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -60,6 +60,15 @@ edges:
 }
 
 #[test]
+fn dag_role_key_qualifies_dag_and_role_ids() {
+    let key = DagRoleKey::new(DagTypeId::new("paper-review"), RoleId::new("summary"));
+
+    assert_eq!(key.as_str(), "paper-review.summary");
+    assert_eq!(key.dag_type(), "paper-review");
+    assert_eq!(key.role_id(), "summary");
+}
+
+#[test]
 fn loads_tool_nodes_and_top_level_tool_definitions() {
     let manifest = DagManifest::from_str(
         r#"
@@ -95,6 +104,7 @@ edges:
 
     assert_eq!(manifest.tools.len(), 1);
     assert_eq!(manifest.tools[0].id.as_str(), "source_to_body");
+    assert_eq!(manifest.nodes[1].kind, DagNodeKind::Tool);
     assert_eq!(manifest.nodes[1].tool.as_deref(), Some("source_to_body"));
     assert_eq!(
         manifest.nodes[1].outputs,
@@ -102,6 +112,82 @@ edges:
     );
     assert!(manifest.nodes[1].required);
     assert_eq!(manifest.nodes[2].dag_type.as_deref(), Some("paper-review"));
+}
+
+#[test]
+fn rejects_unknown_node_kind() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: [critic]
+nodes:
+  - id: surprise
+    kind: drone_strike
+"#,
+    )
+    .expect_err("unknown node kind should be rejected");
+
+    assert!(err.to_string().contains("drone_strike"));
+}
+
+#[test]
+fn loads_feeds_meta_and_gate_policy() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: paper-review
+version: 1
+accepts: [critic]
+roles:
+  - id: summary
+    kind: critic
+    config: agents/paper-review/summary.yaml
+nodes:
+  - id: summary
+    kind: agent
+    role: summary
+    feeds_meta: true
+  - id: specialist_quorum
+    kind: gate
+    gate:
+      min_usable: 1
+      sources: [summary]
+edges:
+  - from: summary
+    to: specialist_quorum
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.nodes[0].kind, DagNodeKind::Agent);
+    assert!(manifest.nodes[0].feeds_meta);
+    let gate = manifest.nodes[1]
+        .gate
+        .as_ref()
+        .expect("gate policy should load");
+    assert_eq!(gate.min_usable, Some(1));
+    assert_eq!(gate.sources, vec!["summary".to_string()]);
+}
+
+#[test]
+fn rejects_tool_node_without_tool_reference() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: [extractor]
+tools:
+  - id: source_to_body
+    executor: rust
+nodes:
+  - id: source_to_body
+    kind: tool
+"#,
+    )
+    .expect_err("tool node must point at a registered tool");
+
+    assert!(err.to_string().contains("tool node"));
+    assert!(err.to_string().contains("source_to_body"));
 }
 
 #[test]
@@ -147,7 +233,7 @@ nodes:
     kind: agent
     role: a
   - id: b
-    kind: action
+    kind: artifact
 edges:
   - from: a
     to: [b]

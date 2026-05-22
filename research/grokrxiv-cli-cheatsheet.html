@@ -221,12 +221,19 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <h1 id="grokrxiv-cli-cheatsheet"><a class="anchor" aria-label="anchor" href="#grokrxiv-cli-cheatsheet">#</a><code>grokrxiv</code> CLI cheatsheet</h1>
 <h2 id="setup"><a class="anchor" aria-label="anchor" href="#setup">#</a>Setup</h2>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">cp</span><span style="color:#9ECBFF"> .env.example</span><span style="color:#9ECBFF"> .env</span></span>
+<span data-line=""><span style="color:#F97583">for</span><span style="color:#E1E4E8"> name </span><span style="color:#F97583">in</span><span style="color:#9ECBFF"> core</span><span style="color:#9ECBFF"> ingest</span><span style="color:#9ECBFF"> extract</span><span style="color:#9ECBFF"> review</span><span style="color:#9ECBFF"> publish</span><span style="color:#9ECBFF"> web</span><span style="color:#9ECBFF"> billing</span><span style="color:#9ECBFF"> dev</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">do</span></span>
+<span data-line=""><span style="color:#B392F0">  cp</span><span style="color:#9ECBFF"> ".env_${</span><span style="color:#E1E4E8">name</span><span style="color:#9ECBFF">}.example"</span><span style="color:#9ECBFF"> ".env_${</span><span style="color:#E1E4E8">name</span><span style="color:#9ECBFF">}"</span></span>
+<span data-line=""><span style="color:#F97583">done</span></span>
 <span data-line=""><span style="color:#B392F0">supabase</span><span style="color:#9ECBFF"> start</span></span>
 <span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> build</span><span style="color:#79B8FF"> --workspace</span></span>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span></span></code></pre></figure>
-<p>The binary loads <code>.env</code> from the repo root. For shell scripts that run the
-release binary directly:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
+<p>The binary loads root <code>.env</code> from the repo root and then each file named by
+<code>GROKRXIV_ENV_FILES</code>. For shell scripts that run the release binary directly,
+source the root file plus its includes:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span></span>
+<span data-line=""><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span></span>
+<span data-line=""><span style="color:#F97583">for</span><span style="color:#E1E4E8"> file </span><span style="color:#F97583">in</span><span style="color:#E1E4E8"> ${GROKRXIV_ENV_FILES</span><span style="color:#F97583">//</span><span style="color:#E1E4E8">,</span><span style="color:#F97583">/</span><span style="color:#E1E4E8"> }; </span><span style="color:#F97583">do</span><span style="color:#79B8FF"> source</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$file</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">done</span></span>
+<span data-line=""><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
 <span data-line=""><span style="color:#E1E4E8">PATH</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">$PWD</span><span style="color:#9ECBFF">/target/release:</span><span style="color:#E1E4E8">$PATH</span><span style="color:#9ECBFF">"</span></span></code></pre></figure>
 <h2 id="one-paper"><a class="anchor" aria-label="anchor" href="#one-paper">#</a>One Paper</h2>
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> --json</span><span style="color:#79B8FF"> 2605.17307</span></span></code></pre></figure>
@@ -270,7 +277,7 @@ uses provider API credentials and should be selected explicitly.</p>
 <span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> show</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$rid</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-20T18:41:12.014Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-22T01:31:40.154Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

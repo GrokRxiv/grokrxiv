@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use grokrxiv_dag_runtime::DagManifest;
+use grokrxiv_dag_runtime::{AgentKind, DagExecutionMode, DagManifest};
 use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
 use reqwest::Client;
 use sqlx::PgPool;
@@ -233,20 +233,39 @@ impl AppState {
     }
 }
 
-/// Minimal YAML shape we read from agent YAML. Captures the per-role
-/// fields the orchestrator cares about: the routing target (`provider`,
-/// `model`), the optional runner backend, and the agent-level timeout /
-/// retry caps used to build [`AgentSpec`].
-#[derive(serde::Deserialize, Clone)]
+/// YAML shape read from agent config files. The legacy review runtime still
+/// executes only the routing subset, but startup validates the declarative
+/// fields so prompt/schema/tool-loop config cannot drift silently.
+#[derive(Debug, serde::Deserialize, Clone)]
 struct AgentRouting {
+    #[serde(default)]
+    kind: Option<AgentKind>,
     provider: String,
     model: String,
     #[serde(default)]
     runner: Option<AgentRunnerKind>,
     #[serde(default)]
+    execution_mode: DagExecutionMode,
+    #[serde(default)]
+    prompt_template: Option<String>,
+    #[serde(default)]
+    input_schema: Option<String>,
+    #[serde(default)]
+    output_schema: Option<String>,
+    #[serde(default)]
+    verifiers: Vec<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    max_iters: Option<u32>,
+    #[serde(default)]
+    max_cost_usd: Option<f64>,
+    #[serde(default)]
     max_retries: Option<u8>,
     #[serde(default)]
     timeout_secs: Option<u32>,
+    #[serde(default)]
+    escalation: Option<String>,
 }
 
 /// Per-role YAML config map. `None` for a role means the YAML was missing or
@@ -279,6 +298,7 @@ const LEGACY_ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
 #[derive(Debug, Clone)]
 struct RoleConfigRef {
     role: grokrxiv_schemas::AgentRole,
+    expected_kind: AgentKind,
     label: String,
     path: PathBuf,
 }
@@ -318,20 +338,109 @@ fn load_role_configs() -> RoleYamlMap {
 }
 
 fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
-    let missing: Vec<String> = review_role_config_refs()
-        .into_iter()
+    let config_refs = review_role_config_refs();
+    let missing: Vec<String> = config_refs
+        .iter()
         .filter_map(|config_ref| match role_yaml.get(&config_ref.role) {
             Some(Some(_)) => None,
             _ => Some(format!("{:?} ({})", config_ref.role, config_ref.label)),
         })
         .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
+    if !missing.is_empty() {
         anyhow::bail!(
             "agent role YAML is missing or malformed for {}; refusing to start with permissive schemas",
             missing.join(", ")
         )
+    }
+    for config_ref in config_refs {
+        if let Some(Some(cfg)) = role_yaml.get(&config_ref.role) {
+            validate_agent_routing_detail(
+                &format!("{:?}", config_ref.role),
+                &config_ref.expected_kind,
+                cfg,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_agent_routing_detail(
+    label: &str,
+    expected_kind: &AgentKind,
+    cfg: &AgentRouting,
+) -> anyhow::Result<()> {
+    if let Some(kind) = &cfg.kind {
+        if kind != expected_kind {
+            anyhow::bail!(
+                "agent role YAML for {label} declares kind={}, but DAG expects kind={}",
+                kind,
+                expected_kind
+            );
+        }
+    }
+    for (field, declared_path) in [
+        ("prompt_template", cfg.prompt_template.as_deref()),
+        ("input_schema", cfg.input_schema.as_deref()),
+        ("output_schema", cfg.output_schema.as_deref()),
+    ] {
+        if let Some(declared_path) = declared_path {
+            let path = resolve_declared_runtime_path(declared_path);
+            if !path.exists() {
+                anyhow::bail!(
+                    "agent role YAML for {label} declares {field}={}, but {} does not exist",
+                    declared_path,
+                    path.display()
+                );
+            }
+        }
+    }
+    if cfg.execution_mode == DagExecutionMode::ToolLoop {
+        if cfg.max_iters.unwrap_or(0) == 0 {
+            anyhow::bail!(
+                "agent role YAML for {label} uses execution_mode=tool_loop but max_iters is missing or zero"
+            );
+        }
+        match cfg.max_cost_usd {
+            Some(cost) if cost > 0.0 => {}
+            _ => anyhow::bail!(
+                "agent role YAML for {label} uses execution_mode=tool_loop but max_cost_usd is missing or non-positive"
+            ),
+        }
+        if cfg.tools.is_empty() {
+            anyhow::bail!(
+                "agent role YAML for {label} uses execution_mode=tool_loop but declares no tools"
+            );
+        }
+    }
+    validate_unique_names(label, "verifiers", &cfg.verifiers)?;
+    validate_unique_names(label, "tools", &cfg.tools)?;
+    if let Some(escalation) = cfg.escalation.as_deref() {
+        match escalation {
+            "skip" | "human" | "retry" => {}
+            other => anyhow::bail!(
+                "agent role YAML for {label} declares unsupported escalation `{other}`"
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_names(label: &str, field: &str, names: &[String]) -> anyhow::Result<()> {
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !seen.insert(name.as_str()) {
+            anyhow::bail!("agent role YAML for {label} declares duplicate {field} entry `{name}`");
+        }
+    }
+    Ok(())
+}
+
+fn resolve_declared_runtime_path(path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        default_repo_root().join(path)
     }
 }
 
@@ -428,6 +537,7 @@ fn legacy_role_config_refs(agents_dir: &Path) -> Vec<RoleConfigRef> {
         .iter()
         .map(|(role, filename)| RoleConfigRef {
             role: *role,
+            expected_kind: agent_role_kind(*role),
             label: (*filename).to_string(),
             path: agents_dir.join(filename),
         })
@@ -461,6 +571,7 @@ fn manifest_role_config_refs() -> anyhow::Result<Vec<RoleConfigRef>> {
         let path = resolve_agent_config_path(&repo_root, &config);
         refs.push(RoleConfigRef {
             role: known_role,
+            expected_kind: role.kind,
             label: config,
             path,
         });
@@ -470,6 +581,17 @@ fn manifest_role_config_refs() -> anyhow::Result<Vec<RoleConfigRef>> {
         anyhow::bail!("paper-review manifest did not define any known executable review roles");
     }
     Ok(refs)
+}
+
+fn agent_role_kind(role: grokrxiv_schemas::AgentRole) -> AgentKind {
+    match role {
+        grokrxiv_schemas::AgentRole::Summary
+        | grokrxiv_schemas::AgentRole::TechnicalCorrectness
+        | grokrxiv_schemas::AgentRole::Novelty
+        | grokrxiv_schemas::AgentRole::Reproducibility
+        | grokrxiv_schemas::AgentRole::Citation => AgentKind::Critic,
+        grokrxiv_schemas::AgentRole::MetaReviewer => AgentKind::Synthesizer,
+    }
 }
 
 fn paper_review_manifest_path() -> PathBuf {
@@ -638,6 +760,123 @@ mod tests {
     }
 
     #[test]
+    fn agent_routing_parses_declarative_runtime_fields() {
+        let routing: AgentRouting = serde_yaml::from_str(
+            r#"
+kind: extractor
+provider: gemini
+model: gemini-2.5-flash
+runner: cli
+execution_mode: tool_loop
+prompt_template: prompts/extraction/citations.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/extraction/citations.schema.json
+verifiers: [json_schema, citation]
+tools: [read_file, crossref_lookup, submit]
+max_iters: 80
+max_cost_usd: 0.5
+max_retries: 2
+timeout_secs: 240
+escalation: human
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(routing.kind, Some(AgentKind::Extractor));
+        assert_eq!(
+            routing.execution_mode,
+            grokrxiv_dag_runtime::DagExecutionMode::ToolLoop
+        );
+        assert_eq!(
+            routing.prompt_template.as_deref(),
+            Some("prompts/extraction/citations.md")
+        );
+        assert_eq!(
+            routing.input_schema.as_deref(),
+            Some("schemas/paper_extract.schema.json")
+        );
+        assert_eq!(
+            routing.output_schema.as_deref(),
+            Some("schemas/extraction/citations.schema.json")
+        );
+        assert_eq!(routing.verifiers, vec!["json_schema", "citation"]);
+        assert_eq!(
+            routing.tools,
+            vec!["read_file", "crossref_lookup", "submit"]
+        );
+        assert_eq!(routing.max_iters, Some(80));
+        assert_eq!(routing.max_cost_usd, Some(0.5));
+        assert_eq!(routing.escalation.as_deref(), Some("human"));
+    }
+
+    #[test]
+    fn agent_routing_validation_rejects_missing_declared_runtime_files() {
+        let routing: AgentRouting = serde_yaml::from_str(
+            r#"
+kind: critic
+provider: claude
+model: claude-haiku-4-5-20251001
+runner: cli
+prompt_template: prompts/summary.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/does-not-exist.schema.json
+"#,
+        )
+        .unwrap();
+
+        let err = validate_agent_routing_detail("summary", &AgentKind::Critic, &routing)
+            .expect_err("missing output schema must fail startup validation");
+
+        assert!(err.to_string().contains("output_schema"));
+        assert!(err.to_string().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn agent_routing_validation_rejects_invalid_tool_loop_config() {
+        let routing: AgentRouting = serde_yaml::from_str(
+            r#"
+kind: extractor
+provider: gemini
+model: gemini-2.5-flash
+runner: cli
+execution_mode: tool_loop
+tools: [read_file, read_file]
+max_iters: 0
+max_cost_usd: 0
+"#,
+        )
+        .unwrap();
+
+        let err = validate_agent_routing_detail(
+            "citation_contextualizer",
+            &AgentKind::Extractor,
+            &routing,
+        )
+        .expect_err("invalid tool-loop config should fail validation");
+
+        assert!(err.to_string().contains("max_iters"));
+    }
+
+    #[test]
+    fn agent_routing_validation_rejects_kind_drift_from_manifest() {
+        let routing: AgentRouting = serde_yaml::from_str(
+            r#"
+kind: extractor
+provider: claude
+model: claude-haiku-4-5-20251001
+runner: cli
+"#,
+        )
+        .unwrap();
+
+        let err = validate_agent_routing_detail("summary", &AgentKind::Critic, &routing)
+            .expect_err("agent YAML kind must match DAG role kind");
+
+        assert!(err.to_string().contains("kind=extractor"));
+        assert!(err.to_string().contains("kind=critic"));
+    }
+
+    #[test]
     fn build_agent_registry_applies_resolved_model_override() {
         let _guard = EnvVarGuard::set(
             crate::runtime_config::role_model_override_env_var(AgentRole::Summary),
@@ -647,11 +886,21 @@ mod tests {
         role_yaml.insert(
             AgentRole::Summary,
             Some(AgentRouting {
+                kind: Some(AgentKind::Critic),
                 provider: "claude".to_string(),
                 model: "claude-haiku-4-5-20251001".to_string(),
                 runner: Some(AgentRunnerKind::Cli),
+                execution_mode: DagExecutionMode::OneShot,
+                prompt_template: Some("prompts/summary.md".to_string()),
+                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
+                output_schema: Some("schemas/summary_review.schema.json".to_string()),
+                verifiers: vec!["json_schema".to_string()],
+                tools: Vec::new(),
+                max_iters: None,
+                max_cost_usd: None,
                 max_retries: Some(2),
                 timeout_secs: Some(90),
+                escalation: Some("skip".to_string()),
             }),
         );
         let mut schemas = AgentSchemaMap::new();
@@ -699,11 +948,21 @@ mod tests {
         role_yaml.insert(
             AgentRole::Summary,
             Some(AgentRouting {
+                kind: Some(AgentKind::Critic),
                 provider: "claude".to_string(),
                 model: "claude-haiku-4-5-20251001".to_string(),
                 runner: Some(AgentRunnerKind::Cli),
+                execution_mode: DagExecutionMode::OneShot,
+                prompt_template: Some("prompts/summary.md".to_string()),
+                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
+                output_schema: Some("schemas/summary_review.schema.json".to_string()),
+                verifiers: vec!["json_schema".to_string()],
+                tools: Vec::new(),
+                max_iters: None,
+                max_cost_usd: None,
                 max_retries: Some(2),
                 timeout_secs: Some(90),
+                escalation: Some("skip".to_string()),
             }),
         );
 
@@ -722,11 +981,21 @@ mod tests {
         role_yaml.insert(
             AgentRole::Summary,
             Some(AgentRouting {
+                kind: Some(AgentKind::Critic),
                 provider: "claude".to_string(),
                 model: "claude-haiku-4-5-20251001".to_string(),
                 runner: Some(AgentRunnerKind::Api),
+                execution_mode: DagExecutionMode::OneShot,
+                prompt_template: Some("prompts/summary.md".to_string()),
+                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
+                output_schema: Some("schemas/summary_review.schema.json".to_string()),
+                verifiers: vec!["json_schema".to_string()],
+                tools: Vec::new(),
+                max_iters: None,
+                max_cost_usd: None,
                 max_retries: Some(2),
                 timeout_secs: Some(90),
+                escalation: Some("skip".to_string()),
             }),
         );
 

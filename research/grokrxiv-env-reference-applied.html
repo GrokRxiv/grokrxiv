@@ -220,9 +220,68 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <main class="prose">
 <h1 id="grokrxiv-env-var-reference--applied"><a class="anchor" aria-label="anchor" href="#grokrxiv-env-var-reference--applied">#</a><code>grokrxiv</code> env-var reference — applied</h1>
 <p>Env vars consumed by the orchestrator binary (<code>grokrxiv</code> / <code>grokrxiv-orchestrator</code>)
-and the Next.js web tier. Layered config order is: CLI flags > ENV > TOML
-profile > built-in defaults. The CLI's <code>--profile &#x3C;name></code> and <code>--config &#x3C;path></code>
-flags pick the TOML file/profile that ENV then overrides.</p>
+and the Next.js web tier. Layered config order is: CLI flags > process ENV /
+root <code>.env</code> / included <code>.env_*</code> files > TOML profile > built-in defaults. The
+CLI's <code>--profile &#x3C;name></code> and <code>--config &#x3C;path></code> flags pick the TOML file/profile
+that ENV then overrides.</p>
+<h2 id="env-files"><a class="anchor" aria-label="anchor" href="#env-files">#</a>Env Files</h2>
+<p>The root <code>.env</code> is now a selector. It should normally contain only
+<code>GROKRXIV_ENV_FILES</code>, for example:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">GROKRXIV_ENV_FILES</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">.env_core,.env_ingest,.env_extract,.env_review,.env_publish,.env_web,.env_billing,.env_dev</span></span></code></pre></figure>
+<p>The Rust CLI/orchestrator loads <code>.env</code> first, then loads the files named in
+<code>GROKRXIV_ENV_FILES</code> relative to the root <code>.env</code> directory. Existing process
+vars and root <code>.env</code> values win over included files.</p>
+<p>Docker Compose does not follow <code>GROKRXIV_ENV_FILES</code> during <code>${...}</code>
+interpolation. Before <code>docker compose up</code>, export the split env files into the
+shell:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span></span>
+<span data-line=""><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span></span>
+<span data-line=""><span style="color:#F97583">for</span><span style="color:#E1E4E8"> file </span><span style="color:#F97583">in</span><span style="color:#E1E4E8"> ${GROKRXIV_ENV_FILES</span><span style="color:#F97583">//</span><span style="color:#E1E4E8">,</span><span style="color:#F97583">/</span><span style="color:#E1E4E8"> }; </span><span style="color:#F97583">do</span><span style="color:#79B8FF"> source</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$file</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">done</span></span>
+<span data-line=""><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span></code></pre></figure>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.env_core</code></td>
+<td>Supabase/Postgres, orchestrator bind URLs, service/admin tokens, public base URLs</td>
+</tr>
+<tr>
+<td><code>.env_ingest</code></td>
+<td>arXiv/Crossref endpoints, data repo paths, storage, ingest scheduler and cache controls</td>
+</tr>
+<tr>
+<td><code>.env_extract</code></td>
+<td>Pandoc, LaTeXML, extraction mode, and extraction-agent toggles</td>
+</tr>
+<tr>
+<td><code>.env_review</code></td>
+<td>LLM provider keys, runners, role models, timeouts, review/verifier controls</td>
+</tr>
+<tr>
+<td><code>.env_publish</code></td>
+<td>GitHub publisher, webhook/revalidate secrets, publish-path E2E controls</td>
+</tr>
+<tr>
+<td><code>.env_web</code></td>
+<td>Next.js public env, web Supabase URLs, admin seed, SMTP</td>
+</tr>
+<tr>
+<td><code>.env_billing</code></td>
+<td>Stripe billing keys and billing enablement</td>
+</tr>
+<tr>
+<td><code>.env_dev</code></td>
+<td>Docker platform/build toggles, diagnostics, supervisor sizing, local safety switches</td>
+</tr>
+</tbody>
+</table>
+<p>Templates are committed as <code>.env_&#x3C;purpose>.example</code>. Real <code>.env_&#x3C;purpose></code>
+files are gitignored.</p>
 <h2 id="service"><a class="anchor" aria-label="anchor" href="#service">#</a>Service</h2>
 <table>
 <thead>
@@ -339,16 +398,6 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td><code>GROKRXIV_FREE_REVIEW_LIMIT</code></td>
 <td><em>none</em></td>
 <td>Lifetime free full-review cap per logged-in user; default <code>3</code></td>
-</tr>
-<tr>
-<td><code>GROKRXIV_DAILY_FULL_REVIEW_LIMIT</code></td>
-<td><em>none</em></td>
-<td>Optional global daily full-review throttle</td>
-</tr>
-<tr>
-<td><code>GROKRXIV_MONTHLY_FULL_REVIEW_LIMIT</code></td>
-<td><em>none</em></td>
-<td>Optional global monthly full-review throttle</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_NO_CACHE</code></td>
@@ -750,7 +799,7 @@ enabled in <code>supabase/config.toml</code>, but routes it to the local Mailpit
 container instead of Mailgun.</p>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-22T01:04:29.252Z &middot; grokrxiv</p>
+<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-22T01:32:21.819Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

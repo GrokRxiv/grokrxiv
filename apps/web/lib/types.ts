@@ -8,7 +8,8 @@ export type ReviewStatus =
   | "published"
   | "corrected"
   | "withdrawn"
-  | "rejected";
+  | "rejected"
+  | "system_failed";
 
 export type ReviewVisibility = "public" | "private";
 
