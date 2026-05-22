@@ -247,7 +247,12 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 </tr>
 </tbody>
 </table>
-<p><code>.env.local</code> is gitignored, so this is a per-machine setup step that needs to happen once after <code>supabase start</code> produces keys.</p>
+<p><code>.env.local</code> is gitignored, so this is a per-machine setup step when running
+the web app directly with <code>cd apps/web &#x26;&#x26; pnpm dev</code>. When running through the
+root <code>docker-compose.yml</code>, Compose passes env vars into the container before
+Next.js reads <code>apps/web/.env*</code>; the Compose file therefore now defaults to the
+Supabase CLI local-dev keys instead of passing empty strings that override the
+app-local env files.</p>
 <h2 id="risk"><a class="anchor" aria-label="anchor" href="#risk">#</a>Risk</h2>
 <table>
 <thead>
@@ -282,10 +287,15 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">cd</span><span style="color:#9ECBFF"> apps/web</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#B392F0">pnpm</span><span style="color:#9ECBFF"> dev</span></span>
 <span data-line=""><span style="color:#6A737D"># In another shell:</span></span>
 <span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> http://localhost:3000/api/v1/papers/2605.00403</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> head</span><span style="color:#79B8FF"> -c</span><span style="color:#79B8FF"> 200</span></span>
-<span data-line=""><span style="color:#6A737D"># Should return real paper JSON, not {"error":"not_found"}.</span></span></code></pre></figure>
+<span data-line=""><span style="color:#6A737D"># Should return real paper JSON, not {"error":"not_found"}.</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#6A737D"># Docker Compose path:</span></span>
+<span data-line=""><span style="color:#B392F0">docker</span><span style="color:#9ECBFF"> compose</span><span style="color:#9ECBFF"> up</span><span style="color:#79B8FF"> -d</span><span style="color:#9ECBFF"> web</span></span>
+<span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> 'http://localhost:3000/api/v1/reviews?limit=5'</span></span>
+<span data-line=""><span style="color:#6A737D"># Should return published review rows from the local Supabase database.</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>web-env-local-placeholder-fix-applied.md &middot; generated 2026-05-16T01:44:11.933Z &middot; grokrxiv</p>
+<p>web-env-local-placeholder-fix-applied.md &middot; generated 2026-05-22T13:02:59.240Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

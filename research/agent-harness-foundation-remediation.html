@@ -221,7 +221,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <h1 id="agent-harness--orchestration-foundation-remediation-plan"><a class="anchor" aria-label="anchor" href="#agent-harness--orchestration-foundation-remediation-plan">#</a>Agent harness + orchestration: foundation remediation plan</h1>
 <p><strong>Date:</strong> 2026-05-20
 <strong>Scope:</strong> Deep review of the agent review harness and orchestration layer following the 2026-05-20 Part-A remediation merge, plus a framework / foundational-harness gap analysis for research-paper reviews at scale.
-<strong>Status:</strong> Roadmap — not implemented.</p>
+<strong>Status:</strong> Tier 1 remediation branch — behavior-preserving supervisor decomposition first; foundation refactors deferred.</p>
 <hr>
 <h2 id="where-the-codebase-actually-stands"><a class="anchor" aria-label="anchor" href="#where-the-codebase-actually-stands">#</a>Where the codebase actually stands</h2>
 <p>Today's <code>952c4e5</code> (Merge fp-remediation-root) plus the post-merge fixes (<code>ec339df</code> budget supervisor timeout for corrective retries, <code>72ae2b5</code> kill cli subprocess groups on timeout) landed roughly 24 of the 27 Part A items. The CLI smoke (<code>tests/manual/smoke-root-72ae2b5.json</code>) confirms the harness runs end-to-end against arXiv <code>2605.17307</code>: 6/6 agents <code>verifier_status: pass</code>, a real PR (#31) opened, status <code>pr_open</code>. The system works.</p>
@@ -246,13 +246,13 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <p><strong>Corrective retry actually mutates the system prompt.</strong> <code>corrective_system_prompt(&#x26;system, &#x26;first_err)</code> differentiates <code>OutputFailureKind::SchemaValidation</code> from prose-wrap. Two tests pin the behaviour (<code>corrective_retry_changes_system_prompt_for_prose_wrapped_json</code>, <code>…_for_schema_failure</code>). The "model wrote prose, retry sends same prompt, model writes prose again" loop is broken.</p>
 </li>
 <li>
-<p><strong>Supervisor-level timeout wraps every <code>agent.run</code>.</strong> <code>run_agent_with_supervisor_timeout</code> (supervisor.rs:3141) hard-caps each call at <code>spec.timeout_secs + 30</code>. Wedged runners stop hoarding semaphore slots.</p>
+<p><strong>Supervisor-level timeout wraps every <code>agent.run</code>.</strong> <code>run_agent_with_supervisor_timeout</code> now lives with the review flow and hard-caps each call at <code>spec.timeout_secs + 30</code>. Wedged runners stop hoarding semaphore slots.</p>
 </li>
 <li>
 <p><strong>CLI subprocess <code>kill_on_drop(true)</code></strong> plus process-group kill on timeout (<code>72ae2b5</code>). A wedged claude/codex/gemini subprocess actually dies instead of leaking.</p>
 </li>
 <li>
-<p><strong>Publish-after-approval idempotency via <code>publish_inflight: Mutex&#x3C;HashSet&#x3C;Uuid>></code>.</strong> Second click logs <code>"publish job already in flight"</code> and returns <code>Ok(())</code> without enqueueing. Cleanup on enqueue failure. Test at <code>supervisor.rs:3307</code>.</p>
+<p><strong>Publish-after-approval idempotency via <code>publish_inflight: Mutex&#x3C;HashSet&#x3C;Uuid>></code>.</strong> Second click logs <code>"publish job already in flight"</code> and returns <code>Ok(())</code> without enqueueing. Cleanup on enqueue failure.</p>
 </li>
 <li>
 <p><strong>PR-open reconcile loop</strong> spawns from <code>serve.rs:60</code>, polls every 300s, walks <code>list_pr_open_reviews_with_urls</code>, queries GitHub via octocrab, calls the existing <code>finalize_published_review</code>. Reconcile stats logged per pass.</p>
@@ -297,7 +297,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <p><strong>The CLI smoke gate checks <code>verifier_status</code> per agent, not <code>gate_verdict</code>.</strong> Today's smoke passes the gate ("6/6 pass") even though <code>gate_verdict: "fail"</code>. That's correct as a regression test — it's "the harness ran" not "the review's verdict was accept" — but operators reading the file might mistake <code>gate_verdict: fail</code> for a regression. Worth a one-line comment in the JSON or rename <code>gate_verdict</code> to <code>meta_recommendation_gate</code>.</p>
 </li>
 <li>
-<p><strong><code>supervisor.rs</code> grew from 3,524 → 4,472 lines.</strong> The remediation added ~950 lines net. The file is moving in the wrong direction for legibility. The split-by-concern idea from the original review (dag/prompts/merges/cache/verify modules) is more urgent now than two weeks ago.</p>
+<p><strong><code>supervisor.rs</code> had become the immediate maintainability blocker.</strong> The file mixed queue dispatch, review orchestration, prompt construction, verifier handling, fact merges, rendering, and publishing. The Tier 1 remediation is a behavior-preserving decomposition into private <code>supervisor/</code> modules, not a new DAG runtime.</p>
 </li>
 </ol>
 <hr>
@@ -317,15 +317,15 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <h2 id="hard-couplings-still-blocking-the-framework-story"><a class="anchor" aria-label="anchor" href="#hard-couplings-still-blocking-the-framework-story">#</a>Hard couplings still blocking the framework story</h2>
 <p>Severity-tagged. <strong>B</strong> = blocker for non-arXiv domains. <strong>S</strong> = scaling concern at >100 reviews/day.</p>
 <h3 id="b1-agentrole-is-still-a-6-variant-enum-in-grokrxiv_schemas"><a class="anchor" aria-label="anchor" href="#b1-agentrole-is-still-a-6-variant-enum-in-grokrxiv_schemas">#</a><strong>B1. <code>AgentRole</code> is still a 6-variant enum in <code>grokrxiv_schemas</code>.</strong></h3>
-<p>Adding <code>triage</code>, <code>ethics</code>, <code>statistical_methodology</code>, <code>computational_chemistry</code> still requires touching the enum, the migration (CHECK constraint at <code>init.sql:70</code>), <code>role_slug</code>, <code>role_sort_key</code>, <code>ROLE_FILES</code>, <code>parse_role_slug</code>, plus per-role code paths in <code>supervisor.rs</code> (system prompt, merge functions, prompt builder). The remediation kept the enum. Roles are still code, not config.</p>
+<p>Adding <code>triage</code>, <code>ethics</code>, <code>statistical_methodology</code>, <code>computational_chemistry</code> still requires touching the enum, the migration (CHECK constraint at <code>init.sql:70</code>), <code>role_slug</code>, <code>role_sort_key</code>, <code>ROLE_FILES</code>, <code>parse_role_slug</code>, plus per-role code paths in the supervisor modules. The remediation kept the enum. Roles are still code, not config.</p>
 <h3 id="b2-paperextract-is-the-only-artifact-the-harness-knows"><a class="anchor" aria-label="anchor" href="#b2-paperextract-is-the-only-artifact-the-harness-knows">#</a><strong>B2. <code>PaperExtract</code> is the only <code>Artifact</code> the harness knows.</strong></h3>
 <p>70+ call sites take <code>&#x26;PaperExtract</code>. <code>specialist_facts.rs</code> (821 lines, untouched today) is hard-typed against paper structure. <code>VerifierContext.paper: &#x26;PaperExtract</code>. <code>ExtractionContext.extract: &#x26;PaperExtract</code>. Switching to "review a code repo" or "review a dataset" requires a typed-trait abstraction or a wide refactor.</p>
 <h3 id="b3-review_dagrs-is-still-decorative"><a class="anchor" aria-label="anchor" href="#b3-review_dagrs-is-still-decorative">#</a><strong>B3. <code>review_dag.rs</code> is still decorative.</strong></h3>
 <p>340 lines, zero commits today. The executor still walks <code>specialist_roles</code> manually. <code>ReviewDag::canonical()</code> is built and validated at runtime, then ignored. The whole "different review topologies per project" story needs the executor to actually drive <code>ReviewDag</code>.</p>
-<h3 id="b4-build_specialist_prompt-280-lines-in-supervisorrs-is-hardcoded-paper-domain-scaffolding"><a class="anchor" aria-label="anchor" href="#b4-build_specialist_prompt-280-lines-in-supervisorrs-is-hardcoded-paper-domain-scaffolding">#</a><strong>B4. <code>build_specialist_prompt</code> (~280 lines in <code>supervisor.rs</code>) is hardcoded paper-domain scaffolding.</strong></h3>
+<h3 id="b4-build_specialist_prompt-is-hardcoded-paper-domain-scaffolding"><a class="anchor" aria-label="anchor" href="#b4-build_specialist_prompt-is-hardcoded-paper-domain-scaffolding">#</a><strong>B4. <code>build_specialist_prompt</code> is hardcoded paper-domain scaffolding.</strong></h3>
 <p>"Paper title / Abstract / Section headings / Paper body / Citation contexts / Bibliography / Verified availability facts / Verified prior-art candidates / Verified structural facts." Right for arXiv, wrong for anything else. A foundation needs <code>RoleSpec.render_prompt(&#x26;Artifact, &#x26;Facts) -> String</code> per role.</p>
 <h3 id="b5-is_code_amenable_field-body_budget_chars-proof-as-code-system-prompt-mutation"><a class="anchor" aria-label="anchor" href="#b5-is_code_amenable_field-body_budget_chars-proof-as-code-system-prompt-mutation">#</a><strong>B5. <code>is_code_amenable_field</code>, <code>body_budget_chars</code>, proof-as-code system-prompt mutation.</strong></h3>
-<p>All in <code>supervisor.rs</code>, all hardcoded to arXiv field prefixes. A bio/clinical/legal/RFP review pipeline would inherit these inappropriately.</p>
+<p>These are now isolated in <code>supervisor/prompts.rs</code>, but they remain hardcoded to arXiv field prefixes. A bio/clinical/legal/RFP review pipeline would inherit these inappropriately until roles and prompt templates become runtime config.</p>
 <h3 id="b6-ingest-crate-is-arxiv_id--paperextract"><a class="anchor" aria-label="anchor" href="#b6-ingest-crate-is-arxiv_id--paperextract">#</a><strong>B6. ingest crate is <code>arxiv_id → PaperExtract</code>.</strong></h3>
 <p>No source-adapter trait. <code>crates/ingest/src/source.rs</code> already added local-PDF + git-repo paths (per yesterday's <code>2b85331</code> checkpoint merge), but they all converge on <code>PaperExtract</code>. A real adapter trait would let "ingest" be a registry.</p>
 <h3 id="b7-publisher-crate-is-openreviewpr--github"><a class="anchor" aria-label="anchor" href="#b7-publisher-crate-is-openreviewpr--github">#</a><strong>B7. publisher crate is <code>OpenReviewPr → GitHub</code>.</strong></h3>
@@ -349,59 +349,39 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <h3 id="s9-no-streaming-progress-to-the-moderator"><a class="anchor" aria-label="anchor" href="#s9-no-streaming-progress-to-the-moderator">#</a><strong>S9. No streaming progress to the moderator.</strong></h3>
 <p>6 specialists run in parallel; the operator sees nothing until all 6 finish + meta runs. For a 5-minute review that's fine; for a longer review (e.g. a long paper with deep fact verification) it's frustrating. Server-sent events per specialist completion would help.</p>
 <hr>
-<h2 id="refactor-path--three-moves-then-youre-a-framework"><a class="anchor" aria-label="anchor" href="#refactor-path--three-moves-then-youre-a-framework">#</a>Refactor path — three moves, then you're a framework</h2>
-<p>These supersede the prior R1/R2/R3 with today's state as the baseline. Effort estimates are post-remediation (the supervisor is cleaner now; some of the work is already partially done).</p>
-<h3 id="r1-roles-become-runtime-config-b1--b4--b5--s2--s3--s4"><a class="anchor" aria-label="anchor" href="#r1-roles-become-runtime-config-b1--b4--b5--s2--s3--s4">#</a><strong>R1. Roles become runtime config (B1 + B4 + B5 + S2 + S3 + S4).</strong></h3>
-<p>Replace the <code>AgentRole</code> enum with a runtime-loaded role registry. <code>RoleSpec</code> carries everything a role needs:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">struct</span><span style="color:#B392F0"> RoleSpec</span><span style="color:#E1E4E8"> {</span></span>
-<span data-line=""><span style="color:#E1E4E8">  id</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,                        </span><span style="color:#6A737D">// "summary" | "stats_methodology" | "ethics"</span></span>
-<span data-line=""><span style="color:#E1E4E8">  display_name</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#E1E4E8">  prompt_template</span><span style="color:#F97583">:</span><span style="color:#B392F0"> PromptTemplate</span><span style="color:#E1E4E8">,   </span><span style="color:#6A737D">// tera/handlebars; renders against Artifact + Facts</span></span>
-<span data-line=""><span style="color:#E1E4E8">  system_prompt</span><span style="color:#F97583">:</span><span style="color:#B392F0"> String</span><span style="color:#E1E4E8">,             </span><span style="color:#6A737D">// also templatable</span></span>
-<span data-line=""><span style="color:#E1E4E8">  schema</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Arc</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">>,</span></span>
-<span data-line=""><span style="color:#E1E4E8">  verifiers</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Vec</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">VerifierConfig</span><span style="color:#E1E4E8">>,    </span><span style="color:#6A737D">// declared, not hardcoded</span></span>
-<span data-line=""><span style="color:#E1E4E8">  facts</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Vec</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">FactPluginRef</span><span style="color:#E1E4E8">>,         </span><span style="color:#6A737D">// per-role deterministic fact gathering</span></span>
-<span data-line=""><span style="color:#E1E4E8">  budget</span><span style="color:#F97583">:</span><span style="color:#B392F0"> CostBudget</span><span style="color:#E1E4E8">,                </span><span style="color:#6A737D">// per-role $cap + token cap (S2)</span></span>
-<span data-line=""><span style="color:#E1E4E8">  escalation</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">EscalationRule</span><span style="color:#E1E4E8">>,</span><span style="color:#6A737D">// "if confidence &#x3C; X, escalate to model Y" (S3)</span></span>
-<span data-line=""><span style="color:#E1E4E8">  profile</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">Profile</span><span style="color:#E1E4E8">>,          </span><span style="color:#6A737D">// overlay (S4)</span></span>
-<span data-line=""><span style="color:#E1E4E8">  spec</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentSpec</span><span style="color:#E1E4E8">,                   </span><span style="color:#6A737D">// provider/model/runner/timeout</span></span>
-<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<p>DB: <code>review_agents.role</code> becomes <code>text</code> (CHECK constraint dropped or expanded with a registry-aware migration). Supervisor's role-keyed <code>HashMap&#x3C;AgentRole, _></code> becomes <code>HashMap&#x3C;String, RoleSpec></code>. Adding a new reviewer = add <code>agents/&#x3C;role>.yaml</code> + <code>schemas/&#x3C;role>.schema.json</code> + <code>prompts/&#x3C;role>.md</code>. No code change, no migration.</p>
-<p>This also fixes the dormant <code>AgentRole::Render</code> placeholder (Render becomes one role registry entry, with its own schema, no enum collision).</p>
-<p><strong>Effort: ~10-14 days. Unlocks everything downstream.</strong></p>
-<h3 id="r2-paperextract--artifact-trait-b2--b6--s5"><a class="anchor" aria-label="anchor" href="#r2-paperextract--artifact-trait-b2--b6--s5">#</a><strong>R2. <code>PaperExtract</code> → <code>Artifact</code> trait (B2 + B6 + S5).</strong></h3>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">trait</span><span style="color:#B392F0"> Artifact</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Send</span><span style="color:#F97583"> +</span><span style="color:#B392F0"> Sync</span><span style="color:#E1E4E8"> {</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> kind</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#F97583"> &#x26;</span><span style="color:#B392F0">str</span><span style="color:#E1E4E8">;                         </span><span style="color:#6A737D">// "arxiv_paper" | "code_repo" | ...</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> id</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#F97583"> &#x26;</span><span style="color:#B392F0">str</span><span style="color:#E1E4E8">;</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> version</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> u32</span><span style="color:#E1E4E8">;                        </span><span style="color:#6A737D">// S5: first-class versioning</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> primary_text</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#F97583">&#x26;</span><span style="color:#B392F0">str</span><span style="color:#E1E4E8">>;</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> structured</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#F97583"> &#x26;</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">;</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> metadata</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#F97583"> &#x26;</span><span style="color:#B392F0">Map</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">String</span><span style="color:#E1E4E8">, </span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">>;</span></span>
-<span data-line=""><span style="color:#F97583">  fn</span><span style="color:#B392F0"> fact_inputs</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> FactInputs</span><span style="color:#E1E4E8">;             </span><span style="color:#6A737D">// urls, citations, tables — what facts plugins read</span></span>
-<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<p><code>AgentInput.artifact: Arc&#x3C;dyn Artifact></code>. <code>VerifierContext.artifact: &#x26;dyn Artifact</code>. <code>specialist_facts.rs</code>'s <code>gather_*_facts</code> become role-config-attached <code>FactPlugin</code> impls instead of supervisor functions.</p>
-<p>DB: <code>artifacts</code> table with <code>kind</code> discriminator + <code>version</code>; <code>papers</code> becomes a view (or migrate via UNION); <code>reviews.paper_id → artifact_id + artifact_version</code>. Backwards-compat view for the existing UI.</p>
-<p>Source-adapter trait (B6) falls out of this naturally: <code>trait SourceAdapter { fn fetch(source_ref: &#x26;SourceRef) -> Box&#x3C;dyn Artifact> }</code>.</p>
-<p><strong>Effort: ~8-12 days. Unlocks domain-portability.</strong></p>
-<h3 id="r3-dag-composition-driver-b3--s3--s8"><a class="anchor" aria-label="anchor" href="#r3-dag-composition-driver-b3--s3--s8">#</a><strong>R3. DAG composition driver (B3 + S3 + S8).</strong></h3>
-<p>Make <code>review_dag.rs</code> the supervisor's actual executor. Each <code>ReviewNodeKind</code> becomes a handler trait:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">trait</span><span style="color:#B392F0"> NodeHandler</span><span style="color:#E1E4E8"> {</span></span>
-<span data-line=""><span style="color:#F97583">  async</span><span style="color:#F97583"> fn</span><span style="color:#B392F0"> run</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF">self</span><span style="color:#E1E4E8">, ctx</span><span style="color:#F97583">:</span><span style="color:#F97583"> &#x26;</span><span style="color:#B392F0">DagCtx</span><span style="color:#E1E4E8">, deps</span><span style="color:#F97583">:</span><span style="color:#F97583"> &#x26;</span><span style="color:#E1E4E8">[</span><span style="color:#B392F0">NodeOutput</span><span style="color:#E1E4E8">]) </span><span style="color:#F97583">-></span><span style="color:#B392F0"> NodeOutput</span><span style="color:#E1E4E8">;</span></span>
-<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<p>DAG topology is config:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="yaml" data-theme="github-dark"><code data-language="yaml" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># dags/arxiv_review.yaml</span></span>
-<span data-line=""><span style="color:#85E89D">nodes</span><span style="color:#E1E4E8">:</span></span>
-<span data-line=""><span style="color:#E1E4E8">  - { </span><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">prep</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">kind</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">prepare</span><span style="color:#E1E4E8"> }</span></span>
-<span data-line=""><span style="color:#E1E4E8">  - { </span><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">summary</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">kind</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">specialist</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">role</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">summary</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">depends</span><span style="color:#E1E4E8">: [</span><span style="color:#9ECBFF">prep</span><span style="color:#E1E4E8">] }</span></span>
-<span data-line=""><span style="color:#E1E4E8">  - { </span><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">tc</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">kind</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">specialist</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">role</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">technical_correctness</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">depends</span><span style="color:#E1E4E8">: [</span><span style="color:#9ECBFF">prep</span><span style="color:#E1E4E8">] }</span></span>
-<span data-line=""><span style="color:#79B8FF">  ...</span></span>
-<span data-line=""><span style="color:#E1E4E8">  - { </span><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">tiebreaker</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">kind</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">conditional_specialist</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#85E89D">      role</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">tiebreaker</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">run_if</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"specialists_disagree({{tc.confidence}}, {{novelty.confidence}})"</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#85E89D">      depends</span><span style="color:#E1E4E8">: [</span><span style="color:#9ECBFF">tc</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">novelty</span><span style="color:#E1E4E8">] }</span></span>
-<span data-line=""><span style="color:#E1E4E8">  - { </span><span style="color:#85E89D">id</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">meta</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">kind</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">meta_reviewer</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">min_quorum</span><span style="color:#E1E4E8">: </span><span style="color:#79B8FF">3</span><span style="color:#E1E4E8">, </span><span style="color:#85E89D">depends</span><span style="color:#E1E4E8">: [</span><span style="color:#79B8FF">...</span><span style="color:#E1E4E8">] }</span></span></code></pre></figure>
-<p>Different projects (or different artifact kinds) = different DAG yamls. The "review-and-revise" path becomes a DAG with an <code>apply_revisions</code> node, not a hidden enum.</p>
-<p>Shadow-review and A/B (S8) become DAG configurations: run two parallel <code>specialist</code> nodes for the same role with different specs, compare outputs.</p>
-<p><strong>Effort: ~5-7 days. Unlocks per-project topologies, ensembles, escalation, A/B.</strong></p>
+<h2 id="tiered-remediation-path"><a class="anchor" aria-label="anchor" href="#tiered-remediation-path">#</a>Tiered remediation path</h2>
+<h3 id="tier-1-behavior-preserving-supervisor-decomposition"><a class="anchor" aria-label="anchor" href="#tier-1-behavior-preserving-supervisor-decomposition">#</a><strong>Tier 1. Behavior-preserving supervisor decomposition</strong></h3>
+<p>This is the immediate remediation. Keep the runtime behavior stable and split the old monolithic supervisor into focused private modules:</p>
+<ul>
+<li><code>supervisor/review_flow.rs</code> owns the current specialist -> verifier -> quorum -> meta-review -> render sequence.</li>
+<li><code>supervisor/prompts.rs</code>, <code>verification.rs</code>, and <code>merge_facts.rs</code> isolate prompt construction, verifier plumbing, and deterministic fact overlays.</li>
+<li><code>supervisor/rendering.rs</code>, <code>publish.rs</code>, and <code>jobs.rs</code> isolate artifact rendering, publish/reconcile helpers, and queue/worker dispatch.</li>
+<li><code>supervisor.rs</code> remains the public entrypoint for <code>Supervisor</code>, public wrappers, module declarations, and shared glue.</li>
+</ul>
+<p>Do not make YAML DAG topology executable in this tier. Do not add migrations. Do not change role schemas, cache semantics, verifier semantics, publish behavior, or CLI smoke expectations.</p>
+<h3 id="tier-2-role-and-prompt-registry"><a class="anchor" aria-label="anchor" href="#tier-2-role-and-prompt-registry">#</a><strong>Tier 2. Role and prompt registry</strong></h3>
+<p>After the supervisor split is stable, move role-specific prompt/schema/fact configuration out of code. Keep this as a separate branch because it affects <code>AgentRole</code>, schema lookup, DB role constraints, prompt rendering, and cache identity.</p>
+<p>Deferred work:</p>
+<ul>
+<li>Runtime string-keyed roles / <code>RoleSpec</code>.</li>
+<li>Prompt templates and fact-plugin configuration.</li>
+<li>Prompt-hash or schema-id cache invalidation.</li>
+<li>Per-role and per-review cost ceilings.</li>
+<li>Escalation and reviewer profile support.</li>
+</ul>
+<h3 id="tier-3-artifact-dag-and-publishing-foundation"><a class="anchor" aria-label="anchor" href="#tier-3-artifact-dag-and-publishing-foundation">#</a><strong>Tier 3. Artifact, DAG, and publishing foundation</strong></h3>
+<p>Only after Tier 2 has a stable role boundary should the framework move beyond <code>PaperExtract</code> and the hardcoded review flow.</p>
+<p>The detailed future implementation plan lives in
+<a href="yaml-dag-agent-runtime-major-revision-plan.md"><code>docs/yaml-dag-agent-runtime-major-revision-plan.md</code></a>.</p>
+<p>Deferred work:</p>
+<ul>
+<li><code>ReviewArtifact</code> or equivalent artifact abstraction.</li>
+<li>Source adapter registry for arXiv, local PDF/TeX, git repos, and future domains.</li>
+<li>Executable DAG/YAML runtime using <code>review_dag.rs</code> topology as the driver.</li>
+<li>Audit bundle generation.</li>
+<li>Tenant/RLS model.</li>
+<li>OpenReview or other publish adapters.</li>
+</ul>
 <h2 id="stretch-not-on-the-critical-path-but-valuable-at-scale"><a class="anchor" aria-label="anchor" href="#stretch-not-on-the-critical-path-but-valuable-at-scale">#</a>Stretch (not on the critical path but valuable at scale)</h2>
 <ul>
 <li><strong>S7 audit bundle</strong>: after every review, persist <code>audit/&#x3C;review_id>.zip</code> containing prompts, raw outputs, verifier diagnostics, fact-plugin results. Two days of work.</li>
@@ -420,33 +400,25 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <h2 id="recommendations-on-sequencing"><a class="anchor" aria-label="anchor" href="#recommendations-on-sequencing">#</a>Recommendations on sequencing</h2>
 <ol>
 <li>
-<p><strong>Close the three sidestepped items first.</strong> They're cheap and prevent future confusion:</p>
-<ul>
-<li>Add <code>AgentRole::Render</code> enum variant + migration (1 day) so the placeholder is gone.</li>
-<li>Delete Cloud + LocalInference runners + enum variants (~1 day; recoverable from git).</li>
-<li>Document the <code>pr_kind: revision_needed</code> state machine in <code>schemas/review_bundle_metadata.schema.json</code> (2 hours).</li>
-</ul>
+<p><strong>Land Tier 1 first.</strong> The current blocker is maintainability, not missing YAML execution. A behavior-preserving supervisor split gets most of the benefit with much less risk.</p>
 </li>
 <li>
-<p><strong>Split <code>supervisor.rs</code> into modules.</strong> It's 4,472 lines. The dag/prompts/merges/cache/verify split from earlier reviews now has even more cause. Pure refactor, no behavior change. ~3 days.</p>
+<p><strong>Keep DAG/YAML as a later runtime change.</strong> <code>review_dag.rs</code> can remain the topology reference while <code>review_flow.rs</code> executes today's pipeline. Turning topology into an executor should happen only after the base is stable.</p>
 </li>
 <li>
-<p><strong>Then commit to R1 (RoleSpec)</strong>. It's the highest-leverage foundational move and is most disruptive to land — better to do it before the codebase grows further.</p>
+<p><strong>Do Tier 2 before broad artifact work.</strong> Runtime roles and prompt/fact configuration are the highest-leverage foundation boundary. They also reduce the risk of making a generic artifact abstraction around hardcoded role behavior.</p>
 </li>
 <li>
-<p><strong>R2 and R3 can land after R1 in either order</strong>, but R3 is faster (~1 week vs R2's ~2 weeks).</p>
+<p><strong>Pick a second domain before Tier 3.</strong> Artifact and publish abstractions should be pulled by a real consumer, not invented speculatively.</p>
 </li>
 <li>
-<p><strong>Pick the framework's first second domain</strong> before doing R1+R2+R3. Without a concrete second-domain consumer the abstractions will be speculative; with one (e.g., "review my company's RFCs" or "review research-grant proposals") every refactor decision has a forcing function.</p>
-</li>
-<li>
-<p><strong>Add an audit-bundle stage and a per-paper cost ceiling early in the foundation work</strong>. Both are operator-facing scale features that pay back immediately, even without R1-R3, and they constrain how the foundation is designed.</p>
+<p><strong>Add audit and cost controls early in foundation work.</strong> They are useful even inside the current arXiv-only pipeline and constrain later framework interfaces.</p>
 </li>
 </ol>
 <hr>
 <h2 id="bottom-line"><a class="anchor" aria-label="anchor" href="#bottom-line">#</a>Bottom line</h2>
 <p>The remediation closed the bleeding. The harness is now production-shaped: bounded workers, graceful shutdown, idempotent publish, real reconcile loop, honest cost telemetry, structured corrective retries, supervisor-level timeouts, subprocess cleanup. That's most of what "at scale" needs from a single-domain operational perspective.</p>
-<p>What's left for "foundational research-paper review framework at scale" is a clean separation between <em>configuration</em> (roles, prompts, DAGs, schemas, profiles) and <em>executor</em> (the supervisor that walks any DAG over any artifact through any runner). The runner is already there. The artifact and role aren't. Three focused refactors land the framework. Pick a second domain before starting them.</p>
+<p>What's left for "foundational research-paper review framework at scale" is a clean separation between <em>configuration</em> (roles, prompts, DAGs, schemas, profiles) and <em>executor</em> (the supervisor that walks a review topology over an artifact through configured runners). The runner is already close. Tier 1 keeps the working product stable while making the next boundaries visible. The artifact, role registry, executable DAG, audit, cost, tenant, and publish-adapter work should follow in separate branches.</p>
 <hr>
 <h2 id="verification-when-items-from-this-plan-land"><a class="anchor" aria-label="anchor" href="#verification-when-items-from-this-plan-land">#</a>Verification (when items from this plan land)</h2>
 <p>Every change goes through the cost-control regression gate:</p>
@@ -456,7 +428,7 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <p>If the smoke regresses, stop and fix it in the same diff. Revert if the fix scope-creeps.</p>
 </main>
 <footer class="doc-footer">
-<p>agent-harness-foundation-remediation.md &middot; generated 2026-05-20T12:12:20.182Z &middot; grokrxiv</p>
+<p>agent-harness-foundation-remediation.md &middot; generated 2026-05-22T13:02:59.236Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

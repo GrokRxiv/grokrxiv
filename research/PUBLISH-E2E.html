@@ -226,12 +226,12 @@ disposable test repo when you intentionally want to validate the destructive
 merge → webhook → published leg.</p>
 <h2 id="what-it-proves"><a class="anchor" aria-label="anchor" href="#what-it-proves">#</a>What it proves</h2>
 <ol>
-<li><code>grokrxiv --runner cli --extractor cli --status --no-cache --json ingest &#x3C;arxiv_id></code>
+<li><code>agh --runner cli --extractor cli --status --no-cache --json app run grokrxiv -- review &#x3C;arxiv_id></code>
 produces a real review row at <code>awaiting_moderation</code> with six
 <code>review_agents</code> rows, real input/output JSON artifacts, and per-role
-verifier evidence persisted. Set <code>GROKRXIV_RUNNER=api</code>
-<code>GROKRXIV_EXTRACTOR=api</code> only when you intend to spend provider API credits.</li>
-<li><code>grokrxiv approve &#x3C;review_id></code> opens a real pull request against your test
+verifier evidence persisted. Set <code>AGENTHERO_RUNNER=api</code>
+<code>AGENTHERO_EXTRACTOR=api</code> only when you intend to spend provider API credits.</li>
+<li><code>agh app run grokrxiv -- approve &#x3C;review_id></code> opens a real pull request against your test
 reviews repo with the rendered HTML/MD/LaTeX/zip artifacts at the canonical
 <code>reviews/YYYY/MM/&#x3C;field>/&#x3C;arxiv_id>/</code> repo path.</li>
 <li>The script stops with the review at <code>status=pr_open</code> and <code>published_at IS NULL</code>.</li>
@@ -276,8 +276,8 @@ deployed Next.js site.</p>
 <span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_REPO</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"grokrxiv-reviews"</span></span>
 <span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GITHUB_WEBHOOK_SECRET</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"$(</span><span style="color:#B392F0">grep</span><span style="color:#9ECBFF"> ^GITHUB_WEBHOOK_SECRET= .env </span><span style="color:#F97583">|</span><span style="color:#B392F0"> cut</span><span style="color:#79B8FF"> -d=</span><span style="color:#79B8FF"> -f2</span><span style="color:#9ECBFF">)"</span></span>
 <span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> DATABASE_URL</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"postgresql://postgres:postgres@127.0.0.1:54322/postgres"</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_RUNNER</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">cli</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_EXTRACTOR</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">cli</span></span>
+<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> AGENTHERO_RUNNER</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">cli</span></span>
+<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> AGENTHERO_EXTRACTOR</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">cli</span></span>
 <span data-line=""> </span>
 <span data-line=""><span style="color:#B392F0">bash</span><span style="color:#9ECBFF"> scripts/publish-e2e.sh</span></span></code></pre></figure>
 <p>The script prints each step (1. ingest, 2. approve, 3. PR handoff assertion).
@@ -354,7 +354,7 @@ script doesn't try to assert on it.</li>
 </table>
 </main>
 <footer class="doc-footer">
-<p>PUBLISH-E2E.md &middot; generated 2026-05-20T07:47:39.043Z &middot; grokrxiv</p>
+<p>PUBLISH-E2E.md &middot; generated 2026-05-22T15:08:52.405Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>
