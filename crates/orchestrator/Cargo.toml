@@ -55,15 +55,10 @@ pdfium-render = { version = "0.8", default-features = false, features = ["pdfium
 image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { path = "../schemas" }
-agenthero-dag-app-c2rust = { path = "../dag-app-c2rust" }
-grokrxiv-dag-app-citation-validation = { path = "../dag-app-citation-validation" }
-grokrxiv-dag-app-paper-extract = { path = "../dag-app-paper-extract" }
-grokrxiv-dag-app-paper-ingest = { path = "../dag-app-paper-ingest" }
-grokrxiv-dag-app-paper-publish = { path = "../dag-app-paper-publish" }
-grokrxiv-dag-app-paper-review = { path = "../dag-app-paper-review" }
-grokrxiv-dag-app-paper-revise = { path = "../dag-app-paper-revise" }
+agenthero-agent-runtime = { path = "../agent-runtime" }
 agenthero-dag-executor = { path = "../dag-executor" }
 agenthero-dag-runtime = { path = "../dag-runtime" }
+grokrxiv-extraction = { path = "../grokrxiv-extraction" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }
 tempfile = "3"
 tar = "0.4"

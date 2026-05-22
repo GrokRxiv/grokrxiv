@@ -143,7 +143,7 @@ pub struct Cli {
     pub dry_run_storage: bool,
 }
 
-/// Hint for `agh app run grokrxiv -- review <source>` when the source can't be inferred.
+/// Hint for `agh app run grokrxiv review <source>` when the source can't be inferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
@@ -224,7 +224,7 @@ pub enum AppCommand {
         /// App id, e.g. `grokrxiv` or `c2rust`.
         app: String,
     },
-    /// Run one installed app action. Canonical form: `agh app run <app> -- <action> ...`.
+    /// Run one installed app action. With no action, prints that app's action catalog.
     Run {
         /// App id, e.g. `grokrxiv` or `c2rust`.
         app: String,
@@ -451,7 +451,7 @@ pub enum JobsCommand {
     },
 }
 
-/// Selector for `agh app run grokrxiv -- list`.
+/// Selector for `agh app run grokrxiv list`.
 #[derive(Debug, Subcommand)]
 pub enum ListKind {
     /// List reviews.
@@ -501,7 +501,7 @@ pub enum ListKind {
     },
 }
 
-/// Output format for `agh app run grokrxiv -- render`.
+/// Output format for `agh app run grokrxiv render`.
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum RenderFormat {
     /// Self-contained HTML.
@@ -706,23 +706,15 @@ async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::
 
 async fn app_args_command(
     app: &str,
-    mut args: Vec<String>,
+    args: Vec<String>,
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     if args.is_empty() {
-        anyhow::bail!("agh {app} requires an action");
+        return app_show(app, json);
     }
-    let action = if app == "grokrxiv"
-        && args.get(0).is_some_and(|part| part == "validate")
-        && args.get(1).is_some_and(|part| part == "citations")
-    {
-        args.drain(0..2);
-        "validate-citations".to_string()
-    } else {
-        args.remove(0)
-    };
-    app_run_command(app, &action, args, json, dry_run).await
+    let resolved = crate::dag_apps::resolve_app_action_args(app, &args)?;
+    app_run_command(app, &resolved.id, resolved.args, json, dry_run).await
 }
 
 pub(crate) fn status_enabled_for_stderr(cli: &Cli, stderr_is_terminal: bool) -> bool {
@@ -770,6 +762,7 @@ fn app_list(json: bool) -> anyhow::Result<()> {
                     "label": app.label,
                     "actions": app.actions.iter().map(|action| serde_json::json!({
                         "id": action.id,
+                        "command": action.command,
                         "dag_type": action.dag_type,
                         "description": action.description,
                     })).collect::<Vec<_>>(),
@@ -797,6 +790,7 @@ fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
                 "label": app.label,
                 "actions": app.actions.iter().map(|action| serde_json::json!({
                     "id": action.id,
+                    "command": action.command,
                     "dag_type": action.dag_type,
                     "description": action.description,
                 })).collect::<Vec<_>>(),
@@ -821,190 +815,44 @@ async fn app_run_command(
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let descriptor = crate::dag_apps::app_action_binding(app, action)?;
+    let binding = crate::dag_apps::app_action_binding(app, action)?;
+    let mut input = agenthero_dag_executor::DagIo::default();
+    input.values.insert("app".into(), serde_json::json!(app));
+    input
+        .values
+        .insert("action".into(), serde_json::json!(action));
+    input
+        .values
+        .insert("dag_type".into(), serde_json::json!(binding.dag_type));
+    input.values.insert("args".into(), serde_json::json!(args));
+    input.values.insert("dry_run".into(), serde_json::json!(dry_run));
 
-    match (app, action) {
-        ("grokrxiv", "extract") => {
-            ensure_args_not_empty(&args, "GrokRxiv extract requires at least one source")?;
-            extract_many(&args, json).await
-        }
-        ("grokrxiv", "ingest") => {
-            let request = parse_ingest_args(args)?;
-            ingest_many(&request.arxiv_ids, request.auto_moderate, json).await
-        }
-        ("grokrxiv", "ingest-range") => {
-            let request = parse_ingest_range_args(args)?;
-            ingest_range(
-                request.from,
-                request.to,
-                request.categories,
-                request.no_review,
-            )
-            .await
-        }
-        ("grokrxiv", "ingest-daily") => {
-            ensure_args_empty(&args, "GrokRxiv ingest-daily takes no arguments")?;
-            ingest_daily().await
-        }
-        ("grokrxiv", "review") => {
-            let request = parse_grokrxiv_review_args(args)?;
-            review_source(
-                &request.source,
-                request.source_type,
-                ReviewSourceOptions {
-                    rev: request.rev,
-                    paper_path: request.paper_path,
-                    title: request.title,
-                    field: request.field,
-                    corpus: request.corpus,
-                    scan_root: request.scan_root,
-                    limit: request.limit,
-                    include: request.include,
-                    exclude: request.exclude,
-                },
-                json,
-                dry_run,
-            )
-            .await
-        }
-        ("grokrxiv", "review-extracted") => {
-            let request = parse_review_extracted_args(args)?;
-            review_extracted(&request.source, request.force, json).await
-        }
-        ("grokrxiv", "re-review") => {
-            let paper_id = parse_uuid_arg(args.first(), "paper_id")?;
-            review_paper(paper_id).await
-        }
-        ("grokrxiv", "validate-citations") => {
-            let mut input = agenthero_dag_executor::DagIo::default();
-            input.values.insert("app".into(), serde_json::json!(app));
-            input
-                .values
-                .insert("action".into(), serde_json::json!(action));
-            input.values.insert("args".into(), serde_json::json!(args));
-            let report =
-                crate::dag_apps::run_registered_dag_app(&descriptor.dag_type, input).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!(
-                    "app={} action={} dag_type={} status={:?} nodes={}",
-                    app,
-                    action,
-                    descriptor.dag_type,
-                    report.status,
-                    report.nodes.len()
-                );
-            }
-            Ok(())
-        }
-        ("grokrxiv", "verify") => {
-            let review_id = parse_uuid_arg(args.first(), "review_id")?;
-            verify(review_id).await
-        }
-        ("grokrxiv", "render") => {
-            let request = parse_render_args(args)?;
-            render(request.review_id, request.format, request.out).await
-        }
-        ("grokrxiv", "refresh-review") => {
-            let review_id = parse_uuid_arg(args.first(), "review_id")?;
-            refresh_review(review_id, json).await
-        }
-        ("grokrxiv", "show") => {
-            let review_id = parse_uuid_arg(args.first(), "review_id")?;
-            show(review_id, json).await
-        }
-        ("grokrxiv", "list") => {
-            let request = parse_grokrxiv_list_args(args, json)?;
-            list(request).await
-        }
-        ("grokrxiv", "open") => {
-            let review_id = parse_uuid_arg(args.first(), "review_id")?;
-            open_review(review_id)
-        }
-        ("grokrxiv", "approve") => {
-            let request = parse_review_id_action_args(args, "approve", "force")?;
-            approve(request.review_id, request.force, json).await
-        }
-        ("grokrxiv", "request-revisions") => {
-            let request = parse_review_id_notes_args(args, "request-revisions", false)?;
-            request_revisions(request.review_id, request.notes.as_deref(), json).await
-        }
-        ("grokrxiv", "request-changes") => {
-            let request = parse_review_id_notes_args(args, "request-changes", true)?;
-            request_changes(request.review_id, request.notes.as_deref().unwrap_or("")).await
-        }
-        ("grokrxiv", "reject") => {
-            let request = parse_review_id_reason_args(args, "reject")?;
-            reject(request.review_id, &request.reason).await
-        }
-        ("grokrxiv", "close") => {
-            let request = parse_close_args(args)?;
-            close_review(
-                request.review_id,
-                &request.reason,
-                request.keep_github_pr,
-                json,
-            )
-            .await
-        }
-        ("grokrxiv", "withdraw") => {
-            let request = parse_review_id_reason_args(args, "withdraw")?;
-            withdraw(request.review_id, &request.reason).await
-        }
-        ("grokrxiv", "correct") => {
-            let request = parse_correct_args(args)?;
-            correct(request.review_id, &request.rationale_md).await
-        }
-        ("grokrxiv", "html-review") => {
-            let request = parse_html_review_args(args)?;
-            html_review_cmd(request.review_id, request.all, json).await
-        }
-        ("grokrxiv", "feedback-loop-smoke") => {
-            let request = parse_feedback_loop_smoke_args(args)?;
-            feedback_loop_smoke(request.review_id, request.max_wait_secs, json).await
-        }
-        ("grokrxiv", "batch-create") => {
-            let command = parse_batch_create_args(args)?;
-            batch_command(command, dry_run, json).await
-        }
-        ("grokrxiv", "batch-run") => {
-            let command = parse_batch_run_args(args)?;
-            batch_command(command, dry_run, json).await
-        }
-        ("grokrxiv", "batch-status") => {
-            let batch_id = parse_uuid_arg(args.first(), "batch_id")?;
-            batch_command(BatchCommand::Status { batch_id }, dry_run, json).await
-        }
-        ("grokrxiv", "batch-list") => {
-            let limit = parse_optional_limit(args, 20)?;
-            batch_command(BatchCommand::List { limit }, dry_run, json).await
-        }
-        ("c2rust", "migrate") => {
-            let mut input = agenthero_dag_executor::DagIo::default();
-            input.values.insert("app".into(), serde_json::json!(app));
-            input
-                .values
-                .insert("action".into(), serde_json::json!(action));
-            input.values.insert("args".into(), serde_json::json!(args));
-            let report =
-                crate::dag_apps::run_registered_dag_app(&descriptor.dag_type, input).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!(
-                    "app={} action={} dag_type={} status={:?} nodes={}",
-                    app,
-                    action,
-                    descriptor.dag_type,
-                    report.status,
-                    report.nodes.len()
-                );
-            }
-            Ok(())
-        }
-        _ => anyhow::bail!("app action `{app} {action}` is registered but has no adapter"),
+    let response = crate::dag_apps::run_app_action(app, action, args, input, json).await?;
+    if !response.ok {
+        anyhow::bail!(
+            "{}",
+            response
+                .error
+                .unwrap_or_else(|| format!("app `{app}` action `{action}` failed"))
+        );
     }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if let Some(report) = response.report {
+        println!(
+            "app={} action={} dag_type={} status={:?} nodes={}",
+            app,
+            action,
+            report.dag_type,
+            report.status,
+            report.nodes.len()
+        );
+    } else if let Some(output) = response.output {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("app={} action={} ok", app, action);
+    }
+    Ok(())
 }
 
 async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
@@ -1784,9 +1632,8 @@ async fn run_dag_app_command(dag_type: &str, json: bool) -> anyhow::Result<()> {
 
 fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<()> {
     let manifests = load_repo_dag_manifests(dag_type)?;
-    let dags_dir = dags_dir();
     for manifest in &manifests {
-        validate_declared_agent_configs(manifest, &dags_dir)?;
+        validate_declared_agent_configs(manifest)?;
         validate_declared_tools(manifest)?;
     }
     if json {
@@ -2162,8 +2009,12 @@ fn emit_or_write_manifest(
     Ok(())
 }
 
-fn validate_declared_agent_configs(manifest: &DagManifest, dags_dir: &Path) -> anyhow::Result<()> {
-    let repo_root = dags_dir.parent().unwrap_or_else(|| Path::new("."));
+fn validate_declared_agent_configs(manifest: &DagManifest) -> anyhow::Result<()> {
+    let manifest_path = dag_manifest_path(manifest.id.as_str());
+    let repo_root = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."));
     for role in &manifest.roles {
         let Some(config) = role.config.as_deref() else {
             continue;
@@ -2235,19 +2086,12 @@ fn place_agent(path: &Path, json: bool) -> anyhow::Result<()> {
 }
 
 fn load_repo_dag_manifests(dag_type: Option<&str>) -> anyhow::Result<Vec<DagManifest>> {
-    let dags_dir = dags_dir();
     let mut paths = Vec::new();
     if let Some(id) = dag_type {
-        paths.push(dag_manifest_path_in(&dags_dir, id));
+        paths.push(dag_manifest_path(id));
     } else {
-        for entry in std::fs::read_dir(&dags_dir)
-            .with_context(|| format!("read DAG manifest directory {}", dags_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                paths.push(path);
-            }
+        for app in crate::dag_apps::registered_dag_apps()? {
+            paths.push(app.manifest_path);
         }
         paths.sort();
     }
@@ -2262,11 +2106,16 @@ fn load_repo_dag_manifests(dag_type: Option<&str>) -> anyhow::Result<Vec<DagMani
 }
 
 fn dag_manifest_path(dag_type: &str) -> PathBuf {
-    dag_manifest_path_in(&dags_dir(), dag_type)
-}
-
-fn dag_manifest_path_in(dags_dir: &Path, dag_type: &str) -> PathBuf {
-    dags_dir.join(format!("{dag_type}.yaml"))
+    if let Ok(path) = std::env::var("AGENTHERO_DAGS_DIR") {
+        return PathBuf::from(path).join(format!("{dag_type}.yaml"));
+    }
+    if let Some(app) = crate::dag_apps::registered_dag_app(dag_type) {
+        return app.manifest_path;
+    }
+    crate::dag_apps::apps_root()
+        .join("unknown")
+        .join("dags")
+        .join(format!("{dag_type}.yaml"))
 }
 
 fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
@@ -2280,21 +2129,6 @@ fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
         }
     }
     repo_root.join(path)
-}
-
-fn dags_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("AGENTHERO_DAGS_DIR") {
-        return PathBuf::from(path);
-    }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cwd_dags = cwd.join("dags");
-    if cwd_dags.is_dir() {
-        return cwd_dags;
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("dags")
 }
 
 fn print_config(
@@ -3764,8 +3598,8 @@ fn existing_review_json(
         "review_id": review_id,
         "review_status": review_status,
         "pr_url": pr_url,
-        "show_command": format!("agh app run grokrxiv -- show {review_id}"),
-        "force_command": format!("agh app run grokrxiv -- review-extracted --force {arxiv_id}"),
+        "show_command": format!("agh app run grokrxiv show {review_id}"),
+        "force_command": format!("agh app run grokrxiv review-extracted --force {arxiv_id}"),
     })
 }
 
@@ -3783,10 +3617,10 @@ fn existing_review_text(
         out.push_str(&format!("pr_url={pr_url}\n"));
     }
     out.push_str(&format!(
-        "show_command=agh app run grokrxiv -- show {review_id}\n"
+        "show_command=agh app run grokrxiv show {review_id}\n"
     ));
     out.push_str(&format!(
-        "force_command=agh app run grokrxiv -- review-extracted --force {arxiv_id}\n"
+        "force_command=agh app run grokrxiv review-extracted --force {arxiv_id}\n"
     ));
     out
 }
@@ -3842,19 +3676,19 @@ async fn resolve_extracted_paper(
 
     let Some((paper_id, arxiv_id, title, status, git_path)) = row else {
         anyhow::bail!(
-            "review-extracted: no paper row for `{source}`; run `agh app run grokrxiv -- extract {source}` first"
+            "review-extracted: no paper row for `{source}`; run `agh app run grokrxiv extract {source}` first"
         );
     };
     if status.as_deref() != Some("ready") || git_path.is_none() {
         anyhow::bail!(
-            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `agh app run grokrxiv -- extract {arxiv_id}` first",
+            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `agh app run grokrxiv extract {arxiv_id}` first",
             status.as_deref().unwrap_or("pending")
         );
     }
     Ok((paper_id, arxiv_id, title))
 }
 
-/// Source resolution for `agh app run grokrxiv -- review <source>`.
+/// Source resolution for `agh app run grokrxiv review <source>`.
 #[derive(Debug, Clone)]
 enum ResolvedSource {
     /// arXiv id (already normalised).
@@ -4049,7 +3883,7 @@ async fn resolve_source(
     anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
 
-/// Canonical end-to-end entry point — `agh app run grokrxiv -- review <source>`.
+/// Canonical end-to-end entry point — `agh app run grokrxiv review <source>`.
 async fn review_source(
     source: &str,
     type_hint: Option<SourceType>,
@@ -5814,8 +5648,8 @@ async fn open_publication_pr_impl(
         }
         anyhow::bail!(
             "review {review_id} is not cleanly publishable: {} \
-             Use `agh app run grokrxiv -- request-revisions {review_id}`, \
-             `agh app run grokrxiv -- reject {review_id} --reason …`, \
+             Use `agh app run grokrxiv request-revisions {review_id}`, \
+             `agh app run grokrxiv reject {review_id} --reason …`, \
              or re-run approve with `--force` to override.",
             publication_gate.reason
         );
@@ -5858,7 +5692,7 @@ async fn open_publication_pr_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh app run grokrxiv -- ingest <arxiv_id>` to regenerate."
+             re-run `agh app run grokrxiv ingest <arxiv_id>` to regenerate."
         );
     }
 
@@ -5876,14 +5710,14 @@ async fn open_publication_pr_impl(
     let raw_pr_title = format!("Review: {} ({})", title, source_ref);
     let raw_pr_body = if visibility == "private" {
         format!(
-            "Opened by `agh app run grokrxiv -- review ...`.\n\n\
+            "Opened by `agh app run grokrxiv review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview."
         )
     } else {
         format!(
-            "Opened by `agh app run grokrxiv -- review ...`.\n\n\
+            "Opened by `agh app run grokrxiv review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
@@ -6061,7 +5895,7 @@ async fn request_revisions_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh app run grokrxiv -- review ...` to regenerate."
+             re-run `agh app run grokrxiv review ...` to regenerate."
         );
     }
 
@@ -6091,7 +5925,7 @@ async fn request_revisions_impl(
     };
     let raw_pr_title = format!("Needs revision: {} ({})", title, source_ref);
     let raw_pr_body = format!(
-        "Opened by `agh app run grokrxiv -- request-revisions {review_id}`.\n\n\
+        "Opened by `agh app run grokrxiv request-revisions {review_id}`.\n\n\
          **Automated gate:** Needs revision (`{recommendation}`).\n\n\
          **Public review details:** {public_url}/reviews/{review_id}\n\n\
          This review is not approved for publication yet. {correction_instruction} Each push triggers GrokRxiv automated re-review through the `pull_request.synchronize` webhook. GrokRxiv updates the stable gate comment with pass/fail status and concrete correction notes until automation accepts the fixes.{note_block}{citation_block}\n\n\
@@ -6905,7 +6739,7 @@ async fn request_revisions_impl(
 }
 
 /// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
-/// `agh app run grokrxiv -- approve` command (which doesn't go through the supervisor
+/// `agh app run grokrxiv approve` command (which doesn't go through the supervisor
 /// background worker) also closes the prior PR on supersede.
 #[cfg(feature = "grokrxiv-publisher")]
 async fn close_superseded_pr_if_any_cli(
@@ -7038,7 +6872,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
             .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let pr_url = pr_url.ok_or_else(|| {
         anyhow::anyhow!(
-            "review {review_id} has no github_pr_url; run `agh app run grokrxiv -- review ...` first"
+            "review {review_id} has no github_pr_url; run `agh app run grokrxiv review ...` first"
         )
     })?;
 
@@ -7061,7 +6895,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
         anyhow::bail!(
             "approve refused: latest automated gate for review {review_id} is not pass: {} \
-             Push fixes to the PR and wait for re-review, or run `agh app run grokrxiv -- approve {review_id} --force`.",
+             Push fixes to the PR and wait for re-review, or run `agh app run grokrxiv approve {review_id} --force`.",
             publication_gate.reason
         );
     }
@@ -7076,7 +6910,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
-             Re-run `agh app run grokrxiv -- review ...` with GITHUB_TOKEN set."
+             Re-run `agh app run grokrxiv review ...` with GITHUB_TOKEN set."
         )
     })?;
 
@@ -7131,7 +6965,7 @@ async fn publish_cmd(review_id: Uuid, _force: bool, _json: bool) -> anyhow::Resu
     )
 }
 
-/// `agh app run grokrxiv -- html-review [<id>|--all]`. Re-runs the post-render html_quality
+/// `agh app run grokrxiv html-review [<id>|--all]`. Re-runs the post-render html_quality
 /// harness on already-rendered reviews. Used to backfill existing reviews
 /// after the harness lands, or to re-run after prompt iteration.
 async fn html_review_cmd(review_id: Option<Uuid>, all: bool, json: bool) -> anyhow::Result<()> {
@@ -7314,7 +7148,7 @@ async fn close_review_github_pr(
     let publisher = GithubPublisher::new(client, plan.owner.clone(), plan.repo.clone());
     let admin = AdminCaller::from_admin_endpoint();
     let comment =
-        format!("Closed by `agh app run grokrxiv -- close {review_id}`.\n\nReason:\n\n{reason}");
+        format!("Closed by `agh app run grokrxiv close {review_id}`.\n\nReason:\n\n{reason}");
     publisher
         .close_pr_with_comment(&admin, plan.pr_number, &comment)
         .await
@@ -7333,7 +7167,7 @@ async fn close_review_github_pr(
     )
 }
 
-/// `agh app run grokrxiv -- reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
+/// `agh app run grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
 /// public terminal state. Writes `moderation_queue` like before but ALSO:
 ///   - inserts a `rejections` row with the reason as `rationale_md`,
 ///   - flips `reviews.status` to `rejected`,
@@ -7414,7 +7248,7 @@ async fn auto_moderate_review(
     Ok(())
 }
 
-/// `agh app run grokrxiv -- request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
+/// `agh app run grokrxiv request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
 /// moderator's notes in `moderation_queue.notes`, then trigger a fresh
 /// review of the same paper. The agents see the notes via
 /// `db::fetch_latest_changes_request_notes` on the next pass.
@@ -7463,7 +7297,7 @@ async fn request_changes(review_id: Uuid, notes: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `agh app run grokrxiv -- withdraw <REVIEW_ID> --reason TEXT`. Inserts a withdrawal row in
+/// `agh app run grokrxiv withdraw <REVIEW_ID> --reason TEXT`. Inserts a withdrawal row in
 /// `corrections`, flips `reviews.status` to `withdrawn`, fires a best-effort
 /// revalidate on the configured frontend.
 async fn withdraw(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
@@ -7485,7 +7319,7 @@ async fn withdraw(review_id: Uuid, reason: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `agh app run grokrxiv -- correct <REVIEW_ID> --rationale-md PATH`. Reads the markdown
+/// `agh app run grokrxiv correct <REVIEW_ID> --rationale-md PATH`. Reads the markdown
 /// rationale, inserts a `correction` row, flips `reviews.status` to
 /// `corrected`, fires a best-effort revalidate.
 async fn correct(review_id: Uuid, rationale_md: &std::path::Path) -> anyhow::Result<()> {
@@ -7771,11 +7605,11 @@ mod tests {
             "approve",
             &review_id.to_string(),
         ])
-        .expect("agh app run grokrxiv -- approve --dry-run should parse");
+        .expect("agh app run grokrxiv approve --dry-run should parse");
 
         run(cli)
             .await
-            .expect("agh app run grokrxiv -- approve --dry-run should not require DB or GitHub");
+            .expect("agh app run grokrxiv approve --dry-run should not require DB or GitHub");
     }
 
     #[test]
@@ -7843,7 +7677,7 @@ mod tests {
                 assert_eq!(app, "grokrxiv");
                 assert_eq!(args, vec!["extract", "2605.00561"]);
             }
-            other => panic!("expected agh app run grokrxiv -- extract, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv extract, got {other:?}"),
         }
     }
 
@@ -7870,7 +7704,7 @@ mod tests {
                 assert_eq!(app, "c2rust");
                 assert_eq!(args, vec!["migrate", "--input", "src/main.c"]);
             }
-            other => panic!("expected agh app run c2rust -- migrate, got {other:?}"),
+            other => panic!("expected agh app run c2rust migrate, got {other:?}"),
         }
     }
 
@@ -8264,10 +8098,10 @@ mod tests {
         assert!(text.contains("review_status=pr_open"));
         assert!(text.contains("pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/19"));
         assert!(text.contains(
-            "show_command=agh app run grokrxiv -- show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
+            "show_command=agh app run grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
         ));
         assert!(text
-            .contains("force_command=agh app run grokrxiv -- review-extracted --force 2605.00561"));
+            .contains("force_command=agh app run grokrxiv review-extracted --force 2605.00561"));
 
         let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
         assert_eq!(json["status"], "already_reviewed");
@@ -8296,7 +8130,7 @@ mod tests {
                 assert_eq!(app, "grokrxiv");
                 assert_eq!(args, vec!["list", "extracted", "--limit", "50"])
             }
-            other => panic!("expected agh app run grokrxiv -- list extracted, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv list extracted, got {other:?}"),
         }
 
         let reviews = Cli::try_parse_from([
@@ -8323,7 +8157,7 @@ mod tests {
                     vec!["list", "reviews", "--review-status", "awaiting_moderation"]
                 );
             }
-            other => panic!("expected agh app run grokrxiv -- list reviews, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv list reviews, got {other:?}"),
         }
     }
 
@@ -8449,7 +8283,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
                     ]
                 );
             }
-            other => panic!("expected agh app run grokrxiv -- review, got {other:?}"),
+            other => panic!("expected agh app run grokrxiv review, got {other:?}"),
         }
     }
 

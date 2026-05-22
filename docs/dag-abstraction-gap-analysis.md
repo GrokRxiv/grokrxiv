@@ -27,8 +27,8 @@ Registered DAG apps:
 
 Registered product apps:
 
-- `research`, with app actions under `agh app run grokrxiv -- ...`.
-- `c2rust`, with `agenthero app run c2rust -- migrate ...`.
+- `research`, with app actions under `agh app run grokrxiv ...`.
+- `c2rust`, with `agenthero app run c2rust migrate ...`.
 
 `paper-extract` now starts with a `dag_call` to `paper-ingest`. `c2rust`
 runs through the same generic executor path and is the non-paper proof that the

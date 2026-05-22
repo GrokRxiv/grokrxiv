@@ -172,7 +172,7 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 
 | Env                          | Notes |
 |------------------------------|-------|
-| `GITHUB_TOKEN`               | PAT used by `agh app run grokrxiv -- approve`; required for live PR creation |
+| `GITHUB_TOKEN`               | PAT used by `agh app run grokrxiv approve`; required for live PR creation |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
 | `GROKRXIV_REVIEWS_REPO`      | Backward-compatible public repo alias; default `grokrxiv-reviews` |
 | `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |
@@ -182,7 +182,7 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 
 | Env                                  | Notes |
 |--------------------------------------|-------|
-| `NEXT_PUBLIC_SITE_URL`               | Used by `agh app run grokrxiv -- open` |
+| `NEXT_PUBLIC_SITE_URL`               | Used by `agh app run grokrxiv open` |
 | `GROKRXIV_PUBLIC_URL`                | Canonical URL (defaults to `https://grokrxiv.org`) |
 | `ORCHESTRATOR_INTERNAL_URL`          | Internal orchestrator URL (default `http://localhost:8080`) |
 | `AGENTHERO_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |

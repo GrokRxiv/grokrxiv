@@ -38,15 +38,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenthero-agent-runtime"
+version = "0.1.0"
+dependencies = [
+ "agenthero-dag-executor",
+ "anyhow",
+ "async-trait",
+ "clap 4.5.20",
+ "grokrxiv-llm-adapter",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "agenthero-dag-app-c2rust"
 version = "0.1.0"
 dependencies = [
+ "agenthero-agent-runtime",
  "agenthero-dag-executor",
  "agenthero-dag-runtime",
  "anyhow",
  "async-trait",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "agenthero-dag-app-grokrxiv"
+version = "0.1.0"
+dependencies = [
+ "agenthero-agent-runtime",
+ "agenthero-dag-executor",
+ "agenthero-dag-runtime",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "grokrxiv-extraction",
+ "grokrxiv-ingest",
+ "grokrxiv-llm-adapter",
+ "hex",
+ "image",
+ "jsonschema",
+ "lopdf 0.36.0",
+ "pdfium-render",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -77,7 +122,7 @@ dependencies = [
 name = "agenthero-orchestrator"
 version = "0.1.0"
 dependencies = [
- "agenthero-dag-app-c2rust",
+ "agenthero-agent-runtime",
  "agenthero-dag-executor",
  "agenthero-dag-runtime",
  "anyhow",
@@ -90,12 +135,7 @@ dependencies = [
  "dotenvy",
  "flate2",
  "futures",
- "grokrxiv-dag-app-citation-validation",
- "grokrxiv-dag-app-paper-extract",
- "grokrxiv-dag-app-paper-ingest",
- "grokrxiv-dag-app-paper-publish",
- "grokrxiv-dag-app-paper-review",
- "grokrxiv-dag-app-paper-revise",
+ "grokrxiv-extraction",
  "grokrxiv-ingest",
  "grokrxiv-llm-adapter",
  "grokrxiv-publisher",
@@ -1878,6 +1918,32 @@ dependencies = [
  "grokrxiv-render",
  "grokrxiv-schemas",
  "serde_json",
+]
+
+[[package]]
+name = "grokrxiv-extraction"
+version = "0.1.0"
+dependencies = [
+ "agenthero-agent-runtime",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "grokrxiv-ingest",
+ "grokrxiv-llm-adapter",
+ "grokrxiv-schemas",
+ "hex",
+ "image",
+ "jsonschema",
+ "lopdf 0.36.0",
+ "pdfium-render",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

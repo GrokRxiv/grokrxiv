@@ -11,7 +11,6 @@
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
 pub mod config;
-pub mod extraction;
 pub mod review;
 pub mod runners;
 pub mod sandbox;

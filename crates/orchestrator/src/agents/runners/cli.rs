@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::agents::extraction::ToolCtx;
+use agenthero_agent_runtime::ToolCtx;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
@@ -514,7 +514,7 @@ fn render_tool_prompt(
          Conversation so far:\n{messages_json}\n",
         provider = spec.provider,
         model = spec.model,
-        arxiv_id = ctx.arxiv_id,
+        arxiv_id = ctx.source_id,
         workdir = ctx.workdir.display(),
     ))
 }
@@ -2614,6 +2614,7 @@ printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
         let ctx = ToolCtx {
             workdir: &workdir,
             semantic_ast: None,
+            source_id: "2401.00001",
             arxiv_id: "2401.00001",
             http: std::sync::Arc::new(reqwest::Client::new()),
         };

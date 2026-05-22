@@ -25,18 +25,25 @@ workers, and future remote service nodes are workers behind Rust-controlled DAG
 nodes. The GrokRxiv review/revise pipeline is the first DAG app proving the
 abstraction, not the orchestration contract itself.
 
-- DAG manifests live in `dags/*.yaml`.
+- Product apps live under `agenthero/apps/<app>/`.
+- App manifests live at `agenthero/apps/<app>/app.yaml`.
+- DAG manifests live at `agenthero/apps/<app>/dags/*.yaml`.
 - Generic execution contracts live in `crates/dag-executor`.
-- Concrete DAG apps live in `crates/dag-app-*`.
-- Agent configs live in `agents/<dag-type>/*.yaml`.
-- Prompt templates live in `prompts/`.
-- Output contracts live in `schemas/*.schema.json` and must be
+- App adapters are declared by `adapter:` in `app.yaml`. The orchestrator must
+  not depend on app crates in `crates/orchestrator/Cargo.toml`.
+- Concrete app code lives with the product app, for example
+  `agenthero/apps/grokrxiv/rust/`, or behind another executable declared by
+  the adapter.
+- Agent configs live in `agenthero/apps/<app>/agents/<dag-type>/*.yaml`.
+- Prompt templates live in `agenthero/apps/<app>/prompts/`.
+- Output contracts live in `agenthero/apps/<app>/schemas/*.schema.json` and must be
   LLM-readable, strict, and contract-preserving.
 - Rust-native DAG tool handlers are registered in
-  `crates/orchestrator/src/dag_tools.rs`.
-- Extraction-agent callable tools live under
-  `crates/orchestrator/src/agents/extraction/tools/` or the owning extraction
-  agent module.
+  `crates/orchestrator/src/dag_tools.rs` only when they are platform-generic.
+  App-specific tools belong to the app adapter or an app-owned/domain crate.
+- GrokRxiv extraction-agent callable tools live outside the orchestrator in
+  `crates/grokrxiv-extraction/src/extraction/tools/`, re-exported by the
+  GrokRxiv app.
 - Role identity is a DAG/YAML string contract. Do not introduce Rust enums for
   app-specific agent roles.
 - Node I/O at the executor boundary is named JSON values plus artifact
@@ -55,8 +62,9 @@ Manifest rules:
   manifests, not by hardcoding supervisor control flow.
 - `dag_call` composes DAGs. Prefer a separate DAG plus `dag_call` when a
   pipeline can stand alone, such as citation validation.
-- A new DAG app needs a manifest plus an app crate. Register the app through
-  the orchestrator DAG app registry; do not add a one-off supervisor branch.
+- A new DAG app needs an app root, `app.yaml`, DAG manifests, and an adapter
+  executable. Do not add an orchestrator Cargo dependency, static registry
+  entry, or one-off supervisor branch for the app.
 - The scheduler/executor may place work on local Tokio tasks, local CLI
   subprocesses, Rust handlers, cloud runners, local inference, or future remote
   AgentHero worker nodes. DAG apps must not depend on a paper-review-specific
@@ -72,17 +80,19 @@ The operator CLI is app-scoped:
 ```bash
 agh app list
 agh app show grokrxiv
-agh app run grokrxiv -- extract 2605.17307
-agh app run grokrxiv -- review 2605.17307 --type arxiv
-agh app run grokrxiv -- approve <REVIEW_ID>
-agh app run c2rust -- migrate --input src/main.c
+agh app run grokrxiv
+agh app run grokrxiv extract 2605.17307
+agh app run grokrxiv review 2605.17307 --type arxiv
+agh app run grokrxiv approve <REVIEW_ID>
+agh app run c2rust migrate --input src/main.c
 ```
 
 Do not add new unscoped root commands such as `agh review` or `agh approve`.
-Add an app action in `crates/orchestrator/src/dag_apps.rs`, route it through
-the generic app runner/adapter, and keep the action mapped to a DAG type. Root
-commands are reserved for platform operations such as `app`, `serve`, `doctor`,
-`config`, `dag`, `agent`, and `jobs`.
+Add an app action in `agenthero/apps/<app>/app.yaml`, route it through the
+declared adapter, and keep the action mapped to a DAG type. Running
+`agh --json app run <app>` with no action must show the app's action catalog.
+Root commands are reserved for platform operations such as `app`, `serve`,
+`doctor`, `config`, `dag`, `agent`, and `jobs`.
 
 ## Runtime Database Shape
 
@@ -157,22 +167,27 @@ must emit raw JSON; the first character of stdout is `{`.
 
 1. Add or scaffold the manifest tool:
    `agh dag add-tool --dag-type <dag> --tool-id <id> --executor rust --handler <module>::<function> --after <node> --before <node> --input <artifact> --output <artifact> --write`
-2. Register the handler in `crates/orchestrator/src/dag_tools.rs`.
+2. Register the handler in `crates/orchestrator/src/dag_tools.rs` only if the
+   tool is platform-generic. For app-specific tools, implement and dispatch it
+   in the app adapter or an app-owned/domain crate.
 3. Implement the function in the owning Rust module.
 4. Add tests for the function and manifest validation.
 5. Run `agh validate --dag-type <dag>`.
 
 ## Adding A DAG App
 
-1. Add `dags/<dag-type>.yaml`.
-2. Add `crates/dag-app-<dag-type>/` implementing `agenthero_dag_executor::DagApp`.
-3. Add the crate to the workspace.
-4. Register the app in `crates/orchestrator/src/dag_apps.rs`.
-5. Register the product app/action surface in `crates/orchestrator/src/dag_apps.rs`
-   if it should be callable through `agh app run <app> -- <action>`.
-6. Add a smoke test that runs the manifest through
-   `agenthero_dag_executor::DagExecutor`.
-7. Run `agh dag run --dag-type <dag-type> --json`.
+1. Create `agenthero/apps/<app>/app.yaml` with `slug`, `label`, `adapter`, and
+   action-to-DAG bindings.
+2. Add `agenthero/apps/<app>/dags/<dag-type>.yaml`.
+3. Add app-owned `agents/`, `prompts/`, and `schemas/` files as needed.
+4. Add or point at an adapter executable. A Rust adapter can live at
+   `agenthero/apps/<app>/rust/`, but the orchestrator calls it only through the
+   process adapter protocol declared in `app.yaml`.
+5. Add the app crate to the workspace only if it is built from this repo. Do
+   not add it to `crates/orchestrator/Cargo.toml`.
+6. Add a smoke test that runs through `agh app run <app> <action>` or the
+   adapter protocol.
+7. Run `agh --json app run <app>` and one action smoke.
 
 ## Adding A CLI Tool
 
@@ -183,7 +198,8 @@ must emit raw JSON; the first character of stdout is `{`.
 
 ## Adding An Agent
 
-1. Add an agent YAML under `agents/<dag-type>/<role-id>.yaml`.
+1. Add an agent YAML under
+   `agenthero/apps/<app>/agents/<dag-type>/<role-id>.yaml`.
 2. Add prompt and schema files.
 3. Declare `prompt_context`, `system_overlays`, `verifiers`, and
    `postprocessors` explicitly when the agent needs reusable Rust hook
@@ -204,7 +220,8 @@ cargo test -p agenthero-orchestrator --test dag_app_registry
 cargo test -p agenthero-orchestrator --lib --features full -- --test-threads=1
 cargo check -p grokrxiv-ingest -p agenthero-dag-runtime -p grokrxiv-storage -p agenthero-orchestrator --features full
 cargo run -p agenthero-orchestrator --features full --bin agh -- validate --dag-type <dag>
-cargo run -p agenthero-orchestrator --features full --bin agh -- --json dag run --dag-type <dag>
+cargo run -p agenthero-orchestrator --features full --bin agh -- --json app run <app>
+cargo run -p agenthero-orchestrator --features full --bin agh -- --json app run <app> <action>
 ```
 
 Update or remove tests that encode obsolete fixed-pipeline assumptions. Keep

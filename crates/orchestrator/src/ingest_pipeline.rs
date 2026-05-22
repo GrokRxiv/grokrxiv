@@ -47,13 +47,13 @@ use grokrxiv_storage::{
     SupabaseStorage,
 };
 
-use crate::agents::extraction::{
+use grokrxiv_extraction::extraction::{
     citations::CitationContextualizerAgent, equations::EquationCanonicalizerAgent,
     macros::MacroExpanderAgent, theorems::TheoremGraphExtractorAgent, vlm::VlmExtractorAgent,
-    ExtractionAgent, ToolRegistry,
+    ExtractionAgent, ExtractionContext, ToolCallRecord, ToolRegistry,
 };
 use crate::agents::types::AgentRunnerKind;
-use crate::agents::types::{AgentSpec, ExtractionContext, ToolCallRecord};
+use crate::agents::types::AgentSpec;
 use crate::agents::AgentRunner;
 use crate::db;
 use crate::runtime_config::{parse_extractor, ExtractorKind};
@@ -1582,7 +1582,7 @@ fn build_registry_for<A: ExtractionAgent + Sized + 'static>(_agent: &A) -> ToolR
     use std::any::TypeId;
     let id = TypeId::of::<A>();
     if id == TypeId::of::<VlmExtractorAgent>() {
-        crate::agents::extraction::vlm::build_registry()
+        grokrxiv_extraction::extraction::vlm::build_registry()
     } else if id == TypeId::of::<MacroExpanderAgent>() {
         MacroExpanderAgent::new().registry()
     } else if id == TypeId::of::<EquationCanonicalizerAgent>() {
@@ -1595,16 +1595,16 @@ fn build_registry_for<A: ExtractionAgent + Sized + 'static>(_agent: &A) -> ToolR
         // re-register the per-agent ones on top.
         let mut r = ToolRegistry::with_core_tools();
         r.register(Arc::new(
-            crate::agents::extraction::citations::tools::ListCitationSitesTool,
+            grokrxiv_extraction::extraction::citations::tools::ListCitationSitesTool,
         ));
         r.register(Arc::new(
-            crate::agents::extraction::citations::tools::LookupBibtexTool,
+            grokrxiv_extraction::extraction::citations::tools::LookupBibtexTool,
         ));
         r.register(Arc::new(
-            crate::agents::extraction::citations::tools::SearchCorpusTool,
+            grokrxiv_extraction::extraction::citations::tools::SearchCorpusTool,
         ));
         r.register(Arc::new(
-            crate::agents::extraction::citations::tools::ReadSectionTool,
+            grokrxiv_extraction::extraction::citations::tools::ReadSectionTool,
         ));
         r
     }
@@ -2019,10 +2019,10 @@ fn deterministic_equations_outcome(
 ) -> Option<StageOutcome> {
     let started = std::time::Instant::now();
     let mut listed = semantic_ast
-        .map(crate::agents::extraction::equations::tools::list_from_ast)
+        .map(grokrxiv_extraction::extraction::equations::tools::list_from_ast)
         .unwrap_or_default();
     if listed.is_empty() {
-        listed = crate::agents::extraction::equations::tools::list_from_markdown_body(body_md);
+        listed = grokrxiv_extraction::extraction::equations::tools::list_from_markdown_body(body_md);
     }
     let equations: Vec<Value> = listed
         .into_iter()
@@ -2032,7 +2032,7 @@ fn deterministic_equations_outcome(
             if tex.is_empty() {
                 return None;
             }
-            let hash = crate::agents::extraction::equations::tools::equation_hash(&tex);
+            let hash = grokrxiv_extraction::extraction::equations::tools::equation_hash(&tex);
             Some(json!({
                 "id": id,
                 "canonical_tex": tex,
@@ -2078,7 +2078,7 @@ fn deterministic_theorems_or_empty(_arxiv_id: &str, body_md: &str) -> Option<Sta
 
 fn deterministic_theorems_outcome(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
     let started = std::time::Instant::now();
-    let sections = crate::agents::extraction::theorems::tools::sections_from_markdown(body_md);
+    let sections = grokrxiv_extraction::extraction::theorems::tools::sections_from_markdown(body_md);
     let mut nodes: Vec<Value> = Vec::new();
     if sections.is_empty() {
         append_theorem_blocks(&mut nodes, None, body_md);
@@ -2119,7 +2119,7 @@ fn should_use_citation_fallback(
         return false;
     }
     let has_sites =
-        !crate::agents::extraction::citations::tools::extract_citation_sites(body_md).is_empty();
+        !grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md).is_empty();
     if !has_sites {
         return false;
     }
@@ -2142,7 +2142,7 @@ fn deterministic_citations_outcome(
     use std::collections::{BTreeMap, BTreeSet};
 
     let started = std::time::Instant::now();
-    let sites = crate::agents::extraction::citations::tools::extract_citation_sites(body_md);
+    let sites = grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md);
     let has_sites = !sites.is_empty();
     let bibliography_by_key: BTreeMap<String, &grokrxiv_schemas::Citation> = extract
         .bibliography
@@ -2407,7 +2407,7 @@ fn build_artifact_provenance(
 }
 
 fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body: &str) {
-    for block in crate::agents::extraction::theorems::tools::scan_theorem_blocks(body) {
+    for block in grokrxiv_extraction::extraction::theorems::tools::scan_theorem_blocks(body) {
         let node_type = block
             .get("type")
             .and_then(Value::as_str)
@@ -3182,7 +3182,7 @@ mod a4_tests {
 
         let report = build_citation_validation_report(&references);
         let schema: Value = serde_json::from_str(include_str!(
-            "../../../schemas/citation_validation_report.schema.json"
+            "../../../agenthero/apps/grokrxiv/schemas/citation_validation_report.schema.json"
         ))
         .expect("citation validation report schema");
         let validator = jsonschema::validator_for(&schema).expect("compile schema");

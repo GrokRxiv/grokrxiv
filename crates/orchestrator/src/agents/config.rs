@@ -11,7 +11,7 @@ use agenthero_dag_runtime::{AgentKind, DagExecutionMode, DagManifest, DagNodeKin
 
 use crate::agents::types::AgentRunnerKind;
 
-/// YAML shape read from `agents/<dag-type>/<role-id>.yaml`.
+/// YAML shape read from `agenthero/apps/<app>/agents/<dag-type>/<role-id>.yaml`.
 #[derive(Debug, serde::Deserialize, Clone)]
 pub struct AgentConfig {
     /// Human-readable/local id. The DAG manifest role id is still authoritative.
@@ -33,13 +33,13 @@ pub struct AgentConfig {
     /// One-shot JSON output or tool-loop execution.
     #[serde(default)]
     pub execution_mode: DagExecutionMode,
-    /// Prompt template path, relative to the repo root unless absolute.
+    /// Prompt template path, relative to the app root unless absolute.
     #[serde(default)]
     pub prompt_template: Option<String>,
-    /// Input schema path, relative to the repo root unless absolute.
+    /// Input schema path, relative to the app root unless absolute.
     #[serde(default)]
     pub input_schema: Option<String>,
-    /// Output schema path, relative to the repo root unless absolute.
+    /// Output schema path, relative to the app root unless absolute.
     #[serde(default)]
     pub output_schema: Option<String>,
     /// Named verifier ladder entries.
@@ -150,7 +150,7 @@ pub fn dag_agent_config_refs(dag_id: &str) -> anyhow::Result<Vec<AgentConfigRef>
     Ok(refs)
 }
 
-/// Read one DAG manifest by id, honoring `AGENTHERO_DAGS_DIR`.
+/// Read one DAG manifest by id from its owning app root.
 pub fn read_dag_manifest(dag_id: &str) -> anyhow::Result<DagManifest> {
     let manifest_path = dag_manifest_path(dag_id);
     let manifest = DagManifest::from_path(&manifest_path)
@@ -307,17 +307,21 @@ pub fn validate_agent_config_detail(
     Ok(())
 }
 
-/// Resolve a manifest/config-declared runtime path relative to the repo root.
+/// Resolve a manifest/config-declared runtime path relative to installed app roots.
 pub fn resolve_declared_runtime_path(path: &str) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
         path
     } else {
-        default_repo_root().join(path)
+        let repo_relative = default_repo_root().join(&path);
+        if repo_relative.exists() {
+            return repo_relative;
+        }
+        find_app_relative_path(&path).unwrap_or(repo_relative)
     }
 }
 
-/// Resolve an agent config path, honoring `AGENTHERO_AGENTS_DIR`.
+/// Resolve an agent config path relative to the owning app root.
 pub fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
     let path = PathBuf::from(config);
     if path.is_absolute() {
@@ -340,7 +344,7 @@ pub fn default_repo_root() -> PathBuf {
 
 /// Default checked-in `agents/` directory.
 pub fn default_agents_dir() -> PathBuf {
-    default_repo_root().join("agents")
+    crate::dag_apps::app_root("grokrxiv").join("agents")
 }
 
 /// Resolve one DAG manifest path.
@@ -348,9 +352,17 @@ pub fn dag_manifest_path(dag_id: &str) -> PathBuf {
     if let Some(dags_dir) = std::env::var_os("AGENTHERO_DAGS_DIR").map(PathBuf::from) {
         return dags_dir.join(format!("{dag_id}.yaml"));
     }
-    default_repo_root()
-        .join("dags")
-        .join(format!("{dag_id}.yaml"))
+    if let Some(descriptor) = crate::dag_apps::registered_dag_app(dag_id) {
+        return crate::dag_apps::app_root(&descriptor.product_app)
+            .join("dags")
+            .join(format!("{dag_id}.yaml"));
+    }
+    find_app_relative_path(&PathBuf::from(format!("dags/{dag_id}.yaml"))).unwrap_or_else(|| {
+        crate::dag_apps::apps_root()
+            .join("unknown")
+            .join("dags")
+            .join(format!("{dag_id}.yaml"))
+    })
 }
 
 fn repo_root_for_manifest_path(manifest_path: &Path) -> PathBuf {
@@ -359,6 +371,20 @@ fn repo_root_for_manifest_path(manifest_path: &Path) -> PathBuf {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(default_repo_root)
+}
+
+fn find_app_relative_path(path: &Path) -> Option<PathBuf> {
+    let apps_root = crate::dag_apps::apps_root();
+    let entries = std::fs::read_dir(apps_root).ok()?;
+    let mut matches = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_dir())
+        .map(|app_root| app_root.join(path))
+        .filter(|candidate| candidate.exists())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.into_iter().next()
 }
 
 fn validate_unique_names(label: &str, field: &str, names: &[String]) -> anyhow::Result<()> {

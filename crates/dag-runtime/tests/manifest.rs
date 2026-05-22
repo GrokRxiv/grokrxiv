@@ -353,11 +353,11 @@ nodes: []
 fn repo_manifests_validate_and_expose_expected_capabilities() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest_paths = [
-        root.join("dags/paper-review.yaml"),
-        root.join("dags/paper-extract.yaml"),
-        root.join("dags/citation-validation.yaml"),
-        root.join("dags/paper-revise.yaml"),
-        root.join("dags/c2rust.yaml"),
+        root.join("agenthero/apps/grokrxiv/dags/paper-review.yaml"),
+        root.join("agenthero/apps/grokrxiv/dags/paper-extract.yaml"),
+        root.join("agenthero/apps/grokrxiv/dags/citation-validation.yaml"),
+        root.join("agenthero/apps/grokrxiv/dags/paper-revise.yaml"),
+        root.join("agenthero/apps/c2rust/dags/c2rust.yaml"),
     ];
     let manifests = manifest_paths
         .iter()

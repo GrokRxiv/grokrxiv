@@ -1,0 +1,116 @@
+slug: grokrxiv
+label: GrokRxiv
+description: Research ingest, extraction, review, revision, validation, and publish DAG app.
+adapter:
+  kind: process
+  command: cargo
+  args: ["run", "-p", "agenthero-dag-app-grokrxiv", "--quiet", "--", "adapter"]
+actions:
+  - id: extract
+    command: [extract]
+    dag_type: paper-extract
+    description: Extract source artifacts for one or more research papers.
+  - id: ingest
+    command: [ingest]
+    dag_type: paper-ingest
+    description: Ingest one or more arXiv papers and optionally moderate.
+  - id: ingest-range
+    command: [ingest-range]
+    dag_type: paper-ingest
+    description: Backfill arXiv metadata across a date range.
+  - id: ingest-daily
+    command: [ingest-daily]
+    dag_type: paper-ingest
+    description: Run the daily research ingest scheduler tick once.
+  - id: review
+    command: [review]
+    dag_type: paper-review
+    description: Run the research review DAG for a paper source.
+  - id: review-extracted
+    command: [review-extracted]
+    dag_type: paper-review
+    description: Run the review DAG for an already extracted paper.
+  - id: re-review
+    command: [re-review]
+    dag_type: paper-review
+    description: Re-run the review DAG against an already ingested paper.
+  - id: validate-citations
+    command: [validate, citations]
+    dag_type: citation-validation
+    description: Validate paper citations through parser, resolver, metadata, graph, and agent review nodes.
+  - id: verify
+    command: [verify]
+    dag_type: paper-review
+    description: Re-run verifier nodes for one persisted research review.
+  - id: render
+    command: [render]
+    dag_type: paper-publish
+    description: Re-render deterministic review artifacts.
+  - id: refresh-review
+    command: [refresh-review]
+    dag_type: paper-review
+    description: Refresh derived review metadata without rerunning agents.
+  - id: show
+    command: [show]
+    dag_type: paper-review
+    description: Show one persisted research review.
+  - id: list
+    command: [list]
+    dag_type: paper-review
+    description: List persisted research sources or reviews.
+  - id: open
+    command: [open]
+    dag_type: paper-review
+    description: Open the canonical URL for one persisted research review.
+  - id: approve
+    command: [approve]
+    dag_type: paper-publish
+    description: Approve and publish a completed research review.
+  - id: request-revisions
+    command: [request-revisions]
+    dag_type: paper-revise
+    description: Request author revisions for a failed research review.
+  - id: request-changes
+    command: [request-changes]
+    dag_type: paper-revise
+    description: Request moderator changes for a queued research review.
+  - id: reject
+    command: [reject]
+    dag_type: paper-review
+    description: Reject a research review from the moderation flow.
+  - id: close
+    command: [close]
+    dag_type: paper-publish
+    description: Hide a review from web output and optionally close its PR.
+  - id: withdraw
+    command: [withdraw]
+    dag_type: paper-publish
+    description: Withdraw a published research review.
+  - id: correct
+    command: [correct]
+    dag_type: paper-revise
+    description: Append a correction to a published research review.
+  - id: html-review
+    command: [html-review]
+    dag_type: paper-publish
+    description: Run the HTML quality repair harness for rendered output.
+  - id: feedback-loop-smoke
+    command: [feedback-loop-smoke]
+    dag_type: paper-revise
+    description: Run the destructive GitHub correction feedback-loop smoke.
+  - id: batch-create
+    command: [batch-create]
+    dag_type: paper-review
+    description: Create a scheduled research review batch.
+  - id: batch-run
+    command: [batch-run]
+    dag_type: paper-review
+    description: Run queued items from a scheduled research review batch.
+  - id: batch-status
+    command: [batch-status]
+    dag_type: paper-review
+    description: Show scheduled research review batch status.
+  - id: batch-list
+    command: [batch-list]
+    dag_type: paper-review
+    description: List scheduled research review batches.

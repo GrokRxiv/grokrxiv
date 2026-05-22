@@ -46,11 +46,10 @@ fn app_run_grokrxiv_command_parses_as_canonical_app_execution() {
         "app",
         "run",
         "grokrxiv",
-        "--",
         "review",
         "https://arxiv.org/abs/2509.09915v1",
     ])
-    .expect("app run grokrxiv review command should parse");
+    .expect("app run grokrxiv review command should parse without a separator");
 
     match cli.command {
         Command::App { command } => match command {
@@ -97,11 +96,10 @@ fn app_run_c2rust_command_parses_and_direct_app_commands_do_not() {
         "app",
         "run",
         "c2rust",
-        "--",
         "migrate",
         "fixtures/kernel.c",
     ])
-    .expect("app run c2rust migrate command should parse");
+    .expect("app run c2rust migrate command should parse without a separator");
     match cli.command {
         Command::App { command } => match command {
             AppCommand::Run { app, args } => {
@@ -124,13 +122,31 @@ fn app_run_c2rust_command_parses_and_direct_app_commands_do_not() {
 }
 
 #[test]
+fn app_run_with_no_action_is_action_catalog_request() {
+    let cli = Cli::try_parse_from(["agh", "--json", "app", "run", "grokrxiv"])
+        .expect("app run grokrxiv with no action should parse as app action catalog");
+
+    assert!(cli.json);
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
 fn app_manifests_are_yaml_source_of_truth() {
     let root = workspace_root();
     let app_dir = root.join("agenthero").join("apps");
     let expected = [("grokrxiv", "GrokRxiv"), ("c2rust", "C2Rust")];
 
     for (slug, label) in expected {
-        let path = app_dir.join(format!("{slug}.yaml"));
+        let path = app_dir.join(slug).join("app.yaml");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
         let manifest: Value = serde_yaml::from_str(&text)
@@ -159,7 +175,6 @@ fn every_grokrxiv_manifest_action_has_parseable_cli_shape() {
             "app".to_string(),
             "run".to_string(),
             "grokrxiv".to_string(),
-            "--".to_string(),
         ];
         argv.extend(action.command.iter().cloned());
         argv.extend(sample_grokrxiv_args(&action.id, review_id));

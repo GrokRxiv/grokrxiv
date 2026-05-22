@@ -1,0 +1,22 @@
+[package]
+name = "agenthero-agent-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generic AgentHero agent runner contracts."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { version = "=4.5.20", features = ["derive"] }
+agenthero-dag-executor = { path = "../dag-executor" }
+grokrxiv-llm-adapter = { path = "../llm-adapter" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

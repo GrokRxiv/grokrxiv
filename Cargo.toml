@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/dag-runtime",
     "crates/dag-executor",
+    "crates/agent-runtime",
+    "crates/grokrxiv-extraction",
+    "agenthero/apps/grokrxiv/rust",
     "crates/dag-app-citation-validation",
     "crates/dag-app-paper-ingest",
     "crates/dag-app-paper-extract",

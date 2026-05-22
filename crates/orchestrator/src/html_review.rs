@@ -13,7 +13,7 @@
 //! template artifacts). Failures are non-fatal: any error logs a warning
 //! and the original `review.html` is left untouched.
 //!
-//! Output schema: `schemas/html_quality_review.schema.json`.
+//! Output schema: `agenthero/apps/grokrxiv/schemas/html_quality_review.schema.json`.
 
 use crate::agents::{
     runners::cli::CliRunner, AgentInput, AgentRunner, AgentRunnerKind, AgentSpec, SandboxPolicy,
@@ -24,11 +24,14 @@ use serde_json::Value;
 use std::path::Path;
 use uuid::Uuid;
 
-const HTML_QUALITY_SCHEMA: &str = include_str!("../../../schemas/html_quality_review.schema.json");
-const HTML_QUALITY_PROMPT_TEMPLATE: &str = include_str!("../../../prompts/html_quality.md");
+const HTML_QUALITY_SCHEMA: &str =
+    include_str!("../../../agenthero/apps/grokrxiv/schemas/html_quality_review.schema.json");
+const HTML_QUALITY_PROMPT_TEMPLATE: &str =
+    include_str!("../../../agenthero/apps/grokrxiv/prompts/html_quality.md");
 const PR_TEXT_QUALITY_SCHEMA: &str =
-    include_str!("../../../schemas/pr_text_quality_review.schema.json");
-const PR_TEXT_QUALITY_PROMPT_TEMPLATE: &str = include_str!("../../../prompts/pr_text_quality.md");
+    include_str!("../../../agenthero/apps/grokrxiv/schemas/pr_text_quality_review.schema.json");
+const PR_TEXT_QUALITY_PROMPT_TEMPLATE: &str =
+    include_str!("../../../agenthero/apps/grokrxiv/prompts/pr_text_quality.md");
 
 /// Cleaned PR title + body returned by [`clean_pr_text`]. Fields default to
 /// the inputs when codex declines to rewrite them.

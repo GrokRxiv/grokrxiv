@@ -40,22 +40,22 @@ reachability.
 ## Review commands
 
 ```sh
-agh --runner cli --extractor cli --no-cache --json app run grokrxiv -- review 2605.17307
-agh --runner cli --extractor cli app run grokrxiv -- review ./paper.tex --type tex
-agh --runner cli --extractor cli app run grokrxiv -- review ./paper.pdf --type pdf
-agh --runner cli --extractor cli app run grokrxiv -- review <repo-url> --type git --rev main --paper-path paper.tex
+agh --runner cli --extractor cli --no-cache --json app run grokrxiv review 2605.17307
+agh --runner cli --extractor cli app run grokrxiv review ./paper.tex --type tex
+agh --runner cli --extractor cli app run grokrxiv review ./paper.pdf --type pdf
+agh --runner cli --extractor cli app run grokrxiv review <repo-url> --type git --rev main --paper-path paper.tex
 ```
 
-`agh app run grokrxiv -- review` accepts arXiv IDs, arXiv URLs, local `.tex` and
+`agh app run grokrxiv review` accepts arXiv IDs, arXiv URLs, local `.tex` and
 `.pdf` files, git repositories, `@manifest` files, and stdin. For git corpus review, add
 `--corpus`, `--scan-root`, `--include`, `--exclude`, and `--limit`.
 
 Extraction-only and already-extracted paths:
 
 ```sh
-agh --json app run grokrxiv -- extract 2605.17307
-agh --json app run grokrxiv -- review-extracted 2605.17307
-agh --json app run grokrxiv -- review-extracted --force 2605.17307
+agh --json app run grokrxiv extract 2605.17307
+agh --json app run grokrxiv review-extracted 2605.17307
+agh --json app run grokrxiv review-extracted --force 2605.17307
 ```
 
 ## Batch reviews
@@ -67,33 +67,33 @@ records every paper through `queued`, `running`, `reviewed`, `pr_open`,
 `failed`, or `skipped`.
 
 ```sh
-agh --json app run grokrxiv -- batch-create --category math --month 2026-05 --daily-limit 30 --auto-pr
-agh --json app run grokrxiv -- batch-create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr
-agh --json app run grokrxiv -- batch-run <BATCH_ID>
-agh --json app run grokrxiv -- batch-status <BATCH_ID>
-agh --json app run grokrxiv -- batch-list
+agh --json app run grokrxiv batch-create --category math --month 2026-05 --daily-limit 30 --auto-pr
+agh --json app run grokrxiv batch-create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr
+agh --json app run grokrxiv batch-run <BATCH_ID>
+agh --json app run grokrxiv batch-status <BATCH_ID>
+agh --json app run grokrxiv batch-list
 ```
 
 Use `--max-items` for bounded smoke runs before scheduling a whole month. Use
-`agh app run grokrxiv -- batch-run` from cron, launchd, GitHub Actions, or another scheduler for a daily
+`agh app run grokrxiv batch-run` from cron, launchd, GitHub Actions, or another scheduler for a daily
 review quota. With `--auto-pr`, each successfully reviewed item opens the same
-GitHub review PR that `agh app run grokrxiv -- review` opens.
+GitHub review PR that `agh app run grokrxiv review` opens.
 
 ## Review lifecycle
 
 ```sh
-agh --json app run grokrxiv -- show <REVIEW_ID>
-agh app run grokrxiv -- open <REVIEW_ID>
+agh --json app run grokrxiv show <REVIEW_ID>
+agh app run grokrxiv open <REVIEW_ID>
 ```
 
 Moderation:
 
 ```sh
-agh app run grokrxiv -- request-revisions <REVIEW_ID> --notes "Needs a corrected proof."
-agh app run grokrxiv -- approve <REVIEW_ID>
-agh app run grokrxiv -- reject <REVIEW_ID> --reason "Out of scope for publication."
-agh app run grokrxiv -- request-changes <REVIEW_ID> --notes "Regenerate after source fix."
-agh app run grokrxiv -- close <REVIEW_ID> --reason "Superseded by a corrected review."
+agh app run grokrxiv request-revisions <REVIEW_ID> --notes "Needs a corrected proof."
+agh app run grokrxiv approve <REVIEW_ID>
+agh app run grokrxiv reject <REVIEW_ID> --reason "Out of scope for publication."
+agh app run grokrxiv request-changes <REVIEW_ID> --notes "Regenerate after source fix."
+agh app run grokrxiv close <REVIEW_ID> --reason "Superseded by a corrected review."
 ```
 
 `close` hides the review from the web and closes the linked GitHub PR unless
@@ -114,5 +114,5 @@ The hidden `tail-jobs` alias maps to `jobs list` for compatibility.
 cargo test -p agenthero-orchestrator --lib cli::tests
 cargo check -p agenthero-orchestrator --all-targets
 set -a && source .env && set +a
-PATH="$PWD/target/release:$PATH" agh --runner cli --extractor cli --no-cache --json app run grokrxiv -- review 2605.17307
+PATH="$PWD/target/release:$PATH" agh --runner cli --extractor cli --no-cache --json app run grokrxiv review 2605.17307
 ```

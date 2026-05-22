@@ -15,14 +15,19 @@ paper ingest/extract/review/revise/publish.
 - `apps/web/` — Next.js 16 frontend (App Router, Tailwind 4, shadcn/Radix). Production UI.
 - `crates/dag-runtime/` — DAG manifest parsing and validation.
 - `crates/dag-executor/` — generic manifest-driven DAG executor. It must stay free of paper/review/arXiv dependencies.
-- `crates/dag-app-*` — concrete DAG apps that adapt manifests to domain tools, agents, verifiers, renderers, and publishers.
-- `crates/orchestrator/` — HTTP/CLI/scheduler glue, DB/job ownership, and DAG app registry.
+- `agenthero/apps/<app>/` — installed DAGOps product apps. Each app owns
+  `app.yaml`, `dags/`, `agents/`, `prompts/`, `schemas/`, and any app adapter
+  code.
+- `crates/orchestrator/` — AgentHero platform CLI/HTTP/scheduler glue,
+  DB/job ownership, app manifest discovery, and process adapter execution.
+  It must not take a Cargo dependency on concrete app crates.
 - `crates/llm-adapter/` — Multi-provider LLM client (claude / openai / gemini / vllm).
 - `crates/{ingest,render,publisher,schemas,verifier}/` — domain tool/provider crates used by DAG apps.
-- `dags/*.yaml` — DAG-type manifests: tools, roles, nodes, edges, and `dag_call` composition.
-- `agents/<dag-type>/*.yaml` — per-role config: provider, model, runner, prompt template, schemas, verifier names, prompt context, overlays, postprocessors, max_retries.
-- `schemas/*.schema.json` — typed output contracts (the single source of truth).
-- `prompts/*.md` — per-role prompt templates.
+- `crates/grokrxiv-extraction/` — GrokRxiv extraction agents, tools, and deterministic scanners; not platform orchestration.
+- `agenthero/apps/<app>/dags/*.yaml` — DAG-type manifests: tools, roles, nodes, edges, and `dag_call` composition.
+- `agenthero/apps/<app>/agents/<dag-type>/*.yaml` — per-role config: provider, model, runner, prompt template, schemas, verifier names, prompt context, overlays, postprocessors, max_retries.
+- `agenthero/apps/<app>/schemas/*.schema.json` — typed output contracts (the single source of truth).
+- `agenthero/apps/<app>/prompts/*.md` — per-role prompt templates.
 - `supabase/migrations/` + `migrations/` — DB schema.
 - `research/` — design docs (`.md` canonical, `.html` auto-generated; see FP6).
 - `~/.claude/plans/` — per-pass plan files (`fpN-*.md`); index at `piped-bubbling-brook.md`.
@@ -33,7 +38,7 @@ paper ingest/extract/review/revise/publish.
 1. **Never use the user's Claude Code CLI API key for the orchestrator.** The orchestrator reads `ANTHROPIC_API_KEY` from `.env` — that is the **GrokRxiv project key**, not the user's personal CLI key. Confusing them inflates the user's CLI bill against the wrong account.
 2. **`/legal` is the only page that carries the AI-disclaimer.** FP3 locked this directive: do NOT re-add the disclaimer to render artifacts, upload UI, or any other route.
 3. **All schemas are OpenAI-strict-compatible.** Every property must be in `required`; nullable fields use `type: ["X", "null"]`; no `format: uri`, no `minimum/maximum`, no `minLength/maxLength`, no `minItems`. The Gemini adapter has a `sanitize_schema_for_gemini()` shim that migrates from this form.
-4. **Cost-aware role assignment.** Model choice belongs in `agents/<dag-type>/*.yaml` or explicit runtime overrides. Don't promote a role to a more expensive model without measuring.
+4. **Cost-aware role assignment.** Model choice belongs in `agenthero/apps/<app>/agents/<dag-type>/*.yaml` or explicit runtime overrides. Don't promote a role to a more expensive model without measuring.
 5. **`meta_reviewer` input contract (FP6 fix):** receives only the 5 specialist outputs, NOT the full paper extract. The paper is already baked into specialist reasoning.
 6. **New plan runs start from clean lineage.** Commit any existing dirty feature-branch work, merge it locally to `main`, revalidate `main`, then create a fresh branch before applying a new plan.
 7. **Schemas, manifests, prompts, and catalogs are LLM-facing structural contracts.** They must be explicit, stable, and easy for an LLM to follow without inventing fields or breaking shape. If a contract changes, update the schema, prompt, manifest, Rust catalog/types, and tests together.
@@ -46,13 +51,12 @@ agents, and whole DAG types. Do not add new orchestration by hardcoding a
 special case into the supervisor when a manifest node, registered Rust handler,
 or `dag_call` can express it.
 
-Use `agh dag run --dag-type <dag> --json` for executor-path smoke tests.
-The c2rust DAG app is the required non-paper proof path for generic DAG
-changes.
+Use `agh app run <app> <action>` for app-path smoke tests. The c2rust DAG app
+is the required non-paper proof path for generic DAG changes.
 
-The operator CLI is app-scoped. Use `agh app run grokrxiv -- review ...`,
-`agh app run grokrxiv -- approve ...`, and
-`agh app run c2rust -- migrate ...`; do not add new GrokRxiv lifecycle
+The operator CLI is app-scoped and does not use a `--` separator after the app
+slug. Use `agh app run grokrxiv review ...`, `agh app run grokrxiv approve ...`,
+and `agh app run c2rust migrate ...`; do not add new GrokRxiv lifecycle
 commands at the root.
 
 LLM readability is a product requirement: prefer explicit names and small

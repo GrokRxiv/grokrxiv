@@ -1,0 +1,43 @@
+[package]
+name = "agenthero-dag-app-grokrxiv"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GrokRxiv DAGOps app implementation."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "agenthero-dag-app-grokrxiv"
+path = "src/main.rs"
+
+[dependencies]
+agenthero-agent-runtime = { path = "../../../../crates/agent-runtime" }
+agenthero-dag-executor = { path = "../../../../crates/dag-executor" }
+agenthero-dag-runtime = { path = "../../../../crates/dag-runtime" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22"
+hex = "0.4"
+image = { version = "0.24", default-features = false, features = ["png"] }
+jsonschema = { workspace = true }
+lopdf = "0.36"
+pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "thread_safe", "image_024"] }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+sqlx = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+grokrxiv-ingest = { path = "../../../../crates/ingest" }
+grokrxiv-extraction = { path = "../../../../crates/grokrxiv-extraction" }
+grokrxiv-llm-adapter = { path = "../../../../crates/llm-adapter" }
+
+[dev-dependencies]
+wiremock = "=0.6.2"

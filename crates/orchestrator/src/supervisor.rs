@@ -602,7 +602,8 @@ mod tests {
     /// missing required fields.
     #[test]
     fn revision_artifact_schema_validates() {
-        let schema_str = include_str!("../../../schemas/revision_artifact.schema.json");
+        let schema_str =
+            include_str!("../../../agenthero/apps/grokrxiv/schemas/revision_artifact.schema.json");
         let schema: serde_json::Value =
             serde_json::from_str(schema_str).expect("schema parses as JSON");
         let validator =

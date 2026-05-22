@@ -3,7 +3,7 @@
 //! This directory owns review-role bindings and deterministic facts that are
 //! injected into review prompts. Generic runner backends live in
 //! [`crate::agents::runners`], and extraction-specific agents live in
-//! [`crate::agents::extraction`].
+//! [`grokrxiv_extraction::extraction`].
 
 pub mod facts;
 

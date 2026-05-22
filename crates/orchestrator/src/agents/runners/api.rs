@@ -16,7 +16,7 @@ use grokrxiv_llm_adapter::{
 };
 use tracing::warn;
 
-use crate::agents::extraction::ToolCtx;
+use agenthero_agent_runtime::ToolCtx;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, Message, ToolCompletion,
     ToolSpec,
@@ -440,6 +440,7 @@ mod tests {
         ToolCtx {
             workdir,
             semantic_ast: None,
+            source_id: "2401.00001v1",
             arxiv_id: "2401.00001v1",
             http: std::sync::Arc::new(reqwest::Client::new()),
         }

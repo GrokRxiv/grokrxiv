@@ -387,7 +387,7 @@ In `cli.rs::approve_impl`, keep human `--force`, but make non-force approval req
 ```rust
 if gate.verdict != crate::review_gate::GateVerdict::Pass {
     anyhow::bail!(
-        "review {review_id} is not cleanly publishable: {}. Use `agh app run grokrxiv -- request-revisions {review_id}` or `agh app run grokrxiv -- approve --force {review_id}`.",
+        "review {review_id} is not cleanly publishable: {}. Use `agh app run grokrxiv request-revisions {review_id}` or `agh app run grokrxiv approve --force {review_id}`.",
         gate.reason
     );
 }
