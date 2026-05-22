@@ -3,8 +3,11 @@ label: GrokRxiv
 description: Research ingest, extraction, review, revision, validation, and publish DAG app.
 adapter:
   kind: process
-  command: cargo
-  args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--", "adapter"]
+  command: agenthero-dag-app-grokrxiv
+  fallback_command: cargo
+  fallback_args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--"]
+  timeout_secs: 7200
+  output_limit_bytes: 8388608
 deployments:
   - kind: vercel
     id: web

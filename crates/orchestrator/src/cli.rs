@@ -51,19 +51,13 @@ pub struct Cli {
 /// Top-level CLI subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List or inspect installed DAGOps apps.
-    Apps {
-        /// App registry operation.
-        #[command(subcommand)]
-        command: AppsCommand,
-    },
     /// List, inspect, or run installed DAGOps apps.
     App {
         /// App registry operation.
         #[command(subcommand)]
         command: AppCommand,
     },
-    /// Run the HTTP API + Tokio supervisor + scheduler.
+    /// Run the HTTP API + DB-backed app-run scheduler workers.
     Serve,
     /// Print env vars, app roots, DB, and provider reachability.
     Doctor,
@@ -99,18 +93,6 @@ pub enum Command {
     },
 }
 
-/// Product app registry operations.
-#[derive(Debug, Subcommand)]
-pub enum AppsCommand {
-    /// List installed DAGOps apps.
-    List,
-    /// Show one app's available actions.
-    Show {
-        /// Installed app id.
-        app: String,
-    },
-}
-
 /// Product app execution operations.
 #[derive(Debug, Subcommand)]
 pub enum AppCommand {
@@ -134,6 +116,12 @@ pub enum AppCommand {
         /// Optional app id filter.
         #[arg(long)]
         app: Option<String>,
+        /// Optional state filter.
+        #[arg(long)]
+        state: Option<String>,
+        /// Maximum rows to return.
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
     },
     /// Show one app run record.
     Status {
@@ -302,14 +290,10 @@ pub enum JobsCommand {
 
 /// Run the parsed CLI.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    set_status_enabled(cli.status || (!cli.no_status && std::io::stderr().is_terminal()));
+    let _status_enabled = cli.status || (!cli.no_status && std::io::stderr().is_terminal());
     let json = cli.json;
     let dry_run = cli.dry_run;
     match cli.command {
-        Command::Apps { command } => match command {
-            AppsCommand::List => app_list(json),
-            AppsCommand::Show { app } => app_show(&app, json),
-        },
         Command::App { command } => app_command(command, json, dry_run).await,
         Command::Serve => crate::serve::run().await,
         Command::Doctor => crate::doctor::doctor(json).await,
@@ -323,20 +307,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-fn set_status_enabled(_enabled: bool) {}
-
 async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::Result<()> {
     match command {
         AppCommand::List => app_list(json),
         AppCommand::Show { app } => app_show(&app, json),
         AppCommand::Run { app, args } => {
+            let manifest = crate::dag_apps::load_app_manifest_by_slug(&app)?;
             if args.is_empty() {
-                return app_show(&app, json);
+                return app_show_manifest(&manifest, json);
             }
-            let resolved = crate::dag_apps::resolve_app_action_args(&app, &args)?;
-            app_run_command(&app, &resolved.id, resolved.args, json, dry_run).await
+            let resolved = crate::dag_apps::resolve_app_action_args_in_manifest(&manifest, &args)?;
+            app_run_command(&manifest, &resolved.id, resolved.args, json, dry_run).await
         }
-        AppCommand::Runs { app } => app_runs(app.as_deref(), json).await,
+        AppCommand::Runs { app, state, limit } => {
+            app_runs(app.as_deref(), state.as_deref(), limit, json).await
+        }
         AppCommand::Status { run_id } => app_status(run_id, json).await,
     }
 }
@@ -363,8 +348,12 @@ fn app_list(json: bool) -> anyhow::Result<()> {
 
 fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
     let app = crate::dag_apps::load_app_manifest_by_slug(app_id)?;
+    app_show_manifest(&app, json)
+}
+
+fn app_show_manifest(app: &crate::dag_apps::AppManifest, json: bool) -> anyhow::Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&app_catalog_json(&app))?);
+        println!("{}", serde_json::to_string_pretty(&app_catalog_json(app))?);
     } else {
         println!("{} - {}", app.slug, app.label);
         for action in &app.actions {
@@ -437,29 +426,33 @@ fn app_catalog_json(app: &crate::dag_apps::AppManifest) -> serde_json::Value {
 }
 
 async fn app_run_command(
-    app: &str,
+    app: &crate::dag_apps::AppManifest,
     action: &str,
     args: Vec<String>,
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let binding = crate::dag_apps::app_action_binding(app, action)?;
+    let binding = app
+        .actions
+        .iter()
+        .find(|candidate| candidate.id == action)
+        .ok_or_else(|| anyhow::anyhow!("unknown app action `{} {action}`", app.slug))?;
     let mut input = agenthero_dag_executor::DagIo::default();
-    input.values.insert("app".into(), json!(app));
+    input.values.insert("app".into(), json!(app.slug));
     input.values.insert("action".into(), json!(action));
     input
         .values
         .insert("dag_type".into(), json!(binding.dag_type));
-    input.values.insert("args".into(), json!(args));
-    input.values.insert("dry_run".into(), json!(dry_run));
 
-    let response = crate::dag_apps::run_app_action(app, action, args, input, json).await?;
+    let response =
+        crate::dag_apps::run_app_action_with_manifest(app, action, args, input, json, dry_run)
+            .await?;
     if !response.ok {
         anyhow::bail!(
             "{}",
             response
                 .error
-                .unwrap_or_else(|| format!("app `{app}` action `{action}` failed"))
+                .unwrap_or_else(|| format!("app `{}` action `{action}` failed", app.slug))
         );
     }
     if json {
@@ -467,7 +460,7 @@ async fn app_run_command(
     } else if let Some(report) = response.report {
         println!(
             "app={} action={} dag_type={} status={:?} nodes={}",
-            app,
+            app.slug,
             action,
             report.dag_type,
             report.status,
@@ -476,21 +469,30 @@ async fn app_run_command(
     } else if let Some(output) = response.output {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("app={} action={} ok", app, action);
+        println!("app={} action={} ok", app.slug, action);
     }
     Ok(())
 }
 
-async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
+async fn app_runs(
+    app: Option<&str>,
+    state: Option<&str>,
+    limit: u32,
+    json: bool,
+) -> anyhow::Result<()> {
     let pool = connect_db().await?;
+    let limit = limit.clamp(1, 500) as i64;
     let rows = sqlx::query(
         "select id::text, app_id, action_id, state, created_at, started_at, finished_at \
          from app_runs \
          where ($1::text is null or app_id = $1) \
+           and ($2::text is null or state = $2) \
          order by created_at desc \
-         limit 50",
+         limit $3",
     )
     .bind(app)
+    .bind(state)
+    .bind(limit)
     .fetch_all(&pool)
     .await
     .context("list app runs")?;
@@ -727,7 +729,7 @@ fn add_agent_to_dag(
     write: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let path = dag_manifest_path(dag_type);
+    let path = dag_manifest_path(dag_type)?;
     let mut manifest = DagManifest::from_path(&path)
         .with_context(|| format!("load DAG manifest {}", path.display()))?;
     let kind = parse_agent_kind_arg(kind)?;
@@ -769,7 +771,7 @@ fn remove_agent_from_dag(
     write: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let path = dag_manifest_path(dag_type);
+    let path = dag_manifest_path(dag_type)?;
     let mut manifest = DagManifest::from_path(&path)
         .with_context(|| format!("load DAG manifest {}", path.display()))?;
     let before_roles = manifest.roles.len();
@@ -808,7 +810,7 @@ fn add_tool_to_dag(
     write: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let path = dag_manifest_path(dag_type);
+    let path = dag_manifest_path(dag_type)?;
     let mut manifest = DagManifest::from_path(&path)
         .with_context(|| format!("load DAG manifest {}", path.display()))?;
     if manifest.tools.iter().any(|tool| tool.id == tool_id) {
@@ -855,7 +857,7 @@ fn remove_tool_from_dag(
     write: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let path = dag_manifest_path(dag_type);
+    let path = dag_manifest_path(dag_type)?;
     let mut manifest = DagManifest::from_path(&path)
         .with_context(|| format!("load DAG manifest {}", path.display()))?;
     let before_tools = manifest.tools.len();
@@ -998,7 +1000,7 @@ fn emit_or_write_manifest(
 }
 
 fn validate_declared_agent_configs(manifest: &DagManifest) -> anyhow::Result<()> {
-    let manifest_path = dag_manifest_path(manifest.id.as_str());
+    let manifest_path = dag_manifest_path(manifest.id.as_str())?;
     let app_root = manifest_path
         .parent()
         .and_then(Path::parent)
@@ -1090,7 +1092,7 @@ fn place_agent(path: &Path, json: bool) -> anyhow::Result<()> {
 fn load_repo_dag_manifests(dag_type: Option<&str>) -> anyhow::Result<Vec<DagManifest>> {
     let mut paths = Vec::new();
     if let Some(id) = dag_type {
-        paths.push(dag_manifest_path(id));
+        paths.push(dag_manifest_path(id)?);
     } else {
         for app in crate::dag_apps::registered_dag_apps()? {
             paths.push(app.manifest_path);
@@ -1106,14 +1108,14 @@ fn load_repo_dag_manifests(dag_type: Option<&str>) -> anyhow::Result<Vec<DagMani
         .collect()
 }
 
-fn dag_manifest_path(dag_type: &str) -> PathBuf {
-    if let Some(app) = crate::dag_apps::registered_dag_app(dag_type) {
-        return app.manifest_path;
+fn dag_manifest_path(dag_type: &str) -> anyhow::Result<PathBuf> {
+    if let Some(app) = crate::dag_apps::registered_dag_app(dag_type)? {
+        return Ok(app.manifest_path);
     }
-    crate::dag_apps::apps_root()
+    Ok(crate::dag_apps::apps_root()
         .join("unknown")
         .join("dags")
-        .join(format!("{dag_type}.yaml"))
+        .join(format!("{dag_type}.yaml")))
 }
 
 fn print_config(show_secrets: bool, json: bool) -> anyhow::Result<()> {

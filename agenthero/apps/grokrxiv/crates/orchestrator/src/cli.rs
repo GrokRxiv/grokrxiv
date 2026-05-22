@@ -824,12 +824,7 @@ async fn app_run_command(
     input
         .values
         .insert("dag_type".into(), serde_json::json!(binding.dag_type));
-    input.values.insert("args".into(), serde_json::json!(args));
-    input
-        .values
-        .insert("dry_run".into(), serde_json::json!(dry_run));
-
-    let response = crate::dag_apps::run_app_action(app, action, args, input, json).await?;
+    let response = crate::dag_apps::run_app_action(app, action, args, input, json, dry_run).await?;
     if !response.ok {
         anyhow::bail!(
             "{}",

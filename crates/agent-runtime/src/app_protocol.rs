@@ -26,6 +26,9 @@ pub struct AppAdapterRequest {
     /// Whether the caller requested JSON output.
     #[serde(default)]
     pub json: bool,
+    /// Whether the caller requested a plan-only dry run.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 impl AppAdapterRequest {
@@ -37,6 +40,7 @@ impl AppAdapterRequest {
         args: Vec<String>,
         input: DagIo,
         json: bool,
+        dry_run: bool,
     ) -> Self {
         Self {
             protocol: APP_ADAPTER_PROTOCOL.to_string(),
@@ -46,6 +50,7 @@ impl AppAdapterRequest {
             args,
             input,
             json,
+            dry_run,
         }
     }
 }

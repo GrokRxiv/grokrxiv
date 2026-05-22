@@ -1,17 +1,25 @@
 use agenthero_dag_runtime::{DagManifest, DagNodeStatus};
+use serde_json::json;
+use std::sync::Mutex;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn app_registry_groups_dag_types_behind_product_apps() {
-    let ids = agenthero_orchestrator::dag_apps::registered_app_ids();
+    let _guard = EnvGuard::clear_apps_root();
+    let ids = agenthero_orchestrator::dag_apps::registered_app_ids().expect("registered app ids");
     assert_eq!(ids, vec!["c2rust".to_string(), "grokrxiv".to_string()]);
 
     let grokrxiv = agenthero_orchestrator::dag_apps::registered_app("grokrxiv")
+        .expect("GrokRxiv app descriptor loads")
         .expect("GrokRxiv app descriptor");
     assert_eq!(grokrxiv.deployments.len(), 1);
     let deployment = &grokrxiv.deployments[0];
-    let agenthero_orchestrator::dag_apps::AppDeployment::Vercel {
-        project, root, env, ..
-    } = deployment;
+    let (project, root, env) = match deployment {
+        agenthero_orchestrator::dag_apps::AppDeployment::Vercel {
+            project, root, env, ..
+        } => (project, root, env),
+    };
     assert_eq!(project, "grokrxiv");
     assert_eq!(root, "web");
     for required in [
@@ -60,8 +68,9 @@ fn app_registry_groups_dag_types_behind_product_apps() {
         );
     }
 
-    let c2rust =
-        agenthero_orchestrator::dag_apps::registered_app("c2rust").expect("c2rust app descriptor");
+    let c2rust = agenthero_orchestrator::dag_apps::registered_app("c2rust")
+        .expect("c2rust app descriptor loads")
+        .expect("c2rust app descriptor");
     assert_eq!(
         c2rust
             .actions
@@ -74,7 +83,9 @@ fn app_registry_groups_dag_types_behind_product_apps() {
 
 #[test]
 fn registry_contains_grokrxiv_chain_and_c2rust_apps() {
-    let ids = agenthero_orchestrator::dag_apps::registered_dag_app_ids();
+    let _guard = EnvGuard::clear_apps_root();
+    let ids =
+        agenthero_orchestrator::dag_apps::registered_dag_app_ids().expect("registered DAG app ids");
 
     assert_eq!(
         ids,
@@ -91,7 +102,207 @@ fn registry_contains_grokrxiv_chain_and_c2rust_apps() {
 }
 
 #[test]
+fn broken_app_manifest_bubbles_from_registry_helpers() {
+    let root = TempRoot::new("broken-app");
+    std::fs::create_dir_all(root.path().join("bad")).unwrap();
+    std::fs::write(root.path().join("bad/app.yaml"), "slug: [not-a-string]\n").unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("broken app manifest must bubble as error");
+    assert!(
+        err.to_string().contains("parse app manifest"),
+        "expected parse error, got {err:#}"
+    );
+}
+
+#[test]
+fn duplicate_dag_type_across_apps_is_rejected() {
+    let root = TempRoot::new("duplicate-dag");
+    write_app_manifest(root.path(), "alpha", "shared", "run", "/bin/true", &[]);
+    write_app_manifest(root.path(), "beta", "shared", "run", "/bin/true", &[]);
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_dag_apps()
+        .expect_err("duplicate dag_type must fail");
+    assert!(
+        err.to_string().contains("dag_type `shared`"),
+        "expected duplicate dag_type error, got {err:#}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adapter_response_identity_mismatch_is_rejected() {
+    let root = TempRoot::new("identity-mismatch");
+    let script = write_adapter_script(
+        root.path(),
+        "mismatch.sh",
+        r#"#!/bin/sh
+cat >/dev/null
+printf '%s' '{"protocol":"agenthero.app.v1","app":"wrong","action":"run","dag_type":"demo","ok":true}'
+"#,
+    );
+    write_app_manifest(
+        root.path(),
+        "alpha",
+        "demo",
+        "run",
+        script.to_str().unwrap(),
+        &[],
+    );
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::run_app_action(
+        "alpha",
+        "run",
+        Vec::new(),
+        agenthero_dag_executor::DagIo::default(),
+        true,
+        false,
+    )
+    .await
+    .expect_err("identity mismatch must fail");
+    assert!(
+        err.to_string().contains("response app `wrong`"),
+        "expected identity error, got {err:#}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adapter_request_uses_typed_args_and_dry_run() {
+    let root = TempRoot::new("typed-request");
+    let capture = root.path().join("request.json");
+    let script = write_adapter_script(
+        root.path(),
+        "capture.sh",
+        &format!(
+            r#"#!/bin/sh
+cat > "{}"
+printf '%s' '{{"protocol":"agenthero.app.v1","app":"alpha","action":"run","dag_type":"demo","ok":true}}'
+"#,
+            capture.display()
+        ),
+    );
+    write_app_manifest(
+        root.path(),
+        "alpha",
+        "demo",
+        "run",
+        script.to_str().unwrap(),
+        &[],
+    );
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let mut input = agenthero_dag_executor::DagIo::default();
+    input.values.insert("seed".to_string(), json!(true));
+    agenthero_orchestrator::dag_apps::run_app_action(
+        "alpha",
+        "run",
+        vec!["--flag".to_string(), "value".to_string()],
+        input,
+        true,
+        true,
+    )
+    .await
+    .expect("captured request succeeds");
+
+    let request: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(capture).unwrap()).unwrap();
+    assert_eq!(request["args"], json!(["--flag", "value"]));
+    assert_eq!(request["dry_run"], json!(true));
+    assert_eq!(request["input"]["values"]["seed"], json!(true));
+    assert!(
+        request["input"]["values"].get("args").is_none(),
+        "args must not be duplicated into DagIo values"
+    );
+    assert!(
+        request["input"]["values"].get("dry_run").is_none(),
+        "dry_run must not be duplicated into DagIo values"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adapter_malformed_json_nonzero_exit_and_timeout_are_rejected() {
+    let root = TempRoot::new("adapter-failures");
+    let malformed = write_adapter_script(
+        root.path(),
+        "malformed.sh",
+        "#!/bin/sh\ncat >/dev/null\nprintf 'not json'\n",
+    );
+    let nonzero = write_adapter_script(
+        root.path(),
+        "nonzero.sh",
+        "#!/bin/sh\ncat >/dev/null\necho boom >&2\nexit 42\n",
+    );
+    let timeout = write_adapter_script(root.path(), "timeout.sh", "#!/bin/sh\nsleep 2\n");
+    let oversized = write_adapter_script(
+        root.path(),
+        "oversized.sh",
+        "#!/bin/sh\ncat >/dev/null\nprintf '0123456789abcdef0123456789abcdef'\n",
+    );
+    write_app_manifest(
+        root.path(),
+        "malformed",
+        "malformed-dag",
+        "run",
+        malformed.to_str().unwrap(),
+        &[],
+    );
+    write_app_manifest(
+        root.path(),
+        "nonzero",
+        "nonzero-dag",
+        "run",
+        nonzero.to_str().unwrap(),
+        &[],
+    );
+    write_app_manifest(
+        root.path(),
+        "timeout",
+        "timeout-dag",
+        "run",
+        timeout.to_str().unwrap(),
+        &["timeout_secs: 1"],
+    );
+    write_app_manifest(
+        root.path(),
+        "oversized",
+        "oversized-dag",
+        "run",
+        oversized.to_str().unwrap(),
+        &["output_limit_bytes: 16"],
+    );
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    for (app, expected) in [
+        (
+            "malformed",
+            "parse app `malformed` adapter response as JSON",
+        ),
+        ("nonzero", "adapter exited"),
+        ("timeout", "timed out"),
+        ("oversized", "stdout exceeded 16 bytes"),
+    ] {
+        let err = agenthero_orchestrator::dag_apps::run_app_action(
+            app,
+            "run",
+            Vec::new(),
+            agenthero_dag_executor::DagIo::default(),
+            true,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(expected),
+            "{app}: expected `{expected}`, got {err:#}"
+        );
+    }
+}
+
+#[test]
 fn orchestrator_does_not_depend_on_dag_app_crates() {
+    let _guard = EnvGuard::clear_apps_root();
     let manifest = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
     )
@@ -124,6 +335,7 @@ fn orchestrator_does_not_depend_on_dag_app_crates() {
 
 #[test]
 fn root_workspace_only_contains_platform_crates() {
+    let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read root Cargo.toml");
     let parsed: toml::Value = toml::from_str(&manifest).expect("parse root Cargo.toml");
@@ -154,6 +366,7 @@ fn root_workspace_only_contains_platform_crates() {
 
 #[test]
 fn top_level_crates_directory_is_platform_only() {
+    let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
     let mut crates = std::fs::read_dir(root.join("crates"))
         .expect("read crates/")
@@ -182,6 +395,7 @@ fn top_level_crates_directory_is_platform_only() {
 
 #[test]
 fn orchestrator_source_has_no_grokrxiv_domain_code() {
+    let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
     let src = root.join("crates").join("orchestrator").join("src");
     let forbidden = [
@@ -207,6 +421,7 @@ fn orchestrator_source_has_no_grokrxiv_domain_code() {
 
 #[test]
 fn app_manifest_resolves_action_command_paths() {
+    let _guard = EnvGuard::clear_apps_root();
     let review = agenthero_orchestrator::dag_apps::resolve_app_action_args(
         "grokrxiv",
         &["review".into(), "2605.17307".into()],
@@ -235,6 +450,7 @@ fn app_manifest_resolves_action_command_paths() {
 
 #[test]
 fn every_registered_app_has_a_valid_manifest() {
+    let _guard = EnvGuard::clear_apps_root();
     for app in
         agenthero_orchestrator::dag_apps::registered_dag_apps().expect("registered DAG apps load")
     {
@@ -247,6 +463,7 @@ fn every_registered_app_has_a_valid_manifest() {
 
 #[test]
 fn app_contracts_are_owned_by_app_roots() {
+    let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
 
     for app in ["grokrxiv", "c2rust"] {
@@ -295,6 +512,7 @@ fn app_contracts_are_owned_by_app_roots() {
 
 #[test]
 fn grokrxiv_env_templates_use_agenthero_operator_contract() {
+    let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
     let keys = active_env_template_keys(&root);
 
@@ -305,6 +523,7 @@ fn grokrxiv_env_templates_use_agenthero_operator_contract() {
         "AGENTHERO_EXTRACTOR",
         "AGENTHERO_ALLOW_PROVIDER_API",
         "AGENTHERO_SERVICE_TOKEN",
+        "AGENTHERO_SCHEDULER_WORKERS",
         "AGENTHERO_CLOUD_PROVIDER",
         "AGENTHERO_CLAUDE_BIN",
         "AGENTHERO_CODEX_BIN",
@@ -317,6 +536,12 @@ fn grokrxiv_env_templates_use_agenthero_operator_contract() {
         "AGENTHERO_SANDBOX",
         "AGENTHERO_EXTRACTION_TOOL_FALLBACK",
         "AGENTHERO_APPS_ROOT",
+        "AGENTHERO_ADAPTER_BIN_DIR",
+        "AGENTHERO_APP_BIN_DIR",
+        "AGENTHERO_ADAPTER_CWD",
+        "AGENTHERO_ADAPTER_TIMEOUT_SECS",
+        "AGENTHERO_ADAPTER_OUTPUT_LIMIT_BYTES",
+        "AGENTHERO_ALLOW_ADAPTER_FALLBACK",
     ] {
         assert!(
             keys.contains(required),
@@ -413,8 +638,118 @@ fn walk_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-#[tokio::test]
+struct TempRoot {
+    path: std::path::PathBuf,
+}
+
+impl TempRoot {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "agenthero-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+struct EnvGuard {
+    previous_apps_root: Option<std::ffi::OsString>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EnvGuard {
+    fn clear_apps_root() -> Self {
+        let guard = ENV_LOCK.lock().unwrap();
+        let previous_apps_root = std::env::var_os("AGENTHERO_APPS_ROOT");
+        std::env::remove_var("AGENTHERO_APPS_ROOT");
+        Self {
+            previous_apps_root,
+            _guard: guard,
+        }
+    }
+
+    fn set_apps_root(path: &std::path::Path) -> Self {
+        let guard = ENV_LOCK.lock().unwrap();
+        let previous_apps_root = std::env::var_os("AGENTHERO_APPS_ROOT");
+        std::env::set_var("AGENTHERO_APPS_ROOT", path);
+        Self {
+            previous_apps_root,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous_apps_root {
+            Some(value) => std::env::set_var("AGENTHERO_APPS_ROOT", value),
+            None => std::env::remove_var("AGENTHERO_APPS_ROOT"),
+        }
+    }
+}
+
+fn write_app_manifest(
+    root: &std::path::Path,
+    slug: &str,
+    dag_type: &str,
+    action: &str,
+    command: &str,
+    adapter_extra: &[&str],
+) {
+    let app = root.join(slug);
+    std::fs::create_dir_all(&app).unwrap();
+    let extra = if adapter_extra.is_empty() {
+        String::new()
+    } else {
+        format!("  {}\n", adapter_extra.join("\n  "))
+    };
+    std::fs::write(
+        app.join("app.yaml"),
+        format!(
+            r#"slug: {slug}
+label: {slug}
+adapter:
+  kind: process
+  command: "{command}"
+{extra}actions:
+  - id: {action}
+    command: [{action}]
+    dag_type: {dag_type}
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn write_adapter_script(root: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = root.join(name);
+    std::fs::write(&script, body).unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    script
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn registry_runs_c2rust_manifest_through_declared_adapter() {
+    let _guard = EnvGuard::clear_apps_root();
     let report = agenthero_orchestrator::dag_apps::run_registered_dag_app(
         "c2rust",
         agenthero_dag_executor::DagIo::default(),
