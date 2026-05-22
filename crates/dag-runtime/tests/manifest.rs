@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use grokrxiv_dag_runtime::{AgentKind, DagManifest, DagNodeKind, DagRoleKey, DagTypeId, RoleId};
+use grokrxiv_dag_runtime::{
+    AgentKind, DagManifest, DagNodeKind, DagRoleKey, DagTypeId, RoleId, ToolExecutorKind,
+};
 
 fn write_temp_file(name: &str, contents: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -112,6 +114,71 @@ edges:
     );
     assert!(manifest.nodes[1].required);
     assert_eq!(manifest.nodes[2].dag_type.as_deref(), Some("paper-review"));
+}
+
+#[test]
+fn loads_tool_handler_metadata_and_cli_commands() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: citation-validation
+version: 1
+accepts: [verifier]
+concurrency: 1
+tools:
+  - id: bibtex_reference_parser
+    executor: rust
+    handler: citation_validation::bibtex_reference_parser
+    timeout_secs: 30
+  - id: external_citation_audit
+    executor: cli
+    command: [citation-audit, --json]
+    timeout_secs: 60
+nodes:
+  - id: bibtex_reference_parser
+    kind: tool
+    tool: bibtex_reference_parser
+  - id: external_citation_audit
+    kind: tool
+    tool: external_citation_audit
+edges:
+  - from: bibtex_reference_parser
+    to: external_citation_audit
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.tools[0].executor, ToolExecutorKind::Rust);
+    assert_eq!(
+        manifest.tools[0].handler.as_deref(),
+        Some("citation_validation::bibtex_reference_parser")
+    );
+    assert_eq!(manifest.tools[1].executor, ToolExecutorKind::Cli);
+    assert_eq!(
+        manifest.tools[1].command.as_deref(),
+        Some(["citation-audit".to_string(), "--json".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn rejects_cli_tool_without_command() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: [verifier]
+tools:
+  - id: external_citation_audit
+    executor: cli
+nodes:
+  - id: external_citation_audit
+    kind: tool
+    tool: external_citation_audit
+"#,
+    )
+    .expect_err("CLI tools must declare a command");
+
+    assert!(err.to_string().contains("CLI tool"));
+    assert!(err.to_string().contains("external_citation_audit"));
 }
 
 #[test]
@@ -288,6 +355,7 @@ fn repo_manifests_validate_and_expose_expected_capabilities() {
     let manifest_paths = [
         root.join("dags/paper-review.yaml"),
         root.join("dags/paper-extract.yaml"),
+        root.join("dags/citation-validation.yaml"),
         root.join("dags/paper-revise.yaml"),
         root.join("dags/c-to-rust.yaml"),
     ];
@@ -308,5 +376,13 @@ fn repo_manifests_validate_and_expose_expected_capabilities() {
     assert_eq!(
         DagManifest::compatible_dag_ids(&manifests, AgentKind::Extractor),
         vec!["paper-extract".to_string(), "c-to-rust".to_string()]
+    );
+    assert_eq!(
+        DagManifest::compatible_dag_ids(&manifests, AgentKind::Verifier),
+        vec![
+            "paper-review".to_string(),
+            "citation-validation".to_string(),
+            "c-to-rust".to_string(),
+        ]
     );
 }

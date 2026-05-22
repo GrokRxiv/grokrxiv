@@ -1,0 +1,85 @@
+id: citation-validation
+version: 1
+accepts:
+  - verifier
+concurrency: 1
+tools:
+  - id: bibtex_reference_parser
+    executor: rust
+    handler: citation_validation::bibtex_reference_parser
+    timeout_secs: 30
+  - id: doi_resolver
+    executor: rust
+    handler: citation_validation::doi_resolver
+    timeout_secs: 60
+  - id: semantic_similarity_check
+    executor: rust
+    handler: citation_validation::semantic_similarity_check
+    timeout_secs: 60
+  - id: metadata_consistency_validator
+    executor: rust
+    handler: citation_validation::metadata_consistency_validator
+    timeout_secs: 30
+  - id: citation_graph_validation
+    executor: rust
+    handler: citation_validation::citation_graph_validation
+    timeout_secs: 30
+roles:
+  - id: citation_validation_adjudicator
+    kind: verifier
+    config: agents/citation-validation/adjudicator.yaml
+nodes:
+  - id: bibtex_reference_parser
+    kind: tool
+    tool: bibtex_reference_parser
+    inputs: [body.md, references.json, source_manifest.json]
+    outputs: [citation_validation/bibtex_entries.json]
+    required: true
+  - id: doi_resolver
+    kind: tool
+    tool: doi_resolver
+    inputs: [citation_validation/bibtex_entries.json, references.json]
+    outputs: [citation_validation/resolved_metadata.json]
+    required: true
+  - id: semantic_similarity_check
+    kind: tool
+    tool: semantic_similarity_check
+    inputs: [body.md, references.json, citation_validation/resolved_metadata.json]
+    outputs: [citation_validation/similarity.json]
+    required: true
+  - id: metadata_consistency_validator
+    kind: tool
+    tool: metadata_consistency_validator
+    inputs:
+      - citation_validation/bibtex_entries.json
+      - citation_validation/resolved_metadata.json
+      - citation_validation/similarity.json
+    outputs: [citation_validation/metadata_conflicts.json]
+    required: true
+  - id: citation_graph_validation
+    kind: tool
+    tool: citation_graph_validation
+    inputs:
+      - references.json
+      - citation_validation/bibtex_entries.json
+      - citation_validation/resolved_metadata.json
+      - citation_validation/metadata_conflicts.json
+    outputs: [citation_validation_report.json]
+    required: true
+  - id: citation_validation_adjudicator
+    kind: verify
+    role: citation_validation_adjudicator
+    inputs: [citation_validation_report.json]
+    outputs: [citation_validation_adjudication.json]
+    required: true
+edges:
+  - from: bibtex_reference_parser
+    to: doi_resolver
+  - from: doi_resolver
+    to: semantic_similarity_check
+  - from: semantic_similarity_check
+    to: metadata_consistency_validator
+  - from: metadata_consistency_validator
+    to: citation_graph_validation
+  - from: citation_graph_validation
+    to: citation_validation_adjudicator

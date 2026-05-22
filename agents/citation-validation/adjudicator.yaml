@@ -1,0 +1,15 @@
+id: citation_validation_adjudicator
+kind: verifier
+role: "Adjudicate the deterministic citation-validation report and decide whether the paper needs citation remediation."
+provider: openai
+model: gpt-5.5
+runner: cli
+execution_mode: one_shot
+prompt_template: prompts/citation-validation/adjudicator.md
+input_schema: schemas/citation_validation_report.schema.json
+output_schema: schemas/citation_validation_adjudicator.schema.json
+verifiers:
+  - json_schema
+tools: []
+max_retries: 2
+timeout_secs: 180

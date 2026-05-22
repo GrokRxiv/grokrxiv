@@ -7,7 +7,8 @@
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use grokrxiv_dag_runtime::{
-    AgentKind, DagEdge, DagManifest, DagNode, DagNodeKind, DagRole, OneOrMany, RoleId,
+    AgentKind, DagEdge, DagManifest, DagNode, DagNodeKind, DagRole, DagTool, OneOrMany, RoleId,
+    ToolExecutorKind,
 };
 use grokrxiv_schemas::AgentRole;
 use serde::{Deserialize, Serialize};
@@ -504,6 +505,84 @@ pub enum DagCommand {
         #[arg(long)]
         write: bool,
     },
+    /// Add a tool definition/node to one DAG manifest.
+    AddTool {
+        /// DAG type id to edit, e.g. `paper-extract`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+        /// DAG-scoped tool id, e.g. `doi_resolver`.
+        #[arg(long = "tool-id")]
+        tool_id: String,
+        /// Tool executor kind: `rust` or `cli`.
+        #[arg(long)]
+        executor: String,
+        /// Rust handler name. Defaults to the tool id for Rust executors.
+        #[arg(long)]
+        handler: Option<String>,
+        /// CLI command token. Repeat for multiple argv tokens.
+        #[arg(long = "command")]
+        command: Vec<String>,
+        /// Add an edge from this existing node to the new node. Repeatable.
+        #[arg(long = "after")]
+        after: Vec<String>,
+        /// Add an edge from the new node to this existing node. Repeatable.
+        #[arg(long = "before")]
+        before: Vec<String>,
+        /// Artifact or node input name. Repeatable.
+        #[arg(long = "input")]
+        inputs: Vec<String>,
+        /// Artifact output name. Repeatable.
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Optional timeout in seconds.
+        #[arg(long = "timeout-secs")]
+        timeout_secs: Option<u64>,
+        /// Write the manifest. Without this, print the updated YAML.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Remove a tool definition/node from one DAG manifest.
+    RemoveTool {
+        /// DAG type id to edit, e.g. `paper-extract`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+        /// DAG-scoped tool id to remove.
+        #[arg(long = "tool-id")]
+        tool_id: String,
+        /// Write the manifest. Without this, print the updated YAML.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Scaffold a Rust tool definition/node in one DAG manifest.
+    ScaffoldTool {
+        /// DAG type id to edit, e.g. `paper-extract`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+        /// DAG-scoped tool id, e.g. `metadata_consistency_validator`.
+        #[arg(long = "tool-id")]
+        tool_id: String,
+        /// Rust handler name. Defaults to the tool id.
+        #[arg(long)]
+        handler: Option<String>,
+        /// Add an edge from this existing node to the new node. Repeatable.
+        #[arg(long = "after")]
+        after: Vec<String>,
+        /// Add an edge from the new node to this existing node. Repeatable.
+        #[arg(long = "before")]
+        before: Vec<String>,
+        /// Artifact or node input name. Repeatable.
+        #[arg(long = "input")]
+        inputs: Vec<String>,
+        /// Artifact output name. Repeatable.
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Optional timeout in seconds.
+        #[arg(long = "timeout-secs")]
+        timeout_secs: Option<u64>,
+        /// Write the manifest. Without this, print the updated YAML.
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 /// Subcommands for agent config placement/scaffolding.
@@ -959,6 +1038,59 @@ async fn dag_command(command: DagCommand, json: bool) -> anyhow::Result<()> {
             role_id,
             write,
         } => remove_agent_from_dag(&dag_type, &role_id, write, json),
+        DagCommand::AddTool {
+            dag_type,
+            tool_id,
+            executor,
+            handler,
+            command,
+            after,
+            before,
+            inputs,
+            outputs,
+            timeout_secs,
+            write,
+        } => add_tool_to_dag(
+            &dag_type,
+            &tool_id,
+            &executor,
+            handler,
+            command,
+            after,
+            before,
+            inputs,
+            outputs,
+            timeout_secs,
+            write,
+            json,
+        ),
+        DagCommand::RemoveTool {
+            dag_type,
+            tool_id,
+            write,
+        } => remove_tool_from_dag(&dag_type, &tool_id, write, json),
+        DagCommand::ScaffoldTool {
+            dag_type,
+            tool_id,
+            handler,
+            after,
+            before,
+            inputs,
+            outputs,
+            timeout_secs,
+            write,
+        } => scaffold_tool_for_dag(
+            &dag_type,
+            &tool_id,
+            handler,
+            after,
+            before,
+            inputs,
+            outputs,
+            timeout_secs,
+            write,
+            json,
+        ),
     }
 }
 
@@ -973,6 +1105,7 @@ fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<
     let dags_dir = dags_dir();
     for manifest in &manifests {
         validate_declared_agent_configs(manifest, &dags_dir)?;
+        validate_declared_tools(manifest)?;
     }
     if json {
         let rows: Vec<serde_json::Value> = manifests
@@ -1002,6 +1135,41 @@ fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<
                 manifest.nodes.len(),
                 layer_count
             );
+        }
+    }
+    Ok(())
+}
+
+fn validate_declared_tools(manifest: &DagManifest) -> anyhow::Result<()> {
+    for tool in &manifest.tools {
+        match tool.executor {
+            ToolExecutorKind::Rust => {
+                let handler = tool.handler.as_deref().unwrap_or(tool.id.as_str());
+                if !crate::dag_tools::is_known_rust_tool_handler(handler) {
+                    let known = crate::dag_tools::known_rust_tool_handlers().join(", ");
+                    anyhow::bail!(
+                        "DAG `{}` tool `{}` declares unknown Rust handler `{}`; known handlers: {}",
+                        manifest.id,
+                        tool.id,
+                        handler,
+                        known
+                    );
+                }
+            }
+            ToolExecutorKind::Cli => {
+                if tool
+                    .command
+                    .as_ref()
+                    .map(|command| command.is_empty())
+                    .unwrap_or(true)
+                {
+                    anyhow::bail!(
+                        "DAG `{}` CLI tool `{}` must declare command",
+                        manifest.id,
+                        tool.id
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -1062,6 +1230,7 @@ fn add_agent_to_dag(
         });
     }
     manifest.validate()?;
+    validate_declared_tools(&manifest)?;
     emit_or_write_manifest(&path, &manifest, write, json)
 }
 
@@ -1104,12 +1273,153 @@ fn remove_agent_from_dag(
         })
         .collect();
     manifest.validate()?;
+    validate_declared_tools(&manifest)?;
     emit_or_write_manifest(&path, &manifest, write, json)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_tool_to_dag(
+    dag_type: &str,
+    tool_id: &str,
+    executor: &str,
+    handler: Option<String>,
+    command: Vec<String>,
+    after: Vec<String>,
+    before: Vec<String>,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    timeout_secs: Option<u64>,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let path = dag_manifest_path(dag_type);
+    let mut manifest = DagManifest::from_path(&path)
+        .with_context(|| format!("load DAG manifest {}", path.display()))?;
+    if manifest.tools.iter().any(|tool| tool.id == tool_id) {
+        anyhow::bail!("DAG `{dag_type}` already has tool `{tool_id}`");
+    }
+    if manifest.nodes.iter().any(|node| node.id == tool_id) {
+        anyhow::bail!("DAG `{dag_type}` already has node `{tool_id}`");
+    }
+    let executor = parse_tool_executor_arg(executor)?;
+    let handler = match executor {
+        ToolExecutorKind::Rust => Some(handler.unwrap_or_else(|| tool_id.to_string())),
+        ToolExecutorKind::Cli => handler,
+    };
+    let command = (!command.is_empty()).then_some(command);
+    manifest.tools.push(DagTool {
+        id: tool_id.to_string(),
+        executor,
+        handler,
+        command,
+        timeout_secs,
+        input_schema: None,
+        output_schema: None,
+    });
+    manifest.nodes.push(DagNode {
+        id: tool_id.to_string(),
+        kind: DagNodeKind::Tool,
+        role: None,
+        tool: Some(tool_id.to_string()),
+        dag_type: None,
+        inputs,
+        outputs,
+        required: true,
+        feeds_meta: false,
+        gate: None,
+    });
+    for source in after {
+        manifest.edges.push(DagEdge {
+            from: OneOrMany::One(source),
+            to: OneOrMany::One(tool_id.to_string()),
+        });
+    }
+    for target in before {
+        manifest.edges.push(DagEdge {
+            from: OneOrMany::One(tool_id.to_string()),
+            to: OneOrMany::One(target),
+        });
+    }
+    manifest.validate()?;
+    validate_declared_tools(&manifest)?;
+    emit_or_write_manifest(&path, &manifest, write, json)
+}
+
+fn remove_tool_from_dag(
+    dag_type: &str,
+    tool_id: &str,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let path = dag_manifest_path(dag_type);
+    let mut manifest = DagManifest::from_path(&path)
+        .with_context(|| format!("load DAG manifest {}", path.display()))?;
+    let before_tools = manifest.tools.len();
+    manifest.tools.retain(|tool| tool.id != tool_id);
+    if before_tools == manifest.tools.len() {
+        anyhow::bail!("DAG `{dag_type}` has no tool `{tool_id}`");
+    }
+    let removed_node_ids: std::collections::HashSet<String> = manifest
+        .nodes
+        .iter()
+        .filter(|node| node.tool.as_deref() == Some(tool_id))
+        .map(|node| node.id.clone())
+        .collect();
+    manifest
+        .nodes
+        .retain(|node| !removed_node_ids.contains(&node.id));
+    manifest.edges = manifest
+        .edges
+        .into_iter()
+        .filter_map(|edge| {
+            Some(DagEdge {
+                from: strip_one_or_many(edge.from, &removed_node_ids)?,
+                to: strip_one_or_many(edge.to, &removed_node_ids)?,
+            })
+        })
+        .collect();
+    manifest.validate()?;
+    validate_declared_tools(&manifest)?;
+    emit_or_write_manifest(&path, &manifest, write, json)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scaffold_tool_for_dag(
+    dag_type: &str,
+    tool_id: &str,
+    handler: Option<String>,
+    after: Vec<String>,
+    before: Vec<String>,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    timeout_secs: Option<u64>,
+    write: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    add_tool_to_dag(
+        dag_type,
+        tool_id,
+        "rust",
+        handler,
+        Vec::new(),
+        after,
+        before,
+        inputs,
+        outputs,
+        timeout_secs,
+        write,
+        json,
+    )
 }
 
 fn parse_agent_kind_arg(raw: &str) -> anyhow::Result<AgentKind> {
     serde_yaml::from_value(serde_yaml::Value::String(raw.to_string()))
         .with_context(|| format!("unknown agent kind `{raw}`"))
+}
+
+fn parse_tool_executor_arg(raw: &str) -> anyhow::Result<ToolExecutorKind> {
+    serde_yaml::from_value(serde_yaml::Value::String(raw.to_string()))
+        .with_context(|| format!("unknown tool executor `{raw}`"))
 }
 
 fn default_node_kind_for_agent_kind(kind: &AgentKind) -> DagNodeKind {
@@ -6526,6 +6836,125 @@ mod tests {
                 assert_eq!(dag_type, "paper-review");
                 assert_eq!(role_id, "type_theory_validator");
                 assert!(!write);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_dag_add_remove_and_scaffold_tool_commands() {
+        let add = Cli::try_parse_from([
+            "grokrxiv",
+            "dag",
+            "add-tool",
+            "--dag-type",
+            "citation-validation",
+            "--tool-id",
+            "doi_resolver",
+            "--executor",
+            "rust",
+            "--handler",
+            "citation_validation::doi_resolver",
+            "--after",
+            "bibtex_reference_parser",
+            "--before",
+            "semantic_similarity_check",
+            "--input",
+            "references.json",
+            "--output",
+            "citation_validation_report.json",
+            "--write",
+        ])
+        .unwrap();
+
+        match add.command {
+            Command::Dag {
+                command:
+                    DagCommand::AddTool {
+                        dag_type,
+                        tool_id,
+                        executor,
+                        handler,
+                        after,
+                        before,
+                        inputs,
+                        outputs,
+                        write,
+                        ..
+                    },
+            } => {
+                assert_eq!(dag_type, "citation-validation");
+                assert_eq!(tool_id, "doi_resolver");
+                assert_eq!(executor, "rust");
+                assert_eq!(
+                    handler.as_deref(),
+                    Some("citation_validation::doi_resolver")
+                );
+                assert_eq!(after, vec!["bibtex_reference_parser"]);
+                assert_eq!(before, vec!["semantic_similarity_check"]);
+                assert_eq!(inputs, vec!["references.json"]);
+                assert_eq!(outputs, vec!["citation_validation_report.json"]);
+                assert!(write);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let remove = Cli::try_parse_from([
+            "grokrxiv",
+            "dag",
+            "remove-tool",
+            "--dag-type",
+            "citation-validation",
+            "--tool-id",
+            "doi_resolver",
+        ])
+        .unwrap();
+
+        match remove.command {
+            Command::Dag {
+                command:
+                    DagCommand::RemoveTool {
+                        dag_type,
+                        tool_id,
+                        write,
+                    },
+            } => {
+                assert_eq!(dag_type, "citation-validation");
+                assert_eq!(tool_id, "doi_resolver");
+                assert!(!write);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let scaffold = Cli::try_parse_from([
+            "grokrxiv",
+            "dag",
+            "scaffold-tool",
+            "--dag-type",
+            "citation-validation",
+            "--tool-id",
+            "metadata_consistency_validator",
+            "--handler",
+            "citation_validation::metadata_consistency_validator",
+        ])
+        .unwrap();
+
+        match scaffold.command {
+            Command::Dag {
+                command:
+                    DagCommand::ScaffoldTool {
+                        dag_type,
+                        tool_id,
+                        handler,
+                        ..
+                    },
+            } => {
+                assert_eq!(dag_type, "citation-validation");
+                assert_eq!(tool_id, "metadata_consistency_validator");
+                assert_eq!(
+                    handler.as_deref(),
+                    Some("citation_validation::metadata_consistency_validator")
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }

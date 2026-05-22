@@ -116,6 +116,26 @@ impl PaperArtifacts {
                 TierDecision::Tier1Git("references.json".into()),
             ));
         }
+        if let Some(v) = &bundle.citation_validation_report {
+            git_files.insert(
+                "citation_validation_report.json".into(),
+                serde_json::to_vec_pretty(v)?,
+            );
+            routed.push((
+                "citation_validation_report.json".into(),
+                TierDecision::Tier1Git("citation_validation_report.json".into()),
+            ));
+        }
+        if let Some(v) = &bundle.citation_validation_adjudication {
+            git_files.insert(
+                "citation_validation_adjudication.json".into(),
+                serde_json::to_vec_pretty(v)?,
+            );
+            routed.push((
+                "citation_validation_adjudication.json".into(),
+                TierDecision::Tier1Git("citation_validation_adjudication.json".into()),
+            ));
+        }
         if let Some(v) = &bundle.extraction_report {
             git_files.insert(
                 "extraction_report.json".into(),

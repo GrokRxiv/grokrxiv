@@ -77,6 +77,31 @@ pub async fn set_review_status(
     Ok(res.rows_affected())
 }
 
+pub(crate) async fn set_review_system_failed(
+    pool: &PgPool,
+    review_id: Uuid,
+    failure_code: &str,
+    failure_message: &str,
+    failure_retryable: bool,
+) -> sqlx::Result<u64> {
+    let res = sqlx::query(
+        "update reviews \
+            set status = 'system_failed', \
+                failure_code = $2, \
+                failure_message = $3, \
+                failure_retryable = $4, \
+                failed_at = now() \
+          where id = $1",
+    )
+    .bind(review_id)
+    .bind(failure_code)
+    .bind(failure_message)
+    .bind(failure_retryable)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 pub(crate) async fn set_review_meta_review(
     pool: &PgPool,
     review_id: Uuid,

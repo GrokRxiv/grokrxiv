@@ -32,6 +32,7 @@ fn citation_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(tools::SearchCorpusTool),
         Arc::new(tools::ReadSectionTool),
         Arc::new(core_tools::crossref_lookup::CrossrefLookupTool),
+        Arc::new(core_tools::openalex_lookup::OpenAlexLookupTool),
         Arc::new(core_tools::arxiv_lookup::ArxivLookupTool),
     ]
 }
@@ -179,7 +180,7 @@ impl ExtractionAgent for CitationContextualizerAgent {
     fn system_prompt(&self) -> String {
         "You are enriching this paper's citation graph. Use `list_citation_sites` \
          to find every [@key] occurrence, `lookup_bibtex(key)` to get the raw \
-         entry, `crossref_lookup` or `arxiv_lookup` to fetch real metadata \
+         entry, `crossref_lookup`, `openalex_lookup`, or `arxiv_lookup` to fetch real metadata \
          (DOIs, arxiv IDs — DO NOT INVENT THEM), and `search_corpus(query)` to \
          find related already-reviewed papers in the GrokRxiv corpus. For each \
          citation, classify each use site as one of: extends, contradicts, \
@@ -341,6 +342,7 @@ mod tests {
             "search_corpus",
             "read_section",
             "crossref_lookup",
+            "openalex_lookup",
             "arxiv_lookup",
             "submit",
         ] {

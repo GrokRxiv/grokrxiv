@@ -204,6 +204,8 @@ pub struct DagTool {
     pub id: String,
     pub executor: ToolExecutorKind,
     #[serde(default)]
+    pub handler: Option<String>,
+    #[serde(default)]
     pub command: Option<Vec<String>>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
@@ -284,6 +286,25 @@ impl DagManifest {
                     role: role.id.to_string(),
                     kind: role.kind.to_string(),
                 });
+            }
+        }
+
+        let mut tool_def_ids = HashSet::new();
+        for tool in &self.tools {
+            if !tool_def_ids.insert(tool.id.clone()) {
+                return Err(DagError::DuplicateTool(tool.id.clone()));
+            }
+            if tool.executor == ToolExecutorKind::Cli {
+                let has_command = tool
+                    .command
+                    .as_ref()
+                    .map(|command| {
+                        !command.is_empty() && command.iter().all(|part| !part.is_empty())
+                    })
+                    .unwrap_or(false);
+                if !has_command {
+                    return Err(DagError::CliToolMissingCommand(tool.id.clone()));
+                }
             }
         }
 
@@ -450,6 +471,8 @@ pub enum DagError {
     DuplicateRole(String),
     #[error("duplicate node id `{0}`")]
     DuplicateNode(String),
+    #[error("duplicate tool id `{0}`")]
+    DuplicateTool(String),
     #[error("node `{node}` references missing role `{role}`")]
     MissingRole { node: String, role: String },
     #[error("missing node `{0}`")]
@@ -458,6 +481,8 @@ pub enum DagError {
     MissingTool { node: String, tool: String },
     #[error("tool node `{0}` must reference a registered tool")]
     ToolNodeMissingTool(String),
+    #[error("CLI tool `{0}` must declare a non-empty command")]
+    CliToolMissingCommand(String),
     #[error("gate node `{0}` must define a gate policy")]
     GateNodeMissingPolicy(String),
     #[error("gate node `{0}` has invalid min_usable; value must be >= 1")]

@@ -1,0 +1,154 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CitationValidationReport",
+  "description": "Deterministic citation validation report emitted by the citation-validation DAG.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "parsed_references",
+    "resolver_results",
+    "similarity_results",
+    "metadata_conflicts",
+    "graph_warnings",
+    "remediation_items"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["verified", "needs_remediation", "failed"]
+    },
+    "summary": { "type": "string" },
+    "parsed_references": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/reference" }
+    },
+    "resolver_results": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/resolver_result" }
+    },
+    "similarity_results": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/similarity_result" }
+    },
+    "metadata_conflicts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/conflict" }
+    },
+    "graph_warnings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/graph_warning" }
+    },
+    "remediation_items": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/remediation_item" }
+    }
+  },
+  "definitions": {
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "raw",
+        "title",
+        "authors",
+        "venue",
+        "year",
+        "doi",
+        "arxiv_id",
+        "cited"
+      ],
+      "properties": {
+        "key": { "type": "string" },
+        "raw": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "authors": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "venue": { "type": ["string", "null"] },
+        "year": { "type": ["integer", "null"] },
+        "doi": { "type": ["string", "null"] },
+        "arxiv_id": { "type": ["string", "null"] },
+        "cited": { "type": "boolean" }
+      }
+    },
+    "resolver_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "source",
+        "status",
+        "resolved_doi",
+        "resolved_url",
+        "evidence"
+      ],
+      "properties": {
+        "key": { "type": "string" },
+        "source": {
+          "type": "string",
+          "enum": ["crossref", "openalex", "arxiv", "corpus"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["verified", "unresolved", "conflict", "not_checked"]
+        },
+        "resolved_doi": { "type": ["string", "null"] },
+        "resolved_url": { "type": ["string", "null"] },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "similarity_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "score", "method", "notes"],
+      "properties": {
+        "key": { "type": "string" },
+        "score": { "type": "number" },
+        "method": { "type": "string" },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "field", "expected", "observed", "severity"],
+      "properties": {
+        "key": { "type": "string" },
+        "field": { "type": "string" },
+        "expected": { "type": ["string", "null"] },
+        "observed": { "type": ["string", "null"] },
+        "severity": { "type": "string", "enum": ["low", "medium", "high"] }
+      }
+    },
+    "graph_warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "keys"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "remediation_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "action", "reason"],
+      "properties": {
+        "key": { "type": ["string", "null"] },
+        "action": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

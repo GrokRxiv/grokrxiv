@@ -12,6 +12,7 @@ tools:
   - list_citation_sites
   - lookup_bibtex
   - crossref_lookup
+  - openalex_lookup
   - arxiv_lookup
   - search_corpus
   - read_section

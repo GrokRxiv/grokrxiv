@@ -4,20 +4,22 @@ Project-specific instructions for Claude Code working in this repo. Read this be
 
 ## What this project is
 
-GrokRxiv is an agentic AI peer-review system for arXiv papers. A 6-agent review DAG produces typed, JSON-schema-enforced reviews that are gated through a verifier ladder, persisted to Postgres, and (after human moderation) published as PRs against a GitHub mirror of the paper.
+GrokRxiv is an agentic AI peer-review system for arXiv papers. Rust orchestrates typed DAGs whose nodes may be Rust-native tools, CLI tools, agents, verifier/gate nodes, artifacts, or calls into other DAGs. The paper-review DAG still produces typed, JSON-schema-enforced reviews that are gated through a verifier ladder, persisted to Postgres, and (after moderation) published as PRs against a GitHub mirror of the paper.
 
 ## Architecture map
 
 - `apps/web/` — Next.js 16 frontend (App Router, Tailwind 4, shadcn/Radix). Production UI.
-- `crates/orchestrator/` — Rust supervisor that runs the 6-agent DAG.
+- `crates/orchestrator/` — Rust supervisor that runs DAG manifests and owns side effects.
 - `crates/llm-adapter/` — Multi-provider LLM client (claude / openai / gemini / vllm).
 - `crates/{ingest,render,publisher,schemas,verifier}/` — pipeline stages.
+- `dags/*.yaml` — DAG-type manifests: tools, roles, nodes, edges, and `dag_call` composition.
 - `agents/*.yaml` — per-role config: provider, model, schema, verifiers, max_retries.
 - `schemas/*.schema.json` — typed output contracts (the single source of truth).
 - `prompts/*.md` — per-role prompt templates.
 - `supabase/migrations/` + `migrations/` — DB schema.
 - `research/` — design docs (`.md` canonical, `.html` auto-generated; see FP6).
 - `~/.claude/plans/` — per-pass plan files (`fpN-*.md`); index at `piped-bubbling-brook.md`.
+- `AGENTS.md` — cross-agent instructions for adding DAGs, Rust tools/functions, CLI tools, and agents.
 
 ## Hard rules
 
@@ -26,6 +28,18 @@ GrokRxiv is an agentic AI peer-review system for arXiv papers. A 6-agent review 
 3. **All schemas are OpenAI-strict-compatible.** Every property must be in `required`; nullable fields use `type: ["X", "null"]`; no `format: uri`, no `minimum/maximum`, no `minLength/maxLength`, no `minItems`. The Gemini adapter has a `sanitize_schema_for_gemini()` shim that translates from this form.
 4. **Cost-aware role assignment.** Opus is reserved for `technical_correctness` (claim-by-claim audit). Other roles use Haiku / Sonnet / gpt-5.5 / gemini-2.5-flash per their `agents/*.yaml`. Don't promote a role to Opus without measuring.
 5. **`meta_reviewer` input contract (FP6 fix):** receives only the 5 specialist outputs, NOT the full paper extract. The paper is already baked into specialist reasoning.
+6. **New plan runs start from clean lineage.** Commit any existing dirty feature-branch work, merge it locally to `main`, revalidate `main`, then create a fresh branch before applying a new plan.
+7. **Schemas, manifests, prompts, and catalogs are LLM-facing structural contracts.** They must be explicit, stable, and easy for an LLM to follow without inventing fields or breaking shape. If a contract changes, update the schema, prompt, manifest, Rust catalog/types, and tests together.
+
+## DAG/tool/agent authoring
+
+Follow `AGENTS.md` for the standard way to add Rust tools/functions, CLI tools,
+agents, and whole DAG types. Do not add new orchestration by hardcoding a
+special case into the supervisor when a manifest node, registered Rust handler,
+or `dag_call` can express it.
+
+LLM readability is a product requirement: prefer explicit names and small
+contract files over implicit conventions or catch-all modules.
 
 ## How to run the M1 smoke test
 
