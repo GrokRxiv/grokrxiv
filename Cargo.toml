@@ -4,23 +4,8 @@ members = [
     "crates/dag-runtime",
     "crates/dag-executor",
     "crates/agent-runtime",
-    "crates/grokrxiv-extraction",
-    "agenthero/apps/grokrxiv/rust",
-    "crates/dag-app-citation-validation",
-    "crates/dag-app-paper-ingest",
-    "crates/dag-app-paper-extract",
-    "crates/dag-app-paper-review",
-    "crates/dag-app-paper-revise",
-    "crates/dag-app-paper-publish",
-    "crates/dag-app-c2rust",
     "crates/orchestrator",
     "crates/llm-adapter",
-    "crates/ingest",
-    "crates/render",
-    "crates/verifier",
-    "crates/publisher",
-    "crates/schemas",
-    "crates/storage",
 ]
 
 [workspace.package]

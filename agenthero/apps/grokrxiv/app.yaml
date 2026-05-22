@@ -4,20 +4,55 @@ description: Research ingest, extraction, review, revision, validation, and publ
 adapter:
   kind: process
   command: cargo
-  args: ["run", "-p", "agenthero-dag-app-grokrxiv", "--quiet", "--", "adapter"]
+  args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--", "adapter"]
 actions:
   - id: extract
     command: [extract]
     dag_type: paper-extract
     description: Extract source artifacts for one or more research papers.
+    options:
+      - name: source
+        kind: positional
+        value_name: ARXIV_ID_OR_URL
+        required: true
+        multiple: true
+        description: arXiv id or URL to fetch and extract.
   - id: ingest
     command: [ingest]
     dag_type: paper-ingest
     description: Ingest one or more arXiv papers and optionally moderate.
+    options:
+      - name: arxiv_id
+        kind: positional
+        value_name: ARXIV_ID
+        required: true
+        multiple: true
+        description: arXiv id to ingest.
+      - name: --auto-moderate
+        kind: flag
+        description: Continue into moderation after ingest succeeds.
   - id: ingest-range
     command: [ingest-range]
     dag_type: paper-ingest
     description: Backfill arXiv metadata across a date range.
+    options:
+      - name: --from
+        kind: flag
+        value_name: YYYY-MM-DD
+        required: true
+        description: Inclusive start date.
+      - name: --to
+        kind: flag
+        value_name: YYYY-MM-DD
+        required: true
+        description: Inclusive end date.
+      - name: --categories
+        kind: flag
+        value_name: CSV
+        description: Comma-separated arXiv categories to include.
+      - name: --no-review
+        kind: flag
+        description: Ingest metadata without scheduling review.
   - id: ingest-daily
     command: [ingest-daily]
     dag_type: paper-ingest
@@ -26,14 +61,76 @@ actions:
     command: [review]
     dag_type: paper-review
     description: Run the research review DAG for a paper source.
+    options:
+      - name: source
+        kind: positional
+        value_name: URL_OR_PATH
+        required: true
+        description: arXiv id/URL, local PDF, local TeX file, or Git repository.
+      - name: --type
+        kind: flag
+        value_name: arxiv|pdf|tex|git|mixed
+        description: Source type hint when it cannot be inferred.
+      - name: --rev
+        kind: flag
+        value_name: REF
+        description: Git revision for repository sources.
+      - name: --paper-path
+        kind: flag
+        value_name: PATH
+        description: Manuscript path inside a repository source.
+      - name: --title
+        kind: flag
+        value_name: TITLE
+        description: Override or provide the paper title.
+      - name: --field
+        kind: flag
+        value_name: FIELD
+        description: Research field/category override.
+      - name: --corpus
+        kind: flag
+        description: Treat the source as a corpus repository and scan for manuscripts.
+      - name: --scan-root
+        kind: flag
+        value_name: PATH
+        description: Root path to scan inside a corpus repository.
+      - name: --limit
+        kind: flag
+        value_name: N
+        description: Maximum corpus manuscripts to review.
+      - name: --include
+        kind: flag
+        value_name: GLOB
+        multiple: true
+        description: Include corpus paths matching this pattern.
+      - name: --exclude
+        kind: flag
+        value_name: GLOB
+        multiple: true
+        description: Exclude corpus paths matching this pattern.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review
     description: Run the review DAG for an already extracted paper.
+    options:
+      - name: source
+        kind: positional
+        value_name: PAPER_ID_OR_PATH
+        required: true
+        description: Already extracted paper id or artifact path.
+      - name: --force
+        kind: flag
+        description: Re-run review even if an existing result is present.
   - id: re-review
     command: [re-review]
     dag_type: paper-review
     description: Re-run the review DAG against an already ingested paper.
+    options:
+      - name: paper_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted paper UUID.
   - id: validate-citations
     command: [validate, citations]
     dag_type: citation-validation
@@ -42,75 +139,287 @@ actions:
     command: [verify]
     dag_type: paper-review
     description: Re-run verifier nodes for one persisted research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
   - id: render
     command: [render]
     dag_type: paper-publish
     description: Re-render deterministic review artifacts.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --format
+        kind: flag
+        value_name: html|md|tex|pdf|zip
+        description: Artifact format to render.
+      - name: --out
+        kind: flag
+        value_name: PATH
+        description: Output path for the rendered artifact.
   - id: refresh-review
     command: [refresh-review]
     dag_type: paper-review
     description: Refresh derived review metadata without rerunning agents.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
   - id: show
     command: [show]
     dag_type: paper-review
     description: Show one persisted research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
   - id: list
     command: [list]
     dag_type: paper-review
     description: List persisted research sources or reviews.
+    options:
+      - name: target
+        kind: positional
+        value_name: reviews|papers|extracted
+        required: true
+        description: List surface to query.
+      - name: --review-status
+        kind: flag
+        value_name: STATUS
+        description: Review status filter for `list reviews`.
+      - name: --state
+        kind: flag
+        value_name: STATUS
+        description: Alias for `--review-status`.
+      - name: --field
+        kind: flag
+        value_name: FIELD
+        description: Research field/category filter.
+      - name: --has-review
+        kind: flag
+        description: Only show papers with at least one review.
+      - name: --extracted
+        kind: flag
+        description: Only show papers with successful extracted artifacts.
+      - name: --limit
+        kind: flag
+        value_name: N
+        description: Maximum rows to return.
   - id: open
     command: [open]
     dag_type: paper-review
     description: Open the canonical URL for one persisted research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
   - id: approve
     command: [approve]
     dag_type: paper-publish
     description: Approve and publish a completed research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --force
+        kind: flag
+        description: Approve even when the normal guard would stop the action.
   - id: request-revisions
     command: [request-revisions]
     dag_type: paper-revise
     description: Request author revisions for a failed research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --notes
+        kind: flag
+        value_name: TEXT
+        description: Optional revision notes.
   - id: request-changes
     command: [request-changes]
     dag_type: paper-revise
     description: Request moderator changes for a queued research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --notes
+        kind: flag
+        value_name: TEXT
+        required: true
+        description: Moderator change request text.
   - id: reject
     command: [reject]
     dag_type: paper-review
     description: Reject a research review from the moderation flow.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --reason
+        kind: flag
+        value_name: TEXT
+        required: true
+        description: Rejection reason.
   - id: close
     command: [close]
     dag_type: paper-publish
     description: Hide a review from web output and optionally close its PR.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --reason
+        kind: flag
+        value_name: TEXT
+        required: true
+        description: Close reason.
+      - name: --keep-github-pr
+        kind: flag
+        description: Leave the GitHub PR open.
   - id: withdraw
     command: [withdraw]
     dag_type: paper-publish
     description: Withdraw a published research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --reason
+        kind: flag
+        value_name: TEXT
+        required: true
+        description: Withdrawal reason.
   - id: correct
     command: [correct]
     dag_type: paper-revise
     description: Append a correction to a published research review.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --rationale-md
+        kind: flag
+        value_name: PATH
+        required: true
+        description: Markdown file containing the correction rationale.
   - id: html-review
     command: [html-review]
     dag_type: paper-publish
     description: Run the HTML quality repair harness for rendered output.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        description: Persisted review UUID. Required unless `--all` is set.
+      - name: --all
+        kind: flag
+        description: Run the HTML quality harness for all eligible reviews.
   - id: feedback-loop-smoke
     command: [feedback-loop-smoke]
     dag_type: paper-revise
     description: Run the destructive GitHub correction feedback-loop smoke.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Persisted review UUID.
+      - name: --max-wait-secs
+        kind: flag
+        value_name: SECONDS
+        description: Maximum time to wait for the feedback loop.
   - id: batch-create
     command: [batch-create]
     dag_type: paper-review
     description: Create a scheduled research review batch.
+    options:
+      - name: --category
+        kind: flag
+        value_name: ARXIV_SET
+        required: true
+        description: arXiv category or OAI-PMH set.
+      - name: --month
+        kind: flag
+        value_name: YYYY-MM
+        required: true
+        description: Listing month to schedule.
+      - name: --daily-limit
+        kind: flag
+        value_name: N
+        description: Maximum papers scheduled per day.
+      - name: --max-items
+        kind: flag
+        value_name: N
+        description: Maximum papers to schedule.
+      - name: --auto-pr
+        kind: flag
+        description: Open the GitHub review PR after each completed review.
+      - name: --start-date
+        kind: flag
+        value_name: YYYY-MM-DD
+        description: First scheduled day.
   - id: batch-run
     command: [batch-run]
     dag_type: paper-review
     description: Run queued items from a scheduled research review batch.
+    options:
+      - name: batch_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Scheduled batch UUID.
+      - name: --today
+        kind: flag
+        value_name: YYYY-MM-DD
+        description: Override the date used when selecting due items.
+      - name: --limit
+        kind: flag
+        value_name: N
+        description: Maximum due items to run.
   - id: batch-status
     command: [batch-status]
     dag_type: paper-review
     description: Show scheduled research review batch status.
+    options:
+      - name: batch_id
+        kind: positional
+        value_name: UUID
+        required: true
+        description: Scheduled batch UUID.
   - id: batch-list
     command: [batch-list]
     dag_type: paper-review
     description: List scheduled research review batches.
+    options:
+      - name: --limit
+        kind: flag
+        value_name: N
+        description: Maximum batches to return.

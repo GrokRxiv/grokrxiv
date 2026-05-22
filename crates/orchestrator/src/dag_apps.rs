@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 /// Metadata for one DAG type discovered from installed app manifests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DagAppDescriptor {
     /// Product app slug that owns this DAG type.
     pub product_app: String,
@@ -23,7 +23,7 @@ pub struct DagAppDescriptor {
 }
 
 /// Metadata for one product app command surface.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RegisteredAppDescriptor {
     /// Product app id used by `agh app run <app> ...`.
     pub id: String,
@@ -34,7 +34,7 @@ pub struct RegisteredAppDescriptor {
 }
 
 /// Metadata for one app action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppActionDescriptor {
     /// Action id used by `agh app run <app> <action>`.
     pub id: String,
@@ -42,6 +42,8 @@ pub struct AppActionDescriptor {
     pub dag_type: String,
     /// Short operator-facing description.
     pub description: String,
+    /// Action-specific positional and flag metadata.
+    pub options: Vec<AppActionOption>,
 }
 
 /// YAML product app manifest loaded from `agenthero/apps/<app>/app.yaml`.
@@ -84,6 +86,30 @@ pub struct AppManifestAction {
     pub command: Vec<String>,
     /// DAG type bound to this action.
     pub dag_type: String,
+    /// Operator-facing description.
+    #[serde(default)]
+    pub description: String,
+    /// Human/LLM-readable argument contract for this action.
+    #[serde(default)]
+    pub options: Vec<AppActionOption>,
+}
+
+/// Metadata for one app action positional argument or flag.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AppActionOption {
+    /// Exact positional name or flag token, e.g. `source` or `--source-type`.
+    pub name: String,
+    /// Option kind, usually `positional` or `flag`.
+    pub kind: String,
+    /// Optional value placeholder, e.g. `URL_OR_PATH`.
+    #[serde(default)]
+    pub value_name: Option<String>,
+    /// Whether the option is required.
+    #[serde(default)]
+    pub required: bool,
+    /// Whether the option can be repeated.
+    #[serde(default)]
+    pub multiple: bool,
     /// Operator-facing description.
     #[serde(default)]
     pub description: String,
@@ -131,6 +157,7 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
                     id: action.id,
                     dag_type: action.dag_type,
                     description: action.description,
+                    options: action.options,
                 })
                 .collect(),
         })
@@ -268,6 +295,22 @@ fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
         }
         if action.dag_type.trim().is_empty() {
             anyhow::bail!("action `{}` dag_type is required", action.id);
+        }
+        let mut option_names = BTreeSet::new();
+        for option in &action.options {
+            if option.name.trim().is_empty() {
+                anyhow::bail!("action `{}` option name is required", action.id);
+            }
+            if option.kind.trim().is_empty() {
+                anyhow::bail!("action `{}` option `{}` kind is required", action.id, option.name);
+            }
+            if !option_names.insert(option.name.as_str()) {
+                anyhow::bail!(
+                    "duplicate option `{}` for action `{}`",
+                    option.name,
+                    action.id
+                );
+            }
         }
     }
     Ok(())

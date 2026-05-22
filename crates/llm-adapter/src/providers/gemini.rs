@@ -533,7 +533,7 @@ mod tests {
         // OpenAI-style schema with all the bits Gemini chokes on.
         let openai_form = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "https://grokrxiv.org/schemas/x.schema.json",
+            "$id": "https://agenthero.dev/schemas/x.schema.json",
             "type": "object",
             "additionalProperties": false,
             "properties": {

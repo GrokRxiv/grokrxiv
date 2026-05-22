@@ -64,6 +64,32 @@ fn app_run_grokrxiv_command_parses_as_canonical_app_execution() {
 }
 
 #[test]
+fn app_run_grokrxiv_dry_run_parses_at_agenthero_layer() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "--dry-run",
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "https://arxiv.org/abs/2509.09915v1",
+    ])
+    .expect("dry-run app review command should parse");
+
+    assert!(cli.dry_run);
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(args, vec!["review", "https://arxiv.org/abs/2509.09915v1"]);
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
 fn app_run_grokrxiv_command_parses_without_separator() {
     let cli = Cli::try_parse_from([
         "agh",
@@ -137,6 +163,46 @@ fn app_run_with_no_action_is_action_catalog_request() {
         },
         other => panic!("expected App command, got {other:?}"),
     }
+}
+
+#[test]
+fn app_action_catalog_exposes_options_from_yaml() {
+    let grokrxiv = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("grokrxiv")
+        .expect("load grokrxiv app manifest");
+    let review = grokrxiv
+        .actions
+        .iter()
+        .find(|action| action.id == "review")
+        .expect("review action");
+    assert!(
+        review
+            .options
+            .iter()
+            .any(|option| option.name == "source" && option.kind == "positional" && option.required),
+        "review action must document its required source argument"
+    );
+    assert!(
+        review
+            .options
+            .iter()
+            .any(|option| option.name == "--include" && option.multiple),
+        "repeatable review flags should be visible in the app catalog"
+    );
+
+    let c2rust = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("c2rust")
+        .expect("load c2rust app manifest");
+    let migrate = c2rust
+        .actions
+        .iter()
+        .find(|action| action.id == "migrate")
+        .expect("migrate action");
+    assert!(
+        migrate
+            .options
+            .iter()
+            .any(|option| option.name == "source" && option.required),
+        "new DAGOps apps should expose their own app-level argument contract"
+    );
 }
 
 #[test]

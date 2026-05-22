@@ -11,9 +11,6 @@ pub struct ToolCtx<'a> {
     pub semantic_ast: Option<&'a serde_json::Value>,
     /// Source identifier for app tools that need external lookups.
     pub source_id: &'a str,
-    /// Backward-compatible arXiv identifier field for GrokRxiv tools during
-    /// the app split. New app code should prefer `source_id`.
-    pub arxiv_id: &'a str,
     /// Shared HTTP client for network-capable tools.
     pub http: Arc<reqwest::Client>,
 }

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Generic manifest-driven DAG executor for GrokRxiv DAG apps."
+description = "Generic manifest-driven DAG executor for AgentHero DAGOps apps."
 
 [dependencies]
 anyhow = { workspace = true }

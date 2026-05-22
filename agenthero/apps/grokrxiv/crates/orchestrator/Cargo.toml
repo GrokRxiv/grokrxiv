@@ -1,0 +1,90 @@
+[package]
+name = "grokrxiv-app-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GrokRxiv DAG app runtime, repository layer, HTTP handlers, and review pipeline."
+autobins = false
+
+[[bin]]
+name = "grokrxiv-app"
+path = "src/bin/grokrxiv_app.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+jsonschema = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+sqlx = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+octocrab = { workspace = true }
+clap = { version = "=4.5.20", features = ["derive", "string"] }
+clap_lex = "=0.7.2"
+toml = "0.8"
+regex = "1"
+lopdf = "0.36"
+pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "thread_safe", "image_024"] }
+image = { version = "0.24", default-features = false, features = ["png"] }
+
+grokrxiv-schemas = { workspace = true }
+agenthero-agent-runtime = { workspace = true }
+agenthero-dag-executor = { workspace = true }
+agenthero-dag-runtime = { workspace = true }
+grokrxiv-extraction = { workspace = true }
+grokrxiv-llm-adapter = { workspace = true }
+tempfile = "3"
+tar = "0.4"
+flate2 = "1.0"
+
+# Sibling pipeline crates are optional so this binary can compile and run a
+# stubbed end-to-end demo before they ship. The orchestrator flips to
+# `--features full` once they're wired.
+grokrxiv-ingest    = { workspace = true, optional = true }
+grokrxiv-render    = { workspace = true, optional = true }
+grokrxiv-verifier  = { workspace = true, optional = true }
+grokrxiv-publisher = { workspace = true, optional = true }
+grokrxiv-storage   = { workspace = true, optional = true }
+
+[features]
+# `full` is on by default — preview, ingest, render, verifier and publisher
+# all use the real sibling crates. Pass `--no-default-features` and re-enable
+# `stub-ingest` / `stub-render` for a lean dev build without those deps.
+default = ["full"]
+full = [
+    "grokrxiv-ingest",
+    "grokrxiv-render",
+    "grokrxiv-verifier",
+    "grokrxiv-publisher",
+    "grokrxiv-storage",
+]
+stub-ingest = []
+stub-render = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "=0.6.2"
+zip = { workspace = true }

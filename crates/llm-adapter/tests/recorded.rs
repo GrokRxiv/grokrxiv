@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use grokrxiv_llm_adapter::providers::claude::ClaudeProvider;
-use grokrxiv_llm_adapter::providers::gemini::GeminiProvider;
-use grokrxiv_llm_adapter::providers::openai::OpenAIProvider;
-use grokrxiv_llm_adapter::{
+use agenthero_llm_adapter::providers::claude::ClaudeProvider;
+use agenthero_llm_adapter::providers::gemini::GeminiProvider;
+use agenthero_llm_adapter::providers::openai::OpenAIProvider;
+use agenthero_llm_adapter::{
     ChatRequest, ContentPart, LLMError, LLMProvider, Message, ProviderConfig, ResponseFormat, Role,
     ToolChatRequest, ToolContent, ToolMessage, ToolSpec,
 };

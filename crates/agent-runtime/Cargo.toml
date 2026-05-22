@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { version = "=4.5.20", features = ["derive"] }
 agenthero-dag-executor = { path = "../dag-executor" }
-grokrxiv-llm-adapter = { path = "../llm-adapter" }
+agenthero-llm-adapter = { path = "../llm-adapter" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

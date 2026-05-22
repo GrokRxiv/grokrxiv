@@ -15,13 +15,15 @@ name = "agenthero-dag-app-grokrxiv"
 path = "src/main.rs"
 
 [dependencies]
-agenthero-agent-runtime = { path = "../../../../crates/agent-runtime" }
-agenthero-dag-executor = { path = "../../../../crates/dag-executor" }
-agenthero-dag-runtime = { path = "../../../../crates/dag-runtime" }
+agenthero-agent-runtime = { workspace = true }
+agenthero-dag-executor = { workspace = true }
+agenthero-dag-runtime = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
+base64ct = { workspace = true }
 hex = "0.4"
+idna_adapter = { workspace = true }
 image = { version = "0.24", default-features = false, features = ["png"] }
 jsonschema = { workspace = true }
 lopdf = "0.36"
@@ -35,9 +37,10 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 
-grokrxiv-ingest = { path = "../../../../crates/ingest" }
-grokrxiv-extraction = { path = "../../../../crates/grokrxiv-extraction" }
-grokrxiv-llm-adapter = { path = "../../../../crates/llm-adapter" }
+grokrxiv-app-runtime = { workspace = true }
+grokrxiv-extraction = { workspace = true }
+grokrxiv-ingest = { workspace = true }
+grokrxiv-llm-adapter = { workspace = true }
 
 [dev-dependencies]
 wiremock = "=0.6.2"

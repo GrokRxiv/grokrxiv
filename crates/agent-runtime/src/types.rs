@@ -17,13 +17,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use grokrxiv_llm_adapter::{
+pub use agenthero_llm_adapter::{
     ProviderToolCall as ToolCall, ToolChatRequest, ToolCompletion, ToolContent, ToolMessage,
     ToolSpec,
 };
 
 /// Shorthand for one message in a tool-using conversation. The shape is
-/// identical to [`grokrxiv_llm_adapter::ToolMessage`]; this alias keeps the
+/// identical to [`agenthero_llm_adapter::ToolMessage`]; this alias keeps the
 /// orchestrator's call sites tidy.
 pub type Message = ToolMessage;
 
@@ -108,8 +108,8 @@ pub enum RevisionTarget {
     /// Patch the paper's own LaTeX source (the agustif-style review-author
     /// loop).
     PaperLatex,
-    /// Revise GrokRxiv's own generated review artifact (self-improvement loop).
-    GrokrxivReviewOutput,
+    /// Revise the app's own generated artifact (self-improvement loop).
+    AppReviewOutput,
 }
 
 impl Default for RevisionTarget {

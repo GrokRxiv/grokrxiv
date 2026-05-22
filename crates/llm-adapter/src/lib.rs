@@ -1,4 +1,4 @@
-//! GrokRxiv LLM adapter.
+//! AgentHero LLM adapter.
 //!
 //! Defines a single [`LLMProvider`] trait that every concrete provider
 //! ([`providers::claude::ClaudeProvider`], [`providers::gemini::GeminiProvider`],
@@ -40,7 +40,7 @@ pub use providers::openai::OpenAIProvider;
 #[cfg(feature = "vllm")]
 pub use providers::vllm::VllmProvider;
 
-/// Resolve GrokRxiv's per-request output-token cap for a provider/model pair.
+/// Resolve AgentHero's per-request output-token cap for a provider/model pair.
 ///
 /// This is deliberately table-driven: unknown future model IDs fall back to a
 /// conservative provider-safe cap instead of substring-matching a family name

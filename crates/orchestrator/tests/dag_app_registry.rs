@@ -70,6 +70,14 @@ fn orchestrator_does_not_depend_on_dag_app_crates() {
     for forbidden in [
         "agenthero-dag-app-c2rust",
         "agenthero-dag-app-grokrxiv",
+        "grokrxiv-app-runtime",
+        "grokrxiv-extraction",
+        "grokrxiv-ingest",
+        "grokrxiv-publisher",
+        "grokrxiv-render",
+        "grokrxiv-schemas",
+        "grokrxiv-storage",
+        "grokrxiv-verifier",
         "grokrxiv-dag-app-citation-validation",
         "grokrxiv-dag-app-paper-extract",
         "grokrxiv-dag-app-paper-ingest",
@@ -81,6 +89,87 @@ fn orchestrator_does_not_depend_on_dag_app_crates() {
             !manifest.contains(forbidden),
             "orchestrator must not depend on app crate `{forbidden}`; app manifests declare adapters"
         );
+    }
+}
+
+#[test]
+fn root_workspace_only_contains_platform_crates() {
+    let root = workspace_root();
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read root Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&manifest).expect("parse root Cargo.toml");
+    let members = parsed["workspace"]["members"]
+        .as_array()
+        .expect("workspace members")
+        .iter()
+        .map(|value| value.as_str().expect("member string"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        members,
+        vec![
+            "crates/dag-runtime",
+            "crates/dag-executor",
+            "crates/agent-runtime",
+            "crates/orchestrator",
+            "crates/llm-adapter",
+        ]
+    );
+    assert!(
+        members.iter().all(|member| !member.starts_with("agenthero/apps/")),
+        "apps must build from their own manifests, not root workspace membership"
+    );
+}
+
+#[test]
+fn top_level_crates_directory_is_platform_only() {
+    let root = workspace_root();
+    let mut crates = std::fs::read_dir(root.join("crates"))
+        .expect("read crates/")
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    crates.sort();
+    assert_eq!(
+        crates,
+        vec![
+            "agent-runtime",
+            "dag-executor",
+            "dag-runtime",
+            "llm-adapter",
+            "orchestrator",
+        ]
+    );
+}
+
+#[test]
+fn orchestrator_source_has_no_grokrxiv_domain_code() {
+    let root = workspace_root();
+    let src = root.join("crates").join("orchestrator").join("src");
+    let forbidden = [
+        "grokrxiv",
+        "GrokRxiv",
+        "arxiv",
+        "paper-review",
+        "paper_extract",
+        "paper-extract",
+    ];
+    for path in walk_rs_files(&src) {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        for needle in forbidden {
+            assert!(
+                !text.contains(needle),
+                "{} must not contain app-specific token `{needle}`",
+                path.display()
+            );
+        }
     }
 }
 
@@ -126,11 +215,7 @@ fn every_registered_app_has_a_valid_manifest() {
 
 #[test]
 fn app_contracts_are_owned_by_app_roots() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root")
-        .to_path_buf();
+    let root = workspace_root();
 
     for app in ["grokrxiv", "c2rust"] {
         let app_root = root.join("agenthero").join("apps").join(app);
@@ -152,6 +237,32 @@ fn app_contracts_are_owned_by_app_roots() {
             "legacy root-level `{legacy_root}/` must not remain an app contract source"
         );
     }
+}
+
+fn workspace_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn walk_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path)
+            .unwrap_or_else(|err| panic!("read dir {}: {err}", path.display()))
+        {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 #[tokio::test]

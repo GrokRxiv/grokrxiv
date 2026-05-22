@@ -11,7 +11,7 @@ pub const APP_ADAPTER_PROTOCOL: &str = "agenthero.app.v1";
 pub struct AppAdapterRequest {
     /// Protocol marker.
     pub protocol: String,
-    /// Product app slug, e.g. `grokrxiv`.
+    /// Product app slug, e.g. `c2rust`.
     pub app: String,
     /// App action id resolved from `app.yaml`.
     pub action: String,

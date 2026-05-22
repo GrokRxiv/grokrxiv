@@ -1,0 +1,20 @@
+[package]
+name = "agenthero-dag-app-c2rust"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C2Rust DAG app proving the generic executor is not paper-review shaped."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+agenthero-agent-runtime = { workspace = true }
+agenthero-dag-executor = { workspace = true }
+agenthero-dag-runtime = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

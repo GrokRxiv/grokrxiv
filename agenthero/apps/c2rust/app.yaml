@@ -4,9 +4,15 @@ description: C to Rust migration DAG app.
 adapter:
   kind: process
   command: cargo
-  args: ["run", "-p", "agenthero-dag-app-c2rust", "--quiet", "--", "adapter"]
+  args: ["run", "--manifest-path", "agenthero/apps/c2rust/rust/Cargo.toml", "--quiet", "--", "adapter"]
 actions:
   - id: migrate
     command: [migrate]
     dag_type: c2rust
     description: Translate and validate a C source through the C2Rust DAG.
+    options:
+      - name: source
+        kind: positional
+        value_name: C_FILE_OR_PROJECT
+        required: true
+        description: C source file or project root to migrate.

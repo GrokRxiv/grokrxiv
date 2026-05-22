@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Data-driven DAG manifest loading and validation for GrokRxiv agent workflows."
+description = "Data-driven DAG manifest loading and validation for AgentHero DAGOps apps."
 
 [dependencies]
 serde = { workspace = true }
