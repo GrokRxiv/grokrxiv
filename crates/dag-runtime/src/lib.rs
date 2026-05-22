@@ -84,7 +84,39 @@ pub struct DagRole {
 pub struct DagNode {
     pub id: String,
     pub kind: String,
+    #[serde(default)]
     pub role: Option<RoleId>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub dag_type: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagTool {
+    pub id: String,
+    pub executor: ToolExecutorKind,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub input_schema: Option<serde_yaml::Value>,
+    #[serde(default)]
+    pub output_schema: Option<serde_yaml::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutorKind {
+    Rust,
+    Cli,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +149,8 @@ pub struct DagManifest {
     pub accepts: Vec<AgentKind>,
     #[serde(default)]
     pub concurrency: Option<u32>,
+    #[serde(default)]
+    pub tools: Vec<DagTool>,
     #[serde(default)]
     pub roles: Vec<DagRole>,
     #[serde(default)]
@@ -153,6 +187,7 @@ impl DagManifest {
         }
 
         let mut node_ids = HashSet::new();
+        let tool_ids: HashSet<&str> = self.tools.iter().map(|tool| tool.id.as_str()).collect();
         for node in &self.nodes {
             if !node_ids.insert(node.id.clone()) {
                 return Err(DagError::DuplicateNode(node.id.clone()));
@@ -162,6 +197,14 @@ impl DagManifest {
                     return Err(DagError::MissingRole {
                         node: node.id.clone(),
                         role: role.to_string(),
+                    });
+                }
+            }
+            if let Some(tool) = node.tool.as_deref() {
+                if !tool_ids.contains(tool) {
+                    return Err(DagError::MissingTool {
+                        node: node.id.clone(),
+                        tool: tool.to_string(),
                     });
                 }
             }
@@ -235,6 +278,44 @@ impl DagManifest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagRunReport {
+    pub dag_type: DagTypeId,
+    pub status: DagNodeStatus,
+    #[serde(default)]
+    pub nodes: Vec<DagNodeReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagNodeReport {
+    pub node_id: String,
+    pub kind: String,
+    pub status: DagNodeStatus,
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagNodeStatus {
+    Pending,
+    Running,
+    Ok,
+    Degraded,
+    Failed,
+    Skipped,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DagError {
     #[error("{0}")]
@@ -249,6 +330,8 @@ pub enum DagError {
     MissingRole { node: String, role: String },
     #[error("missing node `{0}`")]
     MissingNode(String),
+    #[error("node `{node}` references missing tool `{tool}`")]
+    MissingTool { node: String, tool: String },
     #[error("agent kind `{kind}` for role `{role}` is not accepted by DAG `{dag}`")]
     KindNotAccepted {
         dag: String,

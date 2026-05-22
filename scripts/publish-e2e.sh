@@ -40,6 +40,21 @@ load_dotenv() {
   set -a
   # shellcheck disable=SC1090
   source "${env_file}"
+  local env_files="${GROKRXIV_ENV_FILES:-}"
+  local env_path
+  IFS=',' read -r -a split_env_files <<< "${env_files}"
+  for env_path in "${split_env_files[@]}"; do
+    env_path="${env_path#"${env_path%%[![:space:]]*}"}"
+    env_path="${env_path%"${env_path##*[![:space:]]}"}"
+    [[ -n "${env_path}" ]] || continue
+    [[ "${env_path}" = /* ]] || env_path="${REPO}/${env_path}"
+    if [[ ! -f "${env_path}" ]]; then
+      printf 'GROKRXIV_ENV_FILES references missing file %s\n' "${env_path}" >&2
+      exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "${env_path}"
+  done
   set +a
 }
 

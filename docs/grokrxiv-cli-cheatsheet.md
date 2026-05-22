@@ -4,16 +4,23 @@
 
 ```sh
 cp .env.example .env
+for name in core ingest extract review publish web billing dev; do
+  cp ".env_${name}.example" ".env_${name}"
+done
 supabase start
 cargo build --workspace
 grokrxiv doctor
 ```
 
-The binary loads `.env` from the repo root. For shell scripts that run the
-release binary directly:
+The binary loads root `.env` from the repo root and then each file named by
+`GROKRXIV_ENV_FILES`. For shell scripts that run the release binary directly,
+source the root file plus its includes:
 
 ```sh
-set -a && source .env && set +a
+set -a
+source .env
+for file in ${GROKRXIV_ENV_FILES//,/ }; do source "$file"; done
+set +a
 PATH="$PWD/target/release:$PATH"
 ```
 

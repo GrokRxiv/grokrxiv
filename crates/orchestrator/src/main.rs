@@ -10,7 +10,10 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let _ = dotenvy::dotenv();
+    if let Err(err) = grokrxiv_orchestrator::config::load_env() {
+        eprintln!("error: {err:#}");
+        return ExitCode::from(1);
+    }
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,

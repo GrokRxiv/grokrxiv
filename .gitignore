@@ -15,9 +15,11 @@ Cargo.lock.bak
 
 # Env
 .env
+.env_*
 .env.local
 .env.*.local
 !.env.example
+!.env_*.example
 
 # Supabase
 .supabase/

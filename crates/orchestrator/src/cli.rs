@@ -1039,6 +1039,11 @@ fn add_agent_to_dag(
         id: role_id.to_string(),
         kind: default_node_kind_for_agent_kind(&kind).to_string(),
         role: Some(RoleId::new(role_id)),
+        tool: None,
+        dag_type: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        required: false,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -5162,7 +5167,7 @@ async fn feedback_loop_smoke(
     max_wait_secs: u64,
     json: bool,
 ) -> anyhow::Result<()> {
-    let _ = dotenvy::dotenv();
+    crate::config::load_env()?;
     if std::env::var("GROKRXIV_E2E_ALLOW_GITHUB_PUSH").as_deref() != Ok("1") {
         anyhow::bail!(
             "feedback-loop-smoke refuses to push unless GROKRXIV_E2E_ALLOW_GITHUB_PUSH=1"

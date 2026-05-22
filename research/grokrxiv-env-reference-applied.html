@@ -368,7 +368,7 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <tr>
 <td><code>GROKRXIV_SERVICE_TOKEN</code></td>
 <td><em>none</em></td>
-<td>Bearer expected by the web API <code>/api/v1/*</code> write endpoints</td>
+<td>Operator token for non-public web proxy routes; public <code>/api/v1</code> is read-only</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_AGENTS_DIR</code></td>
@@ -486,9 +486,9 @@ flags pick the TOML file/profile that ENV then overrides.</p>
 <td>Optional LaTeXML postprocessor checked only when <code>GROKRXIV_TEX_ENABLE_LATEXML=1</code></td>
 </tr>
 <tr>
-<td><code>GROKRXIV_FORCE_AGENT_EXTRACTION</code></td>
-<td><em>none</em></td>
-<td>Run extraction LLM tool loops instead of the deterministic local extractor</td>
+<td><code>GROKRXIV_EXTRACTION_MODE</code></td>
+<td><code>pandoc_enabled</code></td>
+<td>Extraction execution mode: <code>pandoc_enabled</code> runs Pandoc/PDF/Rust tool extraction; <code>agent_enabled</code> runs extraction LLM tool loops with local tool fallbacks</td>
 </tr>
 </tbody>
 </table>
@@ -669,11 +669,11 @@ settings.</p>
 </tr>
 <tr>
 <td><code>ORCHESTRATOR_INTERNAL_URL</code></td>
-<td>The web API proxies <code>/api/v1/*</code> here (default <code>http://localhost:8080</code>)</td>
+<td>Internal orchestrator URL (default <code>http://localhost:8080</code>)</td>
 </tr>
 <tr>
 <td><code>GROKRXIV_SERVICE_TOKEN</code></td>
-<td>Bearer required on every <code>/api/v1/*</code> write endpoint</td>
+<td>Operator token for private proxy routes, not public read API access</td>
 </tr>
 <tr>
 <td><code>NEXT_PUBLIC_SUPABASE_URL</code></td>
@@ -686,6 +686,26 @@ settings.</p>
 <tr>
 <td><code>REVALIDATE_SECRET</code></td>
 <td>Required on the revalidate route</td>
+</tr>
+<tr>
+<td><code>GROKRXIV_BILLING_ENABLED</code></td>
+<td>Set to <code>1</code> only when Stripe checkout is configured</td>
+</tr>
+<tr>
+<td><code>STRIPE_SECRET_KEY</code></td>
+<td>Stripe server key for checkout, portal, and webhooks</td>
+</tr>
+<tr>
+<td><code>STRIPE_WEBHOOK_SECRET</code></td>
+<td>Stripe webhook signing secret</td>
+</tr>
+<tr>
+<td><code>STRIPE_SUPPORTER_PRICE_ID</code></td>
+<td>Stripe recurring price id for the Supporter plan</td>
+</tr>
+<tr>
+<td><code>STRIPE_RESEARCHER_PRICE_ID</code></td>
+<td>Stripe recurring price id for the Researcher plan</td>
 </tr>
 </tbody>
 </table>
@@ -730,7 +750,7 @@ enabled in <code>supabase/config.toml</code>, but routes it to the local Mailpit
 container instead of Mailgun.</p>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-20T07:47:39.045Z &middot; grokrxiv</p>
+<p>grokrxiv-env-reference-applied.md &middot; generated 2026-05-22T01:04:29.252Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

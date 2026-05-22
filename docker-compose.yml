@@ -15,8 +15,9 @@
 #   # 1. Start Supabase (Postgres on :54322, Storage on :54321, Studio :54323):
 #   supabase start
 #
-#   # 2. Configure .env. Local development defaults to CLI/subscription runners
-#   #    with direct provider API fallback disabled.
+#   # 2. Configure root .env plus the .env_<purpose> files it lists. Before
+#   #    compose, export the includes so docker-compose interpolation sees them:
+#   #    set -a; source .env; for f in ${GROKRXIV_ENV_FILES//,/ }; do source "$f"; done; set +a
 #
 #   # 3. Bring up orchestrator + web:
 #   docker compose up --build

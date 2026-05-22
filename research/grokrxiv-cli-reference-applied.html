@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>`grokrxiv` CLI reference — applied</title>
+<title>`grokrxiv` CLI reference</title>
 <style>
 .katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
 
@@ -218,298 +218,124 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 </head>
 <body>
 <main class="prose">
-<h1 id="grokrxiv-cli-reference--applied"><a class="anchor" aria-label="anchor" href="#grokrxiv-cli-reference--applied">#</a><code>grokrxiv</code> CLI reference — applied</h1>
-<p>This is the operator-facing surface shipped by RPT2 Track I. The same binary
-is installed under two names: <code>grokrxiv-orchestrator</code> (legacy / docker /
-CI-friendly) and <code>grokrxiv</code> (ergonomic, what <code>just install</code> puts on <code>$PATH</code>).</p>
-<h2 id="installation"><a class="anchor" aria-label="anchor" href="#installation">#</a>Installation</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> install</span><span style="color:#6A737D">          # cargo install --path crates/orchestrator --features full --bin grokrxiv --locked</span></span>
-<span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">           # preflight</span></span>
-<span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> serve</span><span style="color:#6A737D">            # blocking; runs HTTP API + supervisor + scheduler</span></span></code></pre></figure>
-<p>Bare <code>grokrxiv</code> prints help and exits. Start the long-running service
-explicitly with <code>grokrxiv serve</code>.</p>
-<h2 id="global-flags-apply-to-every-subcommand"><a class="anchor" aria-label="anchor" href="#global-flags-apply-to-every-subcommand">#</a>Global flags (apply to every subcommand)</h2>
+<h1 id="grokrxiv-cli-reference"><a class="anchor" aria-label="anchor" href="#grokrxiv-cli-reference">#</a><code>grokrxiv</code> CLI reference</h1>
+<p>The <code>grokrxiv</code> binary is the operator surface for local review, batch review,
+moderation, publication, and diagnostics. The repo <code>.env</code> is loaded by the
+binary at startup, so local smoke checks should use the same CLI commands that
+operators run.</p>
+<h2 id="global-flags"><a class="anchor" aria-label="anchor" href="#global-flags">#</a>Global flags</h2>
 <table>
 <thead>
 <tr>
 <th>Flag</th>
-<th>Default</th>
-<th>Notes</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>--mode &#x3C;m></code></td>
-<td><code>review_only</code></td>
-<td><code>review_only</code> or <code>review_and_revise</code></td>
+<td>`--runner &#x3C;api</td>
+<td>cli</td>
 </tr>
 <tr>
-<td><code>--revision-target &#x3C;t></code></td>
-<td><code>paper_latex</code></td>
-<td><code>paper_latex</code> or <code>grokrxiv_review_output</code></td>
+<td>`--extractor &#x3C;api</td>
+<td>cli>`</td>
 </tr>
 <tr>
-<td><code>--runner &#x3C;r></code></td>
-<td><em>from config</em></td>
-<td><code>api</code> / <code>cli</code> / <code>cloud</code> / <code>local_inference</code></td>
+<td><code>--runner-for ROLE=RUNNER</code></td>
+<td>Per-role runner override</td>
 </tr>
 <tr>
-<td><code>--extractor &#x3C;r></code></td>
-<td><code>cli</code></td>
-<td>Staged ingest extraction backend: <code>cli</code> / <code>api</code></td>
-</tr>
-<tr>
-<td><code>--runner-for &#x3C;role>=&#x3C;r></code></td>
-<td><em>empty</em></td>
-<td>Repeatable. e.g. <code>--runner-for summary=cli</code></td>
-</tr>
-<tr>
-<td><code>--sandbox &#x3C;s></code></td>
-<td><code>none</code></td>
-<td><code>none</code> or <code>container</code></td>
-</tr>
-<tr>
-<td><code>--cloud-provider &#x3C;name></code></td>
-<td><em>from env</em></td>
-<td>e.g. <code>vercel_open_agents</code>, <code>e2b</code></td>
-</tr>
-<tr>
-<td><code>--litellm-url &#x3C;url></code></td>
-<td><em>from env</em></td>
-<td>LiteLLM gateway override</td>
-</tr>
-<tr>
-<td><code>--ollama-host &#x3C;url></code></td>
-<td><em>from env</em></td>
-<td>Direct Ollama override</td>
-</tr>
-<tr>
-<td><code>--model-for &#x3C;role>=&#x3C;id></code></td>
-<td><em>empty</em></td>
-<td>Repeatable model override</td>
-</tr>
-<tr>
-<td><code>--max-cost-usd &#x3C;n></code></td>
-<td><em>none</em></td>
-<td>Hard cap on total cost (USD) per review</td>
+<td><code>--model-for ROLE=MODEL</code></td>
+<td>Per-role model override</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>
-<td><code>false</code></td>
-<td>Skip the review cache</td>
-</tr>
-<tr>
-<td><code>--offline</code></td>
-<td><code>false</code></td>
-<td>Disallow network where avoidable</td>
-</tr>
-<tr>
-<td><code>--dry-run</code></td>
-<td><code>false</code></td>
-<td>Plan-only; don't make LLM calls</td>
+<td>Skip review cache reads</td>
 </tr>
 <tr>
 <td><code>--json</code></td>
-<td><code>false</code></td>
-<td>Emit JSON (where supported)</td>
+<td>Emit machine-readable output where supported</td>
 </tr>
 <tr>
-<td><code>--status</code></td>
-<td>auto</td>
-<td>Emit short progress lines to stderr</td>
-</tr>
-<tr>
-<td><code>--no-status</code></td>
-<td><code>false</code></td>
-<td>Suppress progress lines for background runs</td>
+<td><code>--status</code> / <code>--no-status</code></td>
+<td>Force or suppress foreground progress lines</td>
 </tr>
 <tr>
 <td><code>--profile &#x3C;name></code></td>
-<td><code>default</code></td>
-<td>Named TOML profile</td>
+<td>Load a named TOML runtime profile</td>
 </tr>
 <tr>
 <td><code>--config &#x3C;path></code></td>
-<td><code>~/.grokrxiv/config.toml</code></td>
-<td>Override TOML path</td>
+<td>Override the TOML config path</td>
 </tr>
 <tr>
-<td><code>--show-secrets</code></td>
-<td><code>false</code></td>
-<td>Print provider secrets in cleartext (<code>config</code> only)</td>
+<td><code>--dry-run</code></td>
+<td>Print the resolved plan where supported</td>
 </tr>
 </tbody>
 </table>
-<p>When the resolved runtime is CLI-only (<code>--runner cli --extractor cli</code>),
-<code>grokrxiv</code> sets <code>GROKRXIV_ALLOW_PROVIDER_API=0</code> internally and removes provider
-API key env vars from local CLI children. Direct provider API calls are enabled
-only by explicit API selection.</p>
-<p>Docker runs the same CLI path. The orchestrator image installs <code>claude</code>,
-<code>codex</code>, and <code>gemini</code>; compose mounts local CLI auth read-only and the
-entrypoint copies only those auth bundles into <code>/home/grokrxiv</code> at startup.
-Hosted deploys should provide the same files as runtime secrets, not baked
-image layers.</p>
-<p>On macOS, Claude Code stores the usable OAuth credential in Keychain, not just
-<code>~/.claude.json</code>. Export that one item before starting Docker:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">security</span><span style="color:#9ECBFF"> find-generic-password</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> 'Claude Code-credentials'</span><span style="color:#79B8FF"> -w</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#F97583">  ></span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span>
-<span data-line=""><span style="color:#B392F0">chmod</span><span style="color:#79B8FF"> 600</span><span style="color:#9ECBFF"> ~/.claude/docker-claude-code-credentials.secret</span></span></code></pre></figure>
-<p>The compose mount exposes that file read-only, and the container entrypoint
-copies it to Claude Code's Linux credentials-file locations. Do not commit or
-print this file. Codex and Gemini are file-backed on this machine; compose
-mounts only <code>~/.codex/auth.json</code>, <code>~/.gemini/oauth_creds.json</code>, and
-<code>~/.gemini/google_accounts.json</code>. The entrypoint writes a minimal Gemini OAuth
-settings file inside the container so host MCP/trust settings are not copied.</p>
-<p>Review specialists run in parallel by default. Set
-<code>GROKRXIV_REVIEW_CONCURRENCY=1</code> for serial debugging, or set another positive
-integer to cap concurrent specialist CLI/API children.</p>
-<h2 id="subcommands"><a class="anchor" aria-label="anchor" href="#subcommands">#</a>Subcommands</h2>
-<h3 id="service"><a class="anchor" aria-label="anchor" href="#service">#</a>Service</h3>
-<h4 id="grokrxiv-serve"><a class="anchor" aria-label="anchor" href="#grokrxiv-serve">#</a><code>grokrxiv serve</code></h4>
-<p>Runs the orchestrator: HTTP API + supervisor + scheduler. Blocks forever.</p>
-<h4 id="grokrxiv-doctor"><a class="anchor" aria-label="anchor" href="#grokrxiv-doctor">#</a><code>grokrxiv doctor</code></h4>
-<p>Runs the preflight checks (env vars, DB URL, API runner reachability, CLI
-binaries on PATH, cloud reachability, local-inference reachability,
-publisher). Exits 1 if any <em>critical</em> check fails (DATABASE_URL absent, or
-no review runner reachable). Add <code>--json</code> for a structured report.</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">                       # human</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#9ECBFF"> .</span><span style="color:#6A737D">         # machine</span></span></code></pre></figure>
-<h4 id="grokrxiv-config---show-secrets"><a class="anchor" aria-label="anchor" href="#grokrxiv-config---show-secrets">#</a><code>grokrxiv config [--show-secrets]</code></h4>
-<p>Prints the resolved config: the env-based legacy <code>Config</code> <em>and</em> the layered
-<code>RuntimeConfig</code> (defaults → TOML → env → CLI). Add <code>--json</code> for a structured
-view. Secrets are redacted as <code>***</code> unless <code>--show-secrets</code> is passed.</p>
-<h3 id="canonical-review-entry-point"><a class="anchor" aria-label="anchor" href="#canonical-review-entry-point">#</a>Canonical review entry point</h3>
-<h4 id="grokrxiv-review-source---type-t"><a class="anchor" aria-label="anchor" href="#grokrxiv-review-source---type-t">#</a><code>grokrxiv review &#x3C;source> [--type T]</code></h4>
-<p>The "single command for one paper" entry point. <code>source</code> may be:</p>
-<ul>
-<li>bare arXiv id, e.g. <code>2605.12484</code></li>
-<li>arXiv URL, e.g. <code>https://arxiv.org/abs/2605.12484v1</code></li>
-<li>legacy arXiv id, e.g. <code>math-ph/0506010</code></li>
-<li>local PDF, e.g. <code>./paper.pdf</code>              (deferred — Track I follow-up)</li>
-<li>local LaTeX, e.g. <code>./paper.tex</code>            (deferred — Track I follow-up)</li>
-<li>git repository, e.g. <code>https://github.com/org/repo --type git --paper-path paper.tex</code></li>
-<li>git corpus, e.g. <code>https://github.com/org/repo --type git --corpus --scan-root papers</code></li>
-<li><code>-</code> to read from stdin                      (deferred — Track I follow-up)</li>
-<li><code>@&#x3C;path></code> to read a newline-delimited file of sources (recurses through this list)</li>
-</ul>
-<p>For corpus review, GrokRxiv scans for <code>.tex</code> and <code>.pdf</code>, de-duplicates
-matching TeX/PDF pairs, prefers TeX, and creates one review per manuscript:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --status</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#9ECBFF">  review</span><span style="color:#9ECBFF"> https://github.com/MagnetonIO/emergent_spacetime</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --type</span><span style="color:#9ECBFF"> git</span><span style="color:#79B8FF"> --rev</span><span style="color:#9ECBFF"> main</span><span style="color:#79B8FF"> --corpus</span><span style="color:#79B8FF"> --scan-root</span><span style="color:#9ECBFF"> papers/information-theory/src</span></span></code></pre></figure>
-<p>With <code>--json</code>, after the run we emit:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span></span>
-<span data-line=""><span style="color:#79B8FF">  "arxiv_id"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"2605.12484"</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#79B8FF">  "review_id"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"8f9e..."</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#79B8FF">  "status"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"awaiting_moderation"</span><span style="color:#E1E4E8">,</span></span>
-<span data-line=""><span style="color:#79B8FF">  "agents"</span><span style="color:#E1E4E8">: [</span></span>
-<span data-line=""><span style="color:#E1E4E8">    {</span><span style="color:#79B8FF">"role"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"summary"</span><span style="color:#E1E4E8">, </span><span style="color:#79B8FF">"verifier_status"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"pass"</span><span style="color:#E1E4E8">},</span></span>
-<span data-line=""><span style="color:#E1E4E8">    {</span><span style="color:#79B8FF">"role"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"technical_correctness"</span><span style="color:#E1E4E8">, </span><span style="color:#79B8FF">"verifier_status"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"pass"</span><span style="color:#E1E4E8">},</span></span>
-<span data-line=""><span style="color:#FDAEB7;font-style:italic">    ...</span></span>
-<span data-line=""><span style="color:#E1E4E8">  ]</span></span>
-<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<p>The smoke test in <code>tests/m1-pipeline.sh</code> asserts on this envelope.</p>
-<h3 id="ingestion"><a class="anchor" aria-label="anchor" href="#ingestion">#</a>Ingestion</h3>
-<h4 id="grokrxiv-extract-arxiv_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-extract-arxiv_id">#</a><code>grokrxiv extract &#x3C;arxiv_id>...</code></h4>
-<p>Run fetch + extraction only, then audit the reviewer input artifacts. This is
-the fast standalone check for the extractor before running reviewers:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --status</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#9ECBFF"> extract</span><span style="color:#79B8FF"> 2605.00561</span></span></code></pre></figure>
-<p>The default TeX conversion is Pandoc. Local installs find <code>pandoc</code> on PATH or
-via <code>GROKRXIV_PANDOC_BIN</code>; the orchestrator Docker image installs official
-Pandoc by default unless built with <code>GROKRXIV_DOCKER_INSTALL_PANDOC=0</code>.
-LaTeXML semantic AST enrichment runs only when
-<code>GROKRXIV_TEX_ENABLE_LATEXML=1</code>; extraction LLM tool loops run only when
-<code>GROKRXIV_FORCE_AGENT_EXTRACTION=1</code>.</p>
-<h4 id="grokrxiv-review-extracted---force-arxiv_idpaper_idurl"><a class="anchor" aria-label="anchor" href="#grokrxiv-review-extracted---force-arxiv_idpaper_idurl">#</a><code>grokrxiv review-extracted [--force] &#x3C;arxiv_id|paper_id|url></code></h4>
-<p>Run only the review DAG for a paper whose extraction artifacts are already
-persisted. This reuses <code>review_input.json</code> and avoids re-running extraction:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --status</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#9ECBFF"> review-extracted</span><span style="color:#79B8FF"> 2605.00561</span></span></code></pre></figure>
-<p>If the paper already has an active review (<code>awaiting_moderation</code>, <code>pr_open</code>,
-<code>published</code>, etc.), the command does not start a new DAG by default. It prints
-<code>already_reviewed=true</code>, the existing <code>review_id</code>, current status, and PR URL
-when available. With <code>--json</code>, it emits <code>{ "status": "already_reviewed", ... }</code>.
-Use <code>--force</code> only when you intend to supersede the existing review after new
-review input, comments, or paper/extraction changes.</p>
-<h3 id="review-lifecycle"><a class="anchor" aria-label="anchor" href="#review-lifecycle">#</a>Review lifecycle</h3>
-<h4 id="grokrxiv-list-reviews---review-status-s---field-f---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-reviews---review-status-s---field-f---limit-n---json">#</a><code>grokrxiv list reviews [--review-status S] [--field F] [--limit N] [--json]</code></h4>
-<h4 id="grokrxiv-list-papers---field-f---has-review---extracted---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-papers---field-f---has-review---extracted---limit-n---json">#</a><code>grokrxiv list papers [--field F] [--has-review] [--extracted] [--limit N] [--json]</code></h4>
-<h4 id="grokrxiv-list-extracted---field-f---limit-n---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-list-extracted---field-f---limit-n---json">#</a><code>grokrxiv list extracted [--field F] [--limit N] [--json]</code></h4>
-<h4 id="grokrxiv-show-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-show-review_id---json">#</a><code>grokrxiv show &#x3C;REVIEW_ID> [--json]</code></h4>
-<p>Pretty-print a review (paper, agents, verifier status, optional PR URL).</p>
-<h3 id="moderation"><a class="anchor" aria-label="anchor" href="#moderation">#</a>Moderation</h3>
-<h4 id="grokrxiv-approve-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-approve-review_id---json">#</a><code>grokrxiv approve &#x3C;REVIEW_ID> [--json]</code></h4>
-<p>Open the publication PR on <code>GrokRxiv/grokrxiv-reviews</code>. This does not merge or
-publish the review; a human merge plus the GitHub webhook performs the
-<code>published</code> transition. Prints <code>pr_url=…</code>. With <code>--json</code>, returns
-<code>{review_id, pr_url, status}</code>. Without <code>GITHUB_TOKEN</code>, the command fails closed
-instead of writing simulated PR state.</p>
-<h4 id="grokrxiv-publish-review_id---json"><a class="anchor" aria-label="anchor" href="#grokrxiv-publish-review_id---json">#</a><code>grokrxiv publish &#x3C;REVIEW_ID> [--json]</code></h4>
-<p>Publish a review by merging its open publication PR. The GitHub webhook then
-flips the review to <code>published</code> and revalidates the public site. <code>merge</code> is
-kept as a hidden compatibility alias for this command.</p>
-<h4 id="grokrxiv-reject-review_id---reason-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-reject-review_id---reason-text">#</a><code>grokrxiv reject &#x3C;REVIEW_ID> --reason TEXT</code></h4>
-<p>Mark a review rejected (review stays <code>awaiting_moderation</code>).</p>
-<h4 id="grokrxiv-request-changes-review_id---notes-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-request-changes-review_id---notes-text">#</a><code>grokrxiv request-changes &#x3C;REVIEW_ID> --notes TEXT</code></h4>
-<p>Mark a review as needing operator changes.</p>
-<h3 id="conveniences"><a class="anchor" aria-label="anchor" href="#conveniences">#</a>Conveniences</h3>
-<h4 id="grokrxiv-open-review_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-open-review_id">#</a><code>grokrxiv open &#x3C;REVIEW_ID></code></h4>
-<p>Print (and on macOS, <code>open(1)</code>) the <code>/reviews/&#x3C;id></code> URL.</p>
-<h3 id="advanced-and-hidden-commands"><a class="anchor" aria-label="anchor" href="#advanced-and-hidden-commands">#</a>Advanced and hidden commands</h3>
-<p>These remain callable for compatibility and admin repair work, but are hidden
-from default <code>--help</code>.</p>
-<h4 id="grokrxiv-ingest-arxiv_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-arxiv_id">#</a><code>grokrxiv ingest &#x3C;arxiv_id>...</code></h4>
-<p>Lower-level arXiv-only ingest + review path. Prefer <code>grokrxiv review</code>.</p>
-<h4 id="grokrxiv-re-review-paper_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-re-review-paper_id">#</a><code>grokrxiv re-review &#x3C;PAPER_ID></code></h4>
-<p>Re-run the review DAG against an already-ingested paper. Prefer
-<code>grokrxiv review-extracted --force</code> for operator reruns.</p>
-<h4 id="grokrxiv-verify-review_id"><a class="anchor" aria-label="anchor" href="#grokrxiv-verify-review_id">#</a><code>grokrxiv verify &#x3C;REVIEW_ID></code></h4>
-<p>Re-print the per-agent verifier_status rows for a review.</p>
-<h4 id="grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-render-review_id---format-htmlmdtexpdfzip---out-path">#</a><code>grokrxiv render &#x3C;REVIEW_ID> [--format html|md|tex|pdf|zip] [--out PATH]</code></h4>
-<p>Re-emit artifacts for a persisted review.</p>
-<h4 id="grokrxiv-correct-review_id---rationale-md-path"><a class="anchor" aria-label="anchor" href="#grokrxiv-correct-review_id---rationale-md-path">#</a><code>grokrxiv correct &#x3C;REVIEW_ID> --rationale-md PATH</code></h4>
-<p>Append a correction; status → <code>corrected</code>.</p>
-<h4 id="grokrxiv-withdraw-review_id---reason-text"><a class="anchor" aria-label="anchor" href="#grokrxiv-withdraw-review_id---reason-text">#</a><code>grokrxiv withdraw &#x3C;REVIEW_ID> --reason TEXT</code></h4>
-<p>Withdraw a published review (status → <code>withdrawn</code>; revalidates the frontend).</p>
-<h4 id="grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-range---from-d---to-d---categories-ccc---no-review">#</a><code>grokrxiv ingest-range --from D --to D [--categories C,C,C] [--no-review]</code></h4>
-<p>Bulk OAI-PMH backfill across a date range.</p>
-<h4 id="grokrxiv-ingest-daily"><a class="anchor" aria-label="anchor" href="#grokrxiv-ingest-daily">#</a><code>grokrxiv ingest-daily</code></h4>
-<p>Equivalent of the daily scheduler tick (yesterday → today).</p>
-<h4 id="grokrxiv-migrate"><a class="anchor" aria-label="anchor" href="#grokrxiv-migrate">#</a><code>grokrxiv migrate</code></h4>
-<p>Stub: points operators to <code>bash infra/supabase/setup.sh</code> until native migration
-wiring lands.</p>
-<h4 id="grokrxiv-categories"><a class="anchor" aria-label="anchor" href="#grokrxiv-categories">#</a><code>grokrxiv categories</code></h4>
-<p>Prints <code>DEFAULT_ACTIVE_CATEGORIES</code> and the active env override.</p>
-<h4 id="grokrxiv-html-review-review_id--all"><a class="anchor" aria-label="anchor" href="#grokrxiv-html-review-review_id--all">#</a><code>grokrxiv html-review [&#x3C;REVIEW_ID>|--all]</code></h4>
-<p>Internal post-render formatting harness.</p>
-<h4 id="grokrxiv-tail-jobs---kind-k---state-s"><a class="anchor" aria-label="anchor" href="#grokrxiv-tail-jobs---kind-k---state-s">#</a><code>grokrxiv tail-jobs [--kind K] [--state S]</code></h4>
-<p>Stream the jobs table tail. (Wiring tracked under task #15.)</p>
-<h2 id="examples"><a class="anchor" aria-label="anchor" href="#examples">#</a>Examples</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Full M1 smoke</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Force the technical-correctness role to run via the local Claude CLI:</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --runner-for</span><span style="color:#9ECBFF"> technical_correctness=cli</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Switch the entire run to local-inference + cap cost:</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --runner</span><span style="color:#9ECBFF"> local_inference</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --litellm-url</span><span style="color:#9ECBFF"> http://localhost:4000</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --max-cost-usd</span><span style="color:#79B8FF"> 0.10</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">    --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Read sources from a manifest:</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#9ECBFF"> @sources.txt</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -s</span><span style="color:#9ECBFF"> 'map(.review_id)'</span></span></code></pre></figure>
-<h2 id="cross-references"><a class="anchor" aria-label="anchor" href="#cross-references">#</a>Cross-references</h2>
-<ul>
-<li>Env vars: <code>docs/grokrxiv-env-reference-applied.md</code></li>
-<li>HTTP API: <code>docs/grokrxiv-api-reference-applied.md</code></li>
-<li>Config TOML: <code>docs/grokrxiv-config.example.toml</code></li>
-</ul>
+<h2 id="service-and-diagnostics"><a class="anchor" aria-label="anchor" href="#service-and-diagnostics">#</a>Service and diagnostics</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> serve</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> config</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> config</span><span style="color:#79B8FF"> --show-secrets</span></span></code></pre></figure>
+<p><code>serve</code> runs the HTTP API, supervisor, publish reconcile loop, and scheduler.
+<code>doctor</code> is the preflight command for DB, runner, provider, and publisher
+reachability.</p>
+<h2 id="review-commands"><a class="anchor" aria-label="anchor" href="#review-commands">#</a>Review commands</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> --json</span><span style="color:#79B8FF"> 2605.17307</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> tex</span><span style="color:#9ECBFF"> ./paper.tex</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> pdf</span><span style="color:#9ECBFF"> ./paper.pdf</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> git</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">repo-ur</span><span style="color:#E1E4E8">l</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --rev</span><span style="color:#9ECBFF"> main</span><span style="color:#79B8FF"> --paper-path</span><span style="color:#9ECBFF"> paper.tex</span></span></code></pre></figure>
+<p><code>review</code> accepts arXiv IDs, arXiv URLs, local <code>.tex</code> and <code>.pdf</code> files, git
+repositories, <code>@manifest</code> files, and stdin. For git corpus review, add
+<code>--corpus</code>, <code>--scan-root</code>, <code>--include</code>, <code>--exclude</code>, and <code>--limit</code>.</p>
+<p>Extraction-only and already-extracted paths:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> extract</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review-extracted</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review-extracted</span><span style="color:#79B8FF"> --force</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<h2 id="batch-reviews"><a class="anchor" aria-label="anchor" href="#batch-reviews">#</a>Batch reviews</h2>
+<p>Batch review is the field-sweep surface. Full-month runs use arXiv OAI-PMH
+category sets; bounded <code>--max-items</code> pilots use the human month listing order.
+The command persists a batch row, schedules item rows by <code>daily_limit</code>, and
+records every paper through <code>queued</code>, <code>running</code>, <code>reviewed</code>, <code>pr_open</code>,
+<code>failed</code>, or <code>skipped</code>.</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> create</span><span style="color:#79B8FF"> --category</span><span style="color:#9ECBFF"> math</span><span style="color:#79B8FF"> --month</span><span style="color:#9ECBFF"> 2026-05</span><span style="color:#79B8FF"> --daily-limit</span><span style="color:#79B8FF"> 30</span><span style="color:#79B8FF"> --auto-pr</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> create</span><span style="color:#79B8FF"> --category</span><span style="color:#9ECBFF"> math</span><span style="color:#79B8FF"> --month</span><span style="color:#9ECBFF"> 2026-05</span><span style="color:#79B8FF"> --daily-limit</span><span style="color:#79B8FF"> 4</span><span style="color:#79B8FF"> --max-items</span><span style="color:#79B8FF"> 15</span><span style="color:#79B8FF"> --auto-pr</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> run</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">BATCH_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> status</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">BATCH_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<p>Use <code>--max-items</code> for bounded smoke runs before scheduling a whole month. Use
+<code>batch run</code> from cron, launchd, GitHub Actions, or another scheduler for a daily
+review quota. With <code>--auto-pr</code>, each successfully reviewed item opens the same
+GitHub review PR that <code>grokrxiv review</code> opens.</p>
+<h2 id="review-lifecycle"><a class="anchor" aria-label="anchor" href="#review-lifecycle">#</a>Review lifecycle</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> list</span><span style="color:#9ECBFF"> reviews</span><span style="color:#79B8FF"> --review-status</span><span style="color:#9ECBFF"> awaiting_moderation</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> list</span><span style="color:#9ECBFF"> papers</span><span style="color:#79B8FF"> --has-review</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> list</span><span style="color:#9ECBFF"> extracted</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> show</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> open</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span></code></pre></figure>
+<p>Moderation:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> request-revisions</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --notes</span><span style="color:#9ECBFF"> "Needs a corrected proof."</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> reject</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --reason</span><span style="color:#9ECBFF"> "Out of scope for publication."</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> request-changes</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --notes</span><span style="color:#9ECBFF"> "Regenerate after source fix."</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> close</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --reason</span><span style="color:#9ECBFF"> "Superseded by a corrected review."</span></span></code></pre></figure>
+<p><code>close</code> hides the review from the web and closes the linked GitHub PR unless
+<code>--keep-github-pr</code> is supplied.</p>
+<h2 id="jobs"><a class="anchor" aria-label="anchor" href="#jobs">#</a>Jobs</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> jobs</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --kind</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --state</span><span style="color:#9ECBFF"> running</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> jobs</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --state</span><span style="color:#9ECBFF"> failed</span></span></code></pre></figure>
+<p>The hidden <code>tail-jobs</code> alias maps to <code>jobs list</code> for compatibility.</p>
+<h2 id="validation-commands"><a class="anchor" aria-label="anchor" href="#validation-commands">#</a>Validation commands</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> test</span><span style="color:#79B8FF"> -p</span><span style="color:#9ECBFF"> grokrxiv-orchestrator</span><span style="color:#79B8FF"> --lib</span><span style="color:#9ECBFF"> cli::tests</span></span>
+<span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> check</span><span style="color:#79B8FF"> -p</span><span style="color:#9ECBFF"> grokrxiv-orchestrator</span><span style="color:#79B8FF"> --all-targets</span></span>
+<span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span><span style="color:#E1E4E8"> &#x26;&#x26; </span><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
+<span data-line=""><span style="color:#E1E4E8">PATH</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">$PWD</span><span style="color:#9ECBFF">/target/release:</span><span style="color:#E1E4E8">$PATH</span><span style="color:#9ECBFF">"</span><span style="color:#B392F0"> grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> --json</span><span style="color:#79B8FF"> 2605.17307</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-20T07:47:39.045Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-reference-applied.md &middot; generated 2026-05-21T04:08:16.455Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

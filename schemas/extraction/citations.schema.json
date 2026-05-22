@@ -20,8 +20,33 @@
         "properties": {
           "key": { "type": "string" },
           "raw": { "type": "string" },
+          "title": { "type": ["string", "null"] },
+          "authors": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "venue": { "type": ["string", "null"] },
+          "year": { "type": ["integer", "null"] },
           "resolved_doi": { "type": ["string", "null"] },
           "resolved_arxiv_id": { "type": ["string", "null"] },
+          "cited": { "type": "boolean" },
+          "validation": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["status", "evidence"],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["verified", "unresolved", "conflict", "not_checked"]
+              },
+              "source": { "type": ["string", "null"] },
+              "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "notes": { "type": ["string", "null"] }
+            }
+          },
           "contexts": {
             "type": "array",
             "items": {
@@ -47,6 +72,14 @@
           }
         }
       }
+    },
+    "unmatched_citation_keys": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "uncited_bibliography_keys": {
+      "type": "array",
+      "items": { "type": "string" }
     }
   }
 }
