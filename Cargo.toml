@@ -9,7 +9,7 @@ members = [
     "crates/dag-app-paper-review",
     "crates/dag-app-paper-revise",
     "crates/dag-app-paper-publish",
-    "crates/dag-app-c-to-rust",
+    "crates/dag-app-c2rust",
     "crates/orchestrator",
     "crates/llm-adapter",
     "crates/ingest",

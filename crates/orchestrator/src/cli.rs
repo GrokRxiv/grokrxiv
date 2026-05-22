@@ -1,15 +1,15 @@
-//! `grokrxiv` CLI surface.
+//! `agh` CLI surface.
 //!
 //! The binary's `main()` dispatches to one of the subcommands below. Each
 //! variant delegates to a small function so the library/HTTP path and the
 //! CLI path call the same plumbing — no duplication.
 
-use anyhow::Context as _;
-use clap::{Parser, Subcommand};
-use grokrxiv_dag_runtime::{
+use agenthero_dag_runtime::{
     AgentKind, DagEdge, DagManifest, DagNode, DagNodeKind, DagRole, DagTool, OneOrMany, RoleId,
     ToolExecutorKind,
 };
+use anyhow::Context as _;
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -40,12 +40,12 @@ type PaperListRow = (
 const PAPER_REVIEW_DAG_ID: &str = "paper-review";
 const CITATION_VERIFIER_POSTPROCESSOR: &str = "merge_citation_verifier";
 
-/// GrokRxiv — agentic peer-review pipeline for arXiv.
+/// AgentHero — DAGOps runtime for agentic applications as DAGs.
 #[derive(Debug, Parser)]
 #[command(
-    name = "grokrxiv",
+    name = "agh",
     version,
-    about = "GrokRxiv — agentic peer-review pipeline for arXiv",
+    about = "AgentHero — DAGOps runtime for agentic applications as DAGs",
     long_about = None,
     arg_required_else_help = true,
     subcommand_required = true,
@@ -117,7 +117,7 @@ pub struct Cli {
     /// Named TOML profile to load.
     #[arg(long, global = true, default_value = "default")]
     pub profile: String,
-    /// Path to the TOML config file. Defaults to `~/.grokrxiv/config.toml`.
+    /// Path to the TOML config file. Defaults to `~/.agenthero/config.toml`.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
     /// `config show` flag: print provider secrets in cleartext.
@@ -143,7 +143,7 @@ pub struct Cli {
     pub dry_run_storage: bool,
 }
 
-/// Hint for `grokrxiv app run research review <source>` when the source can't be inferred.
+/// Hint for `agh grokrxiv review <source>` when the source can't be inferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
@@ -162,11 +162,60 @@ pub enum SourceType {
 /// Top-level CLI subcommand variants.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run product apps through the generic DAG runtime.
-    App {
-        /// App operation to run.
+    /// List or inspect installed DAGOps apps.
+    Apps {
+        /// Optional app registry operation. Omit to list apps.
         #[command(subcommand)]
-        command: AppCommand,
+        command: Option<AppsCommand>,
+    },
+
+    /// Run the GrokRxiv DAG app.
+    #[command(
+        name = "grokrxiv",
+        after_help = "Actions:
+  extract <SOURCE>...
+  ingest <ARXIV_ID|URL>...
+  ingest-range --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+  ingest-daily
+  review <SOURCE>
+  review-extracted <ARXIV_ID>
+  re-review <REVIEW_ID>
+  validate citations
+  verify <REVIEW_ID>
+  render <REVIEW_ID>
+  refresh-review <REVIEW_ID>
+  show <REVIEW_ID|ARXIV_ID>
+  list reviews|papers
+  open <REVIEW_ID|ARXIV_ID>
+  approve <REVIEW_ID>
+  request-revisions <REVIEW_ID>
+  request-changes <REVIEW_ID>
+  reject <REVIEW_ID>
+  close <REVIEW_ID>
+  withdraw <REVIEW_ID>
+  correct <REVIEW_ID>
+  html-review <REVIEW_ID>
+  feedback-loop-smoke <REVIEW_ID>
+  batch-create|batch-run|batch-status|batch-list
+"
+    )]
+    GrokRxiv {
+        /// GrokRxiv command path and action-specific arguments.
+        #[arg(num_args = 1.., allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Run the C2Rust migration DAG app.
+    #[command(
+        name = "c2rust",
+        after_help = "Actions:
+  migrate <C_SOURCE>
+"
+    )]
+    C2Rust {
+        /// C2Rust command path and action-specific arguments.
+        #[arg(num_args = 1.., allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     // ---------- service ----------
@@ -179,6 +228,12 @@ pub enum Command {
         /// DAG operation to run.
         #[command(subcommand)]
         command: DagCommand,
+    },
+    /// Validate installed app and DAG manifests.
+    Validate {
+        /// Optional DAG type id to validate.
+        #[arg(long = "dag-type")]
+        dag_type: Option<String>,
     },
     /// Place or scaffold agent configs.
     Agent {
@@ -208,25 +263,13 @@ pub enum Command {
     },
 }
 
-/// Subcommands for product app runtime operations.
+/// Subcommands for product app registry operations.
 #[derive(Debug, Subcommand)]
-pub enum AppCommand {
-    /// List registered product apps.
-    List,
+pub enum AppsCommand {
     /// Show one app's available actions.
     Show {
-        /// App id, e.g. `research` or `c-to-rust`.
+        /// App id, e.g. `grokrxiv` or `c2rust`.
         app: String,
-    },
-    /// Run one app action.
-    Run {
-        /// App id, e.g. `research` or `c-to-rust`.
-        app: String,
-        /// App action id, e.g. `review`, `extract`, or `translate`.
-        action: String,
-        /// Action-specific arguments passed to the app action adapter.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
     },
     /// List app run records from the runtime database.
     Runs {
@@ -252,7 +295,7 @@ pub enum DagCommand {
     },
     /// Run one registered DAG app through the generic executor.
     Run {
-        /// DAG type id to run, e.g. `c-to-rust`.
+        /// DAG type id to run, e.g. `c2rust`.
         #[arg(long = "dag-type")]
         dag_type: String,
     },
@@ -447,7 +490,7 @@ pub enum JobsCommand {
     },
 }
 
-/// Selector for `grokrxiv app run research list`.
+/// Selector for `agh grokrxiv list`.
 #[derive(Debug, Subcommand)]
 pub enum ListKind {
     /// List reviews.
@@ -544,7 +587,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let runtime_cfg = match RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref())
     {
         Ok(cfg) => Some(cfg),
-        Err(e) if e.to_string().contains("GROKRXIV_EXTRACTOR") => return Err(e),
+        Err(e) if e.to_string().contains("AGENTHERO_EXTRACTOR") => return Err(e),
         Err(e) => {
             tracing::warn!(err = %e, "could not resolve layered runtime config");
             None
@@ -559,7 +602,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         let kind = rt.default_runner;
         if let Ok(s) = serde_json::to_string(&kind) {
             let bare = s.trim_matches('"');
-            std::env::set_var("GROKRXIV_RUNNER_OVERRIDE", bare);
+            std::env::set_var("AGENTHERO_RUNNER_OVERRIDE", bare);
         }
         for role in crate::runtime_config::configured_review_agent_roles() {
             std::env::remove_var(role_model_override_env_var(&role));
@@ -568,13 +611,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let role_slug = role_env_suffix(role);
             if let Ok(s) = serde_json::to_string(kind) {
                 let bare = s.trim_matches('"');
-                std::env::set_var(format!("GROKRXIV_RUNNER_OVERRIDE_{role_slug}"), bare);
+                std::env::set_var(format!("AGENTHERO_RUNNER_OVERRIDE_{role_slug}"), bare);
             }
         }
         for (role, model) in &rt.model_for {
             std::env::set_var(role_model_override_env_var(role), model);
         }
-        std::env::set_var("GROKRXIV_EXTRACTOR", rt.extractor.as_str());
+        std::env::set_var("AGENTHERO_EXTRACTOR", rt.extractor.as_str());
         std::env::set_var(
             ALLOW_PROVIDER_API_ENV,
             if provider_api_allowed(rt) { "1" } else { "0" },
@@ -625,39 +668,33 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let command = cli.command;
     let is_review_command = matches!(
         &command,
-        Command::App {
-            command:
-                AppCommand::Run {
-                    app,
-                    action,
-                    ..
-                },
-        } if app == "research"
-            && matches!(
-                action.as_str(),
-                "extract" | "review" | "review-extracted" | "approve" | "request-revisions"
-            )
+        Command::GrokRxiv { args }
+            if args
+                .first()
+                .is_some_and(|action| matches!(action.as_str(), "extract" | "review" | "review-extracted" | "approve" | "request-revisions"))
+    ) || matches!(
+        &command,
+        Command::Apps {
+            command: Some(AppsCommand::Show { app }),
+        } if app == "grokrxiv"
     );
 
     if dry_run {
-        if let Command::App {
-            command: AppCommand::Run { app, action, args },
-        } = &command
-        {
-            if app == "research" && action == "approve" {
-                let review_id = parse_uuid_arg(args.first(), "review_id")?;
+        if let Command::GrokRxiv { args } = &command {
+            if args.first().is_some_and(|action| action == "approve") {
+                let review_id = parse_uuid_arg(args.get(1), "review_id")?;
                 if json {
                     println!(
                         "{}",
                         serde_json::to_string(&serde_json::json!({
                             "dry_run": true,
-                            "app": "research",
+                            "app": "grokrxiv",
                             "action": "approve",
                             "review_id": review_id,
                         }))?
                     );
                 } else {
-                    println!("dry_run=true app=research action=approve review_id={review_id}");
+                    println!("dry_run=true app=grokrxiv action=approve review_id={review_id}");
                 }
                 return Ok(());
             }
@@ -665,7 +702,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let result = match command {
-        Command::App { command } => app_command(command, json, dry_run).await,
+        Command::Apps { command } => apps_command(command, json, dry_run).await,
+        Command::GrokRxiv { args } => app_args_command("grokrxiv", args, json, dry_run).await,
+        Command::C2Rust { args } => app_args_command("c2rust", args, json, dry_run).await,
         Command::Serve => super::serve::run().await,
         Command::Doctor => {
             let code = doctor_mod::doctor(&profile, json).await?;
@@ -675,6 +714,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Dag { command } => dag_command(command, json).await,
+        Command::Validate { dag_type } => {
+            dag_command(DagCommand::Validate { dag_type }, json).await
+        }
         Command::Agent { command } => agent_command(command, json).await,
         Command::Config {
             show_secrets: cmd_show,
@@ -693,15 +735,49 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     result
 }
 
+async fn apps_command(
+    command: Option<AppsCommand>,
+    json: bool,
+    _dry_run: bool,
+) -> anyhow::Result<()> {
+    match command {
+        None => app_list(json),
+        Some(AppsCommand::Show { app }) => app_show(&app, json),
+        Some(AppsCommand::Runs { app }) => app_runs(app.as_deref(), json).await,
+        Some(AppsCommand::Status { run_id }) => app_status(run_id, json).await,
+    }
+}
+
+async fn app_args_command(
+    app: &str,
+    mut args: Vec<String>,
+    json: bool,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    if args.is_empty() {
+        anyhow::bail!("agh {app} requires an action");
+    }
+    let action = if app == "grokrxiv"
+        && args.get(0).is_some_and(|part| part == "validate")
+        && args.get(1).is_some_and(|part| part == "citations")
+    {
+        args.drain(0..2);
+        "validate-citations".to_string()
+    } else {
+        args.remove(0)
+    };
+    app_run_command(app, &action, args, json, dry_run).await
+}
+
 pub(crate) fn status_enabled_for_stderr(cli: &Cli, stderr_is_terminal: bool) -> bool {
     cli.status || (!cli.no_status && stderr_is_terminal)
 }
 
 fn emit_pipeline_header(command: &str, subject: &str) {
-    let runner = std::env::var("GROKRXIV_RUNNER_OVERRIDE")
-        .or_else(|_| std::env::var("GROKRXIV_RUNNER"))
+    let runner = std::env::var("AGENTHERO_RUNNER_OVERRIDE")
+        .or_else(|_| std::env::var("AGENTHERO_RUNNER"))
         .unwrap_or_else(|_| "cli".to_string());
-    let extractor = std::env::var("GROKRXIV_EXTRACTOR").unwrap_or_else(|_| "cli".to_string());
+    let extractor = std::env::var("AGENTHERO_EXTRACTOR").unwrap_or_else(|_| "cli".to_string());
     let cache = if matches!(std::env::var("GROKRXIV_NO_CACHE").as_deref(), Ok("1")) {
         "off"
     } else {
@@ -727,26 +803,14 @@ fn emit_pipeline_header(command: &str, subject: &str) {
 // "not yet implemented in stub build" message that points at the right task.
 // ---------------------------------------------------------------------------
 
-async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::Result<()> {
-    match command {
-        AppCommand::List => app_list(json),
-        AppCommand::Show { app } => app_show(&app, json),
-        AppCommand::Run { app, action, args } => {
-            app_run_command(&app, &action, args, json, dry_run).await
-        }
-        AppCommand::Runs { app } => app_runs(app.as_deref(), json).await,
-        AppCommand::Status { run_id } => app_status(run_id, json).await,
-    }
-}
-
 fn app_list(json: bool) -> anyhow::Result<()> {
-    let apps = crate::dag_apps::registered_apps();
+    let apps = crate::dag_apps::load_app_manifests()?;
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "apps": apps.iter().map(|app| serde_json::json!({
-                    "id": app.id,
+                    "id": app.slug,
                     "label": app.label,
                     "actions": app.actions.iter().map(|action| serde_json::json!({
                         "id": action.id,
@@ -757,9 +821,9 @@ fn app_list(json: bool) -> anyhow::Result<()> {
             }))?
         );
     } else {
-        for app in apps {
-            println!("{} — {}", app.id, app.label);
-            for action in app.actions {
+        for app in &apps {
+            println!("{} — {}", app.slug, app.label);
+            for action in &app.actions {
                 println!("  {} -> {}", action.id, action.dag_type);
             }
         }
@@ -768,13 +832,12 @@ fn app_list(json: bool) -> anyhow::Result<()> {
 }
 
 fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
-    let app = crate::dag_apps::registered_app(app_id)
-        .ok_or_else(|| anyhow::anyhow!("unknown app `{app_id}`"))?;
+    let app = crate::dag_apps::load_app_manifest_by_slug(app_id)?;
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "id": app.id,
+                "id": app.slug,
                 "label": app.label,
                 "actions": app.actions.iter().map(|action| serde_json::json!({
                     "id": action.id,
@@ -784,8 +847,8 @@ fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
             }))?
         );
     } else {
-        println!("{} — {}", app.id, app.label);
-        for action in app.actions {
+        println!("{} — {}", app.slug, app.label);
+        for action in &app.actions {
             println!(
                 "{}\n  dag_type={}\n  {}",
                 action.id, action.dag_type, action.description
@@ -802,19 +865,18 @@ async fn app_run_command(
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let descriptor = crate::dag_apps::registered_app_action(app, action)
-        .ok_or_else(|| anyhow::anyhow!("unknown app action `{app} {action}`"))?;
+    let descriptor = crate::dag_apps::app_action_binding(app, action)?;
 
     match (app, action) {
-        ("research", "extract") => {
-            ensure_args_not_empty(&args, "research extract requires at least one source")?;
+        ("grokrxiv", "extract") => {
+            ensure_args_not_empty(&args, "GrokRxiv extract requires at least one source")?;
             extract_many(&args, json).await
         }
-        ("research", "ingest") => {
+        ("grokrxiv", "ingest") => {
             let request = parse_ingest_args(args)?;
             ingest_many(&request.arxiv_ids, request.auto_moderate, json).await
         }
-        ("research", "ingest-range") => {
+        ("grokrxiv", "ingest-range") => {
             let request = parse_ingest_range_args(args)?;
             ingest_range(
                 request.from,
@@ -824,12 +886,12 @@ async fn app_run_command(
             )
             .await
         }
-        ("research", "ingest-daily") => {
-            ensure_args_empty(&args, "research ingest-daily takes no arguments")?;
+        ("grokrxiv", "ingest-daily") => {
+            ensure_args_empty(&args, "GrokRxiv ingest-daily takes no arguments")?;
             ingest_daily().await
         }
-        ("research", "review") => {
-            let request = parse_research_review_args(args)?;
+        ("grokrxiv", "review") => {
+            let request = parse_grokrxiv_review_args(args)?;
             review_source(
                 &request.source,
                 request.source_type,
@@ -849,55 +911,78 @@ async fn app_run_command(
             )
             .await
         }
-        ("research", "review-extracted") => {
+        ("grokrxiv", "review-extracted") => {
             let request = parse_review_extracted_args(args)?;
             review_extracted(&request.source, request.force, json).await
         }
-        ("research", "re-review") => {
+        ("grokrxiv", "re-review") => {
             let paper_id = parse_uuid_arg(args.first(), "paper_id")?;
             review_paper(paper_id).await
         }
-        ("research", "verify") => {
+        ("grokrxiv", "validate-citations") => {
+            let mut input = agenthero_dag_executor::DagIo::default();
+            input.values.insert("app".into(), serde_json::json!(app));
+            input
+                .values
+                .insert("action".into(), serde_json::json!(action));
+            input.values.insert("args".into(), serde_json::json!(args));
+            let report =
+                crate::dag_apps::run_registered_dag_app(&descriptor.dag_type, input).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "app={} action={} dag_type={} status={:?} nodes={}",
+                    app,
+                    action,
+                    descriptor.dag_type,
+                    report.status,
+                    report.nodes.len()
+                );
+            }
+            Ok(())
+        }
+        ("grokrxiv", "verify") => {
             let review_id = parse_uuid_arg(args.first(), "review_id")?;
             verify(review_id).await
         }
-        ("research", "render") => {
+        ("grokrxiv", "render") => {
             let request = parse_render_args(args)?;
             render(request.review_id, request.format, request.out).await
         }
-        ("research", "refresh-review") => {
+        ("grokrxiv", "refresh-review") => {
             let review_id = parse_uuid_arg(args.first(), "review_id")?;
             refresh_review(review_id, json).await
         }
-        ("research", "show") => {
+        ("grokrxiv", "show") => {
             let review_id = parse_uuid_arg(args.first(), "review_id")?;
             show(review_id, json).await
         }
-        ("research", "list") => {
-            let request = parse_research_list_args(args, json)?;
+        ("grokrxiv", "list") => {
+            let request = parse_grokrxiv_list_args(args, json)?;
             list(request).await
         }
-        ("research", "open") => {
+        ("grokrxiv", "open") => {
             let review_id = parse_uuid_arg(args.first(), "review_id")?;
             open_review(review_id)
         }
-        ("research", "approve") => {
+        ("grokrxiv", "approve") => {
             let request = parse_review_id_action_args(args, "approve", "force")?;
             approve(request.review_id, request.force, json).await
         }
-        ("research", "request-revisions") => {
+        ("grokrxiv", "request-revisions") => {
             let request = parse_review_id_notes_args(args, "request-revisions", false)?;
             request_revisions(request.review_id, request.notes.as_deref(), json).await
         }
-        ("research", "request-changes") => {
+        ("grokrxiv", "request-changes") => {
             let request = parse_review_id_notes_args(args, "request-changes", true)?;
             request_changes(request.review_id, request.notes.as_deref().unwrap_or("")).await
         }
-        ("research", "reject") => {
+        ("grokrxiv", "reject") => {
             let request = parse_review_id_reason_args(args, "reject")?;
             reject(request.review_id, &request.reason).await
         }
-        ("research", "close") => {
+        ("grokrxiv", "close") => {
             let request = parse_close_args(args)?;
             close_review(
                 request.review_id,
@@ -907,47 +992,47 @@ async fn app_run_command(
             )
             .await
         }
-        ("research", "withdraw") => {
+        ("grokrxiv", "withdraw") => {
             let request = parse_review_id_reason_args(args, "withdraw")?;
             withdraw(request.review_id, &request.reason).await
         }
-        ("research", "correct") => {
+        ("grokrxiv", "correct") => {
             let request = parse_correct_args(args)?;
             correct(request.review_id, &request.rationale_md).await
         }
-        ("research", "html-review") => {
+        ("grokrxiv", "html-review") => {
             let request = parse_html_review_args(args)?;
             html_review_cmd(request.review_id, request.all, json).await
         }
-        ("research", "feedback-loop-smoke") => {
+        ("grokrxiv", "feedback-loop-smoke") => {
             let request = parse_feedback_loop_smoke_args(args)?;
             feedback_loop_smoke(request.review_id, request.max_wait_secs, json).await
         }
-        ("research", "batch-create") => {
+        ("grokrxiv", "batch-create") => {
             let command = parse_batch_create_args(args)?;
             batch_command(command, dry_run, json).await
         }
-        ("research", "batch-run") => {
+        ("grokrxiv", "batch-run") => {
             let command = parse_batch_run_args(args)?;
             batch_command(command, dry_run, json).await
         }
-        ("research", "batch-status") => {
+        ("grokrxiv", "batch-status") => {
             let batch_id = parse_uuid_arg(args.first(), "batch_id")?;
             batch_command(BatchCommand::Status { batch_id }, dry_run, json).await
         }
-        ("research", "batch-list") => {
+        ("grokrxiv", "batch-list") => {
             let limit = parse_optional_limit(args, 20)?;
             batch_command(BatchCommand::List { limit }, dry_run, json).await
         }
-        ("c-to-rust", "translate") => {
-            let mut input = grokrxiv_dag_executor::DagIo::default();
+        ("c2rust", "migrate") => {
+            let mut input = agenthero_dag_executor::DagIo::default();
             input.values.insert("app".into(), serde_json::json!(app));
             input
                 .values
                 .insert("action".into(), serde_json::json!(action));
             input.values.insert("args".into(), serde_json::json!(args));
             let report =
-                crate::dag_apps::run_registered_dag_app(descriptor.dag_type, input).await?;
+                crate::dag_apps::run_registered_dag_app(&descriptor.dag_type, input).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1143,11 +1228,11 @@ struct FeedbackLoopSmokeArgs {
     max_wait_secs: u64,
 }
 
-fn parse_research_review_args(args: Vec<String>) -> anyhow::Result<ResearchReviewArgs> {
+fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchReviewArgs> {
     let mut iter = args.into_iter();
     let source = iter
         .next()
-        .ok_or_else(|| anyhow::anyhow!("research review requires a source"))?;
+        .ok_or_else(|| anyhow::anyhow!("GrokRxiv review requires a source"))?;
     let mut parsed = ResearchReviewArgs {
         source,
         source_type: None,
@@ -1188,7 +1273,7 @@ fn parse_research_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
             }
             "--include" => parsed.include.push(next_arg(&mut iter, "--include")?),
             "--exclude" => parsed.exclude.push(next_arg(&mut iter, "--exclude")?),
-            other => anyhow::bail!("unknown research review argument `{other}`"),
+            other => anyhow::bail!("unknown GrokRxiv review argument `{other}`"),
         }
     }
     Ok(parsed)
@@ -1205,7 +1290,7 @@ fn parse_ingest_args(args: Vec<String>) -> anyhow::Result<IngestArgs> {
         }
     }
     if arxiv_ids.is_empty() {
-        anyhow::bail!("research ingest requires at least one arXiv id");
+        anyhow::bail!("GrokRxiv ingest requires at least one arXiv id");
     }
     Ok(IngestArgs {
         arxiv_ids,
@@ -1248,10 +1333,10 @@ fn parse_ingest_range_args(args: Vec<String>) -> anyhow::Result<IngestRangeArgs>
     })
 }
 
-fn parse_research_list_args(args: Vec<String>, json: bool) -> anyhow::Result<ListKind> {
+fn parse_grokrxiv_list_args(args: Vec<String>, json: bool) -> anyhow::Result<ListKind> {
     let mut iter = args.into_iter();
     let what = iter.next().ok_or_else(|| {
-        anyhow::anyhow!("research list requires `reviews`, `papers`, or `extracted`")
+        anyhow::anyhow!("GrokRxiv list requires `reviews`, `papers`, or `extracted`")
     })?;
     match what.as_str() {
         "reviews" => {
@@ -1269,7 +1354,7 @@ fn parse_research_list_args(args: Vec<String>, json: bool) -> anyhow::Result<Lis
                             .parse()
                             .context("--limit must be a positive integer")?;
                     }
-                    other => anyhow::bail!("unexpected research list reviews argument `{other}`"),
+                    other => anyhow::bail!("unexpected GrokRxiv list reviews argument `{other}`"),
                 }
             }
             Ok(ListKind::Reviews {
@@ -1294,7 +1379,7 @@ fn parse_research_list_args(args: Vec<String>, json: bool) -> anyhow::Result<Lis
                             .parse()
                             .context("--limit must be a positive integer")?;
                     }
-                    other => anyhow::bail!("unexpected research list papers argument `{other}`"),
+                    other => anyhow::bail!("unexpected GrokRxiv list papers argument `{other}`"),
                 }
             }
             Ok(ListKind::Papers {
@@ -1316,12 +1401,12 @@ fn parse_research_list_args(args: Vec<String>, json: bool) -> anyhow::Result<Lis
                             .parse()
                             .context("--limit must be a positive integer")?;
                     }
-                    other => anyhow::bail!("unexpected research list extracted argument `{other}`"),
+                    other => anyhow::bail!("unexpected GrokRxiv list extracted argument `{other}`"),
                 }
             }
             Ok(ListKind::Extracted { field, limit, json })
         }
-        other => anyhow::bail!("unknown research list target `{other}`"),
+        other => anyhow::bail!("unknown GrokRxiv list target `{other}`"),
     }
 }
 
@@ -1723,7 +1808,7 @@ async fn agent_command(command: AgentCommand, json: bool) -> anyhow::Result<()> 
 
 async fn run_dag_app_command(dag_type: &str, json: bool) -> anyhow::Result<()> {
     let report =
-        crate::dag_apps::run_registered_dag_app(dag_type, grokrxiv_dag_executor::DagIo::default())
+        crate::dag_apps::run_registered_dag_app(dag_type, agenthero_dag_executor::DagIo::default())
             .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -2233,7 +2318,7 @@ fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
     if path.is_absolute() {
         return path;
     }
-    if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
+    if let Some(agents_dir) = std::env::var_os("AGENTHERO_AGENTS_DIR").map(PathBuf::from) {
         if let Ok(stripped) = path.strip_prefix("agents") {
             return agents_dir.join(stripped);
         }
@@ -2242,7 +2327,7 @@ fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
 }
 
 fn dags_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("GROKRXIV_DAGS_DIR") {
+    if let Ok(path) = std::env::var("AGENTHERO_DAGS_DIR") {
         return PathBuf::from(path);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -3723,8 +3808,8 @@ fn existing_review_json(
         "review_id": review_id,
         "review_status": review_status,
         "pr_url": pr_url,
-        "show_command": format!("grokrxiv app run research show {review_id}"),
-        "force_command": format!("grokrxiv app run research review-extracted --force {arxiv_id}"),
+        "show_command": format!("agh grokrxiv show {review_id}"),
+        "force_command": format!("agh grokrxiv review-extracted --force {arxiv_id}"),
     })
 }
 
@@ -3741,11 +3826,9 @@ fn existing_review_text(
     if let Some(pr_url) = pr_url {
         out.push_str(&format!("pr_url={pr_url}\n"));
     }
+    out.push_str(&format!("show_command=agh grokrxiv show {review_id}\n"));
     out.push_str(&format!(
-        "show_command=grokrxiv app run research show {review_id}\n"
-    ));
-    out.push_str(&format!(
-        "force_command=grokrxiv app run research review-extracted --force {arxiv_id}\n"
+        "force_command=agh grokrxiv review-extracted --force {arxiv_id}\n"
     ));
     out
 }
@@ -3801,19 +3884,19 @@ async fn resolve_extracted_paper(
 
     let Some((paper_id, arxiv_id, title, status, git_path)) = row else {
         anyhow::bail!(
-            "review-extracted: no paper row for `{source}`; run `grokrxiv app run research extract {source}` first"
+            "review-extracted: no paper row for `{source}`; run `agh grokrxiv extract {source}` first"
         );
     };
     if status.as_deref() != Some("ready") || git_path.is_none() {
         anyhow::bail!(
-            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `grokrxiv app run research extract {arxiv_id}` first",
+            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `agh grokrxiv extract {arxiv_id}` first",
             status.as_deref().unwrap_or("pending")
         );
     }
     Ok((paper_id, arxiv_id, title))
 }
 
-/// Source resolution for `grokrxiv app run research review <source>`.
+/// Source resolution for `agh grokrxiv review <source>`.
 #[derive(Debug, Clone)]
 enum ResolvedSource {
     /// arXiv id (already normalised).
@@ -4008,7 +4091,7 @@ async fn resolve_source(
     anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
 
-/// Canonical end-to-end entry point — `grokrxiv app run research review <source>`.
+/// Canonical end-to-end entry point — `agh grokrxiv review <source>`.
 async fn review_source(
     source: &str,
     type_hint: Option<SourceType>,
@@ -5469,8 +5552,8 @@ async fn open_publication_pr_impl(
         }
         anyhow::bail!(
             "review {review_id} is not cleanly publishable: {} \
-             Use `grokrxiv app run research request-revisions {review_id}`, \
-             `grokrxiv app run research reject {review_id} --reason …`, \
+             Use `agh grokrxiv request-revisions {review_id}`, \
+             `agh grokrxiv reject {review_id} --reason …`, \
              or re-run approve with `--force` to override.",
             publication_gate.reason
         );
@@ -5513,7 +5596,7 @@ async fn open_publication_pr_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `grokrxiv app run research ingest <arxiv_id>` to regenerate."
+             re-run `agh grokrxiv ingest <arxiv_id>` to regenerate."
         );
     }
 
@@ -5531,14 +5614,14 @@ async fn open_publication_pr_impl(
     let raw_pr_title = format!("Review: {} ({})", title, source_ref);
     let raw_pr_body = if visibility == "private" {
         format!(
-            "Opened by `grokrxiv app run research review ...`.\n\n\
+            "Opened by `agh grokrxiv review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview."
         )
     } else {
         format!(
-            "Opened by `grokrxiv app run research review ...`.\n\n\
+            "Opened by `agh grokrxiv review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
@@ -5716,7 +5799,7 @@ async fn request_revisions_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `grokrxiv app run research review ...` to regenerate."
+             re-run `agh grokrxiv review ...` to regenerate."
         );
     }
 
@@ -5746,7 +5829,7 @@ async fn request_revisions_impl(
     };
     let raw_pr_title = format!("Needs revision: {} ({})", title, source_ref);
     let raw_pr_body = format!(
-        "Opened by `grokrxiv app run research request-revisions {review_id}`.\n\n\
+        "Opened by `agh grokrxiv request-revisions {review_id}`.\n\n\
          **Automated gate:** Needs revision (`{recommendation}`).\n\n\
          **Public review details:** {public_url}/reviews/{review_id}\n\n\
          This review is not approved for publication yet. {correction_instruction} Each push triggers GrokRxiv automated re-review through the `pull_request.synchronize` webhook. GrokRxiv updates the stable gate comment with pass/fail status and concrete correction notes until automation accepts the fixes.{note_block}{citation_block}\n\n\
@@ -6560,7 +6643,7 @@ async fn request_revisions_impl(
 }
 
 /// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
-/// `grokrxiv app run research approve` command (which doesn't go through the supervisor
+/// `agh grokrxiv approve` command (which doesn't go through the supervisor
 /// background worker) also closes the prior PR on supersede.
 #[cfg(feature = "grokrxiv-publisher")]
 async fn close_superseded_pr_if_any_cli(
@@ -6693,7 +6776,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
             .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let pr_url = pr_url.ok_or_else(|| {
         anyhow::anyhow!(
-            "review {review_id} has no github_pr_url; run `grokrxiv app run research review ...` first"
+            "review {review_id} has no github_pr_url; run `agh grokrxiv review ...` first"
         )
     })?;
 
@@ -6716,7 +6799,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
         anyhow::bail!(
             "approve refused: latest automated gate for review {review_id} is not pass: {} \
-             Push fixes to the PR and wait for re-review, or run `grokrxiv app run research approve {review_id} --force`.",
+             Push fixes to the PR and wait for re-review, or run `agh grokrxiv approve {review_id} --force`.",
             publication_gate.reason
         );
     }
@@ -6731,7 +6814,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
-             Re-run `grokrxiv app run research review ...` with GITHUB_TOKEN set."
+             Re-run `agh grokrxiv review ...` with GITHUB_TOKEN set."
         )
     })?;
 
@@ -6987,7 +7070,7 @@ async fn close_review_github_pr(
     )
 }
 
-/// `grokrxiv app run research reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
+/// `agh grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
 /// public terminal state. Writes `moderation_queue` like before but ALSO:
 ///   - inserts a `rejections` row with the reason as `rationale_md`,
 ///   - flips `reviews.status` to `rejected`,
@@ -7068,7 +7151,7 @@ async fn auto_moderate_review(
     Ok(())
 }
 
-/// `grokrxiv app run research request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
+/// `agh grokrxiv request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
 /// moderator's notes in `moderation_queue.notes`, then trigger a fresh
 /// review of the same paper. The agents see the notes via
 /// `db::fetch_latest_changes_request_notes` on the next pass.
@@ -7163,7 +7246,7 @@ async fn correct(review_id: Uuid, rationale_md: &std::path::Path) -> anyhow::Res
 }
 
 fn moderator_handle() -> String {
-    std::env::var("GROKRXIV_MODERATOR")
+    std::env::var("AGENTHERO_MODERATOR")
         .ok()
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "cli".to_string())
@@ -7204,12 +7287,13 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     #[test]
-    fn bare_grokrxiv_prints_help_instead_of_serving() {
-        let err = Cli::try_parse_from(["grokrxiv"]).expect_err("bare CLI should print help");
+    fn bare_agenthero_prints_help_instead_of_serving() {
+        let err = Cli::try_parse_from(["agh"]).expect_err("bare CLI should print help");
         let text = err.to_string();
-        assert!(text.contains("Usage: grokrxiv"));
+        assert!(text.contains("Usage: agh"));
         assert!(text.contains("Commands:"));
-        assert!(text.contains("app"));
+        assert!(text.contains("grokrxiv"));
+        assert!(text.contains("c2rust"));
         assert!(text.contains("serve"));
     }
 
@@ -7218,7 +7302,9 @@ mod tests {
         let mut cmd = Cli::command();
         let help = cmd.render_long_help().to_string();
 
-        for visible in ["app", "serve", "doctor", "config", "dag", "agent", "jobs"] {
+        for visible in [
+            "apps", "grokrxiv", "c2rust", "serve", "doctor", "config", "dag", "agent", "jobs",
+        ] {
             assert!(
                 help.contains(visible),
                 "expected `{visible}` in help:\n{help}"
@@ -7255,48 +7341,48 @@ mod tests {
     }
 
     #[test]
-    fn legacy_research_lifecycle_commands_are_not_root_commands() {
+    fn legacy_unscoped_lifecycle_commands_are_not_root_commands() {
         let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
 
         for args in [
-            vec!["grokrxiv", "extract", "2605.00561"],
-            vec!["grokrxiv", "ingest", "2605.00561"],
-            vec!["grokrxiv", "ingest-daily"],
+            vec!["agh", "extract", "2605.00561"],
+            vec!["agh", "ingest", "2605.00561"],
+            vec!["agh", "ingest-daily"],
             vec![
-                "grokrxiv",
+                "agh",
                 "ingest-range",
                 "--from",
                 "2026-05-01",
                 "--to",
                 "2026-05-02",
             ],
-            vec!["grokrxiv", "review", "2605.00561"],
-            vec!["grokrxiv", "review-extracted", "2605.00561"],
-            vec!["grokrxiv", "approve", &review_id.to_string()],
-            vec!["grokrxiv", "request-revisions", &review_id.to_string()],
+            vec!["agh", "review", "2605.00561"],
+            vec!["agh", "review-extracted", "2605.00561"],
+            vec!["agh", "approve", &review_id.to_string()],
+            vec!["agh", "request-revisions", &review_id.to_string()],
             vec![
-                "grokrxiv",
+                "agh",
                 "request-changes",
                 &review_id.to_string(),
                 "--notes",
                 "fix citation evidence",
             ],
             vec![
-                "grokrxiv",
+                "agh",
                 "reject",
                 &review_id.to_string(),
                 "--reason",
                 "duplicate",
             ],
-            vec!["grokrxiv", "publish", &review_id.to_string()],
-            vec!["grokrxiv", "merge", &review_id.to_string()],
-            vec!["grokrxiv", "show", &review_id.to_string()],
-            vec!["grokrxiv", "open", &review_id.to_string()],
-            vec!["grokrxiv", "list", "reviews"],
-            vec!["grokrxiv", "batch", "list"],
-            vec!["grokrxiv", "tail-jobs"],
+            vec!["agh", "publish", &review_id.to_string()],
+            vec!["agh", "merge", &review_id.to_string()],
+            vec!["agh", "show", &review_id.to_string()],
+            vec!["agh", "open", &review_id.to_string()],
+            vec!["agh", "list", "reviews"],
+            vec!["agh", "batch", "list"],
+            vec!["agh", "tail-jobs"],
             vec![
-                "grokrxiv",
+                "agh",
                 "close",
                 &review_id.to_string(),
                 "--reason",
@@ -7360,36 +7446,34 @@ mod tests {
     async fn app_approve_dry_run_returns_before_db_or_github() {
         let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
         let cli = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--dry-run",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "approve",
             &review_id.to_string(),
         ])
-        .expect("app approve --dry-run should parse");
+        .expect("agh grokrxiv approve --dry-run should parse");
 
         run(cli)
             .await
-            .expect("app approve --dry-run should not require DB or GitHub");
+            .expect("agh grokrxiv approve --dry-run should not require DB or GitHub");
     }
 
     #[test]
     fn cli_parses_status_flags() {
-        let status = Cli::try_parse_from(["grokrxiv", "--status", "doctor"]).unwrap();
+        let status = Cli::try_parse_from(["agh", "--status", "doctor"]).unwrap();
         assert!(status.status);
         assert!(!status.no_status);
         assert!(!status.debug_logs);
 
-        let no_status = Cli::try_parse_from(["grokrxiv", "--no-status", "doctor"]).unwrap();
+        let no_status = Cli::try_parse_from(["agh", "--no-status", "doctor"]).unwrap();
         assert!(!no_status.status);
         assert!(no_status.no_status);
 
-        let debug_logs = Cli::try_parse_from(["grokrxiv", "--debug-logs", "doctor"]).unwrap();
+        let debug_logs = Cli::try_parse_from(["agh", "--debug-logs", "doctor"]).unwrap();
         assert!(debug_logs.debug_logs);
 
-        let both = Cli::try_parse_from(["grokrxiv", "--status", "--no-status", "doctor"]);
+        let both = Cli::try_parse_from(["agh", "--status", "--no-status", "doctor"]);
         assert!(
             both.is_err(),
             "--status and --no-status must be mutually exclusive"
@@ -7398,33 +7482,31 @@ mod tests {
 
     #[test]
     fn json_foreground_runs_still_show_clean_status() {
-        let cli = Cli::try_parse_from(["grokrxiv", "--json", "doctor"]).unwrap();
+        let cli = Cli::try_parse_from(["agh", "--json", "doctor"]).unwrap();
         assert!(status_enabled_for_stderr(&cli, true));
         assert!(!status_enabled_for_stderr(&cli, false));
     }
 
     #[test]
     fn no_status_suppresses_status_even_for_foreground_runs() {
-        let cli = Cli::try_parse_from(["grokrxiv", "--no-status", "doctor"]).unwrap();
+        let cli = Cli::try_parse_from(["agh", "--no-status", "doctor"]).unwrap();
         assert!(!status_enabled_for_stderr(&cli, true));
     }
 
     #[test]
     fn explicit_status_forces_status_for_redirected_stderr() {
-        let cli = Cli::try_parse_from(["grokrxiv", "--status", "--json", "doctor"]).unwrap();
+        let cli = Cli::try_parse_from(["agh", "--status", "--json", "doctor"]).unwrap();
         assert!(status_enabled_for_stderr(&cli, false));
     }
 
     #[test]
-    fn cli_parses_app_run_research_extract_command() {
+    fn cli_parses_agh_grokrxiv_extract_command() {
         let parsed = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--extractor",
             "cli",
             "--status",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "extract",
             "2605.00561",
         ])
@@ -7433,26 +7515,18 @@ mod tests {
         assert_eq!(parsed.extractor, Some(ExtractorKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "extract");
-                assert_eq!(args, vec!["2605.00561"]);
-            }
-            other => panic!("expected app run research extract, got {other:?}"),
+            Command::GrokRxiv { args } => assert_eq!(args, vec!["extract", "2605.00561"]),
+            other => panic!("expected agh grokrxiv extract, got {other:?}"),
         }
     }
 
     #[test]
-    fn cli_parses_app_run_c_to_rust_action() {
+    fn cli_parses_agh_c2rust_migrate_action() {
         let parsed = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--json",
-            "app",
-            "run",
-            "c-to-rust",
-            "translate",
+            "c2rust",
+            "migrate",
             "--input",
             "src/main.c",
         ])
@@ -7460,14 +7534,8 @@ mod tests {
 
         assert!(parsed.json);
         match parsed.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "c-to-rust");
-                assert_eq!(action, "translate");
-                assert_eq!(args, vec!["--input", "src/main.c"]);
-            }
-            other => panic!("expected app run c-to-rust translate, got {other:?}"),
+            Command::C2Rust { args } => assert_eq!(args, vec!["migrate", "--input", "src/main.c"]),
+            other => panic!("expected agh c2rust migrate, got {other:?}"),
         }
     }
 
@@ -7493,27 +7561,21 @@ mod tests {
 
     #[test]
     fn cli_parses_dag_run_command() {
-        let parsed = Cli::try_parse_from([
-            "grokrxiv",
-            "--json",
-            "dag",
-            "run",
-            "--dag-type",
-            "c-to-rust",
-        ])
-        .unwrap();
+        let parsed =
+            Cli::try_parse_from(["grokrxiv", "--json", "dag", "run", "--dag-type", "c2rust"])
+                .unwrap();
 
         match parsed.command {
             Command::Dag {
                 command: DagCommand::Run { dag_type },
-            } => assert_eq!(dag_type, "c-to-rust"),
+            } => assert_eq!(dag_type, "c2rust"),
             other => panic!("unexpected command: {other:?}"),
         }
     }
 
     #[test]
     fn cli_parses_agent_place_command() {
-        let parsed = Cli::try_parse_from(["grokrxiv", "agent", "place", "agent.yaml"]).unwrap();
+        let parsed = Cli::try_parse_from(["agh", "agent", "place", "agent.yaml"]).unwrap();
 
         match parsed.command {
             Command::Agent {
@@ -7716,11 +7778,9 @@ mod tests {
     #[test]
     fn cli_parses_batch_and_jobs_commands() {
         let batch = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--json",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "batch-create",
             "--category",
             "math",
@@ -7735,14 +7795,11 @@ mod tests {
         .expect("batch create should parse");
         assert!(batch.json);
         match batch.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "batch-create");
+            Command::GrokRxiv { args } => {
                 assert_eq!(
                     args,
                     vec![
+                        "batch-create",
                         "--category",
                         "math",
                         "--month",
@@ -7760,10 +7817,8 @@ mod tests {
 
         let batch_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
         let run = Cli::try_parse_from([
+            "agh",
             "grokrxiv",
-            "app",
-            "run",
-            "research",
             "batch-run",
             &batch_id.to_string(),
             "--limit",
@@ -7771,21 +7826,22 @@ mod tests {
         ])
         .expect("batch run should parse");
         match run.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "batch-run");
+            Command::GrokRxiv { args } => {
                 assert_eq!(
                     args,
-                    vec![batch_id.to_string(), "--limit".into(), "5".into()]
+                    vec![
+                        "batch-run".to_string(),
+                        batch_id.to_string(),
+                        "--limit".into(),
+                        "5".into()
+                    ]
                 );
             }
             other => panic!("expected batch run, got {other:?}"),
         }
 
         let jobs = Cli::try_parse_from([
-            "grokrxiv", "--json", "jobs", "list", "--kind", "review", "--state", "running",
+            "agh", "--json", "jobs", "list", "--kind", "review", "--state", "running",
         ])
         .expect("jobs list should parse");
         assert!(jobs.json);
@@ -7801,15 +7857,13 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_app_run_research_review_extracted_command() {
+    fn cli_parses_agh_grokrxiv_review_extracted_command() {
         let parsed = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--runner",
             "cli",
             "--status",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "review-extracted",
             "2605.00561",
         ])
@@ -7818,33 +7872,21 @@ mod tests {
         assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "review-extracted");
-                assert_eq!(args, vec!["2605.00561"]);
-            }
+            Command::GrokRxiv { args } => assert_eq!(args, vec!["review-extracted", "2605.00561"]),
             other => panic!("expected review-extracted command, got {other:?}"),
         }
 
         let forced = Cli::try_parse_from([
+            "agh",
             "grokrxiv",
-            "app",
-            "run",
-            "research",
             "review-extracted",
             "--force",
             "2605.00561",
         ])
         .unwrap();
         match forced.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "review-extracted");
-                assert_eq!(args, vec!["--force", "2605.00561"]);
+            Command::GrokRxiv { args } => {
+                assert_eq!(args, vec!["review-extracted", "--force", "2605.00561"])
             }
             other => panic!("expected forced review-extracted command, got {other:?}"),
         }
@@ -7860,12 +7902,10 @@ mod tests {
         assert!(text.contains("already_reviewed=true"));
         assert!(text.contains("review_status=pr_open"));
         assert!(text.contains("pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/19"));
-        assert!(text.contains(
-            "show_command=grokrxiv app run research show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
-        ));
-        assert!(text.contains(
-            "force_command=grokrxiv app run research review-extracted --force 2605.00561"
-        ));
+        assert!(
+            text.contains("show_command=agh grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8")
+        );
+        assert!(text.contains("force_command=agh grokrxiv review-extracted --force 2605.00561"));
 
         let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
         assert_eq!(json["status"], "already_reviewed");
@@ -7874,35 +7914,20 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_app_run_research_list_args() {
-        let listed = Cli::try_parse_from([
-            "grokrxiv",
-            "app",
-            "run",
-            "research",
-            "list",
-            "extracted",
-            "--limit",
-            "50",
-        ])
-        .unwrap();
+    fn cli_parses_agh_grokrxiv_list_args() {
+        let listed =
+            Cli::try_parse_from(["agh", "grokrxiv", "list", "extracted", "--limit", "50"]).unwrap();
         match listed.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "list");
-                assert_eq!(args, vec!["extracted", "--limit", "50"]);
+            Command::GrokRxiv { args } => {
+                assert_eq!(args, vec!["list", "extracted", "--limit", "50"])
             }
-            other => panic!("expected app run research list extracted, got {other:?}"),
+            other => panic!("expected agh grokrxiv list extracted, got {other:?}"),
         }
 
         let reviews = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--json",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "list",
             "reviews",
             "--review-status",
@@ -7911,17 +7936,13 @@ mod tests {
         .unwrap();
         assert!(reviews.json);
         match reviews.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "list");
+            Command::GrokRxiv { args } => {
                 assert_eq!(
                     args,
-                    vec!["reviews", "--review-status", "awaiting_moderation"]
+                    vec!["list", "reviews", "--review-status", "awaiting_moderation"]
                 );
             }
-            other => panic!("expected app run research list reviews, got {other:?}"),
+            other => panic!("expected agh grokrxiv list reviews, got {other:?}"),
         }
     }
 
@@ -7992,16 +8013,14 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
     }
 
     #[test]
-    fn cli_parses_app_run_git_corpus_review_options() {
+    fn cli_parses_agh_grokrxiv_git_corpus_review_options() {
         let cli = Cli::try_parse_from([
-            "grokrxiv",
+            "agh",
             "--runner",
             "cli",
             "--extractor",
             "cli",
-            "app",
-            "run",
-            "research",
+            "grokrxiv",
             "review",
             "https://github.com/MagnetonIO/emergent_spacetime",
             "--type",
@@ -8021,14 +8040,11 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
         .expect("git corpus review command should parse");
 
         match cli.command {
-            Command::App {
-                command: AppCommand::Run { app, action, args },
-            } => {
-                assert_eq!(app, "research");
-                assert_eq!(action, "review");
+            Command::GrokRxiv { args } => {
                 assert_eq!(
                     args,
                     vec![
+                        "review",
                         "https://github.com/MagnetonIO/emergent_spacetime",
                         "--type",
                         "git",
@@ -8046,7 +8062,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
                     ]
                 );
             }
-            other => panic!("expected app run research review, got {other:?}"),
+            other => panic!("expected agh grokrxiv review, got {other:?}"),
         }
     }
 

@@ -12,14 +12,14 @@ use crate::scheduler::SchedulerConfig;
 pub struct LoadedEnv {
     /// Root dotenv file loaded through dotenvy's normal upward search.
     pub root: Option<PathBuf>,
-    /// Purpose-specific env files loaded from `GROKRXIV_ENV_FILES`.
+    /// Purpose-specific env files loaded from `AGENTHERO_ENV_FILES`.
     pub includes: Vec<PathBuf>,
 }
 
 /// Load the repo dotenv contract.
 ///
 /// The root `.env` remains the entry point. If it defines
-/// `GROKRXIV_ENV_FILES=.env_core,.env_review`, those files are loaded relative
+/// `AGENTHERO_ENV_FILES=.env_core,.env_review`, those files are loaded relative
 /// to the root `.env` directory. Existing process variables and values from the
 /// root `.env` win over included files, matching dotenvy's default behavior.
 pub fn load_env() -> anyhow::Result<LoadedEnv> {
@@ -38,7 +38,7 @@ fn load_env_from_path(path: &Path) -> anyhow::Result<LoadedEnv> {
 }
 
 fn load_env_includes(root: Option<PathBuf>) -> anyhow::Result<LoadedEnv> {
-    let raw = match env::var("GROKRXIV_ENV_FILES") {
+    let raw = match env::var("AGENTHERO_ENV_FILES") {
         Ok(value) if !value.trim().is_empty() => value,
         Ok(_) | Err(env::VarError::NotPresent) => {
             return Ok(LoadedEnv {
@@ -46,7 +46,7 @@ fn load_env_includes(root: Option<PathBuf>) -> anyhow::Result<LoadedEnv> {
                 includes: Vec::new(),
             })
         }
-        Err(err) => return Err(anyhow::anyhow!("read GROKRXIV_ENV_FILES: {err}")),
+        Err(err) => return Err(anyhow::anyhow!("read AGENTHERO_ENV_FILES: {err}")),
     };
 
     let base_dir = root
@@ -58,13 +58,13 @@ fn load_env_includes(root: Option<PathBuf>) -> anyhow::Result<LoadedEnv> {
         let path = resolve_env_path(&base_dir, entry);
         if !path.exists() {
             return Err(anyhow::anyhow!(
-                "GROKRXIV_ENV_FILES references missing file {}",
+                "AGENTHERO_ENV_FILES references missing file {}",
                 path.display()
             ));
         }
         if !fs::metadata(&path)?.is_file() {
             return Err(anyhow::anyhow!(
-                "GROKRXIV_ENV_FILES entry {} is not a file",
+                "AGENTHERO_ENV_FILES entry {} is not a file",
                 path.display()
             ));
         }
@@ -148,7 +148,7 @@ mod tests {
     static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const TEST_KEYS: &[&str] = &[
-        "GROKRXIV_ENV_FILES",
+        "AGENTHERO_ENV_FILES",
         "GROKRXIV_TEST_ROOT",
         "GROKRXIV_TEST_CORE",
         "GROKRXIV_TEST_REVIEW",
@@ -163,7 +163,7 @@ mod tests {
         let root = tmp.path().join(".env");
         fs::write(
             &root,
-            "GROKRXIV_ENV_FILES=.env_core,.env_review\nGROKRXIV_TEST_ROOT=root\nGROKRXIV_TEST_SHARED=root\n",
+            "AGENTHERO_ENV_FILES=.env_core,.env_review\nGROKRXIV_TEST_ROOT=root\nGROKRXIV_TEST_SHARED=root\n",
         )
         .unwrap();
         fs::write(
@@ -201,7 +201,7 @@ mod tests {
         clear_test_env();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join(".env");
-        fs::write(&root, "GROKRXIV_ENV_FILES=.env_missing\n").unwrap();
+        fs::write(&root, "AGENTHERO_ENV_FILES=.env_missing\n").unwrap();
 
         let err = load_env_from_path(&root).unwrap_err();
 

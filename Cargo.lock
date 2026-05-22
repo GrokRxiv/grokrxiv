@@ -38,6 +38,102 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenthero-dag-app-c2rust"
+version = "0.1.0"
+dependencies = [
+ "agenthero-dag-executor",
+ "agenthero-dag-runtime",
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "agenthero-dag-executor"
+version = "0.1.0"
+dependencies = [
+ "agenthero-dag-runtime",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "agenthero-dag-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "agenthero-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "agenthero-dag-app-c2rust",
+ "agenthero-dag-executor",
+ "agenthero-dag-runtime",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "clap 4.5.20",
+ "clap_lex",
+ "dotenvy",
+ "flate2",
+ "futures",
+ "grokrxiv-dag-app-citation-validation",
+ "grokrxiv-dag-app-paper-extract",
+ "grokrxiv-dag-app-paper-ingest",
+ "grokrxiv-dag-app-paper-publish",
+ "grokrxiv-dag-app-paper-review",
+ "grokrxiv-dag-app-paper-revise",
+ "grokrxiv-ingest",
+ "grokrxiv-llm-adapter",
+ "grokrxiv-publisher",
+ "grokrxiv-render",
+ "grokrxiv-schemas",
+ "grokrxiv-storage",
+ "grokrxiv-verifier",
+ "hex",
+ "hmac",
+ "hyper",
+ "image",
+ "jsonschema",
+ "lopdf 0.36.0",
+ "octocrab",
+ "pdfium-render",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+ "zip 2.2.3",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1713,24 +1809,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "grokrxiv-dag-app-c-to-rust"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "grokrxiv-dag-executor",
- "grokrxiv-dag-runtime",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "grokrxiv-dag-app-citation-validation"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-schemas",
  "grokrxiv-verifier",
  "serde_json",
@@ -1740,9 +1824,9 @@ dependencies = [
 name = "grokrxiv-dag-app-paper-extract"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-ingest",
  "grokrxiv-schemas",
  "serde_json",
@@ -1752,9 +1836,9 @@ dependencies = [
 name = "grokrxiv-dag-app-paper-ingest"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-ingest",
  "serde_json",
 ]
@@ -1763,9 +1847,9 @@ dependencies = [
 name = "grokrxiv-dag-app-paper-publish"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-publisher",
  "grokrxiv-schemas",
  "serde_json",
@@ -1775,9 +1859,9 @@ dependencies = [
 name = "grokrxiv-dag-app-paper-review"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-render",
  "grokrxiv-schemas",
  "grokrxiv-verifier",
@@ -1788,36 +1872,12 @@ dependencies = [
 name = "grokrxiv-dag-app-paper-revise"
 version = "0.1.0"
 dependencies = [
+ "agenthero-dag-executor",
  "anyhow",
  "async-trait",
- "grokrxiv-dag-executor",
  "grokrxiv-render",
  "grokrxiv-schemas",
  "serde_json",
-]
-
-[[package]]
-name = "grokrxiv-dag-executor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "grokrxiv-dag-runtime",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "grokrxiv-dag-runtime"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1864,66 +1924,6 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
-]
-
-[[package]]
-name = "grokrxiv-orchestrator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "clap 4.5.20",
- "clap_lex",
- "dotenvy",
- "flate2",
- "futures",
- "grokrxiv-dag-app-c-to-rust",
- "grokrxiv-dag-app-citation-validation",
- "grokrxiv-dag-app-paper-extract",
- "grokrxiv-dag-app-paper-ingest",
- "grokrxiv-dag-app-paper-publish",
- "grokrxiv-dag-app-paper-review",
- "grokrxiv-dag-app-paper-revise",
- "grokrxiv-dag-executor",
- "grokrxiv-dag-runtime",
- "grokrxiv-ingest",
- "grokrxiv-llm-adapter",
- "grokrxiv-publisher",
- "grokrxiv-render",
- "grokrxiv-schemas",
- "grokrxiv-storage",
- "grokrxiv-verifier",
- "hex",
- "hmac",
- "hyper",
- "image",
- "jsonschema",
- "lopdf 0.36.0",
- "octocrab",
- "pdfium-render",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sqlx",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.23",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
- "zip 2.2.3",
 ]
 
 [[package]]

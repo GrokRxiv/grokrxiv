@@ -30,9 +30,9 @@
 Use this immediately until the package work lands:
 
 ```bash
-cargo install --locked --path crates/orchestrator --bin grokrxiv --force
-grokrxiv --version
-grokrxiv --status --json --dry-run review 2602.17480
+cargo install --locked --path crates/orchestrator --bin agh --force
+agenthero --version
+agenthero --status --json --dry-run review 2602.17480
 ```
 
 The `--locked` flag is required because this repo pins Rust 1.82. Without it, Cargo may resolve newer transitive crates that require edition 2024 and fail before compiling.
@@ -416,7 +416,7 @@ async function main() {
     log(`${error.message}; trying locked Cargo fallback`);
     if (!cargoFallback()) {
       throw new Error(
-        "failed to install grokrxiv. Install Rust and run: cargo install --locked --git https://github.com/GrokRxiv/grokrxiv --bin grokrxiv --force",
+        "failed to install grokrxiv. Install Rust and run: cargo install --locked --git https://github.com/GrokRxiv/agenthero --bin agh --force",
       );
     }
   } finally {
@@ -490,7 +490,7 @@ jobs:
         with:
           key: release-${{ matrix.target }}
       - name: Build grokrxiv
-        run: cargo build --locked --release --bin grokrxiv --target ${{ matrix.target }}
+        run: cargo build --locked --release --bin agh --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
@@ -539,7 +539,7 @@ Add:
 ```json
 {
   "scripts": {
-    "install:cli": "cargo install --locked --path crates/orchestrator --bin grokrxiv --force",
+    "install:cli": "cargo install --locked --path crates/orchestrator --bin agh --force",
     "install:cli:npm-local": "npm install -g ./packages/grokrxiv-cli",
     "test:cli-package": "node --test packages/grokrxiv-cli/tests/*.test.js"
   }
@@ -559,14 +559,14 @@ Preferred user install after the first package release:
 
 ```bash
 npm install -g @grokrxiv/cli
-grokrxiv --version
+agenthero --version
 ```
 
 Developer install from a checkout:
 
 ```bash
-cargo install --locked --path crates/orchestrator --bin grokrxiv --force
-grokrxiv --version
+cargo install --locked --path crates/orchestrator --bin agh --force
+agenthero --version
 ```
 
 Use `--locked`; the workspace pins Rust 1.82 and should not resolve newer transitive crates during install.
@@ -579,7 +579,7 @@ Run:
 ```bash
 pnpm test:cli-package
 pnpm install:cli
-grokrxiv --status --json --dry-run review 2602.17480
+agenthero --status --json --dry-run review 2602.17480
 ```
 
 Expected: tests pass, install succeeds, dry-run prints clean status on stderr and valid JSON on stdout.
@@ -603,7 +603,7 @@ Run:
 ```bash
 npm install -g ./packages/grokrxiv-cli
 which grokrxiv
-grokrxiv --version
+agenthero --version
 ```
 
 Expected: `grokrxiv 0.1.0`.
@@ -616,7 +616,7 @@ Run:
 set -a
 source .env
 set +a
-grokrxiv --status --json --dry-run review 2602.17480 > /tmp/grokrxiv-package-stdout.json 2> /tmp/grokrxiv-package-stderr.txt
+agenthero --status --json --dry-run review 2602.17480 > /tmp/grokrxiv-package-stdout.json 2> /tmp/grokrxiv-package-stderr.txt
 jq -e . /tmp/grokrxiv-package-stdout.json
 rg '^\\{"timestamp"|^status:' /tmp/grokrxiv-package-stderr.txt && exit 1 || true
 sed -n '1,20p' /tmp/grokrxiv-package-stderr.txt
@@ -648,10 +648,10 @@ Homebrew should not block the npm MVP. Add a tap only after `release-cli.yml` ha
 
 - `node --test packages/grokrxiv-cli/tests/*.test.js`
 - `npm install -g ./packages/grokrxiv-cli`
-- `grokrxiv --version`
-- `grokrxiv --status --json --dry-run review 2602.17480`
-- `cargo install --locked --path crates/orchestrator --bin grokrxiv --force`
-- `cargo test -p grokrxiv-orchestrator --lib`
+- `agenthero --version`
+- `agenthero --status --json --dry-run review 2602.17480`
+- `cargo install --locked --path crates/orchestrator --bin agh --force`
+- `cargo test -p agenthero-orchestrator --lib`
 - GitHub tag dry-run on a test tag in a fork before publishing npm.
 
 ## Rollout

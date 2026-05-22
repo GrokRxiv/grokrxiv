@@ -1,0 +1,9 @@
+slug: c2rust
+label: C2Rust
+description: C to Rust migration DAG app.
+adapter: c2rust
+actions:
+  - id: migrate
+    command: [migrate]
+    dag_type: c2rust
+    description: Translate and validate a C source through the C2Rust DAG.

@@ -33,7 +33,7 @@ impl ClaudeRunner {
     /// Construct a runner that spawns the `claude` binary on PATH.
     pub fn new() -> Self {
         Self {
-            binary: std::env::var("GROKRXIV_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
+            binary: std::env::var("AGENTHERO_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
         }
     }
 

@@ -16,6 +16,7 @@ pub mod dag_apps;
 pub(crate) mod dag_tools;
 pub mod db;
 pub mod doctor;
+pub mod entrypoint;
 pub mod github_feedback;
 pub mod html_review;
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]

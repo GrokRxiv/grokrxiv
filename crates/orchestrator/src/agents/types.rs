@@ -113,10 +113,10 @@ pub enum AgentRunnerKind {
     /// `provider:` field in YAML drives which binary is spawned.
     Cli,
     /// Cloud agent backend (Vercel Open Agents primary; E2B alternate).
-    /// `GROKRXIV_CLOUD_PROVIDER` selects.
+    /// `AGENTHERO_CLOUD_PROVIDER` selects.
     Cloud,
     /// Local OSS inference (Ollama via direct URL or LiteLLM gateway).
-    /// `GROKRXIV_LITELLM_URL` (preferred) or `OLLAMA_HOST` (fallback) selects
+    /// `AGENTHERO_LITELLM_URL` (preferred) or `OLLAMA_HOST` (fallback) selects
     /// the endpoint.
     LocalInference,
 }

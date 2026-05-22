@@ -1,5 +1,5 @@
 [package]
-name = "grokrxiv-dag-executor"
+name = "agenthero-dag-executor"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ description = "Generic manifest-driven DAG executor for GrokRxiv DAG apps."
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-grokrxiv-dag-runtime = { path = "../dag-runtime" }
+agenthero-dag-runtime = { path = "../dag-runtime" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

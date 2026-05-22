@@ -374,7 +374,7 @@ async fn pipeline_repeated_persist_is_idempotent() -> anyhow::Result<()> {
 async fn write_body_md_to_workdir_puts_body_where_tools_read_it() -> anyhow::Result<()> {
     let work = TempDir::new()?;
     let body = "## Introduction\n\nWe propose a toy framework. See [@MacLane1971].\n";
-    grokrxiv_orchestrator::ingest_pipeline::write_body_md_to_workdir(work.path(), body).await?;
+    agenthero_orchestrator::ingest_pipeline::write_body_md_to_workdir(work.path(), body).await?;
     let on_disk = std::fs::read_to_string(work.path().join("body.md"))?;
     assert_eq!(on_disk, body);
     Ok(())
@@ -401,7 +401,7 @@ async fn load_paper_extract_resolves_section_bodies() -> anyhow::Result<()> {
         .join(arxiv_id())
         .join("review_input.json");
     let ri: ReviewInput = serde_json::from_slice(&std::fs::read(&ri_path)?)?;
-    let extract = grokrxiv_orchestrator::ingest_pipeline::load_paper_extract(&repo_path, &ri)?;
+    let extract = agenthero_orchestrator::ingest_pipeline::load_paper_extract(&repo_path, &ri)?;
     assert_eq!(extract.title, "A Toy Paper on Category Theory");
     assert_eq!(extract.sections.len(), 2);
     // Body markdown for at least one section must be non-empty so configured

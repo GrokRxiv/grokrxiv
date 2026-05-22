@@ -1,11 +1,11 @@
 //! `LocalInferenceRunner` — local OSS models via Ollama (or LiteLLM gateway).
 //!
-//! Generic OpenAI-compatible HTTP client. Prefers `GROKRXIV_LITELLM_URL`
+//! Generic OpenAI-compatible HTTP client. Prefers `AGENTHERO_LITELLM_URL`
 //! when set; falls back to `OLLAMA_HOST` directly. vLLM/MLX/llama.cpp stay
 //! deployment-time choices behind LiteLLM — no runtime switch.
 //!
 //! Endpoint resolution:
-//! - If `$GROKRXIV_LITELLM_URL` is set: `{url}/v1/chat/completions`.
+//! - If `$AGENTHERO_LITELLM_URL` is set: `{url}/v1/chat/completions`.
 //! - Else: `${OLLAMA_HOST:-http://localhost:11434}/v1/chat/completions`
 //!   (Ollama's OpenAI-compat path, available since v0.5).
 //!
@@ -20,11 +20,11 @@ use serde_json::json;
 use crate::agents::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec};
 use crate::agents::AgentRunner;
 
-/// Default Ollama host when neither `GROKRXIV_LITELLM_URL` nor `OLLAMA_HOST`
+/// Default Ollama host when neither `AGENTHERO_LITELLM_URL` nor `OLLAMA_HOST`
 /// are set.
 const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
 
-/// Default per-call timeout in seconds when `GROKRXIV_LOCAL_TIMEOUT_SECS` is
+/// Default per-call timeout in seconds when `AGENTHERO_LOCAL_TIMEOUT_SECS` is
 /// not set or not parseable.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -42,12 +42,12 @@ impl LocalInferenceRunner {
 /// Resolve the chat-completions endpoint from environment variables.
 ///
 /// Order of precedence:
-/// 1. `GROKRXIV_LITELLM_URL` (the gateway path — LiteLLM routes to whatever
+/// 1. `AGENTHERO_LITELLM_URL` (the gateway path — LiteLLM routes to whatever
 ///    provider it's configured with).
 /// 2. `OLLAMA_HOST` (direct to Ollama's OpenAI-compat endpoint).
 /// 3. `DEFAULT_OLLAMA_HOST` (the documented localhost default).
 fn resolve_endpoint() -> String {
-    let base = std::env::var("GROKRXIV_LITELLM_URL")
+    let base = std::env::var("AGENTHERO_LITELLM_URL")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("OLLAMA_HOST").ok().filter(|s| !s.is_empty()))
@@ -56,10 +56,10 @@ fn resolve_endpoint() -> String {
     format!("{trimmed}/v1/chat/completions")
 }
 
-/// Resolve per-call timeout from `GROKRXIV_LOCAL_TIMEOUT_SECS` or fall back to
+/// Resolve per-call timeout from `AGENTHERO_LOCAL_TIMEOUT_SECS` or fall back to
 /// [`DEFAULT_TIMEOUT_SECS`].
 fn resolve_timeout() -> Duration {
-    let secs = std::env::var("GROKRXIV_LOCAL_TIMEOUT_SECS")
+    let secs = std::env::var("AGENTHERO_LOCAL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_TIMEOUT_SECS);
@@ -310,7 +310,7 @@ mod tests {
             .mount(&ollama)
             .await;
 
-        let _g1 = EnvGuard::set("GROKRXIV_LITELLM_URL", &litellm.uri());
+        let _g1 = EnvGuard::set("AGENTHERO_LITELLM_URL", &litellm.uri());
         let _g2 = EnvGuard::set("OLLAMA_HOST", &ollama.uri());
 
         let runner = LocalInferenceRunner::new();
@@ -338,7 +338,7 @@ mod tests {
             .mount(&ollama)
             .await;
 
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::set("OLLAMA_HOST", &ollama.uri());
 
         let runner = LocalInferenceRunner::new();
@@ -350,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_default_ollama_host() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::unset("OLLAMA_HOST");
         let url = resolve_endpoint();
         assert_eq!(url, "http://localhost:11434/v1/chat/completions");
@@ -368,7 +368,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::set("OLLAMA_HOST", &server.uri());
 
         let runner = LocalInferenceRunner::new();
@@ -407,7 +407,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::set("OLLAMA_HOST", &server.uri());
 
         let runner = LocalInferenceRunner::new();
@@ -428,7 +428,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::set("OLLAMA_HOST", &server.uri());
 
         let runner = LocalInferenceRunner::new();
@@ -464,7 +464,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let _g1 = EnvGuard::unset("GROKRXIV_LITELLM_URL");
+        let _g1 = EnvGuard::unset("AGENTHERO_LITELLM_URL");
         let _g2 = EnvGuard::set("OLLAMA_HOST", &server.uri());
 
         let runner = LocalInferenceRunner::new();

@@ -130,7 +130,7 @@ mod tests {
 Run:
 
 ```bash
-cargo test -p grokrxiv-orchestrator --lib review_gate -- --nocapture
+cargo test -p agenthero-orchestrator --lib review_gate -- --nocapture
 ```
 
 Expected: compile failure because `review_gate` types do not exist.
@@ -279,7 +279,7 @@ pub(crate) mod review_gate;
 Run:
 
 ```bash
-cargo test -p grokrxiv-orchestrator --lib review_gate -- --nocapture
+cargo test -p agenthero-orchestrator --lib review_gate -- --nocapture
 ```
 
 Expected: all `review_gate` tests pass.
@@ -328,7 +328,7 @@ If the route helper is not public today, add it as `pub(crate)` inside `routes/w
 Run:
 
 ```bash
-cargo test -p grokrxiv-orchestrator --lib minor_revision -- --nocapture
+cargo test -p agenthero-orchestrator --lib minor_revision -- --nocapture
 ```
 
 Expected: fails because current webhook treats `minor_revision` as pass.
@@ -387,7 +387,7 @@ In `cli.rs::approve_impl`, keep human `--force`, but make non-force approval req
 ```rust
 if gate.verdict != crate::review_gate::GateVerdict::Pass {
     anyhow::bail!(
-        "review {review_id} is not cleanly publishable: {}. Use `grokrxiv request-revisions {review_id}` or `grokrxiv approve --force {review_id}`.",
+        "review {review_id} is not cleanly publishable: {}. Use `agh grokrxiv request-revisions {review_id}` or `agh grokrxiv approve --force {review_id}`.",
         gate.reason
     );
 }
@@ -398,7 +398,7 @@ if gate.verdict != crate::review_gate::GateVerdict::Pass {
 Run:
 
 ```bash
-cargo test -p grokrxiv-orchestrator --lib review_gate minor_revision approve -- --nocapture
+cargo test -p agenthero-orchestrator --lib review_gate minor_revision approve -- --nocapture
 ```
 
 Expected: tests pass and `approve_help_is_pr_handoff_not_publish` still passes.
@@ -507,7 +507,7 @@ Run:
 
 ```bash
 cargo test -p grokrxiv-publisher revision_pr_body -- --nocapture
-cargo test -p grokrxiv-orchestrator --lib correction_source -- --nocapture
+cargo test -p agenthero-orchestrator --lib correction_source -- --nocapture
 ```
 
 Expected: tests pass.
@@ -557,7 +557,7 @@ fn cli_parses_hidden_feedback_loop_smoke() {
 Run:
 
 ```bash
-cargo test -p grokrxiv-orchestrator --lib feedback_loop_smoke -- --nocapture
+cargo test -p agenthero-orchestrator --lib feedback_loop_smoke -- --nocapture
 ```
 
 Expected: fails because the hidden command does not exist.
@@ -600,8 +600,8 @@ Implementation rules:
 Run:
 
 ```bash
-grokrxiv --help | grep feedback-loop-smoke && exit 1 || true
-cargo test -p grokrxiv-orchestrator --lib default_help_shows_operator_surface_only feedback_loop_smoke -- --nocapture
+agenthero --help | grep feedback-loop-smoke && exit 1 || true
+cargo test -p agenthero-orchestrator --lib default_help_shows_operator_surface_only feedback_loop_smoke -- --nocapture
 ```
 
 Expected: command parses but is absent from normal help.
@@ -641,7 +641,7 @@ Use pure helper tests where DB is not needed.
 
 ```bash
 cargo test -p grokrxiv-publisher post_or_update_gate_feedback -- --nocapture
-cargo test -p grokrxiv-orchestrator --lib webhook correction_source marker -- --nocapture
+cargo test -p agenthero-orchestrator --lib webhook correction_source marker -- --nocapture
 ```
 
 Expected: all pass.
@@ -671,7 +671,7 @@ set +a
 - [ ] **Step 2: Verify config guard**
 
 ```bash
-grokrxiv --runner cli --extractor cli --no-cache config --json \
+agh --runner cli --extractor cli --no-cache config --json \
   | jq '{runner:.runtime.default_runner, extractor:.runtime.extractor, direct_provider_api_allowed:.runtime.direct_provider_api_allowed, model_for:.runtime.model_for}'
 ```
 
@@ -691,7 +691,7 @@ cargo test -p grokrxiv-storage
 cargo test -p grokrxiv-verifier
 cargo test -p grokrxiv-render
 cargo test -p grokrxiv-publisher
-cargo test -p grokrxiv-orchestrator --lib
+cargo test -p agenthero-orchestrator --lib
 node --test grokrxiv-skills/tests/*.test.js
 ```
 
@@ -718,7 +718,7 @@ Run the orchestrator with the scheduler disabled so the live smoke does not trig
 
 ```bash
 GROKRXIV_DISABLE_SCHEDULER=1 \
-grokrxiv --runner cli --extractor cli --status serve
+agh --runner cli --extractor cli --status serve
 ```
 
 Confirm `localhost:8080` is listening and the public tunnel points to `/webhook/github`.

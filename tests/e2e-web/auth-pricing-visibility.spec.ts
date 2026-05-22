@@ -1,6 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 
-const SERVICE_TOKEN = process.env.GROKRXIV_SERVICE_TOKEN ?? "";
+const SERVICE_TOKEN = process.env.AGENTHERO_SERVICE_TOKEN ?? "";
 const SUPABASE_AUTH_URL =
   process.env.GROKRXIV_SUPABASE_AUTH_URL ?? "http://127.0.0.1:54321/auth/v1";
 const MAILPIT_URL =
@@ -183,7 +183,7 @@ test.describe("auth, pricing, quota, and visibility surfaces", () => {
   }) => {
     test.skip(
       SERVICE_TOKEN.length === 0,
-      "GROKRXIV_SERVICE_TOKEN is unset for this E2E run.",
+      "AGENTHERO_SERVICE_TOKEN is unset for this E2E run.",
     );
 
     const missingProfile = await request.post("/api/v1/review", {

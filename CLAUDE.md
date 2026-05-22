@@ -1,10 +1,14 @@
-# GrokRxiv — Claude conventions
+# AgentHero / GrokRxiv — Claude conventions
 
 Project-specific instructions for Claude Code working in this repo. Read this before making changes.
 
 ## What this project is
 
-GrokRxiv is a distributed DAG-app runner. Rust orchestrates typed DAGs whose nodes may be Rust-native tools, CLI tools, non-Rust tools, agents, verifier/gate nodes, artifacts, remote service-node work, or calls into other DAGs. The paper ingest/extract/review/revise/output flow is the first scaled DAG app proving the abstraction; it is not the orchestrator contract itself.
+AgentHero is the Rust/Tokio DAGOps runtime and distributed control plane.
+Tokio is the async substrate for local tasks, networking, timers, timeouts,
+channels, and worker I/O; AgentHero owns the app/DAG/node/artifact/capability
+contracts. GrokRxiv is the first scaled DAG app proving the abstraction through
+paper ingest/extract/review/revise/publish.
 
 ## Architecture map
 
@@ -28,7 +32,7 @@ GrokRxiv is a distributed DAG-app runner. Rust orchestrates typed DAGs whose nod
 
 1. **Never use the user's Claude Code CLI API key for the orchestrator.** The orchestrator reads `ANTHROPIC_API_KEY` from `.env` — that is the **GrokRxiv project key**, not the user's personal CLI key. Confusing them inflates the user's CLI bill against the wrong account.
 2. **`/legal` is the only page that carries the AI-disclaimer.** FP3 locked this directive: do NOT re-add the disclaimer to render artifacts, upload UI, or any other route.
-3. **All schemas are OpenAI-strict-compatible.** Every property must be in `required`; nullable fields use `type: ["X", "null"]`; no `format: uri`, no `minimum/maximum`, no `minLength/maxLength`, no `minItems`. The Gemini adapter has a `sanitize_schema_for_gemini()` shim that translates from this form.
+3. **All schemas are OpenAI-strict-compatible.** Every property must be in `required`; nullable fields use `type: ["X", "null"]`; no `format: uri`, no `minimum/maximum`, no `minLength/maxLength`, no `minItems`. The Gemini adapter has a `sanitize_schema_for_gemini()` shim that migrates from this form.
 4. **Cost-aware role assignment.** Model choice belongs in `agents/<dag-type>/*.yaml` or explicit runtime overrides. Don't promote a role to a more expensive model without measuring.
 5. **`meta_reviewer` input contract (FP6 fix):** receives only the 5 specialist outputs, NOT the full paper extract. The paper is already baked into specialist reasoning.
 6. **New plan runs start from clean lineage.** Commit any existing dirty feature-branch work, merge it locally to `main`, revalidate `main`, then create a fresh branch before applying a new plan.
@@ -42,13 +46,13 @@ agents, and whole DAG types. Do not add new orchestration by hardcoding a
 special case into the supervisor when a manifest node, registered Rust handler,
 or `dag_call` can express it.
 
-Use `grokrxiv dag run --dag-type <dag> --json` for executor-path smoke tests.
-The c-to-rust DAG app is the required non-paper proof path for generic DAG
+Use `agh dag run --dag-type <dag> --json` for executor-path smoke tests.
+The c2rust DAG app is the required non-paper proof path for generic DAG
 changes.
 
-The operator CLI is app-scoped. Use `grokrxiv app run research review ...`,
-`grokrxiv app run research approve ...`, and
-`grokrxiv app run c-to-rust translate ...`; do not add new research lifecycle
+The operator CLI is app-scoped. Use `agh grokrxiv review ...`,
+`agh grokrxiv approve ...`, and
+`agh c2rust migrate ...`; do not add new GrokRxiv lifecycle
 commands at the root.
 
 LLM readability is a product requirement: prefer explicit names and small
@@ -74,8 +78,8 @@ Must pass 8/8. Exercises all 3 providers end-to-end with `verifier_status=pass` 
 - `dag_events` — runtime event stream.
 - `worker_nodes` / `worker_leases` — distributed runner presence and work leases.
 - `agent_output_cache` — generic app/DAG/node/role cache.
-- `research_sources`, `research_reviews`, `research_moderation_queue` — research app projection tables for product queries and moderation UI.
-- Existing `papers`, `reviews`, `review_agents`, `review_inputs`, `review_cache`, `moderation_queue`, and `jobs` tables are migration-era research data/projections, not the generic DAG runtime contract.
+- `grokrxiv_sources`, `grokrxiv_reviews`, `grokrxiv_moderation_queue` — GrokRxiv app projection tables for product queries and moderation UI.
+- Existing `papers`, `reviews`, `review_agents`, `review_inputs`, `review_cache`, `moderation_queue`, and `jobs` tables are migration-era GrokRxiv data/projections, not the generic DAG runtime contract.
 - `uploads` — anonymous landing-page samples
 
 ## Provider keys
@@ -98,7 +102,7 @@ History:
 - FP3 — Codex audit follow-through (the `/legal` disclaimer rule comes from here)
 - FP4 — Real typed DAG, parallel 5 specialists + meta_reviewer
 - FP5 — Processing-costs architecture-of-record (design only — no code)
-- FP6 — Pipeline cost fixes + research site + repo bootstrap (you are here)
+- FP6 — Pipeline cost fixes + GrokRxiv site + repo bootstrap (you are here)
 - FP7 — Auth + user/admin consoles (planned)
 - FP8 — API console + pricing + revision agents (planned)
 

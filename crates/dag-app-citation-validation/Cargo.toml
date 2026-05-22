@@ -10,7 +10,7 @@ description = "Citation validation DAG app adapter for the generic GrokRxiv exec
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-grokrxiv-dag-executor = { path = "../dag-executor" }
+agenthero-dag-executor = { path = "../dag-executor" }
 grokrxiv-schemas = { path = "../schemas" }
 grokrxiv-verifier = { path = "../verifier" }
 serde_json = { workspace = true }

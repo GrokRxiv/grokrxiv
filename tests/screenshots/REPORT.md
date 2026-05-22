@@ -14,7 +14,7 @@ backing the claims below.
 | 5 | Legal disclaimer surfaced via dedicated page | `apps/web/app/legal/page.tsx` | Single source of truth lives on `/legal`; renderer artifacts and footer intentionally omit the phrase (see `crates/render/tests/render.rs` negative assertions). |
 | 6 | Upload UX surfaces actionable hints | `apps/web/components/upload-dropzone.tsx`, `apps/web/app/api/upload/route.ts` | `curl -X POST /api/upload` returns `{"error":"Could not reach the orchestrator: fetch failed","hint":"Is the orchestrator running at http://localhost:8080? Try \`just orch\` or \`docker compose up orchestrator\`."}`. Playwright `upload → graceful failure` test asserts the hint copy is visible and that bare "fetch failed" is **not**. |
 | 7 | /preview returns structured 503 on missing API key | `crates/orchestrator/src/routes/preview.rs` | Differentiated handling: `SERVICE_UNAVAILABLE` + hint when `"no LLM provider"` in error; `BAD_GATEWAY` otherwise. |
-| 8 | clap-based `grokrxiv` CLI | `crates/orchestrator/src/{cli,main,serve}.rs` | `./target/release/grokrxiv-orchestrator --help` lists 20 subcommands across service / ingestion / review lifecycle / moderation / conveniences sections. |
+| 8 | clap-based `grokrxiv` CLI | `crates/orchestrator/src/{cli,main,serve}.rs` | `./target/release/agenthero-orchestrator --help` lists 20 subcommands across service / ingestion / review lifecycle / moderation / conveniences sections. |
 | 9 | docker-compose local stack | `docker-compose.yml` | `docker compose config --quiet` exits 0 (valid). Services: `postgres`, `migrate`, `orchestrator`, `web`. Bind-mounts agents/schemas/prompts and the repo for HMR. |
 | 10 | Playwright suite passes | `tests/e2e-web/landing.spec.ts` | 3 passed, 1 skipped, 0 failed. Includes console-error+pageerror listeners hard-failing on any hydration warning. |
 | 11 | Computer-use screenshot pass | `tests/screenshots/landing-chrome-devtools-desktop.png` | Real Chrome via chrome-devtools-mcp at 1280×900, full-page, dark theme; zero console errors/warnings. |
@@ -36,10 +36,10 @@ cd tests/e2e-web && pnpm test
 # → 3 passed, 1 skipped (API test gates on Supabase availability)
 
 # CLI sanity:
-cargo build --release -p grokrxiv-orchestrator
-./target/release/grokrxiv-orchestrator --help
-./target/release/grokrxiv-orchestrator categories
-./target/release/grokrxiv-orchestrator doctor    # fails non-zero unless ANTHROPIC_API_KEY + DATABASE_URL set
+cargo build --release -p agenthero-orchestrator
+./target/release/agenthero-orchestrator --help
+./target/release/agenthero-orchestrator categories
+./target/release/agenthero-orchestrator doctor    # fails non-zero unless ANTHROPIC_API_KEY + DATABASE_URL set
 
 # Full stack (requires Docker + ANTHROPIC_API_KEY in .env):
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env

@@ -10,7 +10,7 @@ description = "Paper extraction DAG app adapter for the generic GrokRxiv executo
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-grokrxiv-dag-executor = { path = "../dag-executor" }
+agenthero-dag-executor = { path = "../dag-executor" }
 serde_json = { workspace = true }
 grokrxiv-ingest = { path = "../ingest" }
 grokrxiv-schemas = { path = "../schemas" }

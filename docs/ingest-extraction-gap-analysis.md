@@ -7,8 +7,8 @@ Command:
 
 ```bash
 GROKRXIV_INGEST_NO_CACHE=1 GROKRXIV_DRY_RUN_STORAGE=1 \
-  cargo run -p grokrxiv-orchestrator --features full --bin grokrxiv -- \
-  extract 2605.19178 --json
+  cargo run -p agenthero-orchestrator --features full --bin agh -- \
+  --json grokrxiv extract 2605.19178
 ```
 
 Result: PASS. The CLI artifact audit returned `review_ready=true` with no

@@ -124,13 +124,13 @@ function loadEnv(path) {
 }
 
 function loadIncludedEnv(rootDir) {
-  const envFiles = process.env.GROKRXIV_ENV_FILES ?? "";
+  const envFiles = process.env.AGENTHERO_ENV_FILES ?? "";
   for (const entry of envFiles.split(",")) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
     const path = trimmed.startsWith("/") ? trimmed : resolve(rootDir, trimmed);
     if (!existsSync(path)) {
-      throw new Error(`GROKRXIV_ENV_FILES references missing file ${path}`);
+      throw new Error(`AGENTHERO_ENV_FILES references missing file ${path}`);
     }
     loadEnv(path);
   }

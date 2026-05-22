@@ -43,3 +43,34 @@ fn app_runtime_migration_declares_generic_tables_once() {
     assert!(compact.contains("references app_runs(id)"));
     assert!(compact.contains("references dag_runs(id)"));
 }
+
+#[test]
+fn agenthero_projection_migration_renames_research_tables_to_grokrxiv() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root")
+        .to_path_buf();
+    let sql = std::fs::read_to_string(
+        root.join("migrations/20260522000003_agenthero_grokrxiv_projection_rename.sql"),
+    )
+    .expect("AgentHero projection rename migration should exist");
+    let supabase_sql = std::fs::read_to_string(
+        root.join("supabase/migrations/20260522000003_agenthero_grokrxiv_projection_rename.sql"),
+    )
+    .expect("supabase AgentHero projection rename migration should exist");
+    assert_eq!(
+        sql, supabase_sql,
+        "root and supabase migration copies must stay identical"
+    );
+
+    for rename in [
+        "research_sources rename to grokrxiv_sources",
+        "research_reviews rename to grokrxiv_reviews",
+        "research_moderation_queue rename to grokrxiv_moderation_queue",
+        "research_reviews_state_idx",
+        "grokrxiv_reviews_state_idx",
+    ] {
+        assert!(sql.contains(rename), "migration must contain `{rename}`");
+    }
+}

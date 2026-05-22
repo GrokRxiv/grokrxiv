@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use grokrxiv_dag_runtime::{
+use agenthero_dag_runtime::{
     AgentKind, DagManifest, DagNodeKind, DagRoleKey, DagTypeId, RoleId, ToolExecutorKind,
 };
 
@@ -357,7 +357,7 @@ fn repo_manifests_validate_and_expose_expected_capabilities() {
         root.join("dags/paper-extract.yaml"),
         root.join("dags/citation-validation.yaml"),
         root.join("dags/paper-revise.yaml"),
-        root.join("dags/c-to-rust.yaml"),
+        root.join("dags/c2rust.yaml"),
     ];
     let manifests = manifest_paths
         .iter()
@@ -371,18 +371,18 @@ fn repo_manifests_validate_and_expose_expected_capabilities() {
     );
     assert_eq!(
         DagManifest::compatible_dag_ids(&manifests, AgentKind::CodeGenerator),
-        vec!["paper-revise".to_string(), "c-to-rust".to_string()]
+        vec!["paper-revise".to_string(), "c2rust".to_string()]
     );
     assert_eq!(
         DagManifest::compatible_dag_ids(&manifests, AgentKind::Extractor),
-        vec!["paper-extract".to_string(), "c-to-rust".to_string()]
+        vec!["paper-extract".to_string(), "c2rust".to_string()]
     );
     assert_eq!(
         DagManifest::compatible_dag_ids(&manifests, AgentKind::Verifier),
         vec![
             "paper-review".to_string(),
             "citation-validation".to_string(),
-            "c-to-rust".to_string(),
+            "c2rust".to_string(),
         ]
     );
 }

@@ -3,10 +3,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use async_trait::async_trait;
-use grokrxiv_dag_executor::{
+use agenthero_dag_executor::{
     manifest_node_result, DagApp, NodeExecutionContext, NodeExecutionResult, NodeHandler,
 };
+use async_trait::async_trait;
 
 /// DAG app adapter for `citation-validation`.
 #[derive(Debug, Clone, Default)]

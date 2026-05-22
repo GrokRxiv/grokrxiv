@@ -112,6 +112,228 @@ pub(crate) fn revision_targets_markdown(meta: Option<&Value>) -> String {
     }
 }
 
+pub(crate) fn revision_dependency_graph_markdown(meta: Option<&Value>) -> String {
+    let Some(targets) = meta
+        .and_then(|m| m.get("revision_targets"))
+        .and_then(Value::as_array)
+    else {
+        return "- None recorded.".to_string();
+    };
+    let nodes: Vec<DependencyNode> = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(index, target)| dependency_node(index, target))
+        .collect();
+    if nodes.is_empty() {
+        return "- None recorded.".to_string();
+    }
+    let edges = dependency_edges(&nodes);
+    if edges.is_empty() {
+        return "- No cross-target dependencies detected; these revision targets can be addressed in parallel.".to_string();
+    }
+
+    let mut lines = vec!["```mermaid".to_string(), "flowchart TD".to_string()];
+    for node in &nodes {
+        lines.push(format!(
+            "  {}[\"{}\"]",
+            node.graph_id,
+            escape_mermaid_label(&node.label)
+        ));
+    }
+    for edge in &edges {
+        lines.push(format!(
+            "  {} --> {}",
+            nodes[edge.from].graph_id, nodes[edge.to].graph_id
+        ));
+    }
+    lines.push("```".to_string());
+    lines.push(String::new());
+    lines.push("Remediation order:".to_string());
+    for (index, node) in nodes.iter().enumerate() {
+        let deps: Vec<&DependencyNode> = edges
+            .iter()
+            .filter(|edge| edge.to == index)
+            .map(|edge| &nodes[edge.from])
+            .collect();
+        if deps.is_empty() {
+            lines.push(format!(
+                "- `{}` can start immediately.",
+                node.display_id.as_str()
+            ));
+        } else {
+            let dep_list = deps
+                .iter()
+                .map(|dep| format!("`{}`", dep.display_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "- `{}` should follow {dep_list}.",
+                node.display_id.as_str()
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+#[derive(Debug)]
+struct DependencyNode {
+    display_id: String,
+    graph_id: String,
+    label: String,
+    kind: String,
+    text: String,
+}
+
+#[derive(Debug)]
+struct DependencyEdge {
+    from: usize,
+    to: usize,
+}
+
+fn dependency_node(index: usize, target: &Value) -> Option<DependencyNode> {
+    let required_update = str_field(target, "required_update")?;
+    if required_update.trim().is_empty() {
+        return None;
+    }
+    let status = str_field(target, "status").unwrap_or_else(|| "open".to_string());
+    if matches!(status.as_str(), "addressed" | "superseded") {
+        return None;
+    }
+    let id = str_field(target, "id").unwrap_or_else(|| format!("target-{}", index + 1));
+    let kind = str_field(target, "target_kind").unwrap_or_else(|| "unknown".to_string());
+    let locator = str_field(target, "locator").filter(|s| !s.trim().is_empty());
+    let evidence = str_field(target, "evidence").unwrap_or_default();
+    let label = format!(
+        "{}: {}",
+        id,
+        target_heading(&kind, locator.as_deref(), &required_update)
+    );
+    let text = join_match_text([
+        required_update,
+        locator.unwrap_or_default(),
+        evidence,
+        str_field(target, "verification_check").unwrap_or_default(),
+    ])
+    .to_ascii_lowercase();
+    Some(DependencyNode {
+        display_id: id.clone(),
+        graph_id: graph_node_id(&id, index),
+        label: short_text(&label, 96),
+        kind,
+        text,
+    })
+}
+
+fn dependency_edges(nodes: &[DependencyNode]) -> Vec<DependencyEdge> {
+    let mut edges = Vec::new();
+    for (from, upstream) in nodes.iter().enumerate() {
+        for (to, target) in nodes.iter().enumerate() {
+            if from == to || !target_depends_on(target, upstream) {
+                continue;
+            }
+            edges.push(DependencyEdge { from, to });
+        }
+    }
+    edges
+}
+
+fn target_depends_on(target: &DependencyNode, upstream: &DependencyNode) -> bool {
+    match (target.kind.as_str(), upstream.kind.as_str()) {
+        ("paper_tex" | "paper_pdf", "bibliography") => mentions_any(
+            &target.text,
+            &["citation", "cite", "reference", "bibliography", "prior art"],
+        ),
+        ("paper_tex" | "paper_pdf", "code") => mentions_any(
+            &target.text,
+            &[
+                "artifact",
+                "benchmark",
+                "code",
+                "evaluation",
+                "experiment",
+                "formal",
+                "machine-checkable",
+                "model",
+                "proof",
+                "protocol",
+                "quantitative",
+                "reproducible",
+                "script",
+                "simulation",
+                "statistical",
+                "speed-up",
+                "speedup",
+            ],
+        ),
+        ("paper_tex" | "paper_pdf", "data") => mentions_any(
+            &target.text,
+            &[
+                "benchmark",
+                "corpus",
+                "csv",
+                "data",
+                "dataset",
+                "evaluation",
+                "statistical",
+                "taxonomy",
+                "validation",
+            ],
+        ),
+        ("code", "data") => mentions_any(
+            &target.text,
+            &[
+                "benchmark",
+                "bootstrap",
+                "data",
+                "dataset",
+                "evaluation",
+                "hac",
+                "pipeline",
+                "statistical",
+                "validation",
+            ],
+        ),
+        ("code", "code") => {
+            mentions_any(&upstream.text, &["entrypoint", "source code", "release"])
+                && mentions_any(
+                    &target.text,
+                    &[
+                        "benchmark",
+                        "evaluation",
+                        "pipeline",
+                        "statistical",
+                        "validation",
+                    ],
+                )
+        }
+        ("review_text", _) => true,
+        _ => false,
+    }
+}
+
+fn mentions_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn graph_node_id(id: &str, index: usize) -> String {
+    let mut out = String::from("n");
+    for ch in id.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out == "n" {
+        out.push_str(&(index + 1).to_string());
+    }
+    out
+}
+
+fn escape_mermaid_label(label: &str) -> String {
+    label.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn collect_candidates(specialists: &Value) -> Vec<TargetCandidate> {
     let root = specialists.get("specialists").unwrap_or(specialists);
     let mut out = Vec::new();
@@ -890,6 +1112,43 @@ mod tests {
         assert!(markdown.contains("  - Evidence: Bloomberg membership data"));
         assert!(markdown.contains("  - Required change: Add a frozen data snapshot"));
         assert!(!markdown.contains("[open] data at data:"));
+    }
+
+    #[test]
+    fn dependency_graph_links_upstream_artifacts_to_manuscript_targets() {
+        let meta = json!({
+            "revision_targets": [
+                {
+                    "id": "weakness-1",
+                    "weakness_index": 0,
+                    "source_role": "technical_correctness",
+                    "target_kind": "paper_tex",
+                    "source_path": "paper.tex",
+                    "locator": "Section 5.2",
+                    "evidence": "The paper makes a quantitative speedup claim with no benchmark.",
+                    "required_update": "Revise the quantitative speedup claim after adding a reproducible benchmark model.",
+                    "verification_check": "Re-review should confirm the manuscript claim matches the benchmark model.",
+                    "status": "open"
+                },
+                {
+                    "id": "weakness-2",
+                    "weakness_index": 1,
+                    "source_role": "reproducibility",
+                    "target_kind": "code",
+                    "source_path": null,
+                    "locator": "code release and execution entrypoints",
+                    "evidence": "No runnable source code is provided.",
+                    "required_update": "Release source code and entrypoints for the benchmark model.",
+                    "verification_check": "Re-review should confirm runnable source code is present.",
+                    "status": "open"
+                }
+            ]
+        });
+        let graph = revision_dependency_graph_markdown(Some(&meta));
+
+        assert!(graph.contains("```mermaid"));
+        assert!(graph.contains("nweakness_2 --> nweakness_1"));
+        assert!(graph.contains("`weakness-1` should follow `weakness-2`."));
     }
 
     #[test]

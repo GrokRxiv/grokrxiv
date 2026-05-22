@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use async_trait::async_trait;
-use grokrxiv_dag_runtime::{
+use agenthero_dag_runtime::{
     DagManifest, DagNode, DagNodeKind, DagNodeReport, DagNodeStatus, OneOrMany,
 };
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Reference to an artifact stored outside the executor's JSON value map.
@@ -149,7 +149,7 @@ pub fn manifest_node_result(app_name: &str, dag_type: &str, node: &DagNode) -> N
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DagExecutionReport {
     /// DAG type id.
-    pub dag_type: grokrxiv_dag_runtime::DagTypeId,
+    pub dag_type: agenthero_dag_runtime::DagTypeId,
     /// Overall run status.
     pub status: DagNodeStatus,
     /// Per-node report entries in execution order.

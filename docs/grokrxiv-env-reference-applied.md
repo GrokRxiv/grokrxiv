@@ -1,6 +1,6 @@
 # `grokrxiv` env-var reference — applied
 
-Env vars consumed by the orchestrator binary (`grokrxiv` / `grokrxiv-orchestrator`)
+Env vars consumed by the orchestrator binary (`grokrxiv` / `agenthero-orchestrator`)
 and the Next.js web tier. Layered config order is: CLI flags > process ENV /
 root `.env` / included `.env_*` files > TOML profile > built-in defaults. The
 CLI's `--profile <name>` and `--config <path>` flags pick the TOML file/profile
@@ -9,24 +9,24 @@ that ENV then overrides.
 ## Env Files
 
 The root `.env` is now a selector. It should normally contain only
-`GROKRXIV_ENV_FILES`, for example:
+`AGENTHERO_ENV_FILES`, for example:
 
 ```sh
-GROKRXIV_ENV_FILES=.env_core,.env_ingest,.env_extract,.env_review,.env_publish,.env_web,.env_billing,.env_dev
+AGENTHERO_ENV_FILES=.env_core,.env_ingest,.env_extract,.env_review,.env_publish,.env_web,.env_billing,.env_dev
 ```
 
 The Rust CLI/orchestrator loads `.env` first, then loads the files named in
-`GROKRXIV_ENV_FILES` relative to the root `.env` directory. Existing process
+`AGENTHERO_ENV_FILES` relative to the root `.env` directory. Existing process
 vars and root `.env` values win over included files.
 
-Docker Compose does not follow `GROKRXIV_ENV_FILES` during `${...}`
+Docker Compose does not follow `AGENTHERO_ENV_FILES` during `${...}`
 interpolation. Before `docker compose up`, export the split env files into the
 shell:
 
 ```sh
 set -a
 source .env
-for file in ${GROKRXIV_ENV_FILES//,/ }; do source "$file"; done
+for file in ${AGENTHERO_ENV_FILES//,/ }; do source "$file"; done
 set +a
 ```
 
@@ -63,20 +63,20 @@ files are gitignored.
 
 | Env                            | CLI equivalent              | Notes |
 |--------------------------------|-----------------------------|-------|
-| `GROKRXIV_RUNNER`              | `--runner`                  | `api` / `cli` / `cloud` / `local_inference` |
-| `GROKRXIV_EXTRACTOR`           | `--extractor`               | Staged ingest extraction backend: `cli` / `api`; default `cli` |
-| `GROKRXIV_SANDBOX`             | `--sandbox`                 | `none` / `container` |
-| `GROKRXIV_MODE`                | `--mode`                    | `review_only` / `review_and_revise` |
-| `GROKRXIV_CLOUD_PROVIDER`      | `--cloud-provider`          | `vercel_open_agents` / `e2b` / ... |
-| `GROKRXIV_LITELLM_URL`         | `--litellm-url`             | LiteLLM gateway base URL |
+| `AGENTHERO_RUNNER`              | `--runner`                  | `api` / `cli` / `cloud` / `local_inference` |
+| `AGENTHERO_EXTRACTOR`           | `--extractor`               | Staged ingest extraction backend: `cli` / `api`; default `cli` |
+| `AGENTHERO_SANDBOX`             | `--sandbox`                 | `none` / `container` |
+| `AGENTHERO_MODE`                | `--mode`                    | `review_only` / `review_and_revise` |
+| `AGENTHERO_CLOUD_PROVIDER`      | `--cloud-provider`          | `vercel_open_agents` / `e2b` / ... |
+| `AGENTHERO_LITELLM_URL`         | `--litellm-url`             | LiteLLM gateway base URL |
 | `OLLAMA_HOST`                  | `--ollama-host`             | Ollama direct base URL |
-| `GROKRXIV_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
+| `AGENTHERO_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
 | `GROKRXIV_FREE_REVIEW_LIMIT`   | _none_                      | Lifetime free full-review cap per logged-in user; default `3` |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
-| `GROKRXIV_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
-| `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
-| `GROKRXIV_SERVICE_TOKEN`       | _none_                      | Operator token for non-public web proxy routes; public `/api/v1` is read-only |
-| `GROKRXIV_AGENTS_DIR`          | _none_                      | Override `./agents` location |
+| `AGENTHERO_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
+| `AGENTHERO_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
+| `AGENTHERO_SERVICE_TOKEN`       | _none_                      | Operator token for non-public web proxy routes; public `/api/v1` is read-only |
+| `AGENTHERO_AGENTS_DIR`          | _none_                      | Override `./agents` location |
 | `GROKRXIV_SUMMARY_MODEL`       | `claude-haiku-4-5-20251001` | Plain-language summary model; same role as `--model-for summary=...` |
 | `GROKRXIV_TECHNICAL_CORRECTNESS_MODEL` | `claude-opus-4-7`      | Technical correctness model; same role as `--model-for technical_correctness=...` |
 | `GROKRXIV_NOVELTY_MODEL`       | `gemini-3-flash-preview`    | Novelty model; same role as `--model-for novelty=...` |
@@ -90,10 +90,10 @@ files are gitignored.
 | `GROKRXIV_CITATION_TIMEOUT_SECS` | `360`                     | CLI subprocess timeout for the citation role |
 | `GROKRXIV_META_REVIEWER_TIMEOUT_SECS` | `300`               | CLI subprocess timeout for the meta reviewer role |
 | `GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES` | `32`             | Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data |
-| `GROKRXIV_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
+| `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
 | `GROKRXIV_DOCKER_INSTALL_PANDOC` | `1`                       | docker-compose build arg. Set `0` before build to omit Pandoc from the orchestrator image |
-| `GROKRXIV_DOCKER_INSTALL_AGENT_CLIS` | `1`                    | docker-compose build arg. Installs Claude, Codex, and Gemini CLIs into the orchestrator image |
+| `GROKRXIV_DOCKER_INSTALL_AGENT_CLIS` | `1`                    | docker-compose build arg. Installs Claude, Codex, and the Gemini-family CLI (`agy`/Antigravity) into the orchestrator image |
 | `GROKRXIV_ORCHESTRATOR_PLATFORM` | `linux/arm64`             | Local Docker platform for orchestrator; set `linux/amd64` only when ARM is unavailable |
 | `GROKRXIV_TEX_ENABLE_LATEXML`  | _none_                      | Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter |
 | `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
@@ -116,13 +116,15 @@ files are gitignored.
 |------------------------------|-------|
 | `CLAUDE_CONFIG_DIR`          | Where the local `claude` CLI looks for auth (`~/.claude` typical) |
 | `CODEX_HOME`                 | Where the local `codex` CLI looks for auth (`~/.codex` typical) |
-| `GEMINI_HOME`                | Where the local `gemini` CLI looks for auth |
-| `GROKRXIV_CLI_TIMEOUT_SECS`  | Global per-call timeout in the CLI runner. Role-specific `GROKRXIV_<ROLE>_TIMEOUT_SECS` vars take precedence |
+| `AGENTHERO_ANTIGRAVITY_BIN`  | Gemini-family CLI transport. Defaults to `agy`; the active Antigravity model selection controls the actual model used by `agy --prompt` |
+| `AGENTHERO_GEMINI_BIN`       | Legacy escape hatch for the old `gemini` CLI. Leave unset for Antigravity/`agy` |
+| `GEMINI_HOME`                | Legacy `gemini` CLI auth location. Antigravity stores local state under `~/.gemini/antigravity*` |
+| `AGENTHERO_CLI_TIMEOUT_SECS`  | Global per-call timeout in the CLI runner. Role-specific `GROKRXIV_<ROLE>_TIMEOUT_SECS` vars take precedence |
 | `GROKRXIV_CITATION_REVIEW_DETERMINISTIC` | Set `1` only to force the old deterministic no-LLM citation review fallback |
-| `GROKRXIV_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
+| `AGENTHERO_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
 
 When the resolved runtime is `--runner cli --extractor cli`, GrokRxiv removes
-provider API key env vars from child `claude` / `codex` / `gemini` processes so
+provider API key env vars from child `claude` / `codex` / `agy` processes so
 those CLIs use their own logged-in local auth instead of inherited API keys.
 
 For Docker on macOS, export Claude Code's Keychain-backed OAuth item into a
@@ -136,10 +138,8 @@ chmod 600 ~/.claude/docker-claude-code-credentials.secret
 
 The orchestrator entrypoint copies that file into Claude Code's Linux
 credentials paths inside `/home/grokrxiv`. Codex uses `~/.codex/auth.json`.
-Gemini uses `~/.gemini/oauth_creds.json` plus
-`~/.gemini/google_accounts.json`; the entrypoint writes a minimal container
-`settings.json` selecting OAuth personal auth instead of copying host MCP/trust
-settings.
+Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
+`~/.gemini/oauth_creds.json` plus `~/.gemini/google_accounts.json`.
 
 ## Cloud runner
 
@@ -153,7 +153,7 @@ settings.
 
 | Env                          | Notes |
 |------------------------------|-------|
-| `GROKRXIV_LITELLM_URL`       | Preferred over `OLLAMA_HOST` |
+| `AGENTHERO_LITELLM_URL`       | Preferred over `OLLAMA_HOST` |
 | `LITELLM_URL`                | Alias accepted by `doctor` |
 | `OLLAMA_HOST`                | e.g. `http://localhost:11434` |
 
@@ -161,7 +161,7 @@ settings.
 
 | Env                          | Notes |
 |------------------------------|-------|
-| `GITHUB_TOKEN`               | PAT used by `grokrxiv app run research approve`; required for live PR creation |
+| `GITHUB_TOKEN`               | PAT used by `agh grokrxiv approve`; required for live PR creation |
 | `GROKRXIV_REVIEWS_OWNER`     | Default `GrokRxiv` |
 | `GROKRXIV_REVIEWS_REPO`      | Backward-compatible public repo alias; default `grokrxiv-reviews` |
 | `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |
@@ -171,10 +171,10 @@ settings.
 
 | Env                                  | Notes |
 |--------------------------------------|-------|
-| `NEXT_PUBLIC_SITE_URL`               | Used by `grokrxiv app run research open` |
+| `NEXT_PUBLIC_SITE_URL`               | Used by `agh grokrxiv open` |
 | `GROKRXIV_PUBLIC_URL`                | Canonical URL (defaults to `https://grokrxiv.org`) |
 | `ORCHESTRATOR_INTERNAL_URL`          | Internal orchestrator URL (default `http://localhost:8080`) |
-| `GROKRXIV_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |
+| `AGENTHERO_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |
 | `NEXT_PUBLIC_SUPABASE_URL`           | Supabase URL for read endpoints |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`      | Supabase anon key |
 | `REVALIDATE_SECRET`                  | Required on the revalidate route |

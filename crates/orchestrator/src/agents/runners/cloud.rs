@@ -1,7 +1,7 @@
 //! `CloudRunner` — durable cloud workflow.
 //!
 //! Vercel Open Agents primary; E2B alternate. Selected by
-//! `GROKRXIV_CLOUD_PROVIDER`. Cloud runners are inherently sandboxed; they
+//! `AGENTHERO_CLOUD_PROVIDER`. Cloud runners are inherently sandboxed; they
 //! ignore `SandboxPolicy`. Track E.
 //!
 //! ### Flow (Vercel)
@@ -46,7 +46,7 @@ pub struct CloudRunner {
     /// `$VERCEL_OPEN_AGENTS_URL` / `$VERCEL_OPEN_AGENTS_TOKEN`. Used by tests.
     vercel_override: Option<VercelConfig>,
     /// Optional provider override; when set the runner ignores
-    /// `$GROKRXIV_CLOUD_PROVIDER`. Used by tests.
+    /// `$AGENTHERO_CLOUD_PROVIDER`. Used by tests.
     provider_override: Option<String>,
 }
 
@@ -81,7 +81,7 @@ impl CloudRunner {
         if let Some(p) = &self.provider_override {
             return p.clone();
         }
-        std::env::var("GROKRXIV_CLOUD_PROVIDER").unwrap_or_else(|_| "vercel".into())
+        std::env::var("AGENTHERO_CLOUD_PROVIDER").unwrap_or_else(|_| "vercel".into())
     }
 
     fn poll_interval(&self) -> Duration {
@@ -95,7 +95,7 @@ impl CloudRunner {
         let base_url = std::env::var("VERCEL_OPEN_AGENTS_URL").map_err(|_| {
             anyhow::anyhow!(
                 "VERCEL_OPEN_AGENTS_URL is not set; required when \
-                 GROKRXIV_CLOUD_PROVIDER=vercel"
+                 AGENTHERO_CLOUD_PROVIDER=vercel"
             )
         })?;
         let token = std::env::var("VERCEL_OPEN_AGENTS_TOKEN").ok();
@@ -331,7 +331,7 @@ impl CloudRunner {
         // Today we surface a clean error that names the alternative so the
         // operator isn't left guessing.
         anyhow::bail!(
-            "e2b: not yet wired; use --cloud-provider vercel or set GROKRXIV_CLOUD_PROVIDER=vercel"
+            "e2b: not yet wired; use --cloud-provider vercel or set AGENTHERO_CLOUD_PROVIDER=vercel"
         )
     }
 }

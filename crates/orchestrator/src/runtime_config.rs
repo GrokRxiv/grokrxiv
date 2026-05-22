@@ -17,7 +17,7 @@ use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 /// The CLI sets this after resolving `--runner` / `--extractor`. Direct
 /// provider APIs are disabled unless the operator explicitly selected an API
 /// backend for review or extraction.
-pub const ALLOW_PROVIDER_API_ENV: &str = "GROKRXIV_ALLOW_PROVIDER_API";
+pub const ALLOW_PROVIDER_API_ENV: &str = "AGENTHERO_ALLOW_PROVIDER_API";
 
 /// Central env interpretation for direct provider API access.
 pub fn direct_provider_api_allowed_from_env() -> bool {
@@ -29,7 +29,7 @@ pub fn direct_provider_api_allowed_from_env() -> bool {
 
 /// Prefix for internal, already-resolved model overrides exported by the CLI
 /// before `AppState` builds the per-role agent registry.
-pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "GROKRXIV_MODEL_OVERRIDE_";
+pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "AGENTHERO_MODEL_OVERRIDE_";
 
 /// Which backend runs staged extraction agents during ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -328,44 +328,44 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
 }
 
 fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
-    if let Ok(v) = std::env::var("GROKRXIV_RUNNER") {
+    if let Ok(v) = std::env::var("AGENTHERO_RUNNER") {
         if let Some(r) = parse_runner(&v) {
             out.default_runner = r;
         }
     }
-    if let Ok(v) = std::env::var("GROKRXIV_EXTRACTOR") {
+    if let Ok(v) = std::env::var("AGENTHERO_EXTRACTOR") {
         out.extractor = parse_extractor(&v).ok_or_else(|| {
-            anyhow::anyhow!("invalid GROKRXIV_EXTRACTOR={v:?}; expected one of: cli, api")
+            anyhow::anyhow!("invalid AGENTHERO_EXTRACTOR={v:?}; expected one of: cli, api")
         })?;
     } else if matches!(
-        std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").as_deref(),
+        std::env::var("AGENTHERO_EXTRACTION_TOOL_FALLBACK").as_deref(),
         Ok("api")
     ) {
         out.extractor = ExtractorKind::Api;
     }
-    if let Ok(v) = std::env::var("GROKRXIV_SANDBOX") {
+    if let Ok(v) = std::env::var("AGENTHERO_SANDBOX") {
         if let Some(r) = parse_sandbox(&v) {
             out.default_sandbox = r;
         }
     }
-    if let Ok(v) = std::env::var("GROKRXIV_MODE") {
+    if let Ok(v) = std::env::var("AGENTHERO_MODE") {
         if let Some(r) = parse_mode(&v) {
             out.default_mode = r;
         }
     }
-    if let Ok(v) = std::env::var("GROKRXIV_CLOUD_PROVIDER") {
+    if let Ok(v) = std::env::var("AGENTHERO_CLOUD_PROVIDER") {
         out.cloud_provider = Some(v);
     }
-    if let Ok(v) = std::env::var("GROKRXIV_LITELLM_URL") {
+    if let Ok(v) = std::env::var("AGENTHERO_LITELLM_URL") {
         out.litellm_url = Some(v);
     }
     if let Ok(v) = std::env::var("OLLAMA_HOST") {
         out.ollama_host = Some(v);
     }
-    if let Ok(v) = std::env::var("GROKRXIV_SERVICE_TOKEN") {
+    if let Ok(v) = std::env::var("AGENTHERO_SERVICE_TOKEN") {
         out.service_token = Some(v);
     }
-    if let Ok(v) = std::env::var("GROKRXIV_MAX_COST_USD") {
+    if let Ok(v) = std::env::var("AGENTHERO_MAX_COST_USD") {
         if let Ok(parsed) = v.parse::<f64>() {
             out.max_cost_usd = Some(parsed);
         }
@@ -377,7 +377,7 @@ fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
         out.no_cache = true;
     }
     if matches!(
-        std::env::var("GROKRXIV_OFFLINE").as_deref(),
+        std::env::var("AGENTHERO_OFFLINE").as_deref(),
         Ok("1") | Ok("true")
     ) {
         out.offline = true;
@@ -500,7 +500,7 @@ pub fn role_model_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_MODEL", role_env_suffix(role))
 }
 
-/// Internal resolved model env var, e.g. `GROKRXIV_MODEL_OVERRIDE_CITATION`.
+/// Internal resolved model env var, e.g. `AGENTHERO_MODEL_OVERRIDE_CITATION`.
 pub fn role_model_override_env_var(role: &str) -> String {
     format!("{}{}", MODEL_OVERRIDE_ENV_PREFIX, role_env_suffix(role))
 }
@@ -642,16 +642,16 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_clean_extractor_env<T>(f: impl FnOnce() -> T) -> T {
-        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
-        let prev_fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
-        std::env::remove_var("GROKRXIV_EXTRACTOR");
-        std::env::remove_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK");
+        let prev = std::env::var("AGENTHERO_EXTRACTOR").ok();
+        let prev_fallback = std::env::var("AGENTHERO_EXTRACTION_TOOL_FALLBACK").ok();
+        std::env::remove_var("AGENTHERO_EXTRACTOR");
+        std::env::remove_var("AGENTHERO_EXTRACTION_TOOL_FALLBACK");
         let out = f();
         if let Some(prev) = prev {
-            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+            std::env::set_var("AGENTHERO_EXTRACTOR", prev);
         }
         if let Some(prev) = prev_fallback {
-            std::env::set_var("GROKRXIV_EXTRACTION_TOOL_FALLBACK", prev);
+            std::env::set_var("AGENTHERO_EXTRACTION_TOOL_FALLBACK", prev);
         }
         out
     }
@@ -831,8 +831,8 @@ mod tests {
     #[test]
     fn invalid_extractor_env_errors_clearly() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var("GROKRXIV_EXTRACTOR").ok();
-        std::env::set_var("GROKRXIV_EXTRACTOR", "cloud");
+        let prev = std::env::var("AGENTHERO_EXTRACTOR").ok();
+        std::env::set_var("AGENTHERO_EXTRACTOR", "cloud");
         let err = RuntimeConfig::resolve(
             &RuntimeConfigOverrides::default(),
             "default",
@@ -840,12 +840,12 @@ mod tests {
         )
         .unwrap_err();
         if let Some(prev) = prev {
-            std::env::set_var("GROKRXIV_EXTRACTOR", prev);
+            std::env::set_var("AGENTHERO_EXTRACTOR", prev);
         } else {
-            std::env::remove_var("GROKRXIV_EXTRACTOR");
+            std::env::remove_var("AGENTHERO_EXTRACTOR");
         }
         assert!(
-            err.to_string().contains("GROKRXIV_EXTRACTOR"),
+            err.to_string().contains("AGENTHERO_EXTRACTOR"),
             "unexpected error: {err}"
         );
     }

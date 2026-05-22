@@ -1,4 +1,4 @@
-id: c-to-rust
+id: c2rust
 version: 1
 accepts:
   - extractor

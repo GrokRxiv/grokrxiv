@@ -292,7 +292,7 @@ pub(super) async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Re
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts under artifacts/{review_id} — \
-             re-run `grokrxiv app run research ingest <arxiv_id>` to regenerate."
+             re-run `agenthero grokrxiv ingest <arxiv_id>` to regenerate."
         );
     }
 

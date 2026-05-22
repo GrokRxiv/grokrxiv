@@ -211,7 +211,7 @@ pub async fn run_one_paper_blocking(
         anyhow::bail!(
             "run_one_paper_blocking requires --features full (grokrxiv-ingest \
              + grokrxiv-render). Rebuild with: cargo run --release -p \
-             grokrxiv-orchestrator -- ingest <ARXIV_ID>"
+             agenthero-orchestrator -- ingest <ARXIV_ID>"
         );
     }
 }

@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use grokrxiv_dag_runtime::{AgentKind, DagExecutionMode, DagManifest, DagNodeKind};
+use agenthero_dag_runtime::{AgentKind, DagExecutionMode, DagManifest, DagNodeKind};
 
 use crate::agents::types::AgentRunnerKind;
 
@@ -150,7 +150,7 @@ pub fn dag_agent_config_refs(dag_id: &str) -> anyhow::Result<Vec<AgentConfigRef>
     Ok(refs)
 }
 
-/// Read one DAG manifest by id, honoring `GROKRXIV_DAGS_DIR`.
+/// Read one DAG manifest by id, honoring `AGENTHERO_DAGS_DIR`.
 pub fn read_dag_manifest(dag_id: &str) -> anyhow::Result<DagManifest> {
     let manifest_path = dag_manifest_path(dag_id);
     let manifest = DagManifest::from_path(&manifest_path)
@@ -317,13 +317,13 @@ pub fn resolve_declared_runtime_path(path: &str) -> PathBuf {
     }
 }
 
-/// Resolve an agent config path, honoring `GROKRXIV_AGENTS_DIR`.
+/// Resolve an agent config path, honoring `AGENTHERO_AGENTS_DIR`.
 pub fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
     let path = PathBuf::from(config);
     if path.is_absolute() {
         return path;
     }
-    if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
+    if let Some(agents_dir) = std::env::var_os("AGENTHERO_AGENTS_DIR").map(PathBuf::from) {
         if let Ok(stripped) = path.strip_prefix("agents") {
             return agents_dir.join(stripped);
         }
@@ -345,7 +345,7 @@ pub fn default_agents_dir() -> PathBuf {
 
 /// Resolve one DAG manifest path.
 pub fn dag_manifest_path(dag_id: &str) -> PathBuf {
-    if let Some(dags_dir) = std::env::var_os("GROKRXIV_DAGS_DIR").map(PathBuf::from) {
+    if let Some(dags_dir) = std::env::var_os("AGENTHERO_DAGS_DIR").map(PathBuf::from) {
         return dags_dir.join(format!("{dag_id}.yaml"));
     }
     default_repo_root()

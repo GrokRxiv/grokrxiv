@@ -1,3 +1,5 @@
+//! Compatibility binary alias for the primary `agh` CLI.
+
 use std::process::ExitCode;
 
 #[tokio::main]

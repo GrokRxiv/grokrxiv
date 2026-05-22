@@ -464,7 +464,7 @@ fn is_local_schema_ref(reference: &str) -> bool {
 mod tests {
     use super::*;
     use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
-    use grokrxiv_dag_runtime::{AgentKind, DagExecutionMode};
+    use agenthero_dag_runtime::{AgentKind, DagExecutionMode};
 
     struct EnvVarGuard {
         key: String,
@@ -550,7 +550,7 @@ mod tests {
 
         assert!(
             ProviderRegistry::from_env().is_none(),
-            "serve/preview must not register direct provider APIs when GROKRXIV_ALLOW_PROVIDER_API=0"
+            "serve/preview must not register direct provider APIs when AGENTHERO_ALLOW_PROVIDER_API=0"
         );
     }
 
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn configured_cli_role_requires_binary_at_startup() {
-        let _bin = EnvVarGuard::unset("GROKRXIV_CLAUDE_BIN".to_string());
+        let _bin = EnvVarGuard::unset("AGENTHERO_CLAUDE_BIN".to_string());
         let mut role_yaml = RoleYamlMap::new();
         role_yaml.insert(
             "summary".to_string(),

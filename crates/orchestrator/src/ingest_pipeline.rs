@@ -1166,8 +1166,8 @@ fn resolve_runner(
 }
 
 fn resolve_extractor(stage: &str) -> ExtractorKind {
-    let extractor = std::env::var("GROKRXIV_EXTRACTOR").ok();
-    let fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK").ok();
+    let extractor = std::env::var("AGENTHERO_EXTRACTOR").ok();
+    let fallback = std::env::var("AGENTHERO_EXTRACTION_TOOL_FALLBACK").ok();
     resolve_extractor_from_routing(
         stage,
         extractor.as_deref(),
@@ -1189,7 +1189,7 @@ fn resolve_extractor_from_routing(
         tracing::warn!(
             stage,
             value = %v,
-            "invalid GROKRXIV_EXTRACTOR; falling back to CLI extraction"
+            "invalid AGENTHERO_EXTRACTOR; falling back to CLI extraction"
         );
         return ExtractorKind::Cli;
     }
@@ -1322,7 +1322,7 @@ fn extraction_routing_path(stage: &str) -> std::path::PathBuf {
     if let Some(path) = extraction_routing_path_from_manifest(stage) {
         return path;
     }
-    let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
+    let agents_dir = std::env::var("AGENTHERO_AGENTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
     agents_dir.join("extraction").join(format!("{stage}.yaml"))
@@ -1330,7 +1330,7 @@ fn extraction_routing_path(stage: &str) -> std::path::PathBuf {
 
 fn extraction_routing_path_from_manifest(stage: &str) -> Option<std::path::PathBuf> {
     let role_id = extraction_manifest_role_id(stage)?;
-    let dags_dir = std::env::var("GROKRXIV_DAGS_DIR")
+    let dags_dir = std::env::var("AGENTHERO_DAGS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1345,7 +1345,7 @@ fn extraction_routing_path_from_manifest(stage: &str) -> Option<std::path::PathB
             }
         });
     let manifest_path = dags_dir.join("paper-extract.yaml");
-    let manifest = grokrxiv_dag_runtime::DagManifest::from_path(&manifest_path).ok()?;
+    let manifest = agenthero_dag_runtime::DagManifest::from_path(&manifest_path).ok()?;
     let config = manifest
         .roles
         .iter()
@@ -1355,7 +1355,7 @@ fn extraction_routing_path_from_manifest(stage: &str) -> Option<std::path::PathB
     let config_path = std::path::PathBuf::from(config);
     if config_path.is_absolute() {
         Some(config_path)
-    } else if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR")
+    } else if let Some(agents_dir) = std::env::var_os("AGENTHERO_AGENTS_DIR")
         .map(std::path::PathBuf::from)
         .and_then(|agents_dir| {
             config_path

@@ -87,7 +87,7 @@ fn detect_quota_signal(stderr: &str) -> Option<String> {
     None
 }
 
-/// Default subprocess timeout (seconds) when `GROKRXIV_CLI_TIMEOUT_SECS` is
+/// Default subprocess timeout (seconds) when `AGENTHERO_CLI_TIMEOUT_SECS` is
 /// unset.
 const DEFAULT_CLI_TIMEOUT_SECS: u64 = 360;
 
@@ -132,10 +132,14 @@ You MUST output a SINGLE JSON object that validates against the schema. NO prose
 static CLAUDE_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 static CODEX_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 static GEMINI_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
+static ANTIGRAVITY_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 
-/// Spawns local CLI binaries (`claude` / `codex` / `gemini`). The binary path
-/// for each is overridable via `GROKRXIV_CLAUDE_BIN` / `GROKRXIV_CODEX_BIN` /
-/// `GROKRXIV_GEMINI_BIN`. Default timeout 180s via `GROKRXIV_CLI_TIMEOUT_SECS`.
+/// Spawns local CLI binaries (`claude` / `codex` / `agy`; legacy `gemini` is
+/// opt-in). The binary path for each is overridable via
+/// `AGENTHERO_CLAUDE_BIN` / `AGENTHERO_CODEX_BIN` /
+/// `AGENTHERO_ANTIGRAVITY_BIN`; `AGENTHERO_GEMINI_BIN=gemini` keeps the legacy
+/// Gemini CLI shape available while it exists. Default timeout 360s via
+/// `AGENTHERO_CLI_TIMEOUT_SECS`.
 #[derive(Default)]
 pub struct CliRunner;
 
@@ -151,17 +155,48 @@ impl CliRunner {
     pub fn binary_for(&self, provider: &str) -> anyhow::Result<String> {
         match provider {
             "claude" => {
-                Ok(std::env::var("GROKRXIV_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()))
+                Ok(std::env::var("AGENTHERO_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()))
             }
             "openai" => {
-                Ok(std::env::var("GROKRXIV_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()))
+                Ok(std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()))
             }
-            "gemini" => {
-                Ok(std::env::var("GROKRXIV_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()))
-            }
+            "gemini" => Ok(std::env::var("AGENTHERO_GEMINI_BIN")
+                .or_else(|_| std::env::var("AGENTHERO_ANTIGRAVITY_BIN"))
+                .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
+                .unwrap_or_else(|_| "agy".to_string())),
+            "antigravity" => Ok(std::env::var("AGENTHERO_ANTIGRAVITY_BIN")
+                .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
+                .unwrap_or_else(|_| "agy".to_string())),
             other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliProviderBackend {
+    Claude,
+    Codex,
+    GeminiLegacy,
+    Antigravity,
+}
+
+fn cli_provider_backend(provider: &str, program: &str) -> anyhow::Result<CliProviderBackend> {
+    match provider {
+        "claude" => Ok(CliProviderBackend::Claude),
+        "openai" => Ok(CliProviderBackend::Codex),
+        "antigravity" => Ok(CliProviderBackend::Antigravity),
+        "gemini" if program_basename(program) == "gemini" => Ok(CliProviderBackend::GeminiLegacy),
+        "gemini" => Ok(CliProviderBackend::Antigravity),
+        other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
+    }
+}
+
+fn program_basename(program: &str) -> String {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_string()
 }
 
 /// Specification for the constructed subprocess. Captured separately from the
@@ -205,7 +240,9 @@ impl AgentRunner for CliRunner {
         // FP-RPT3b B4: surface the per-provider auth path at INFO level once
         // per process so the operator can audit the $0-marginal-cost claim
         // against the actual auth tier.
-        log_auth_path_once(&spec.provider);
+        let auth_program = self.binary_for(&spec.provider)?;
+        let auth_backend = cli_provider_backend(&spec.provider, &auth_program)?;
+        log_auth_path_once(&spec.provider, auth_backend);
 
         // 2. Pre-flight: ensure the Claude skill is installed on disk before
         //    spawning. Idempotent.
@@ -297,15 +334,15 @@ impl AgentRunner for CliRunner {
         ctx: &ToolCtx<'_>,
     ) -> anyhow::Result<ToolCompletion> {
         // Legacy escape valve kept for old smoke scripts. The canonical
-        // operator surface is now `GROKRXIV_EXTRACTOR=api`, which selects the
+        // operator surface is now `AGENTHERO_EXTRACTOR=api`, which selects the
         // ApiRunner before this method is called.
-        let fallback = std::env::var("GROKRXIV_EXTRACTION_TOOL_FALLBACK")
+        let fallback = std::env::var("AGENTHERO_EXTRACTION_TOOL_FALLBACK")
             .ok()
             .filter(|s| s == "api");
         if fallback.is_some() {
             if !extractor_api_selected() || !direct_provider_api_allowed() {
                 anyhow::bail!(
-                    "GROKRXIV_EXTRACTION_TOOL_FALLBACK=api refused because direct provider API \
+                    "AGENTHERO_EXTRACTION_TOOL_FALLBACK=api refused because direct provider API \
                      is disabled for this CLI run; use --extractor api to allow API billing, \
                      or --extractor cli to use local logged-in CLIs"
                 );
@@ -315,17 +352,24 @@ impl AgentRunner for CliRunner {
             return api.complete_with_tools(spec, messages, tools, ctx).await;
         }
 
-        if !matches!(spec.provider.as_str(), "claude" | "gemini") {
+        let program = self.binary_for(&spec.provider)?;
+        let backend = cli_provider_backend(&spec.provider, &program)?;
+        if !matches!(
+            backend,
+            CliProviderBackend::Claude
+                | CliProviderBackend::GeminiLegacy
+                | CliProviderBackend::Antigravity
+        ) {
             anyhow::bail!(
                 "CliRunner.complete_with_tools: provider `{}` is not supported for native \
-                 CLI extraction; set GROKRXIV_EXTRACTOR=api or --extractor api for this run",
+                 CLI extraction; set AGENTHERO_EXTRACTOR=api or --extractor api for this run",
                 spec.provider
             );
         }
 
         let started = Instant::now();
         let timeout_dur = cli_timeout_for(spec);
-        log_auth_path_once(&spec.provider);
+        log_auth_path_once(&spec.provider, backend);
 
         let prompt = render_tool_prompt(spec, messages, tools, ctx)?;
         let built = build_tool_command(self, spec, &prompt, ctx.workdir)?;
@@ -482,8 +526,9 @@ fn build_tool_command(
     workdir: &Path,
 ) -> anyhow::Result<BuiltCommand> {
     let program = runner.binary_for(&spec.provider)?;
-    let args = match spec.provider.as_str() {
-        "claude" => vec![
+    let backend = cli_provider_backend(&spec.provider, &program)?;
+    let args = match backend {
+        CliProviderBackend::Claude => vec![
             "-p".to_string(),
             "-".to_string(),
             "--model".to_string(),
@@ -491,7 +536,7 @@ fn build_tool_command(
             "--output-format".to_string(),
             "json".to_string(),
         ],
-        "gemini" => vec![
+        CliProviderBackend::GeminiLegacy => vec![
             "-p".to_string(),
             prompt.to_string(),
             "--model".to_string(),
@@ -499,7 +544,15 @@ fn build_tool_command(
             "-o".to_string(),
             "json".to_string(),
         ],
-        other => anyhow::bail!("unsupported provider for CLI tool loop: {other}"),
+        CliProviderBackend::Antigravity => vec![
+            "--prompt".to_string(),
+            prompt.to_string(),
+            "--print-timeout".to_string(),
+            format!("{}s", cli_timeout_for(spec).as_secs()),
+        ],
+        CliProviderBackend::Codex => {
+            anyhow::bail!("unsupported provider for CLI tool loop: {}", spec.provider)
+        }
     };
     Ok(BuiltCommand {
         program,
@@ -708,7 +761,7 @@ fn build_api_fallback_providers(
 
 /// Resolve the subprocess timeout. Priority order:
 ///   1. `GROKRXIV_<ROLE>_TIMEOUT_SECS` env var.
-///   2. `GROKRXIV_CLI_TIMEOUT_SECS` env var (global operator override).
+///   2. `AGENTHERO_CLI_TIMEOUT_SECS` env var (global operator override).
 ///   3. `spec.timeout_secs` from `agents/<role>.yaml`.
 ///   4. `DEFAULT_CLI_TIMEOUT_SECS`.
 /// The global env var stays available, but slow roles can now be tuned without
@@ -717,7 +770,7 @@ fn cli_timeout_for(spec: &AgentSpec) -> Duration {
     if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
         return Duration::from_secs(secs);
     }
-    if let Some(secs) = timeout_env_secs("GROKRXIV_CLI_TIMEOUT_SECS") {
+    if let Some(secs) = timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS") {
         return Duration::from_secs(secs);
     }
     if spec.timeout_secs > 0 {
@@ -746,20 +799,24 @@ fn build_command(
     prompt: &str,
 ) -> anyhow::Result<BuiltCommand> {
     let program = runner.binary_for(&spec.provider)?;
+    let backend = cli_provider_backend(&spec.provider, &program)?;
     let role_slug = role_slug(&spec.role);
 
-    // A7: for claude AND gemini, the JSON-only output contract is enforced
+    // A7: for claude and legacy gemini, the JSON-only output contract is enforced
     // via the `/grokrxiv-review` skill which both CLIs resolve from a
     // `/skill-name` prefix on the prompt body (neither CLI has a `--skill`
-    // flag). codex uses `--output-schema` instead, so no prefix there.
-    let provider_prompt = if spec.provider == "claude" || spec.provider == "gemini" {
+    // flag). codex uses `--output-schema` and agy gets a direct task prompt.
+    let provider_prompt = if matches!(
+        backend,
+        CliProviderBackend::Claude | CliProviderBackend::GeminiLegacy
+    ) {
         format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
     } else {
         prompt.to_string()
     };
 
-    let (args, schema_path) = match spec.provider.as_str() {
-        "claude" => {
+    let (args, schema_path) = match backend {
+        CliProviderBackend::Claude => {
             // Pass the prompt via stdin (`-p -`) to avoid argv-length limits.
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
@@ -774,7 +831,7 @@ fn build_command(
             ];
             (args, None)
         }
-        "openai" => {
+        CliProviderBackend::Codex => {
             // codex doesn't read prompts from stdin in `exec`; it takes a
             // positional prompt arg. We still capture it in `stdin_payload`
             // for symmetry with the other branches, but we pass it as the
@@ -792,7 +849,7 @@ fn build_command(
             ];
             (args, Some(path))
         }
-        "gemini" => {
+        CliProviderBackend::GeminiLegacy => {
             // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
             // model output in `{"session_id": ..., "response": "<inner>",
             // "stats": {...}}` — `extract_json_text` unwraps that wrapper
@@ -809,7 +866,18 @@ fn build_command(
             ];
             (args, None)
         }
-        other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
+        CliProviderBackend::Antigravity => {
+            // Antigravity replaces the Gemini CLI path. It has no model flag or
+            // JSON output flag, so the DAG prompt/schema contract is the JSON
+            // boundary and schema validation remains in AgentHero.
+            let args = vec![
+                "--prompt".to_string(),
+                provider_prompt.clone(),
+                "--print-timeout".to_string(),
+                format!("{}s", cli_timeout_for(spec).as_secs()),
+            ];
+            (args, None)
+        }
     };
 
     // `stdin_payload` is only consumed by the claude branch (which reads
@@ -848,7 +916,7 @@ async fn exec_and_capture(
     cmd.kill_on_drop(true);
     configure_process_group(&mut cmd);
     scrub_provider_api_env(&mut cmd);
-    if provider == "gemini" {
+    if provider == "gemini" && program_basename(&built.program) == "gemini" {
         // Extraction and review subprocesses run in isolated temp workdirs so
         // CLI tools cannot scan the repo root. Gemini requires an explicit
         // trust signal for headless automation in such directories.
@@ -995,7 +1063,7 @@ fn direct_provider_api_allowed() -> bool {
 }
 
 fn extractor_api_selected() -> bool {
-    matches!(std::env::var("GROKRXIV_EXTRACTOR").as_deref(), Ok("api"))
+    matches!(std::env::var("AGENTHERO_EXTRACTOR").as_deref(), Ok("api"))
 }
 
 fn scrub_provider_api_env(cmd: &mut Command) {
@@ -1234,9 +1302,9 @@ fn cleanup_schema_path(path: &Option<PathBuf>) {
 /// FP-RPT3b B4: log the per-provider auth surface exactly once per process.
 /// Best-effort: any I/O failure becomes `auth_method=unknown` rather than a
 /// hard error. Reads config files but never writes to them.
-fn log_auth_path_once(provider: &str) {
-    match provider {
-        "claude" => {
+fn log_auth_path_once(provider: &str, backend: CliProviderBackend) {
+    match backend {
+        CliProviderBackend::Claude => {
             if CLAUDE_AUTH_LOGGED.set(()).is_ok() {
                 let (auth_method, account_type, billing_type) = inspect_claude_auth();
                 tracing::info!(
@@ -1249,7 +1317,7 @@ fn log_auth_path_once(provider: &str) {
                 );
             }
         }
-        "openai" => {
+        CliProviderBackend::Codex => {
             if CODEX_AUTH_LOGGED.set(()).is_ok() {
                 let (auth_method, plan_type) = inspect_codex_auth();
                 tracing::info!(
@@ -1266,7 +1334,7 @@ fn log_auth_path_once(provider: &str) {
                 );
             }
         }
-        "gemini" => {
+        CliProviderBackend::GeminiLegacy => {
             if GEMINI_AUTH_LOGGED.set(()).is_ok() {
                 let (auth_method, account, quota_project) = inspect_gemini_auth();
                 tracing::info!(
@@ -1284,7 +1352,21 @@ fn log_auth_path_once(provider: &str) {
                 );
             }
         }
-        _ => {}
+        CliProviderBackend::Antigravity => {
+            if ANTIGRAVITY_AUTH_LOGGED.set(()).is_ok() {
+                tracing::info!(
+                    event = "cli_auth_path",
+                    provider = %provider,
+                    auth_method = "antigravity_cli",
+                    "antigravity CLI auth path"
+                );
+                tracing::info!(
+                    provider = %provider,
+                    auth_method = "antigravity_cli",
+                    "antigravity CLI uses local CLI auth; provider API key env is scrubbed"
+                );
+            }
+        }
     }
 }
 
@@ -1373,7 +1455,7 @@ fn inspect_codex_auth() -> (String, String) {
     (auth_method.into(), plan_type)
 }
 
-/// Best-effort read of the local Gemini CLI auth files. The Gemini CLI's
+/// Best-effort read of the legacy local Gemini CLI auth files. The old
 /// `/auth` flow stores OAuth credentials under `~/.gemini/oauth_creds.json`
 /// and the selected method under `~/.gemini/settings.json`; prefer those over
 /// any unrelated gcloud ADC file that may also exist on the machine. Returns
@@ -1602,21 +1684,33 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_to_binary_mapping_claude_openai_gemini() {
+    fn test_provider_to_binary_mapping_claude_openai_google_cli_backends() {
         // Clear env vars so we exercise the default-name branch.
-        std::env::remove_var("GROKRXIV_CLAUDE_BIN");
-        std::env::remove_var("GROKRXIV_CODEX_BIN");
-        std::env::remove_var("GROKRXIV_GEMINI_BIN");
+        std::env::remove_var("AGENTHERO_CLAUDE_BIN");
+        std::env::remove_var("AGENTHERO_CODEX_BIN");
+        std::env::remove_var("AGENTHERO_GEMINI_BIN");
+        std::env::remove_var("AGENTHERO_ANTIGRAVITY_BIN");
+        std::env::remove_var("AGENTHERO_AGY_BIN");
 
         let r = CliRunner::new();
         assert_eq!(r.binary_for("claude").unwrap(), "claude");
         assert_eq!(r.binary_for("openai").unwrap(), "codex");
-        assert_eq!(r.binary_for("gemini").unwrap(), "gemini");
+        assert_eq!(r.binary_for("gemini").unwrap(), "agy");
+        assert_eq!(r.binary_for("antigravity").unwrap(), "agy");
 
         // Now exercise the env override path.
-        std::env::set_var("GROKRXIV_CLAUDE_BIN", "/opt/bin/claude-test");
+        std::env::set_var("AGENTHERO_CLAUDE_BIN", "/opt/bin/claude-test");
         assert_eq!(r.binary_for("claude").unwrap(), "/opt/bin/claude-test");
-        std::env::remove_var("GROKRXIV_CLAUDE_BIN");
+        std::env::remove_var("AGENTHERO_CLAUDE_BIN");
+
+        std::env::set_var("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy-test");
+        assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/agy-test");
+        assert_eq!(r.binary_for("antigravity").unwrap(), "/opt/bin/agy-test");
+        std::env::remove_var("AGENTHERO_ANTIGRAVITY_BIN");
+
+        std::env::set_var("AGENTHERO_GEMINI_BIN", "/opt/bin/gemini");
+        assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/gemini");
+        std::env::remove_var("AGENTHERO_GEMINI_BIN");
     }
 
     #[test]
@@ -1642,7 +1736,7 @@ mod tests {
         {
             let _guard = EnvVarGuard::set(&[
                 ("GROKRXIV_CUSTOM_VALIDATOR_TIMEOUT_SECS", "77"),
-                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+                ("AGENTHERO_CLI_TIMEOUT_SECS", "42"),
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.role = "custom_validator".to_string();
@@ -1653,7 +1747,7 @@ mod tests {
         {
             let _guard = EnvVarGuard::set(&[
                 ("GROKRXIV_CUSTOM_VALIDATOR_TIMEOUT_SECS", ""),
-                ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
+                ("AGENTHERO_CLI_TIMEOUT_SECS", "42"),
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.role = "custom_validator".to_string();
@@ -1662,23 +1756,27 @@ mod tests {
         }
         // 3. global env var wins over YAML/spec.
         {
-            let _guard = EnvVarGuard::set(&[("GROKRXIV_CLI_TIMEOUT_SECS", "42")]);
+            let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "42")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
         // 4. no env var → spec wins over default.
         {
-            let _guard =
-                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
+            let _guard = EnvVarGuard::clear(&[
+                "AGENTHERO_CLI_TIMEOUT_SECS",
+                "GROKRXIV_SUMMARY_TIMEOUT_SECS",
+            ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 120;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(120));
         }
         // 5. no env var, spec=0 → falls back to default.
         {
-            let _guard =
-                EnvVarGuard::clear(&["GROKRXIV_CLI_TIMEOUT_SECS", "GROKRXIV_SUMMARY_TIMEOUT_SECS"]);
+            let _guard = EnvVarGuard::clear(&[
+                "AGENTHERO_CLI_TIMEOUT_SECS",
+                "GROKRXIV_SUMMARY_TIMEOUT_SECS",
+            ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 0;
             assert_eq!(
@@ -1841,66 +1939,89 @@ mod tests {
     #[test]
     fn test_command_construction_gemini() {
         let r = CliRunner::new();
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_GEMINI_BIN",
+            "AGENTHERO_ANTIGRAVITY_BIN",
+            "AGENTHERO_AGY_BIN",
+        ]);
         let spec = stub_spec("gemini", "gemini-2.5-pro");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
         assert!(
-            built.program.ends_with("gemini"),
-            "program should be gemini binary, got {}",
+            built.program.ends_with("agy"),
+            "program should be agy binary, got {}",
             built.program
         );
 
         let args = &built.args;
 
-        // A7 lock-in #1: `-p` carries the prompt body with the
-        // `/grokrxiv-review` skill prefix prepended. The prompt is passed as
-        // a positional argv value (gemini's headless mode reads from `-p`),
-        // not stdin — so the exact string we send is what the model sees.
+        // Antigravity print mode uses `agy --prompt <task>`, not the old
+        // Gemini `-p <task> --model <model> -o json` shape.
         let prompt_idx = args
             .iter()
-            .position(|a| a == "-p")
-            .expect("missing -p flag in gemini args");
+            .position(|a| a == "--prompt")
+            .expect("missing --prompt flag in agy args");
         let prompt_value = args
             .get(prompt_idx + 1)
-            .expect("missing -p value in gemini args");
+            .expect("missing --prompt value in agy args");
         assert!(
-            prompt_value.starts_with("/grokrxiv-review"),
-            "expected -p value to start with /grokrxiv-review, got {prompt_value:?}"
-        );
-        assert!(
-            prompt_value.contains("the prompt body"),
-            "expected -p value to contain the original prompt, got {prompt_value:?}"
+            prompt_value == "the prompt body",
+            "expected raw prompt for agy, got {prompt_value:?}"
         );
 
         assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"),
-            "missing --model <model> pair in {args:?}"
+            !args.iter().any(|arg| arg == "--model"),
+            "agy does not accept --model; model routing belongs in AgentHero config: {args:?}"
         );
         assert!(
-            !args
-                .windows(2)
-                .any(|w| w[0] == "--approval-mode" && w[1] == "plan"),
-            "gemini review JSON calls must not use plan mode; it causes prose strategy output: {args:?}"
+            !args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
+            "agy does not accept Gemini's `-o json` flag: {args:?}"
         );
 
-        // A7 lock-in #2: `-o json` is set so gemini emits the
-        // `{"session_id": ..., "response": "<inner>", "stats": {...}}`
-        // wrapper that `extract_json_text` unwraps below. Without this flag
-        // gemini emits prose and every CLI Gemini call falls into the
-        // corrective-retry path (B3).
         assert!(
-            args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
-            "missing `-o json` pair in {args:?}"
-        );
-
-        // A7 lock-in #3: stdin_payload mirrors the argv prompt (so the field
-        // can be used for debug logs of the exact text the model received).
-        assert!(
-            built.stdin_payload.starts_with("/grokrxiv-review"),
-            "stdin_payload should also carry the /grokrxiv-review prefix, got {:?}",
+            built.stdin_payload == "the prompt body",
+            "stdin_payload should mirror the agy prompt, got {:?}",
             built.stdin_payload
         );
+
+        assert!(built.schema_path.is_none());
+    }
+
+    #[test]
+    fn test_command_construction_antigravity_provider() {
+        let r = CliRunner::new();
+        let spec = stub_spec("antigravity", "gemini-3-flash-preview");
+        let built = build_command(&r, &spec, "return JSON").unwrap();
+
+        assert!(built.program.ends_with("agy"));
+        assert!(
+            built
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--prompt" && w[1] == "return JSON"),
+            "missing agy --prompt pair in {:?}",
+            built.args
+        );
+        assert!(built.schema_path.is_none());
+    }
+
+    #[test]
+    fn test_command_construction_legacy_gemini_when_explicitly_requested() {
+        let _env = EnvVarGuard::set(&[("AGENTHERO_GEMINI_BIN", "gemini")]);
+        let r = CliRunner::new();
+        let spec = stub_spec("gemini", "gemini-2.5-pro");
+        let built = build_command(&r, &spec, "the prompt body").unwrap();
+
+        assert!(built.program.ends_with("gemini"));
+        assert!(built.args.windows(2).any(|w| w[0] == "-p"));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "-o" && w[1] == "json"));
 
         assert!(built.schema_path.is_none());
     }
@@ -1968,6 +2089,13 @@ mod tests {
     fn test_extract_json_text_gemini_falls_back_when_no_wrapper() {
         let raw = "not a json wrapper";
         let got = extract_json_text("gemini", raw);
+        assert_eq!(got, raw);
+    }
+
+    #[test]
+    fn test_extract_json_text_antigravity_passes_print_output_through() {
+        let raw = "{\"summary\":\"ok\"}";
+        let got = extract_json_text("antigravity", raw);
         assert_eq!(got, raw);
     }
 
@@ -2389,7 +2517,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_and_capture_scrubs_provider_api_env_for_cli_child() {
+    async fn exec_and_capture_scrubs_provider_api_env_for_antigravity_child() {
         use std::os::unix::fs::PermissionsExt;
         let _env = EnvVarGuard::set(&[
             ("ANTHROPIC_API_KEY", "parent-anthropic-key"),
@@ -2436,14 +2564,48 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         assert_eq!(observed["google"], "");
         assert_eq!(observed["gemini"], "");
         assert_eq!(observed["marker"], "1");
+        assert_eq!(observed["gemini_trust"], "");
+    }
+
+    #[tokio::test]
+    async fn legacy_gemini_child_sets_trust_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("grokrxiv-legacy-gemini-env-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("gemini");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
+"#,
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let stdout = exec_and_capture(&built, Duration::from_secs(5), "summary", "gemini")
+            .await
+            .expect("subprocess should succeed");
+        let observed: serde_json::Value =
+            serde_json::from_str(&stdout).expect("fake script should emit JSON");
         assert_eq!(observed["gemini_trust"], "true");
     }
 
     #[tokio::test]
     async fn extraction_api_fallback_is_refused_when_direct_api_disabled() {
         let _env = EnvVarGuard::set(&[
-            ("GROKRXIV_EXTRACTION_TOOL_FALLBACK", "api"),
-            ("GROKRXIV_EXTRACTOR", "cli"),
+            ("AGENTHERO_EXTRACTION_TOOL_FALLBACK", "api"),
+            ("AGENTHERO_EXTRACTOR", "cli"),
         ]);
         let r = CliRunner::new();
         let spec = stub_spec("claude", "claude-test");
@@ -2462,7 +2624,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
             .expect_err("legacy API fallback must be fail-closed in CLI mode");
         let msg = err.to_string();
         assert!(
-            msg.contains("GROKRXIV_EXTRACTION_TOOL_FALLBACK=api refused"),
+            msg.contains("AGENTHERO_EXTRACTION_TOOL_FALLBACK=api refused"),
             "unexpected error: {msg}"
         );
         assert!(

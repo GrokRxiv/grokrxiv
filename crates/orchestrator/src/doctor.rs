@@ -65,7 +65,7 @@ pub struct DoctorReport {
     pub supabase_migrations: Option<CheckResult>,
     /// Per-API runner key check.
     pub api_runners: ApiRunnerStatus,
-    /// CLI runners (claude / codex / gemini).
+    /// CLI runners (claude / codex / Gemini-family CLI).
     pub cli_runners: CliRunnerStatus,
     /// Cloud runner connectivity.
     pub cloud_runners: CloudRunnerStatus,
@@ -103,7 +103,8 @@ pub struct CliRunnerStatus {
     pub claude: Option<CheckResult>,
     /// `codex` CLI on PATH.
     pub codex: Option<CheckResult>,
-    /// `gemini` CLI on PATH.
+    /// Gemini-family CLI on PATH. Defaults to Antigravity `agy`; legacy
+    /// `gemini` is opt-in via `AGENTHERO_GEMINI_BIN`.
     pub gemini: Option<CheckResult>,
 }
 
@@ -371,11 +372,11 @@ impl CliRunnerCheckConfig {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/home/grokrxiv"));
-        let cli_selected = std::env::var("GROKRXIV_RUNNER")
+        let cli_selected = std::env::var("AGENTHERO_RUNNER")
             .ok()
             .map(|v| v.eq_ignore_ascii_case("cli"))
             .unwrap_or(false)
-            || std::env::var("GROKRXIV_EXTRACTOR")
+            || std::env::var("AGENTHERO_EXTRACTOR")
                 .ok()
                 .map(|v| v.eq_ignore_ascii_case("cli"))
                 .unwrap_or(false);
@@ -403,7 +404,7 @@ fn check_cli_runners_with(report: &mut DoctorReport, config: &CliRunnerCheckConf
             || config.required_bins.contains(name)
             || config.required_bins.contains(&binary);
         *slot = Some(match binary_available_in_path(&binary, &config.path) {
-            Some(p) => match cli_auth_status(name, &config.home) {
+            Some(p) => match cli_auth_status(name, &binary, &config.home) {
                 Some(auth) => CheckResult::ok(format!("found {p}; auth {auth}")),
                 None if config.require_auth => CheckResult::fail(format!(
                     "found {p}; auth missing in {}",
@@ -431,7 +432,7 @@ fn which_in_path(bin: &str, path: &OsString) -> Option<String> {
 
 /// Resolve the review-agent YAML directory using the same default as `AppState`.
 pub(crate) fn review_agents_dir_from_env() -> PathBuf {
-    std::env::var("GROKRXIV_AGENTS_DIR")
+    std::env::var("AGENTHERO_AGENTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -499,9 +500,12 @@ pub(crate) fn cli_binary_for_provider(provider: &str) -> anyhow::Result<String> 
 
 fn cli_binary_for_cli_name(name: &str) -> String {
     match name {
-        "claude" => std::env::var("GROKRXIV_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
-        "codex" => std::env::var("GROKRXIV_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()),
-        "gemini" => std::env::var("GROKRXIV_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()),
+        "claude" => std::env::var("AGENTHERO_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
+        "codex" => std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()),
+        "gemini" => std::env::var("AGENTHERO_GEMINI_BIN")
+            .or_else(|_| std::env::var("AGENTHERO_ANTIGRAVITY_BIN"))
+            .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
+            .unwrap_or_else(|_| "agy".to_string()),
         other => other.to_string(),
     }
 }
@@ -515,7 +519,7 @@ pub(crate) fn binary_available_in_path(bin: &str, path: &OsString) -> Option<Str
     which_in_path(bin, path)
 }
 
-fn cli_auth_status(name: &str, home: &Path) -> Option<&'static str> {
+fn cli_auth_status(name: &str, binary: &str, home: &Path) -> Option<&'static str> {
     match name {
         "claude" => {
             if home.join(".claude.json").is_file() {
@@ -531,13 +535,32 @@ fn cli_auth_status(name: &str, home: &Path) -> Option<&'static str> {
             .join("auth.json")
             .is_file()
             .then_some("present (.codex/auth.json)"),
-        "gemini" => home
+        "gemini" if cli_binary_basename(binary) == "gemini" => home
             .join(".gemini")
             .join("oauth_creds.json")
             .is_file()
             .then_some("present (.gemini/oauth_creds.json)"),
+        "gemini" => home
+            .join(".gemini")
+            .join("antigravity")
+            .join("antigravity_state.pbtxt")
+            .is_file()
+            .then_some("present (.gemini/antigravity/antigravity_state.pbtxt)")
+            .or_else(|| {
+                home.join(".gemini")
+                    .join("antigravity-cli")
+                    .exists()
+                    .then_some("present (.gemini/antigravity-cli)")
+            }),
         _ => None,
     }
+}
+
+fn cli_binary_basename(binary: &str) -> &str {
+    Path::new(binary)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(binary)
 }
 
 async fn check_cloud_runners(report: &mut DoctorReport) {
@@ -573,13 +596,13 @@ async fn check_local_inference(report: &mut DoctorReport) {
         Err(_) => return,
     };
     report.local_inference.litellm = Some(
-        match std::env::var("GROKRXIV_LITELLM_URL").or_else(|_| std::env::var("LITELLM_URL")) {
+        match std::env::var("AGENTHERO_LITELLM_URL").or_else(|_| std::env::var("LITELLM_URL")) {
             Ok(url) => match client.get(format!("{url}/health")).send().await {
                 Ok(r) if r.status().is_success() => CheckResult::ok(format!("{url} reachable")),
                 Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
                 Err(e) => CheckResult::fail(format!("{url} unreachable: {e}")),
             },
-            Err(_) => CheckResult::skipped("GROKRXIV_LITELLM_URL unset"),
+            Err(_) => CheckResult::skipped("AGENTHERO_LITELLM_URL unset"),
         },
     );
     report.local_inference.ollama = Some(match std::env::var("OLLAMA_HOST") {
@@ -818,7 +841,7 @@ struct ExtractionAgentConfig {
 
 impl ExtractionAgentConfig {
     fn from_env() -> Self {
-        let agents_dir = std::env::var("GROKRXIV_AGENTS_DIR")
+        let agents_dir = std::env::var("AGENTHERO_AGENTS_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
         Self { agents_dir }
@@ -826,7 +849,7 @@ impl ExtractionAgentConfig {
 }
 
 /// Per-extraction-agent YAML config parseability. Reads
-/// `extraction/<role>.yaml` from `GROKRXIV_AGENTS_DIR` or the default
+/// `extraction/<role>.yaml` from `AGENTHERO_AGENTS_DIR` or the default
 /// `agents/` directory, matching the runtime extraction loader. Per-role
 /// missing files map to `skipped` (Wave 2 may not have shipped one for every
 /// role at audit time).
@@ -978,7 +1001,7 @@ mod tests {
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&bin_dir).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        for name in ["claude", "codex", "gemini"] {
+        for name in ["claude", "codex", "agy", "gemini"] {
             let bin = fake_bin(&tmp, name, &format!("echo '{name} ok'"));
             std::fs::rename(&bin, bin_dir.join(name)).unwrap();
         }
@@ -987,6 +1010,14 @@ mod tests {
         std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
         std::fs::write(home.join(".gemini").join("oauth_creds.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".gemini").join("antigravity")).unwrap();
+        std::fs::write(
+            home.join(".gemini")
+                .join("antigravity")
+                .join("antigravity_state.pbtxt"),
+            "account: \"test\"",
+        )
+        .unwrap();
 
         let config = CliRunnerCheckConfig {
             path: std::env::join_paths([bin_dir.as_path()]).unwrap(),

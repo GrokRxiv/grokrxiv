@@ -1,20 +1,20 @@
 [package]
-name = "grokrxiv-orchestrator"
+name = "agenthero-orchestrator"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "axum HTTP API + tokio supervisor for the GrokRxiv review pipeline."
-default-run = "grokrxiv-orchestrator"
+description = "AgentHero DAGOps runtime CLI, HTTP API, and Tokio supervisor."
+default-run = "agh"
 
 [[bin]]
-name = "grokrxiv-orchestrator"
+name = "agh"
 path = "src/main.rs"
 
 [[bin]]
-name = "grokrxiv"
-path = "src/main.rs"
+name = "agenthero"
+path = "src/bin/agenthero.rs"
 
 [lib]
 path = "src/lib.rs"
@@ -55,15 +55,15 @@ pdfium-render = { version = "0.8", default-features = false, features = ["pdfium
 image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { path = "../schemas" }
-grokrxiv-dag-app-c-to-rust = { path = "../dag-app-c-to-rust" }
+agenthero-dag-app-c2rust = { path = "../dag-app-c2rust" }
 grokrxiv-dag-app-citation-validation = { path = "../dag-app-citation-validation" }
 grokrxiv-dag-app-paper-extract = { path = "../dag-app-paper-extract" }
 grokrxiv-dag-app-paper-ingest = { path = "../dag-app-paper-ingest" }
 grokrxiv-dag-app-paper-publish = { path = "../dag-app-paper-publish" }
 grokrxiv-dag-app-paper-review = { path = "../dag-app-paper-review" }
 grokrxiv-dag-app-paper-revise = { path = "../dag-app-paper-revise" }
-grokrxiv-dag-executor = { path = "../dag-executor" }
-grokrxiv-dag-runtime = { path = "../dag-runtime" }
+agenthero-dag-executor = { path = "../dag-executor" }
+agenthero-dag-runtime = { path = "../dag-runtime" }
 grokrxiv-llm-adapter = { path = "../llm-adapter" }
 tempfile = "3"
 tar = "0.4"

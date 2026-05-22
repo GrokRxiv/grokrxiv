@@ -10,7 +10,7 @@
 //!    `split_sections`; bibliography via `extract_bibliography`).
 //! 4. Runs a single meta-review pass. The default path uses the local CLI
 //!    runner, so homepage samples do not require provider API keys. Direct
-//!    provider API preview remains opt-in through `GROKRXIV_ALLOW_PROVIDER_API=1`.
+//!    provider API preview remains opt-in through `AGENTHERO_ALLOW_PROVIDER_API=1`.
 //! 5. Renders an HTML + Markdown + LaTeX + zip bundle via `grokrxiv-render`.
 //! 6. Persists the result to the `uploads` table only (not `reviews` /
 //!    `papers`) when a DB pool is configured.

@@ -1,6 +1,6 @@
 # GrokRxiv layered config example. Drop this at `~/.grokrxiv/config.toml`
 # (or pass `--config <path>` to override) and select a profile with
-# `grokrxiv --profile <name> ...`. The default profile is "default".
+# `agenthero --profile <name> ...`. The default profile is "default".
 #
 # Resolution order (later wins): defaults → this file → env vars → CLI flags.
 

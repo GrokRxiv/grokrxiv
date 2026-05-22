@@ -1,6 +1,6 @@
 //! FP-RPT3d MVP — operator-locked supervisor-as-parent-process runtime.
 //!
-//! `grokrxiv` is the parent process. Agent CLIs (claude / codex / gemini /
+//! `agh` is the parent process. Agent CLIs (claude / codex / agy /
 //! local) are child workers. Every agent call goes through the typed
 //! [`AgentRunner`] interface in this module: the supervisor prepares a
 //! read-only `input/` directory plus a writable `output/` directory, spawns
@@ -10,12 +10,12 @@
 //! Hard rules (locked, do not relax):
 //! - Agents are leaves. They never spawn other agents.
 //! - Agents may not choose paths; the supervisor picks them.
-//! - Only `grokrxiv` validates and persists outputs.
+//! - Only `agh` validates and persists outputs.
 //!
-//! This module is intentionally separate from the legacy
-//! `crates/orchestrator/src/agents/{traits,runners}` code, which still
-//! drives the 6-agent review DAG used by `grokrxiv app run research ingest`. The two paths
-//! coexist while the MVP stabilises.
+//! This module is intentionally separate from the manifest-driven
+//! `crates/orchestrator/src/agents/{traits,runners}` code. It remains an
+//! older supervisor-runner boundary while AgentHero DAG apps migrate fully to
+//! the generic executor path.
 
 use std::path::PathBuf;
 

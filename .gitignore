@@ -55,6 +55,11 @@ artifacts/
 .claude/.session/
 .claude/projects/
 
+# Local Antigravity CLI workspace/session state
+.antigravity/
+.antigravitycli/
+.antigravity*
+
 # FP6 — research site + HTML build outputs (sources are .md, .html is generated)
 research/_template/node_modules/
 research/site/.next/

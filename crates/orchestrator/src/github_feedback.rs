@@ -37,9 +37,16 @@ pub fn gate_failure_from_meta(
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
     let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
+    let revision_dependency_graph =
+        crate::revision_targets::revision_dependency_graph_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
-    let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
+    let details_md = gate_details_markdown(
+        &summary,
+        meta_summary,
+        &weaknesses,
+        &revision_targets,
+        &revision_dependency_graph,
+        &questions,
     );
     GateFailureArtifact {
         gate: "meta_reviewer_recommendation".to_string(),
@@ -50,7 +57,7 @@ pub fn gate_failure_from_meta(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
+        action_required_md: correction_loop_instructions(review_id),
     }
 }
 
@@ -71,9 +78,16 @@ pub(crate) fn gate_failure_from_publication_gate(
         .unwrap_or("No meta-review summary was recorded.");
     let weaknesses = markdown_list(meta.and_then(|m| m.get("weaknesses")));
     let revision_targets = crate::revision_targets::revision_targets_markdown(meta);
+    let revision_dependency_graph =
+        crate::revision_targets::revision_dependency_graph_markdown(meta);
     let questions = markdown_list(meta.and_then(|m| m.get("questions")));
-    let details_md = format!(
-        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}\n\n## Questions\n\n{questions}"
+    let details_md = gate_details_markdown(
+        &summary,
+        meta_summary,
+        &weaknesses,
+        &revision_targets,
+        &revision_dependency_graph,
+        &questions,
     );
     GateFailureArtifact {
         gate: "publication_gate".to_string(),
@@ -84,25 +98,16 @@ pub(crate) fn gate_failure_from_publication_gate(
         },
         summary,
         details_md,
-        action_required_md: correction_loop_instructions_with_targets(review_id, &revision_targets),
+        action_required_md: correction_loop_instructions(review_id),
     }
 }
 
 /// Instructions shown in the public review details and GitHub feedback.
 pub fn correction_loop_instructions(review_id: Uuid) -> String {
-    correction_loop_instructions_with_targets(review_id, "- None recorded.")
-}
-
-fn correction_loop_instructions_with_targets(review_id: Uuid, revision_targets: &str) -> String {
     let public_url =
         std::env::var("GROKRXIV_PUBLIC_URL").unwrap_or_else(|_| "https://grokrxiv.org".into());
-    let target_block = if revision_targets.trim() == "- None recorded." {
-        String::new()
-    } else {
-        format!("## Targeted Revisions\n\n{revision_targets}\n\n")
-    };
     format!(
-        "{target_block}## How to Resubmit Corrections\n\n\
+        "## How to Resubmit Corrections\n\n\
          1. Apply the requested fixes to the paper source on this PR branch.\n\
          2. Commit and push the correction back to GitHub:\n\n\
          ```bash\n\
@@ -115,6 +120,24 @@ fn correction_loop_instructions_with_targets(review_id: Uuid, revision_targets: 
          4. GrokRxiv updates the same GitHub feedback comment with pass/fail and the reason.\n\
          5. Continue this loop until the automated gate reports that the review passed.\n\n\
          Review details: {public_url}/reviews/{review_id}"
+    )
+}
+
+fn gate_details_markdown(
+    summary: &str,
+    meta_summary: &str,
+    weaknesses: &str,
+    revision_targets: &str,
+    revision_dependency_graph: &str,
+    questions: &str,
+) -> String {
+    let dependency_section = if revision_dependency_graph.trim() == "- None recorded." {
+        String::new()
+    } else {
+        format!("\n\n## Revision Dependency Graph\n\n{revision_dependency_graph}")
+    };
+    format!(
+        "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}{dependency_section}\n\n## Questions\n\n{questions}"
     )
 }
 
@@ -280,5 +303,52 @@ mod tests {
             body.contains("Agent output verification and publication gating are separate checks")
         );
         assert!(body.contains("does not mean the paper was accepted"));
+    }
+
+    #[test]
+    fn gate_failure_comment_lists_targeted_revisions_once_with_dependency_graph() {
+        let gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+        let meta = serde_json::json!({
+            "summary": "Needs a reproducible artifact before the quantitative claim can stand.",
+            "weaknesses": ["The manuscript makes a quantitative speedup claim without a supporting model."],
+            "questions": ["Can the authors provide the model?"],
+            "revision_targets": [
+                {
+                    "id": "weakness-1",
+                    "weakness_index": 0,
+                    "source_role": "technical_correctness",
+                    "target_kind": "paper_tex",
+                    "source_path": "paper.tex",
+                    "locator": "Section 5.2",
+                    "evidence": "The quantitative speedup claim has no benchmark.",
+                    "required_update": "Revise the quantitative speedup claim after adding a reproducible benchmark model.",
+                    "verification_check": "Re-review should confirm the manuscript claim matches the benchmark.",
+                    "status": "open"
+                },
+                {
+                    "id": "weakness-2",
+                    "weakness_index": 1,
+                    "source_role": "reproducibility",
+                    "target_kind": "code",
+                    "source_path": null,
+                    "locator": "code release and execution entrypoints",
+                    "evidence": "No runnable model is provided.",
+                    "required_update": "Release source code and entrypoints for the benchmark model.",
+                    "verification_check": "Re-review should confirm runnable source code is present.",
+                    "status": "open"
+                }
+            ]
+        });
+        let failure = gate_failure_from_publication_gate(Uuid::nil(), &gate, Some(&meta));
+        let body = gate_failure_comment_body(Uuid::nil(), "major_revision", &failure);
+
+        assert_eq!(body.matches("## Targeted Revisions").count(), 1);
+        assert!(body.contains("## Revision Dependency Graph"));
+        assert!(body.contains("nweakness_2 --> nweakness_1"));
+        assert!(!failure.action_required_md.contains("## Targeted Revisions"));
     }
 }

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use grokrxiv_orchestrator::supervisor_runner::{
+use agenthero_orchestrator::supervisor_runner::{
     supervisor::{RunnerConfigPartial, Supervisor},
     AgentRunner, ClaudeRunner, LocalCommandRunner, RunStatus, Stage,
 };
@@ -265,7 +265,7 @@ async fn local_runner_input_dir_is_readonly() {
 }
 
 /// Live smoke against the real `claude` CLI. Skipped by default — run
-/// with `cargo test -p grokrxiv-orchestrator --test supervisor_runner_mvp -- --ignored`
+/// with `cargo test -p agenthero-orchestrator --test supervisor_runner_mvp -- --ignored`
 /// when Max-auth `claude` is on PATH.
 #[tokio::test]
 #[ignore]

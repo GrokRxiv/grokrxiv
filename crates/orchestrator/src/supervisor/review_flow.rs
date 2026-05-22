@@ -18,7 +18,7 @@ use super::verification::{
 use super::{MAX_RETRIES, MIN_SPECIALIST_QUORUM};
 use crate::cli_status::StatusMark;
 use crate::state::AppState;
-use grokrxiv_dag_runtime::{DagManifest, DagNodeKind};
+use agenthero_dag_runtime::{DagManifest, DagNodeKind};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -120,19 +120,19 @@ pub(super) async fn run_review_dag_from_state_with_context(
 
 // CLI runner overrides are passed through environment variables before review dispatch.
 // Format:
-//   GROKRXIV_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
-//   GROKRXIV_RUNNER_OVERRIDE_<ROLE> = same enum, per role
+//   AGENTHERO_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
+//   AGENTHERO_RUNNER_OVERRIDE_<ROLE> = same enum, per role
 #[cfg(feature = "grokrxiv-ingest")]
 pub(super) fn review_runner_override_for(role: &str) -> Option<crate::agents::AgentRunnerKind> {
     use crate::agents::AgentRunnerKind;
 
     let per_role_var = format!(
-        "GROKRXIV_RUNNER_OVERRIDE_{}",
+        "AGENTHERO_RUNNER_OVERRIDE_{}",
         crate::runtime_config::role_env_suffix(role)
     );
     std::env::var(&per_role_var)
         .ok()
-        .or_else(|| std::env::var("GROKRXIV_RUNNER_OVERRIDE").ok())
+        .or_else(|| std::env::var("AGENTHERO_RUNNER_OVERRIDE").ok())
         .and_then(|s| match s.as_str() {
             "api" => Some(AgentRunnerKind::Api),
             "cli" => Some(AgentRunnerKind::Cli),
@@ -335,7 +335,7 @@ fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
 
 #[cfg(feature = "grokrxiv-ingest")]
 fn review_dag_manifest_path() -> PathBuf {
-    if let Some(dags_dir) = std::env::var_os("GROKRXIV_DAGS_DIR").map(PathBuf::from) {
+    if let Some(dags_dir) = std::env::var_os("AGENTHERO_DAGS_DIR").map(PathBuf::from) {
         return dags_dir.join("paper-review.yaml");
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -436,7 +436,7 @@ edges:
 "#,
         )
         .expect("write manifest");
-        let _guard = EnvGuard::set("GROKRXIV_DAGS_DIR", dir.path().to_str().unwrap());
+        let _guard = EnvGuard::set("AGENTHERO_DAGS_DIR", dir.path().to_str().unwrap());
 
         let cfg = load_review_dag_runtime_config().expect("runtime config");
 
@@ -1143,7 +1143,7 @@ pub(super) async fn run_review_dag_inner_with_context(
     // to `system_failed` above and must not remain actionable in admin review.
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     crate::cli_status::emit_stage(6, 6, "Moderation", StatusMark::Ok, "awaiting moderation");
-    crate::cli_status::emit(format!("next: grokrxiv app run research show {review_id}"));
+    crate::cli_status::emit(format!("next: agenthero grokrxiv show {review_id}"));
     Ok(review_id)
 }
 

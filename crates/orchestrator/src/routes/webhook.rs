@@ -906,7 +906,7 @@ pub(crate) async fn finalize_published_review(
 
 /// Fire-and-forget POST to `WEB_REVALIDATE_URL` so the Next.js ISR cache flips
 /// the affected `/reviews/<id>` and `/` pages immediately. Used by both the
-/// merge webhook and `grokrxiv app run research approve` after `pr_open → published`.
+/// merge webhook and `agenthero grokrxiv approve` after `pr_open → published`.
 /// Silent no-op when the env isn't
 /// configured — never an error path for the caller.
 pub fn spawn_revalidate(state: &crate::state::AppState, review_id: uuid::Uuid) {

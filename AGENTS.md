@@ -1,4 +1,4 @@
-# GrokRxiv Agent Instructions
+# AgentHero / GrokRxiv Agent Instructions
 
 ## Plan Run Workflow
 
@@ -14,10 +14,16 @@ work exists.
 
 ## Orchestration Model
 
-Rust owns orchestration. Agent chat sessions, CLI tools, Rust-native functions,
-non-Rust programs, and future remote service nodes are workers behind
-Rust-controlled DAG nodes. The research review/revise pipeline is the first DAG
-app, not the orchestration contract itself.
+AgentHero is the Rust/Tokio DAGOps control plane. Tokio is the async substrate
+for local tasks, timers, networking, cancellation, timeouts, and worker I/O; it
+is not the orchestration abstraction. The durable product abstractions are
+`DagApp`, node, edge, artifact, capability, execution context, verifier, and
+policy.
+
+Agent chat sessions, CLI tools, Rust-native functions, non-Rust programs, cloud
+workers, and future remote service nodes are workers behind Rust-controlled DAG
+nodes. The GrokRxiv review/revise pipeline is the first DAG app proving the
+abstraction, not the orchestration contract itself.
 
 - DAG manifests live in `dags/*.yaml`.
 - Generic execution contracts live in `crates/dag-executor`.
@@ -53,26 +59,29 @@ Manifest rules:
   the orchestrator DAG app registry; do not add a one-off supervisor branch.
 - The scheduler/executor may place work on local Tokio tasks, local CLI
   subprocesses, Rust handlers, cloud runners, local inference, or future remote
-  GrokRxiv service nodes. DAG apps must not depend on a paper-review-specific
+  AgentHero worker nodes. DAG apps must not depend on a paper-review-specific
   supervisor branch.
+- Distributed runtime work belongs in the AgentHero control plane: worker
+  registry, node assignment, artifact/state store, retries/checkpoints,
+  capability permissions, logs/tracing, and remote execution protocol.
 
 ## Product App CLI
 
 The operator CLI is app-scoped:
 
 ```bash
-grokrxiv app list
-grokrxiv app show research
-grokrxiv app run research extract 2605.17307
-grokrxiv app run research review 2605.17307 --type arxiv
-grokrxiv app run research approve <REVIEW_ID>
-grokrxiv app run c-to-rust translate --input src/main.c
+agh apps
+agh apps show grokrxiv
+agh grokrxiv extract 2605.17307
+agh grokrxiv review 2605.17307 --type arxiv
+agh grokrxiv approve <REVIEW_ID>
+agh c2rust migrate --input src/main.c
 ```
 
-Do not add new root commands such as `grokrxiv review` or `grokrxiv approve`.
+Do not add new unscoped root commands such as `agh review` or `agh approve`.
 Add an app action in `crates/orchestrator/src/dag_apps.rs`, route it through
 the generic app runner/adapter, and keep the action mapped to a DAG type. Root
-commands are reserved for platform operations such as `app`, `serve`, `doctor`,
+commands are reserved for platform operations such as `apps`, `serve`, `doctor`,
 `config`, `dag`, `agent`, and `jobs`.
 
 ## Runtime Database Shape
@@ -89,8 +98,8 @@ Every DAG does **not** get its own scheduler table set. Runtime state is shared:
   and input hash.
 
 DAG apps may have projection/business tables when the product needs queryable
-domain state. The research app uses `research_sources`, `research_reviews`, and
-`research_moderation_queue` projections, but those tables are not the generic
+domain state. The GrokRxiv app uses `grokrxiv_sources`, `grokrxiv_reviews`, and
+`grokrxiv_moderation_queue` projections, but those tables are not the generic
 executor contract.
 
 ## LLM-Readable Contracts
@@ -113,6 +122,37 @@ Rules:
 - Prefer small focused files and directories over dumping more orchestration
   logic into `cli.rs` or one monolithic agents file.
 
+## Strict JSON Agent Output
+
+When an AgentHero prompt includes an output schema, the schema is the contract:
+
+- Required properties are required.
+- Enum values use the exact listed strings and casing.
+- Arrays of objects contain objects, not free-form strings.
+- Numeric fields are numbers, not strings.
+- Closed schemas do not allow undeclared fields.
+- Nullable fields must still appear and use `null` when no value applies.
+
+Review roles have these top-level output shapes:
+
+| Role | Top-level required fields |
+|------|---------------------------|
+| `summary` | `tldr`, `plain_language_summary`, `key_contributions[]`, `audience` |
+| `technical_correctness` | `claims[]`, `overall_correctness`, `confidence` |
+| `novelty` | `novelty_score`, `related_work[]`, `missing_prior_art[]`, `verdict`, `confidence` |
+| `reproducibility` | `code_availability`, `code_url`, `data_availability`, `data_url`, `environment`, `concerns[]`, `reproducibility_score`, `confidence` |
+| `citation` | `entries[]`, `missing_references[]`, `summary`, `confidence` |
+| `meta_reviewer` | `summary`, `strengths[]`, `weaknesses[]`, `questions[]`, `recommendation`, `confidence` |
+
+For `novelty`, each `related_work[]` item is exactly
+`{citation_key, title, relation, delta}`.
+
+For `citation`, each `entries[]` item is exactly
+`{citation, exists, resolved_doi, resolved_url, relevance, notes, explanation}`.
+
+The orchestrator validates outputs and may issue one corrective retry. Agents
+must emit raw JSON; the first character of stdout is `{`.
+
 ## Adding A Rust Tool
 
 1. Add or scaffold the manifest tool:
@@ -120,19 +160,19 @@ Rules:
 2. Register the handler in `crates/orchestrator/src/dag_tools.rs`.
 3. Implement the function in the owning Rust module.
 4. Add tests for the function and manifest validation.
-5. Run `grokrxiv dag validate --dag-type <dag>`.
+5. Run `agh validate --dag-type <dag>`.
 
 ## Adding A DAG App
 
 1. Add `dags/<dag-type>.yaml`.
-2. Add `crates/dag-app-<dag-type>/` implementing `grokrxiv_dag_executor::DagApp`.
+2. Add `crates/dag-app-<dag-type>/` implementing `agenthero_dag_executor::DagApp`.
 3. Add the crate to the workspace.
 4. Register the app in `crates/orchestrator/src/dag_apps.rs`.
 5. Register the product app/action surface in `crates/orchestrator/src/dag_apps.rs`
-   if it should be callable through `grokrxiv app run`.
+   if it should be callable through `agh <app> <action>`.
 6. Add a smoke test that runs the manifest through
-   `grokrxiv_dag_executor::DagExecutor`.
-7. Run `grokrxiv dag run --dag-type <dag-type> --json`.
+   `agenthero_dag_executor::DagExecutor`.
+7. Run `agh dag run --dag-type <dag-type> --json`.
 
 ## Adding A CLI Tool
 
@@ -158,13 +198,13 @@ Rules:
 Minimum checks for DAG/tool work:
 
 ```bash
-cargo test -p grokrxiv-dag-runtime --test manifest
-cargo test -p grokrxiv-dag-executor
-cargo test -p grokrxiv-orchestrator --test dag_app_registry
-cargo test -p grokrxiv-orchestrator --lib --features full -- --test-threads=1
-cargo check -p grokrxiv-ingest -p grokrxiv-dag-runtime -p grokrxiv-storage -p grokrxiv-orchestrator --features full
-cargo run -p grokrxiv-orchestrator --features full --bin grokrxiv -- dag validate --dag-type <dag>
-cargo run -p grokrxiv-orchestrator --features full --bin grokrxiv -- --json dag run --dag-type <dag>
+cargo test -p agenthero-dag-runtime --test manifest
+cargo test -p agenthero-dag-executor
+cargo test -p agenthero-orchestrator --test dag_app_registry
+cargo test -p agenthero-orchestrator --lib --features full -- --test-threads=1
+cargo check -p grokrxiv-ingest -p agenthero-dag-runtime -p grokrxiv-storage -p agenthero-orchestrator --features full
+cargo run -p agenthero-orchestrator --features full --bin agh -- validate --dag-type <dag>
+cargo run -p agenthero-orchestrator --features full --bin agh -- --json dag run --dag-type <dag>
 ```
 
 Update or remove tests that encode obsolete fixed-pipeline assumptions. Keep

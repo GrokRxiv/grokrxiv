@@ -50,7 +50,7 @@ pub struct DeterministicIngest {
 /// or PDF (fallback) → [`DeterministicIngest`].
 ///
 /// Stage 3+ extraction agents and Stage 8 persistence live in the
-/// orchestrator crate (see `grokrxiv_orchestrator::ingest_pipeline`).
+/// orchestrator crate (see `agenthero_orchestrator::ingest_pipeline`).
 pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
     let meta = fetch_metadata(arxiv_id).await?;
     let primary = meta.primary_category();

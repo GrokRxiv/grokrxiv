@@ -486,7 +486,7 @@ pub async fn mark_submission_failed(
 }
 
 /// Phase 3: fetch the latest moderator `--notes` recorded via
-/// `grokrxiv app run research request-changes` for any prior review of this paper. The
+/// `agenthero grokrxiv request-changes` for any prior review of this paper. The
 /// supervisor surfaces these notes to specialist + meta prompts on the next
 /// review pass so the agents react to operator feedback. Returns `None` when
 /// the paper has no `changes_requested` history.
@@ -1749,7 +1749,7 @@ mod tests {
     /// Gated on `DATABASE_URL` so cargo test in CI without a DB doesn't
     /// fail. Run locally via:
     ///   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-    ///     cargo test -p grokrxiv-orchestrator --features full --lib \
+    ///     cargo test -p agenthero-orchestrator --features full --lib \
     ///     -- supersede_marks_prior_moderation_queue
     #[tokio::test]
     async fn supersede_marks_prior_moderation_queue_row_as_superseded() {

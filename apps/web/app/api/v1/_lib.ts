@@ -1,6 +1,6 @@
 // Shared helpers for legacy operator write endpoints.
 //
-// These endpoints require a bearer token (`GROKRXIV_SERVICE_TOKEN`) and forward
+// These endpoints require a bearer token (`AGENTHERO_SERVICE_TOKEN`) and forward
 // requests to the orchestrator's internal HTTP API. Read endpoints
 // (e.g. /api/v1/reviews) talk to Supabase directly and don't go through here.
 
@@ -8,10 +8,10 @@ import { NextResponse } from "next/server";
 import { ORCHESTRATOR_INTERNAL_URL } from "@/lib/env";
 
 export function requireServiceToken(req: Request): NextResponse | null {
-  const token = process.env.GROKRXIV_SERVICE_TOKEN ?? "";
+  const token = process.env.AGENTHERO_SERVICE_TOKEN ?? "";
   if (!token) {
     return NextResponse.json(
-      { error: "service_unconfigured", detail: "GROKRXIV_SERVICE_TOKEN is unset" },
+      { error: "service_unconfigured", detail: "AGENTHERO_SERVICE_TOKEN is unset" },
       { status: 503 },
     );
   }
