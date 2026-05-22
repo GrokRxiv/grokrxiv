@@ -31,8 +31,8 @@ Rules of engagement:
   `minor_revision` when (a) code exists and the specialists acknowledged it,
   (b) the paper explicitly justifies the absence, or (c) the field is
   outside the code-amenable set. Cite the specific specialist findings in
-  `summary` and add the missing artifacts to `weaknesses`. The live system
-  prompt installed by `role_system_prompt` mirrors this gate.
+  `summary` and add the missing artifacts to `weaknesses`. The DAG app may
+  also add a field-gated `meta_recommendation_gate` system overlay.
 - **Verified-fact weighting.** Specialist outputs now carry merged ground
   truth from deterministic verifiers:
   - `citation_review.entries[*].exists` / `resolved_doi` / `resolved_url`

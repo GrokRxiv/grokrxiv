@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 struct TargetCandidate {
-    source_role: &'static str,
+    source_role: String,
     target_kind: &'static str,
     locator: Option<String>,
     evidence: Option<String>,
@@ -115,14 +115,19 @@ pub(crate) fn revision_targets_markdown(meta: Option<&Value>) -> String {
 fn collect_candidates(specialists: &Value) -> Vec<TargetCandidate> {
     let root = specialists.get("specialists").unwrap_or(specialists);
     let mut out = Vec::new();
-    collect_technical(root.get("technical_correctness"), &mut out);
-    collect_reproducibility(root.get("reproducibility"), &mut out);
-    collect_novelty(root.get("novelty"), &mut out);
-    collect_citation(root.get("citation"), &mut out);
+    let Some(roles) = root.as_object() else {
+        return out;
+    };
+    for (source_role, value) in roles {
+        collect_technical(source_role, Some(value), &mut out);
+        collect_reproducibility(source_role, Some(value), &mut out);
+        collect_novelty(source_role, Some(value), &mut out);
+        collect_citation(source_role, Some(value), &mut out);
+    }
     out
 }
 
-fn collect_technical(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
+fn collect_technical(source_role: &str, value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
     let Some(claims) = value
         .and_then(|v| v.get("claims"))
         .and_then(Value::as_array)
@@ -152,7 +157,7 @@ fn collect_technical(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
                 "Re-review should confirm the affected claim is corrected or justified.".to_string()
             });
         out.push(TargetCandidate {
-            source_role: "technical_correctness",
+            source_role: source_role.to_string(),
             target_kind: "paper_tex",
             locator,
             evidence,
@@ -163,7 +168,11 @@ fn collect_technical(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
     }
 }
 
-fn collect_reproducibility(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
+fn collect_reproducibility(
+    source_role: &str,
+    value: Option<&Value>,
+    out: &mut Vec<TargetCandidate>,
+) {
     let Some(concerns) = value
         .and_then(|v| v.get("concerns"))
         .and_then(Value::as_array)
@@ -185,7 +194,7 @@ fn collect_reproducibility(value: Option<&Value>, out: &mut Vec<TargetCandidate>
         let required_update = reproducibility_required_update(&area, &description);
         let verification_check = reproducibility_verification_check(&area);
         out.push(TargetCandidate {
-            source_role: "reproducibility",
+            source_role: source_role.to_string(),
             target_kind,
             locator: Some(locator),
             evidence: Some(description.clone()),
@@ -231,7 +240,7 @@ fn reproducibility_verification_check(area: &str) -> String {
     .to_string()
 }
 
-fn collect_novelty(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
+fn collect_novelty(source_role: &str, value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
     let Some(items) = value
         .and_then(|v| v.get("missing_prior_art"))
         .and_then(Value::as_array)
@@ -250,7 +259,7 @@ fn collect_novelty(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
             format!("Add or discuss missing prior art `{title}`. {reason}")
         };
         out.push(TargetCandidate {
-            source_role: "novelty",
+            source_role: source_role.to_string(),
             target_kind: "bibliography",
             locator: (!title.is_empty()).then_some(title.clone()),
             evidence: (!reason.is_empty()).then_some(reason.clone()),
@@ -263,7 +272,7 @@ fn collect_novelty(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
     }
 }
 
-fn collect_citation(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
+fn collect_citation(source_role: &str, value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
     if let Some(items) = value
         .and_then(|v| v.get("missing_references"))
         .and_then(Value::as_array)
@@ -283,7 +292,7 @@ fn collect_citation(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
                 )
             };
             out.push(TargetCandidate {
-                source_role: "citation",
+                source_role: source_role.to_string(),
                 target_kind: "bibliography",
                 locator: (!title.is_empty()).then_some(title.clone()),
                 evidence: (!reason.is_empty()).then_some(reason.clone()),
@@ -326,7 +335,7 @@ fn collect_citation(value: Option<&Value>, out: &mut Vec<TargetCandidate>) {
                 "Verify the unresolved citation against an authoritative source; replace it with a resolvable relevant citation or remove it.".to_string()
             });
         out.push(TargetCandidate {
-            source_role: "citation",
+            source_role: source_role.to_string(),
             target_kind: "bibliography",
             locator: locator.clone(),
             evidence: (!notes.is_empty()).then_some(notes.clone()),
@@ -376,7 +385,7 @@ fn target_from_candidate(
     json!({
         "id": format!("weakness-{}", index + 1),
         "weakness_index": index,
-        "source_role": candidate.source_role,
+        "source_role": candidate.source_role.as_str(),
         "target_kind": candidate.target_kind,
         "source_path": source_path_for(candidate.target_kind, source_path_hint, weakness, &candidate.required_update),
         "locator": candidate.locator,

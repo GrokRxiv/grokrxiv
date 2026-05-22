@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use grokrxiv_schemas::AgentRole;
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
@@ -31,16 +30,6 @@ pub fn direct_provider_api_allowed_from_env() -> bool {
 /// Prefix for internal, already-resolved model overrides exported by the CLI
 /// before `AppState` builds the per-role agent registry.
 pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "GROKRXIV_MODEL_OVERRIDE_";
-
-/// Review roles that can receive per-agent runtime model overrides.
-pub const REVIEW_AGENT_ROLES: [AgentRole; 6] = [
-    AgentRole::Summary,
-    AgentRole::TechnicalCorrectness,
-    AgentRole::Novelty,
-    AgentRole::Reproducibility,
-    AgentRole::Citation,
-    AgentRole::MetaReviewer,
-];
 
 /// Which backend runs staged extraction agents during ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -107,13 +96,13 @@ pub struct RuntimeConfig {
     /// Bearer token clients must present to call the web API write endpoints.
     pub service_token: Option<String>,
     /// Per-role runner override.
-    pub runner_for: HashMap<AgentRole, AgentRunnerKind>,
+    pub runner_for: HashMap<String, AgentRunnerKind>,
     /// Per-role sandbox override.
-    pub sandbox_for: HashMap<AgentRole, SandboxPolicy>,
+    pub sandbox_for: HashMap<String, SandboxPolicy>,
     /// Per-role cloud-provider override.
-    pub cloud_provider_for: HashMap<AgentRole, String>,
+    pub cloud_provider_for: HashMap<String, String>,
     /// Per-role model override (lands as `AgentSpec.model`).
-    pub model_for: HashMap<AgentRole, String>,
+    pub model_for: HashMap<String, String>,
 }
 
 impl Default for RuntimeConfig {
@@ -263,9 +252,9 @@ pub struct RuntimeConfigOverrides {
     /// `--offline`.
     pub offline: bool,
     /// `--runner-for <role>=<runner>` pairs.
-    pub runner_for: Vec<(AgentRole, AgentRunnerKind)>,
+    pub runner_for: Vec<(String, AgentRunnerKind)>,
     /// `--model-for <role>=<model>` pairs.
-    pub model_for: Vec<(AgentRole, String)>,
+    pub model_for: Vec<(String, String)>,
 }
 
 fn default_toml_path() -> Option<PathBuf> {
@@ -393,8 +382,8 @@ fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
     ) {
         out.offline = true;
     }
-    for role in REVIEW_AGENT_ROLES {
-        if let Some(model) = model_from_env_var(&role_model_env_var(role)) {
+    for role in configured_review_agent_roles() {
+        if let Some(model) = model_from_env_var(&role_model_env_var(&role)) {
             out.model_for.insert(role, model);
         }
     }
@@ -436,10 +425,10 @@ fn apply_cli(out: &mut RuntimeConfig, cli: &RuntimeConfigOverrides) {
         out.offline = true;
     }
     for (role, runner) in &cli.runner_for {
-        out.runner_for.insert(*role, *runner);
+        out.runner_for.insert(role.clone(), *runner);
     }
     for (role, model) in &cli.model_for {
-        out.model_for.insert(*role, model.clone());
+        out.model_for.insert(role.clone(), model.clone());
     }
 }
 
@@ -478,46 +467,48 @@ fn parse_mode(s: &str) -> Option<AgentMode> {
     }
 }
 
-fn parse_role(s: &str) -> Option<AgentRole> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "summary" => Some(AgentRole::Summary),
-        "technical_correctness" | "technical-correctness" | "technical" => {
-            Some(AgentRole::TechnicalCorrectness)
-        }
-        "novelty" => Some(AgentRole::Novelty),
-        "reproducibility" | "repro" => Some(AgentRole::Reproducibility),
-        "citation" => Some(AgentRole::Citation),
-        "meta_reviewer" | "meta-reviewer" | "meta" => Some(AgentRole::MetaReviewer),
-        _ => None,
+fn parse_role(s: &str) -> Option<String> {
+    let raw = s.trim();
+    if raw.is_empty() {
+        return None;
     }
+    let canonical = raw.to_ascii_lowercase().replace('-', "_");
+    canonical
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+        .then_some(canonical)
+}
+
+/// Role ids for the default review DAG, loaded from the manifest rather than
+/// encoded in Rust. Missing manifests simply mean there is no env-model scan.
+pub fn configured_review_agent_roles() -> Vec<String> {
+    crate::agents::config::dag_agent_config_refs("paper-review")
+        .map(|refs| refs.into_iter().map(|r| r.role_id).collect())
+        .unwrap_or_default()
 }
 
 /// Upper-snake role suffix used in public env vars.
-pub fn role_env_suffix(role: AgentRole) -> &'static str {
-    match role {
-        AgentRole::Summary => "SUMMARY",
-        AgentRole::TechnicalCorrectness => "TECHNICAL_CORRECTNESS",
-        AgentRole::Novelty => "NOVELTY",
-        AgentRole::Reproducibility => "REPRODUCIBILITY",
-        AgentRole::Citation => "CITATION",
-        AgentRole::MetaReviewer => "META_REVIEWER",
-    }
+pub fn role_env_suffix(role: &str) -> String {
+    role.trim()
+        .replace('.', "_")
+        .replace('-', "_")
+        .to_ascii_uppercase()
 }
 
 /// Public per-agent model env var, e.g. `GROKRXIV_CITATION_MODEL`.
-pub fn role_model_env_var(role: AgentRole) -> String {
+pub fn role_model_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_MODEL", role_env_suffix(role))
 }
 
 /// Internal resolved model env var, e.g. `GROKRXIV_MODEL_OVERRIDE_CITATION`.
-pub fn role_model_override_env_var(role: AgentRole) -> String {
+pub fn role_model_override_env_var(role: &str) -> String {
     format!("{}{}", MODEL_OVERRIDE_ENV_PREFIX, role_env_suffix(role))
 }
 
 /// Read a model override for a role. The CLI exports the resolved value to the
 /// internal override var; non-CLI boot paths can still consume the public env
 /// var directly.
-pub fn model_override_for_role(role: AgentRole) -> Option<String> {
+pub fn model_override_for_role(role: &str) -> Option<String> {
     model_from_env_var(&role_model_override_env_var(role))
         .or_else(|| model_from_env_var(&role_model_env_var(role)))
 }
@@ -530,7 +521,7 @@ fn model_from_env_var(name: &str) -> Option<String> {
 }
 
 /// Parse `<role>=<runner>` (used by `--runner-for`).
-pub fn parse_role_runner(s: &str) -> Result<(AgentRole, AgentRunnerKind), String> {
+pub fn parse_role_runner(s: &str) -> Result<(String, AgentRunnerKind), String> {
     let (role_s, runner_s) = s
         .split_once('=')
         .ok_or_else(|| format!("expected <role>=<runner>, got `{s}`"))?;
@@ -541,7 +532,7 @@ pub fn parse_role_runner(s: &str) -> Result<(AgentRole, AgentRunnerKind), String
 }
 
 /// Parse `<role>=<model-id>` (used by `--model-for`).
-pub fn parse_role_model(s: &str) -> Result<(AgentRole, String), String> {
+pub fn parse_role_model(s: &str) -> Result<(String, String), String> {
     let (role_s, model_s) = s
         .split_once('=')
         .ok_or_else(|| format!("expected <role>=<model>, got `{s}`"))?;
@@ -666,12 +657,12 @@ mod tests {
     }
 
     fn with_clean_model_env<T>(f: impl FnOnce() -> T) -> T {
-        let names: Vec<String> = REVIEW_AGENT_ROLES
-            .iter()
+        let names: Vec<String> = configured_review_agent_roles()
+            .into_iter()
             .flat_map(|role| {
                 [
-                    role_model_env_var(*role),
-                    role_model_override_env_var(*role),
+                    role_model_env_var(&role),
+                    role_model_override_env_var(&role),
                 ]
             })
             .collect();
@@ -695,13 +686,13 @@ mod tests {
     #[test]
     fn parse_role_runner_ok() {
         let (role, runner) = parse_role_runner("summary=cli").unwrap();
-        assert_eq!(role, AgentRole::Summary);
+        assert_eq!(role, "summary");
         assert_eq!(runner, AgentRunnerKind::Cli);
     }
 
     #[test]
     fn parse_role_runner_bad_role() {
-        assert!(parse_role_runner("nope=cli").is_err());
+        assert!(parse_role_runner("not/a/role=cli").is_err());
     }
 
     #[test]
@@ -712,7 +703,7 @@ mod tests {
     #[test]
     fn parse_role_model_ok() {
         let (role, model) = parse_role_model("technical_correctness=claude-opus-4-7").unwrap();
-        assert_eq!(role, AgentRole::TechnicalCorrectness);
+        assert_eq!(role, "technical_correctness");
         assert_eq!(model, "claude-opus-4-7");
     }
 
@@ -733,11 +724,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            cfg.model_for.get(&AgentRole::Novelty).map(String::as_str),
+            cfg.model_for.get("novelty").map(String::as_str),
             Some("gemini-3-flash-preview")
         );
         assert_eq!(
-            cfg.model_for.get(&AgentRole::Citation).map(String::as_str),
+            cfg.model_for.get("citation").map(String::as_str),
             Some("gemini-3-flash-preview")
         );
     }
@@ -750,7 +741,7 @@ mod tests {
                 std::env::set_var("GROKRXIV_CITATION_MODEL", "gemini-3-flash-preview");
                 let mut over = RuntimeConfigOverrides::default();
                 over.model_for
-                    .push((AgentRole::Citation, "gemini-3-pro-preview".to_string()));
+                    .push(("citation".to_string(), "gemini-3-pro-preview".to_string()));
                 RuntimeConfig::resolve(
                     &over,
                     "nonexistent",
@@ -761,7 +752,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            cfg.model_for.get(&AgentRole::Citation).map(String::as_str),
+            cfg.model_for.get("citation").map(String::as_str),
             Some("gemini-3-pro-preview")
         );
     }
@@ -793,7 +784,7 @@ mod tests {
         over.extractor = Some(ExtractorKind::Api);
         over.no_cache = true;
         over.runner_for
-            .push((AgentRole::Summary, AgentRunnerKind::Cloud));
+            .push(("summary".to_string(), AgentRunnerKind::Cloud));
         let cfg = with_clean_extractor_env(|| {
             RuntimeConfig::resolve(
                 &over,
@@ -806,7 +797,7 @@ mod tests {
         assert_eq!(cfg.extractor, ExtractorKind::Api);
         assert!(cfg.no_cache);
         assert_eq!(
-            cfg.runner_for.get(&AgentRole::Summary).copied(),
+            cfg.runner_for.get("summary").copied(),
             Some(AgentRunnerKind::Cloud)
         );
     }
@@ -825,7 +816,7 @@ mod tests {
 
         cfg.default_runner = AgentRunnerKind::Cli;
         cfg.runner_for
-            .insert(AgentRole::Summary, AgentRunnerKind::Api);
+            .insert("summary".to_string(), AgentRunnerKind::Api);
         assert!(provider_api_allowed(&cfg));
     }
 

@@ -124,7 +124,7 @@ impl ExtractionAgent for MacroExpanderAgent {
     }
     async fn run(
         &self,
-        runner: Arc<dyn crate::agents::traits::AgentRunner>,
+        runner: Arc<dyn crate::agents::AgentRunner>,
         spec: &crate::agents::types::AgentSpec,
         ctx: ExtractionContext<'_>,
     ) -> anyhow::Result<ExtractionRun>
@@ -146,11 +146,11 @@ impl ExtractionAgent for MacroExpanderAgent {
 mod agent_tests {
     use super::*;
     use crate::agents::extraction::ToolCtx;
-    use crate::agents::traits::AgentRunner;
     use crate::agents::types::{AgentSpec, Message, ToolCompletion, ToolSpec};
+    use crate::agents::AgentRunner;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
-    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use grokrxiv_schemas::PaperExtract;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -233,7 +233,7 @@ mod agent_tests {
 
     fn fake_spec() -> AgentSpec {
         AgentSpec::api_default(
-            AgentRole::Summary,
+            "summary",
             "claude".to_string(),
             "claude-haiku-4-5".to_string(),
         )

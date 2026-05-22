@@ -7,8 +7,8 @@ use super::merge_facts::{
     merge_reproducibility_facts_into_output,
 };
 use super::prompts::{
-    build_meta_synthesis_prompt, build_specialist_prompt, debug_prompt_root, dump_debug_prompt,
-    role_system_prompt,
+    debug_prompt_root, dump_debug_prompt, render_agent_user_prompt, render_meta_synthesis_prompt,
+    render_system_prompt, ReviewPromptFacts,
 };
 use super::rendering::render_to_disk;
 use super::verification::{
@@ -123,21 +123,13 @@ pub(super) async fn run_review_dag_from_state_with_context(
 //   GROKRXIV_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
 //   GROKRXIV_RUNNER_OVERRIDE_<ROLE> = same enum, per role
 #[cfg(feature = "grokrxiv-ingest")]
-pub(super) fn review_runner_override_for(
-    role: grokrxiv_schemas::AgentRole,
-) -> Option<crate::agents::AgentRunnerKind> {
+pub(super) fn review_runner_override_for(role: &str) -> Option<crate::agents::AgentRunnerKind> {
     use crate::agents::AgentRunnerKind;
-    use grokrxiv_schemas::AgentRole;
 
-    let role_slug = match role {
-        AgentRole::Summary => "summary",
-        AgentRole::TechnicalCorrectness => "technical_correctness",
-        AgentRole::Novelty => "novelty",
-        AgentRole::Reproducibility => "reproducibility",
-        AgentRole::Citation => "citation",
-        AgentRole::MetaReviewer => "meta_reviewer",
-    };
-    let per_role_var = format!("GROKRXIV_RUNNER_OVERRIDE_{}", role_slug.to_uppercase());
+    let per_role_var = format!(
+        "GROKRXIV_RUNNER_OVERRIDE_{}",
+        crate::runtime_config::role_env_suffix(role)
+    );
     std::env::var(&per_role_var)
         .ok()
         .or_else(|| std::env::var("GROKRXIV_RUNNER_OVERRIDE").ok())
@@ -260,12 +252,12 @@ pub(super) async fn run_review_for_extract_with_job_tracking(
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
-pub(super) fn specialist_review_concurrency_limit(roles: &[grokrxiv_schemas::AgentRole]) -> usize {
+pub(super) fn specialist_review_concurrency_limit(roles: &[String]) -> usize {
     use crate::agents::AgentRunnerKind;
 
     let max = roles.len().max(1);
     let has_cli_role = roles.iter().any(|role| {
-        review_runner_override_for(*role).unwrap_or(AgentRunnerKind::Cli) == AgentRunnerKind::Cli
+        review_runner_override_for(role).unwrap_or(AgentRunnerKind::Cli) == AgentRunnerKind::Cli
     });
     review_concurrency_limit_from(
         std::env::var("GROKRXIV_REVIEW_CONCURRENCY").ok().as_deref(),
@@ -292,57 +284,36 @@ pub(super) fn review_concurrency_limit_from(
 struct ReviewDagRuntimeConfig {
     node_count: usize,
     layers: Vec<Vec<String>>,
-    specialist_roles: Vec<grokrxiv_schemas::AgentRole>,
+    specialist_roles: Vec<String>,
+    synthesizer_role: String,
     min_specialist_quorum: usize,
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
 fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
-    use grokrxiv_schemas::AgentRole;
-
     let manifest_path = review_dag_manifest_path();
     let manifest = DagManifest::from_path(&manifest_path)
         .map_err(|e| anyhow::anyhow!("validate {}: {e}", manifest_path.display()))?;
     let layers = manifest.execution_layers()?;
     let mut specialist_roles = Vec::new();
-    let mut has_meta_reviewer = false;
+    let mut synthesizer_role = None;
 
     for node in &manifest.nodes {
         let Some(role_id) = node.role.as_ref().map(|role| role.as_str()) else {
             continue;
         };
-        match role_id {
-            "summary" if node.kind == DagNodeKind::Agent => {
-                specialist_roles.push(AgentRole::Summary)
-            }
-            "technical_correctness" if node.kind == DagNodeKind::Agent => {
-                specialist_roles.push(AgentRole::TechnicalCorrectness)
-            }
-            "novelty" if node.kind == DagNodeKind::Agent => {
-                specialist_roles.push(AgentRole::Novelty)
-            }
-            "reproducibility" if node.kind == DagNodeKind::Agent => {
-                specialist_roles.push(AgentRole::Reproducibility)
-            }
-            "citation" if node.kind == DagNodeKind::Agent => {
-                specialist_roles.push(AgentRole::Citation)
-            }
-            "meta_reviewer" => has_meta_reviewer = true,
-            other if node.kind == DagNodeKind::Agent || node.kind == DagNodeKind::Synthesizer => {
-                anyhow::bail!(
-                    "DAG role `{other}` is configured as executable, but the legacy runner adapter still requires a built-in AgentRole; add a runner/schema adapter for this role before enabling it"
-                );
-            }
-            _ => {}
+        if node.kind == DagNodeKind::Agent && node.feeds_meta {
+            specialist_roles.push(role_id.to_string());
+        } else if node.kind == DagNodeKind::Synthesizer {
+            synthesizer_role = Some(role_id.to_string());
         }
     }
 
     if specialist_roles.is_empty() {
-        anyhow::bail!("paper-review DAG must define at least one specialist agent node");
+        anyhow::bail!("paper-review DAG must define at least one agent node with feeds_meta=true");
     }
-    if !has_meta_reviewer {
-        anyhow::bail!("paper-review DAG must define a meta_reviewer synthesizer node");
-    }
+    let synthesizer_role = synthesizer_role
+        .ok_or_else(|| anyhow::anyhow!("paper-review DAG must define a synthesizer node"))?;
 
     let manifest_min_quorum = manifest
         .nodes
@@ -357,6 +328,7 @@ fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
         node_count: manifest.nodes.len(),
         layers,
         specialist_roles,
+        synthesizer_role,
         min_specialist_quorum,
     })
 }
@@ -431,18 +403,23 @@ nodes:
   - id: summary
     kind: agent
     role: summary
+    feeds_meta: true
   - id: technical_correctness
     kind: agent
     role: technical_correctness
+    feeds_meta: true
   - id: novelty
     kind: agent
     role: novelty
+    feeds_meta: true
   - id: reproducibility
     kind: agent
     role: reproducibility
+    feeds_meta: true
   - id: citation
     kind: agent
     role: citation
+    feeds_meta: true
   - id: specialist_quorum
     kind: gate
     gate:
@@ -491,90 +468,36 @@ pub(super) struct ReviewSubmissionContext {
 pub(super) async fn run_review_dag_inner_with_context(
     state: &AppState,
     pool: &sqlx::PgPool,
-    provider: Option<std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>,
+    _provider: Option<std::sync::Arc<dyn grokrxiv_llm_adapter::LLMProvider>>,
     paper_id: Uuid,
     extract: grokrxiv_schemas::PaperExtract,
     submission: Option<ReviewSubmissionContext>,
 ) -> anyhow::Result<Uuid> {
-    use crate::agents::runners::api::ApiRunner;
-    use crate::agents::{
-        build_agent, AgentInput, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec,
-        ConfiguredAgent, SandboxPolicy,
-    };
-    use grokrxiv_schemas::{AgentRole, MetaReview, VerifierStatus};
+    use crate::agents::{AgentInput, AgentRunner, AgentRunnerKind, ConfiguredAgent};
+    use grokrxiv_schemas::{MetaReview, VerifierStatus};
     use serde_json::json;
     use std::sync::Arc;
 
-    let default_model = state.config.preview_model.clone();
-
-    // Resolve the configured agent + runner pair for a role. Prefers the
-    // boot-time registry built from `agents/*.yaml`; falls back only for
-    // builds where the verifier-backed registry is unavailable. API fallback
-    // needs a provider, but CLI fallback can run through local subscriptions.
-    let make_fallback = |role: AgentRole,
-                         schema: AgentSchema|
-     -> anyhow::Result<(
+    let resolve_agent = |role: &str| -> anyhow::Result<(
         Arc<ConfiguredAgent>,
         Arc<dyn AgentRunner>,
         String,
         AgentRunnerKind,
     )> {
-        let runner_kind = review_runner_override_for(role).unwrap_or(AgentRunnerKind::Cli);
-        let model = crate::runtime_config::model_override_for_role(role)
-            .unwrap_or_else(|| default_model.clone());
-        let spec = AgentSpec {
-            role,
-            runner: runner_kind,
-            sandbox: SandboxPolicy::None,
-            provider: "claude".to_string(),
-            model: model.clone(),
-            schema,
-            max_retries: 2,
-            timeout_secs: 180,
-        };
-        let agent = Arc::new(build_agent(spec));
-        let runner = if runner_kind == AgentRunnerKind::Api {
-            let Some(provider) = provider.as_ref() else {
-                anyhow::bail!(
-                    "no LLM provider configured for API review fallback; use --runner cli or set provider API keys"
-                );
-            };
-            let mut providers_map: std::collections::HashMap<
-                String,
-                Arc<dyn grokrxiv_llm_adapter::LLMProvider>,
-            > = std::collections::HashMap::new();
-            providers_map.insert("claude".to_string(), provider.clone());
-            Arc::new(ApiRunner::new(providers_map)) as Arc<dyn AgentRunner>
-        } else {
-            state
-                .runners
-                .get(&runner_kind)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?
-        };
-        Ok((agent, runner, model, runner_kind))
-    };
-
-    let resolve_agent = |role: AgentRole| -> anyhow::Result<(
-        Arc<ConfiguredAgent>,
-        Arc<dyn AgentRunner>,
-        String,
-        AgentRunnerKind,
-    )> {
-        if let Some(agent) = state.agents.get(&role) {
-            let model = agent.spec().model.clone();
-            // Runtime override beats YAML's runner: field for this run.
-            let runner_kind = review_runner_override_for(role).unwrap_or(agent.spec().runner);
-            if let Some(runner) = state.runners.get(&runner_kind) {
-                return Ok((agent.clone(), runner.clone(), model, runner_kind));
-            }
-        }
-        let schema = state
-            .agent_schemas
-            .get(&role)
+        let agent = state
+            .agents
+            .get(role)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing schema for role {role:?}"))?;
-        make_fallback(role, schema)
+            .ok_or_else(|| anyhow::anyhow!("DAG role `{role}` has no configured agent"))?;
+        let model = agent.spec().model.clone();
+        // Runtime override beats YAML's runner: field for this run.
+        let runner_kind = review_runner_override_for(role).unwrap_or(agent.spec().runner);
+        let runner = state
+            .runners
+            .get(&runner_kind)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?;
+        Ok((agent, runner, model, runner_kind))
     };
 
     let review_dag = load_review_dag_runtime_config()?;
@@ -591,11 +514,10 @@ pub(super) async fn run_review_dag_inner_with_context(
     for role in review_dag
         .specialist_roles
         .iter()
-        .copied()
-        .chain(std::iter::once(AgentRole::MetaReviewer))
+        .chain(std::iter::once(&review_dag.synthesizer_role))
     {
         let model = resolve_agent(role)?.2;
-        models_used_map.insert(super::role_slug(role).to_string(), json!(model));
+        models_used_map.insert(role.clone(), json!(model));
     }
     let models_used = serde_json::Value::Object(models_used_map);
     let review_id = match submission.as_ref() {
@@ -656,10 +578,10 @@ pub(super) async fn run_review_dag_inner_with_context(
     // Gather deterministic facts before specialist prompts so agents can use
     // verifier-side provenance instead of relying only on model memory.
     let (reproducibility_facts, novelty_facts) = tokio::join!(
-        crate::agents::specialist_facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref()),
-        crate::agents::specialist_facts::gather_novelty_facts(&state.http, extract_arc.as_ref()),
+        crate::agents::review::facts::gather_reproducibility_facts(&state.http, extract_arc.as_ref()),
+        crate::agents::review::facts::gather_novelty_facts(&state.http, extract_arc.as_ref()),
     );
-    let tc_facts = crate::agents::specialist_facts::gather_tc_facts(extract_arc.as_ref());
+    let tc_facts = crate::agents::review::facts::gather_tc_facts(extract_arc.as_ref());
     tracing::info!(
         %paper_id,
         %review_id,
@@ -687,42 +609,35 @@ pub(super) async fn run_review_dag_inner_with_context(
     let skip_review_cache = review_cache_disabled();
 
     let mut handles = Vec::with_capacity(specialist_roles.len());
-    for role in specialist_roles.iter().copied() {
-        let repro_for_role = if matches!(role, AgentRole::Reproducibility) {
-            Some(&reproducibility_facts)
-        } else {
-            None
-        };
-        let novelty_for_role = if matches!(role, AgentRole::Novelty) {
-            Some(&novelty_facts)
-        } else {
-            None
-        };
-        let tc_for_role = if matches!(role, AgentRole::TechnicalCorrectness) {
-            Some(&tc_facts)
-        } else {
-            None
-        };
-        let prompt = build_specialist_prompt(
-            role,
+    for role in specialist_roles.iter().cloned() {
+        let cfg = state
+            .agent_configs
+            .get(&role)
+            .ok_or_else(|| anyhow::anyhow!("missing YAML config for DAG role `{role}`"))?;
+        let prompt = render_agent_user_prompt(
+            &role,
+            cfg,
             extract_arc.as_ref(),
-            moderator_notes.as_deref(),
-            repro_for_role,
-            novelty_for_role,
-            tc_for_role,
+            ReviewPromptFacts {
+                moderator_notes: moderator_notes.as_deref(),
+                reproducibility: Some(&reproducibility_facts),
+                novelty: Some(&novelty_facts),
+                technical: Some(&tc_facts),
+            },
         );
         if let Some(root) = debug_root.as_deref() {
-            dump_debug_prompt(root, &extract_arc.arxiv_id, role, &prompt);
+            dump_debug_prompt(root, &extract_arc.arxiv_id, &role, &prompt);
         }
-        let system = role_system_prompt(role, extract_arc.field.as_deref());
-        let (agent, runner, role_model, role_runner) = resolve_agent(role)?;
+        let system = render_system_prompt(&role, cfg, extract_arc.field.as_deref());
+        let (agent, runner, role_model, role_runner) = resolve_agent(&role)?;
         let sem = sem.clone();
         let pool_cloned = pool.clone();
         let cache_hash = specialist_content_hash.clone();
         let specialist_input_cloned = specialist_input.clone();
+        let role_for_task = role.clone();
         handles.push((role, role_model, role_runner, tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore alive");
-            crate::cli_status::emit_detail(role_status_label(role), StatusMark::Run, "starting");
+            crate::cli_status::emit_detail(role_status_label(&role_for_task), StatusMark::Run, "starting");
 
             // Only passed verifier rows are reused from cache.
             if !skip_review_cache {
@@ -731,7 +646,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                         &pool_cloned,
                         paper_id,
                         "paper-review",
-                        super::role_slug(role),
+                        &role_for_task,
                         &cache_hash,
                     )
                     .await
@@ -739,12 +654,12 @@ pub(super) async fn run_review_dag_inner_with_context(
                     if hit.verifier_status == "pass" {
                         tracing::info!(
                             event = "cache",
-                            role = super::role_slug(role),
+                            role = %role_for_task,
                             hit = true,
                             "cache hit"
                         );
                         return anyhow::Ok((
-                            role,
+                            role_for_task,
                             hit.output,
                             Some(hit.tokens_in.unwrap_or(0) as i32),
                             Some(hit.tokens_out.unwrap_or(0) as i32),
@@ -758,14 +673,14 @@ pub(super) async fn run_review_dag_inner_with_context(
             } else {
                 tracing::info!(
                     event = "cache",
-                    role = super::role_slug(role),
+                    role = %role_for_task,
                     disabled = true,
                     "cache bypassed"
                 );
             }
             tracing::info!(
                 event = "cache",
-                role = super::role_slug(role),
+                role = %role_for_task,
                 hit = false,
                 "cache miss"
             );
@@ -773,7 +688,7 @@ pub(super) async fn run_review_dag_inner_with_context(
             let input = AgentInput {
                 paper_id,
                 review_id,
-                role,
+                role: role_for_task.clone(),
                 content_hash_material: specialist_input_cloned.clone(),
                 artifact: specialist_input_cloned,
                 system_prompt: system,
@@ -783,7 +698,7 @@ pub(super) async fn run_review_dag_inner_with_context(
             let run =
                 run_agent_with_supervisor_timeout(agent.as_ref(), runner.as_ref(), input).await?;
             anyhow::Ok((
-                role,
+                role_for_task,
                 run.output,
                 run.tokens_in,
                 run.tokens_out,
@@ -796,7 +711,7 @@ pub(super) async fn run_review_dag_inner_with_context(
     }
 
     let mut specialist_results: Vec<(
-        AgentRole,
+        String,
         serde_json::Value,
         Option<i32>,
         Option<i32>,
@@ -812,14 +727,14 @@ pub(super) async fn run_review_dag_inner_with_context(
                 let error = format!("{e:#}");
                 tracing::warn!(
                     %review_id,
-                    role = super::role_slug(role),
+                    role = %role,
                     err = %error,
                     "specialist reviewer failed; recording failed verifier output"
                 );
-                crate::cli_status::emit_detail(role_status_label(role), StatusMark::Fail, &error);
+                crate::cli_status::emit_detail(role_status_label(&role), StatusMark::Fail, &error);
                 specialist_results.push((
-                    role,
-                    specialist_failure_output(role, &error),
+                    role.clone(),
+                    specialist_failure_output(&role, &error),
                     None,
                     None,
                     0i32,
@@ -832,14 +747,14 @@ pub(super) async fn run_review_dag_inner_with_context(
                 let error = format!("specialist join: {e}");
                 tracing::warn!(
                     %review_id,
-                    role = super::role_slug(role),
+                    role = %role,
                     err = %error,
                     "specialist reviewer task failed; recording failed verifier output"
                 );
-                crate::cli_status::emit_detail(role_status_label(role), StatusMark::Fail, &error);
+                crate::cli_status::emit_detail(role_status_label(&role), StatusMark::Fail, &error);
                 specialist_results.push((
-                    role,
-                    specialist_failure_output(role, &error),
+                    role.clone(),
+                    specialist_failure_output(&role, &error),
                     None,
                     None,
                     0i32,
@@ -854,37 +769,34 @@ pub(super) async fn run_review_dag_inner_with_context(
 
     // Persist and verify each specialist output, then capture verifier status
     // for the quorum gate before meta-review synthesis.
-    let mut specialist_verifier_status: Vec<(AgentRole, Option<VerifierStatus>)> =
+    let mut specialist_verifier_status: Vec<(String, Option<VerifierStatus>)> =
         Vec::with_capacity(specialist_results.len());
     for (role, output, tokens_in, tokens_out, latency_ms, used_model, used_runner, cache_hit) in
         &specialist_results
     {
-        let (v_status, v_notes) = verify_artifact(state, &extract_arc, *role, output).await;
-        // Verifier notes own citation existence and provenance; the persisted
-        // LLM output remains schema-valid citation-use prose.
-        let output_to_persist = match *role {
-            AgentRole::Citation => {
-                merge_citation_verifier_into_output(output.clone(), v_notes.as_ref())
-            }
-            AgentRole::Reproducibility => {
-                merge_reproducibility_facts_into_output(output.clone(), &reproducibility_facts)
-            }
-            AgentRole::Novelty => {
-                merge_novelty_facts_into_output(output.clone(), &novelty_facts)
-            }
-            _ => output.clone(),
-        };
+        let (v_status, v_notes) = verify_artifact(state, &extract_arc, role, output).await;
+        let cfg = state
+            .agent_configs
+            .get(role)
+            .ok_or_else(|| anyhow::anyhow!("missing YAML config for DAG role `{role}`"))?;
+        let output_to_persist = apply_agent_postprocessors(
+            cfg,
+            output.clone(),
+            v_notes.as_ref(),
+            &reproducibility_facts,
+            &novelty_facts,
+        )?;
         #[cfg(feature = "grokrxiv-verifier")]
         if !matches!(v_status, Some(VerifierStatus::Fail)) {
-            validate_role_output_after_merge(*role, &output_to_persist, &state.agent_schemas)?;
+            validate_role_output_after_merge(role, &output_to_persist, &state.agent_schemas)?;
         }
         crate::db::insert_review_agent(
             pool,
             crate::db::ReviewAgentInsert {
                 review_id,
                 dag_type: "paper-review".to_string(),
-                role: super::role_slug(*role).to_string(),
-                node_id: Some(super::role_slug(*role).to_string()),
+                role: role.clone(),
+                node_id: Some(role.clone()),
                 agent_type: Some("critic".to_string()),
                 node_kind: Some("agent".to_string()),
                 runner: *used_runner,
@@ -905,7 +817,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                 pool,
                 paper_id,
                 "paper-review",
-                super::role_slug(*role),
+                role,
                 &specialist_content_hash,
                 output,
                 "pass",
@@ -916,13 +828,13 @@ pub(super) async fn run_review_dag_inner_with_context(
             )
             .await;
         }
-        specialist_verifier_status.push((*role, v_status));
+        specialist_verifier_status.push((role.clone(), v_status));
         crate::cli_status::emit_detail(
-            role_status_label(*role),
+            role_status_label(role),
             verifier_status_mark(v_status),
             "",
         );
-        tracing::info!(role = ?role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
+        tracing::info!(role = %role, latency_ms, model = %used_model, cache_hit, "M1: specialist persisted");
     }
 
     // The review gate decides whether the specialist set is usable for
@@ -982,7 +894,7 @@ pub(super) async fn run_review_dag_inner_with_context(
         tracing::warn!(
             %review_id,
             usable = specialist_gate.usable_roles.len(),
-            quorum = MIN_SPECIALIST_QUORUM,
+            quorum = min_specialist_quorum,
             "specialist quorum not met; recorded major_revision gate failure"
         );
         crate::cli_status::emit_detail(
@@ -995,25 +907,30 @@ pub(super) async fn run_review_dag_inner_with_context(
     // Meta-review synthesis receives only specialist outputs keyed by role slug.
     let mut specialists_map = serde_json::Map::new();
     for (role, output, _ti, _to, _lat, _model, _runner, _cache_hit) in &specialist_results {
-        specialists_map.insert(super::role_slug(*role).to_string(), output.clone());
+        specialists_map.insert(role.clone(), output.clone());
     }
     let meta_input = json!({
         "specialists": serde_json::Value::Object(specialists_map),
     });
-    let meta_prompt = build_meta_synthesis_prompt(&meta_input);
+    let meta_role = review_dag.synthesizer_role.clone();
+    let meta_cfg = state
+        .agent_configs
+        .get(&meta_role)
+        .ok_or_else(|| anyhow::anyhow!("missing YAML config for DAG role `{meta_role}`"))?;
+    let meta_prompt = render_meta_synthesis_prompt(meta_cfg, &meta_input);
     if let Some(root) = debug_root.as_deref() {
         dump_debug_prompt(
             root,
             &extract_arc.arxiv_id,
-            AgentRole::MetaReviewer,
+            &meta_role,
             &meta_prompt,
         );
     }
-    let meta_system = role_system_prompt(AgentRole::MetaReviewer, extract_arc.field.as_deref());
+    let meta_system = render_system_prompt(&meta_role, meta_cfg, extract_arc.field.as_deref());
 
     let (meta_agent, meta_runner, meta_model_used, meta_runner_used) =
-        resolve_agent(AgentRole::MetaReviewer)?;
-    crate::cli_status::emit_detail("meta reviewer", StatusMark::Run, "synthesis");
+        resolve_agent(&meta_role)?;
+    crate::cli_status::emit_detail(role_status_label(&meta_role), StatusMark::Run, "synthesis");
 
     // Meta-review cache keys on the specialist-output bundle.
     let meta_content_hash =
@@ -1034,7 +951,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                 pool,
                 paper_id,
                 "paper-review",
-                super::role_slug(AgentRole::MetaReviewer),
+                &meta_role,
                 &meta_content_hash,
             )
                 .await
@@ -1042,7 +959,7 @@ pub(super) async fn run_review_dag_inner_with_context(
             Ok(Some(hit)) if hit.verifier_status == "pass" => {
                 tracing::info!(
                     event = "cache",
-                    role = "meta_reviewer",
+                    role = %meta_role,
                     hit = true,
                     "cache hit"
                 );
@@ -1060,21 +977,21 @@ pub(super) async fn run_review_dag_inner_with_context(
                 if skip_review_cache {
                     tracing::info!(
                         event = "cache",
-                        role = "meta_reviewer",
+                        role = %meta_role,
                         disabled = true,
                         "cache bypassed"
                     );
                 }
                 tracing::info!(
                     event = "cache",
-                    role = "meta_reviewer",
+                    role = %meta_role,
                     hit = false,
                     "cache miss"
                 );
                 let meta_agent_input = AgentInput {
                     paper_id,
                     review_id,
-                    role: AgentRole::MetaReviewer,
+                    role: meta_role.clone(),
                     content_hash_material: meta_input.clone(),
                     artifact: meta_input.clone(),
                     system_prompt: meta_system,
@@ -1103,7 +1020,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                             err = %error,
                             "meta reviewer failed; recording major_revision gate output"
                         );
-                        crate::cli_status::emit_detail("meta reviewer", StatusMark::Fail, &error);
+                        crate::cli_status::emit_detail(role_status_label(&meta_role), StatusMark::Fail, &error);
                         (
                             meta_failure_output(&error),
                             None,
@@ -1124,14 +1041,14 @@ pub(super) async fn run_review_dag_inner_with_context(
     );
 
     let (meta_v_status, meta_v_notes) =
-        verify_artifact(state, &extract_arc, AgentRole::MetaReviewer, &meta_value).await;
+        verify_artifact(state, &extract_arc, &meta_role, &meta_value).await;
     crate::db::insert_review_agent(
         pool,
         crate::db::ReviewAgentInsert {
             review_id,
             dag_type: "paper-review".to_string(),
-            role: super::role_slug(AgentRole::MetaReviewer).to_string(),
-            node_id: Some(super::role_slug(AgentRole::MetaReviewer).to_string()),
+            role: meta_role.clone(),
+            node_id: Some(meta_role.clone()),
             agent_type: Some("synthesizer".to_string()),
             node_kind: Some("synthesizer".to_string()),
             runner: meta_runner_recorded,
@@ -1146,7 +1063,7 @@ pub(super) async fn run_review_dag_inner_with_context(
     )
     .await?;
     crate::cli_status::emit_detail(
-        "meta reviewer",
+        role_status_label(&meta_role),
         verifier_status_mark(meta_v_status),
         "",
     );
@@ -1157,7 +1074,7 @@ pub(super) async fn run_review_dag_inner_with_context(
             pool,
             paper_id,
             "paper-review",
-            super::role_slug(AgentRole::MetaReviewer),
+            &meta_role,
             &meta_content_hash,
             &meta_value,
             "pass",
@@ -1451,12 +1368,35 @@ fn fallback_source_path_hint(extract: &grokrxiv_schemas::PaperExtract) -> Option
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
+fn apply_agent_postprocessors(
+    cfg: &crate::agents::config::AgentConfig,
+    mut output: serde_json::Value,
+    verifier_notes: Option<&serde_json::Value>,
+    reproducibility_facts: &crate::agents::review::facts::ReproducibilityFacts,
+    novelty_facts: &crate::agents::review::facts::NoveltyFacts,
+) -> anyhow::Result<serde_json::Value> {
+    for postprocessor in &cfg.postprocessors {
+        output = match postprocessor.as_str() {
+            "merge_citation_verifier" => {
+                merge_citation_verifier_into_output(output, verifier_notes)
+            }
+            "merge_reproducibility_facts" => {
+                merge_reproducibility_facts_into_output(output, reproducibility_facts)
+            }
+            "merge_novelty_facts" => merge_novelty_facts_into_output(output, novelty_facts),
+            other => anyhow::bail!("unknown agent postprocessor `{other}`"),
+        };
+    }
+    Ok(output)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
 pub(super) async fn run_agent_with_supervisor_timeout(
     agent: &crate::agents::ConfiguredAgent,
     runner: &dyn crate::agents::AgentRunner,
     input: crate::agents::AgentInput,
 ) -> anyhow::Result<crate::agents::AgentRun> {
-    let role = input.role;
+    let role = input.role.clone();
     let spec = agent.spec();
     let timeout_secs = u64::from(spec.timeout_secs.max(1))
         .saturating_mul(u64::from(spec.max_retries).saturating_add(1))

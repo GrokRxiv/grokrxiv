@@ -1,4 +1,4 @@
-use grokrxiv_schemas::{AgentRole, VerifierStatus};
+use grokrxiv_schemas::VerifierStatus;
 
 /// Final automated gate verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -20,11 +20,11 @@ pub(crate) struct SpecialistGate {
     /// Whether the review can publish without force.
     pub(crate) publishable_without_force: bool,
     /// Specialist roles with pass or warn verifier output.
-    pub(crate) usable_roles: Vec<&'static str>,
+    pub(crate) usable_roles: Vec<String>,
     /// Specialist roles with warn verifier output.
-    pub(crate) warning_roles: Vec<&'static str>,
+    pub(crate) warning_roles: Vec<String>,
     /// Specialist roles with fail or missing verifier output.
-    pub(crate) blocked_roles: Vec<&'static str>,
+    pub(crate) blocked_roles: Vec<String>,
     /// Minimum usable specialist outputs needed for meta-review.
     pub(crate) min_usable: usize,
     /// Expected total specialist outputs.
@@ -34,7 +34,7 @@ pub(crate) struct SpecialistGate {
 impl SpecialistGate {
     /// Evaluate specialist verifier statuses.
     pub(crate) fn evaluate(
-        statuses: &[(AgentRole, Option<VerifierStatus>)],
+        statuses: &[(String, Option<VerifierStatus>)],
         min_usable: usize,
         expected_total: usize,
     ) -> Self {
@@ -42,14 +42,13 @@ impl SpecialistGate {
         let mut warning_roles = Vec::new();
         let mut blocked_roles = Vec::new();
         for (role, status) in statuses {
-            let slug = role_slug(*role);
             match status {
-                Some(VerifierStatus::Pass) => usable_roles.push(slug),
+                Some(VerifierStatus::Pass) => usable_roles.push(role.clone()),
                 Some(VerifierStatus::Warn) => {
-                    usable_roles.push(slug);
-                    warning_roles.push(slug);
+                    usable_roles.push(role.clone());
+                    warning_roles.push(role.clone());
                 }
-                Some(VerifierStatus::Fail) | None => blocked_roles.push(slug),
+                Some(VerifierStatus::Fail) | None => blocked_roles.push(role.clone()),
             }
         }
         let meta_can_run = usable_roles.len() >= min_usable;
@@ -73,11 +72,11 @@ impl SpecialistGate {
             meta_can_run: true,
             publishable_without_force: true,
             usable_roles: vec![
-                "summary",
-                "technical_correctness",
-                "novelty",
-                "reproducibility",
-                "citation",
+                "summary".to_string(),
+                "technical_correctness".to_string(),
+                "novelty".to_string(),
+                "reproducibility".to_string(),
+                "citation".to_string(),
             ],
             warning_roles: vec![],
             blocked_roles: vec![],
@@ -149,23 +148,22 @@ impl PublicationGate {
     }
 }
 
-fn role_slug(role: AgentRole) -> &'static str {
-    crate::review_dag::role_slug(role)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grokrxiv_schemas::{AgentRole, VerifierStatus};
+    use grokrxiv_schemas::VerifierStatus;
 
     #[test]
     fn specialist_gate_distinguishes_usable_from_publishable() {
         let statuses = vec![
-            (AgentRole::Summary, Some(VerifierStatus::Pass)),
-            (AgentRole::TechnicalCorrectness, Some(VerifierStatus::Warn)),
-            (AgentRole::Novelty, Some(VerifierStatus::Pass)),
-            (AgentRole::Reproducibility, Some(VerifierStatus::Fail)),
-            (AgentRole::Citation, None),
+            ("summary".to_string(), Some(VerifierStatus::Pass)),
+            (
+                "technical_correctness".to_string(),
+                Some(VerifierStatus::Warn),
+            ),
+            ("novelty".to_string(), Some(VerifierStatus::Pass)),
+            ("reproducibility".to_string(), Some(VerifierStatus::Fail)),
+            ("citation".to_string(), None),
         ];
         let gate = SpecialistGate::evaluate(&statuses, 3, 5);
         assert!(gate.meta_can_run);
@@ -186,11 +184,11 @@ mod tests {
                 meta_can_run: true,
                 publishable_without_force: true,
                 usable_roles: vec![
-                    "summary",
-                    "technical_correctness",
-                    "novelty",
-                    "reproducibility",
-                    "citation",
+                    "summary".to_string(),
+                    "technical_correctness".to_string(),
+                    "novelty".to_string(),
+                    "reproducibility".to_string(),
+                    "citation".to_string(),
                 ],
                 warning_roles: vec![],
                 blocked_roles: vec![],
@@ -209,7 +207,7 @@ mod tests {
         let warned = PublicationGateInput {
             recommendation: Some("accept"),
             specialist_gate: SpecialistGate {
-                warning_roles: vec!["citation"],
+                warning_roles: vec!["citation".to_string()],
                 publishable_without_force: false,
                 ..SpecialistGate::all_pass_for_test()
             },

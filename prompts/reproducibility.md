@@ -29,9 +29,8 @@ theoretical or empirical claim that lacks a code / proof artifact, add a
 `concerns` entry with `area: proof_as_code`, a description naming the
 specific artifact that would close the gap (with a file path), and
 `severity` at least `major` (`critical` if the headline result depends on
-it). The live `role_system_prompt` (see
-`crates/orchestrator/src/supervisor.rs`) installs this axiom into the system
-prompt when `paper.field` matches the prefix list.
+it). The DAG app may also add field-gated proof-as-code system overlays when
+`paper.field` matches the prefix list.
 
 # User
 
@@ -45,6 +44,9 @@ Sections:
 
 Bibliography:
 {{bibliography}}
+
+Verified fact blocks:
+{{fact_blocks}}
 
 Respond ONLY with JSON matching the schema **reproducibility_review.schema.json**;
 no prose, no markdown fences, no commentary outside the JSON object.

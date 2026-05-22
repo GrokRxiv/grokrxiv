@@ -12,6 +12,9 @@ output_schema: schemas/summary_review.schema.json
 verifiers:
   - json_schema
   - tone
+prompt_context:
+  body_budget_chars: 48000
+  bibliography: full
 max_retries: 2
 timeout_secs: 90
 escalation: skip

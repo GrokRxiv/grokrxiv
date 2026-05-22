@@ -445,15 +445,6 @@ pub(crate) fn review_agents_dir_from_env() -> PathBuf {
 pub(crate) fn required_cli_binaries_for_agents_dir(
     agents_dir: &Path,
 ) -> anyhow::Result<BTreeSet<String>> {
-    const REVIEW_AGENT_FILES: &[&str] = &[
-        "summary.yaml",
-        "technical_correctness.yaml",
-        "novelty.yaml",
-        "reproducibility.yaml",
-        "citation.yaml",
-        "meta_reviewer.yaml",
-    ];
-
     #[derive(serde::Deserialize)]
     struct ReviewAgentCliConfig {
         provider: String,
@@ -462,8 +453,7 @@ pub(crate) fn required_cli_binaries_for_agents_dir(
     }
 
     let mut required = BTreeSet::new();
-    for filename in REVIEW_AGENT_FILES {
-        let path = agents_dir.join(filename);
+    for path in yaml_files_under(agents_dir)? {
         let raw = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
         let cfg: ReviewAgentCliConfig = serde_yaml::from_str(&raw)
@@ -473,6 +463,28 @@ pub(crate) fn required_cli_binaries_for_agents_dir(
         }
     }
     Ok(required)
+}
+
+fn yaml_files_under(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    collect_yaml_files(root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| anyhow::anyhow!("read agents directory {}: {e}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files(&path, out)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("yaml") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Map a review-agent provider tag to the local CLI binary it uses.

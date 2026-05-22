@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec};
+use crate::agents::AgentRunner;
 
 /// Default Ollama host when neither `GROKRXIV_LITELLM_URL` nor `OLLAMA_HOST`
 /// are set.
@@ -190,7 +190,7 @@ impl AgentRunner for LocalInferenceRunner {
         let latency_ms = i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX);
 
         Ok(AgentRun {
-            role: spec.role,
+            role: spec.role.clone(),
             runner: AgentRunnerKind::LocalInference,
             model: spec.model.clone(),
             output: parsed,
@@ -209,7 +209,6 @@ impl AgentRunner for LocalInferenceRunner {
 mod tests {
     use super::*;
     use crate::agents::types::AgentSpec;
-    use grokrxiv_schemas::AgentRole;
     use std::sync::Mutex;
     use uuid::Uuid;
     use wiremock::matchers::{method, path};
@@ -250,7 +249,7 @@ mod tests {
 
     fn test_spec() -> AgentSpec {
         AgentSpec::api_default(
-            AgentRole::Summary,
+            "summary",
             "ollama".to_string(),
             "qwen2.5:7b-instruct".to_string(),
         )
@@ -260,7 +259,7 @@ mod tests {
         AgentInput {
             paper_id: Uuid::nil(),
             review_id: Uuid::nil(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
             system_prompt: "you are a reviewer".to_string(),

@@ -20,11 +20,11 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::agents::extraction::ToolCtx;
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
+use crate::agents::AgentRunner;
 use crate::runtime_config::{role_env_suffix, ALLOW_PROVIDER_API_ENV};
 use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
 
@@ -118,8 +118,8 @@ description: Specialist reviewer for grokrxiv. Emits JSON-only output strictly m
 ---
 
 You are a specialist reviewer for grokrxiv. The user supplies:
-- a role tag (one of: summary, technical_correctness, novelty, reproducibility, citation, meta_reviewer)
-- a paper extract (or for meta_reviewer, the 5 specialist outputs)
+- a DAG-scoped role tag
+- the input artifact for that DAG node
 - the JSON schema for that role's output
 
 You MUST output a SINGLE JSON object that validates against the schema. NO prose, NO markdown fences, NO commentary. If you cannot, output `{\"error\":\"<one-line reason>\"}`.
@@ -222,7 +222,7 @@ impl AgentRunner for CliRunner {
         let mut built = build_command(self, spec, &prompt)?;
         built.cwd = Some(review_workdir.path().to_path_buf());
         let raw_stdout =
-            match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
+            match exec_and_capture(&built, timeout_dur, &spec.role, &spec.provider).await {
                 Ok(s) => s,
                 Err(e) => {
                     cleanup_schema_path(&built.schema_path);
@@ -249,40 +249,24 @@ impl AgentRunner for CliRunner {
                 );
                 let mut built2 = build_command(self, spec, &corrective)?;
                 built2.cwd = Some(review_workdir.path().to_path_buf());
-                let raw2 =
-                    match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            cleanup_schema_path(&built2.schema_path);
-                            return Err(e);
-                        }
-                    };
+                let raw2 = match exec_and_capture(&built2, timeout_dur, &spec.role, &spec.provider)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        cleanup_schema_path(&built2.schema_path);
+                        return Err(e);
+                    }
+                };
                 cleanup_schema_path(&built2.schema_path);
                 let extracted2 = extract_json_text(&spec.provider, &raw2);
                 match parse_and_validate(&extracted2, spec.schema.as_ref()) {
                     Ok(v) => v,
                     Err(second_err) => {
-                        if let Some(repaired) = repair_review_output(
-                            spec.role,
-                            &extracted2,
-                            spec.schema.as_ref(),
-                            &input.artifact,
-                        )
-                        .or_else(|| {
-                            repair_review_output(
-                                spec.role,
-                                &extracted,
-                                spec.schema.as_ref(),
-                                &input.artifact,
-                            )
-                        }) {
-                            repaired
-                        } else {
-                            return Err(anyhow::anyhow!(
-                                "CliRunner parse/validate failure after corrective retry for role {role:?}: first={first_err}; retry={second_err}",
-                                role = spec.role,
-                            ));
-                        }
+                        return Err(anyhow::anyhow!(
+                            "CliRunner parse/validate failure after corrective retry for role {role}: first={first_err}; retry={second_err}",
+                            role = spec.role,
+                        ));
                     }
                 }
             }
@@ -291,7 +275,7 @@ impl AgentRunner for CliRunner {
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
 
         Ok(AgentRun {
-            role: spec.role,
+            role: spec.role.clone(),
             runner: AgentRunnerKind::Cli,
             model: spec.model.clone(),
             output: parsed,
@@ -346,7 +330,7 @@ impl AgentRunner for CliRunner {
         let prompt = render_tool_prompt(spec, messages, tools, ctx)?;
         let built = build_tool_command(self, spec, &prompt, ctx.workdir)?;
         let raw_stdout =
-            match exec_and_capture(&built, timeout_dur, spec.role, &spec.provider).await {
+            match exec_and_capture(&built, timeout_dur, &spec.role, &spec.provider).await {
                 Ok(s) => s,
                 Err(e) => return Err(e),
             };
@@ -369,11 +353,12 @@ impl AgentRunner for CliRunner {
                      submit with the final payload."
                 );
                 let built2 = build_tool_command(self, spec, &corrective, ctx.workdir)?;
-                let raw2 =
-                    match exec_and_capture(&built2, timeout_dur, spec.role, &spec.provider).await {
-                        Ok(s) => s,
-                        Err(e) => return Err(e),
-                    };
+                let raw2 = match exec_and_capture(&built2, timeout_dur, &spec.role, &spec.provider)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => return Err(e),
+                };
                 parse_tool_completion(&spec.provider, &raw2, tools)
                     .map(|mut completion| {
                         completion.raw = enrich_cli_tool_raw(completion.raw, started.elapsed());
@@ -451,7 +436,7 @@ fn render_review_prompt_with_files(input: &AgentInput) -> String {
 	         or extra properties.\n\n\
 	         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
 	         If you use local file tools, restrict them to the current directory and these files.",
-	        role = role_slug(input.role),
+            role = role_slug(&input.role),
 	    )
 }
 
@@ -729,7 +714,7 @@ fn build_api_fallback_providers(
 /// The global env var stays available, but slow roles can now be tuned without
 /// loosening every CLI call.
 fn cli_timeout_for(spec: &AgentSpec) -> Duration {
-    if let Some(secs) = timeout_env_secs(&role_timeout_env_var(spec.role)) {
+    if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
         return Duration::from_secs(secs);
     }
     if let Some(secs) = timeout_env_secs("GROKRXIV_CLI_TIMEOUT_SECS") {
@@ -748,7 +733,7 @@ fn timeout_env_secs(key: &str) -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
-fn role_timeout_env_var(role: grokrxiv_schemas::AgentRole) -> String {
+fn role_timeout_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_TIMEOUT_SECS", role_env_suffix(role))
 }
 
@@ -761,7 +746,7 @@ fn build_command(
     prompt: &str,
 ) -> anyhow::Result<BuiltCommand> {
     let program = runner.binary_for(&spec.provider)?;
-    let role_slug = role_slug(spec.role);
+    let role_slug = role_slug(&spec.role);
 
     // A7: for claude AND gemini, the JSON-only output contract is enforced
     // via the `/grokrxiv-review` skill which both CLIs resolve from a
@@ -796,7 +781,7 @@ fn build_command(
             // final positional arg. Long prompts: codex handles multi-line
             // strings fine, and we are bounded by the OS argv limit only on
             // truly enormous inputs (>1MB on macOS / >2MB on Linux).
-            let path = write_codex_schema(role_slug, spec.schema.as_ref())?;
+            let path = write_codex_schema(&role_slug, spec.schema.as_ref())?;
             let args = vec![
                 "exec".to_string(),
                 "--skip-git-repo-check".to_string(),
@@ -852,7 +837,7 @@ fn build_command(
 async fn exec_and_capture(
     built: &BuiltCommand,
     timeout_dur: Duration,
-    role: grokrxiv_schemas::AgentRole,
+    role: &str,
     provider: &str,
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new(&built.program);
@@ -931,7 +916,7 @@ async fn exec_and_capture(
             stdout_task.abort();
             stderr_task.abort();
             anyhow::bail!(
-                "CliRunner timed out after {}s for role {:?}",
+                "CliRunner timed out after {}s for role {}",
                 timeout_dur.as_secs(),
                 role
             );
@@ -958,14 +943,14 @@ async fn exec_and_capture(
                 message: snippet,
             })
             .context(format!(
-                "`{}` exited with {:?} for role {:?}",
+                "`{}` exited with {:?} for role {}",
                 built.program,
                 status.code(),
                 role,
             )));
         }
         anyhow::bail!(
-            "`{}` exited with {:?} for role {:?}: {stderr}",
+            "`{}` exited with {:?} for role {}: {stderr}",
             built.program,
             status.code(),
             role,
@@ -1215,487 +1200,12 @@ fn validate_parsed(
     Ok(parsed)
 }
 
-fn repair_review_output(
-    role: grokrxiv_schemas::AgentRole,
-    extracted: &str,
-    schema: &serde_json::Value,
-    artifact: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    use grokrxiv_schemas::AgentRole;
-
-    let repaired = match role {
-        AgentRole::Novelty => {
-            let parsed = parse_json_lenient(extracted)?;
-            repair_novelty_review(parsed)?
-        }
-        AgentRole::Reproducibility => parse_json_lenient(extracted)
-            .and_then(repair_reproducibility_review)
-            .or_else(|| Some(fallback_reproducibility_review(artifact)))?,
-        AgentRole::Citation => {
-            let _ = artifact;
-            parse_json_lenient(extracted).and_then(repair_citation_review)?
-        }
-        _ => return None,
-    };
-
-    validate_parsed(repaired, schema).ok()
-}
-
-fn parse_json_lenient(extracted: &str) -> Option<serde_json::Value> {
-    let cleaned = strip_code_fences(extracted.trim());
-    if cleaned.is_empty() {
-        return None;
-    }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
-        return Some(v);
-    }
-    let start = cleaned.find('{')?;
-    let end = cleaned.rfind('}')?;
-    if start >= end {
-        return None;
-    }
-    serde_json::from_str(&cleaned[start..=end]).ok()
-}
-
-fn repair_novelty_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
-    let obj = parsed.as_object()?;
-    let score = obj
-        .get("novelty_score")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| score_from_verdict(obj.get("verdict").and_then(|v| v.as_str())));
-    let verdict = normalize_novelty_verdict(obj.get("verdict").and_then(|v| v.as_str()), score);
-    let confidence = obj
-        .get("confidence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.5)
-        .clamp(0.0, 1.0);
-
-    let related_work = obj
-        .get("related_work")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(normalize_related_work_item)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let missing_prior_art = obj
-        .get("missing_prior_art")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let title = text_field(item, &["title", "citation", "work"])?;
-                    let reason = text_field(item, &["reason", "comment", "delta", "notes"])
-                        .unwrap_or_else(|| {
-                            "Mentioned by CLI reviewer as potentially relevant.".to_string()
-                        });
-                    Some(serde_json::json!({
-                        "title": title,
-                        "reason": reason,
-                    }))
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Some(serde_json::json!({
-        "novelty_score": score.clamp(0.0, 1.0),
-        "related_work": related_work,
-        "missing_prior_art": missing_prior_art,
-        "verdict": verdict,
-        "confidence": confidence,
-    }))
-}
-
-fn normalize_related_work_item(item: &serde_json::Value) -> Option<serde_json::Value> {
-    let citation = item.get("citation");
-    let citation_key = item
-        .get("citation_key")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            citation?
-                .get("key")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        });
-    let title = text_field(item, &["title", "work"])
-        .or_else(|| citation.and_then(|c| text_field(c, &["title", "raw", "key"])))?;
-    let relation = normalize_relation(item.get("relation").and_then(|v| v.as_str()));
-    let delta = text_field(
-        item,
-        &["delta", "comment", "explanation", "notes", "reason"],
-    )
-    .unwrap_or_else(|| {
-        "CLI reviewer identified this as related work but did not provide a schema-compliant delta."
-            .to_string()
-    });
-
-    Some(serde_json::json!({
-        "citation_key": citation_key,
-        "title": title,
-        "relation": relation,
-        "delta": delta,
-    }))
-}
-
-fn normalize_relation(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "builds_on" | "builds on" | "extends" | "extension" | "supporting" => "builds_on",
-        "competing" | "contrasts" | "contrast" | "alternative" => "competing",
-        "prior_art" | "prior art" | "background" | "baseline" => "prior_art",
-        "orthogonal" | "complementary" | "related" | "adjacent" => "orthogonal",
-        _ => "prior_art",
-    }
-}
-
-fn normalize_novelty_verdict(raw: Option<&str>, score: f64) -> &'static str {
-    let lower = raw.unwrap_or("").to_ascii_lowercase();
-    for verdict in ["significant", "incremental", "marginal", "duplicative"] {
-        if lower.contains(verdict) {
-            return verdict;
-        }
-    }
-    if score >= 0.75 {
-        "significant"
-    } else if score >= 0.45 {
-        "incremental"
-    } else if score >= 0.2 {
-        "marginal"
-    } else {
-        "duplicative"
-    }
-}
-
-fn score_from_verdict(raw: Option<&str>) -> f64 {
-    match normalize_novelty_verdict(raw, 0.5) {
-        "significant" => 0.85,
-        "incremental" => 0.6,
-        "marginal" => 0.3,
-        "duplicative" => 0.05,
-        _ => 0.5,
-    }
-}
-
-fn repair_reproducibility_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
-    let obj = parsed.as_object()?;
-    let environment = obj.get("environment").cloned().unwrap_or_else(|| {
-        serde_json::json!({
-            "hardware": null,
-            "software": null,
-            "dependencies": [],
-        })
-    });
-    let concerns = obj
-        .get("concerns")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(normalize_reproducibility_concern)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Some(serde_json::json!({
-        "code_availability": normalize_code_availability(obj.get("code_availability").and_then(|v| v.as_str())),
-        "code_url": nullable_string(obj.get("code_url")),
-        "data_availability": normalize_data_availability(obj.get("data_availability").and_then(|v| v.as_str())),
-        "data_url": nullable_string(obj.get("data_url")),
-        "environment": normalize_environment(&environment),
-        "concerns": concerns,
-        "reproducibility_score": obj
-            .get("reproducibility_score")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.35)
-            .clamp(0.0, 1.0),
-        "confidence": obj
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.55)
-            .clamp(0.0, 1.0),
-    }))
-}
-
-fn fallback_reproducibility_review(artifact: &serde_json::Value) -> serde_json::Value {
-    let body = artifact
-        .get("sections")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|s| s.get("body_markdown").and_then(|v| v.as_str()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let code_url = first_url_matching(&body, &["github.com", "gitlab.com", "zenodo.org"]);
-    let has_code = code_url.is_some();
-    serde_json::json!({
-        "code_availability": if has_code { "open_source" } else { "unspecified" },
-        "code_url": code_url,
-        "data_availability": "unspecified",
-        "data_url": null,
-        "environment": {
-            "hardware": null,
-            "software": null,
-            "dependencies": [],
-        },
-        "concerns": [{
-            "area": "code",
-            "description": "The extracted paper does not provide enough machine-checkable implementation detail or runnable code artifacts for a direct reproduction from GrokRxiv artifacts alone.",
-            "severity": if has_code { "minor" } else { "major" },
-        }, {
-            "area": "data",
-            "description": "The extracted paper does not expose a separate reproducibility data bundle in the review input.",
-            "severity": "minor",
-        }],
-        "reproducibility_score": if has_code { 0.55 } else { 0.25 },
-        "confidence": 0.55,
-    })
-}
-
-fn normalize_reproducibility_concern(item: &serde_json::Value) -> Option<serde_json::Value> {
-    Some(serde_json::json!({
-        "area": normalize_repro_area(item.get("area").and_then(|v| v.as_str())),
-        "description": text_field(item, &["description", "concern", "issue", "notes"])?,
-        "severity": normalize_repro_severity(item.get("severity").and_then(|v| v.as_str())),
-    }))
-}
-
-fn normalize_environment(value: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "hardware": nullable_string(value.get("hardware")),
-        "software": nullable_string(value.get("software")),
-        "dependencies": value
-            .get("dependencies")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
-    })
-}
-
-fn normalize_code_availability(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "open_source" | "open source" | "public" | "available" => "open_source",
-        "available_on_request" | "available on request" | "request" => "available_on_request",
-        "proprietary" | "closed" | "closed_source" => "proprietary",
-        _ => "unspecified",
-    }
-}
-
-fn normalize_data_availability(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "public" | "open" | "available" => "public",
-        "restricted" => "restricted",
-        "synthetic" => "synthetic",
-        "private" => "private",
-        _ => "unspecified",
-    }
-}
-
-fn normalize_repro_area(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "code" => "code",
-        "data" => "data",
-        "compute" => "compute",
-        "hyperparameters" | "hyperparameter" => "hyperparameters",
-        "evaluation" => "evaluation",
-        _ => "other",
-    }
-}
-
-fn normalize_repro_severity(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "critical" => "critical",
-        "major" => "major",
-        "minor" => "minor",
-        _ => "info",
-    }
-}
-
-fn first_url_matching(body: &str, hosts: &[&str]) -> Option<String> {
-    body.split_whitespace()
-        .map(|token| {
-            token.trim_matches(|c: char| {
-                matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '.')
-            })
-        })
-        .find(|token| {
-            token.starts_with("http")
-                && hosts
-                    .iter()
-                    .any(|host| token.to_ascii_lowercase().contains(host))
-        })
-        .map(str::to_string)
-}
-
-fn repair_citation_review(parsed: serde_json::Value) -> Option<serde_json::Value> {
-    let obj = parsed.as_object()?;
-    let entries = obj
-        .get("entries")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, item)| normalize_citation_entry(item, idx))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if entries.is_empty() {
-        return None;
-    }
-
-    let missing_references = obj
-        .get("missing_references")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let title = text_field(item, &["title", "citation", "work"])?;
-                    let reason = text_field(item, &["reason", "comment", "notes"])
-                        .unwrap_or_else(|| "Flagged by CLI citation reviewer.".to_string());
-                    Some(serde_json::json!({
-                        "title": title,
-                        "reason": reason,
-                    }))
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Some(serde_json::json!({
-        "entries": entries,
-        "missing_references": missing_references,
-        "summary": text_field(&parsed, &["summary"]).unwrap_or_else(|| {
-            "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()
-        }),
-        "confidence": obj
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5)
-            .clamp(0.0, 1.0),
-    }))
-}
-
-fn normalize_citation_entry(item: &serde_json::Value, idx: usize) -> Option<serde_json::Value> {
-    let citation = item.get("citation")?;
-    let citation_obj = normalize_citation(citation, idx);
-    Some(serde_json::json!({
-        "citation": citation_obj,
-        "exists": nullable_bool(item.get("exists")),
-        "resolved_doi": nullable_string(item.get("resolved_doi")),
-        "resolved_url": nullable_string(item.get("resolved_url").or_else(|| item.get("url"))),
-        "relevance": normalize_relevance(item.get("relevance").and_then(|v| v.as_str())),
-        "notes": nullable_string(item.get("notes").or_else(|| item.get("comment"))),
-        "explanation": text_field(item, &["explanation", "reason", "comment", "notes"])
-            .unwrap_or_else(|| "CLI citation output was normalized to the GrokRxiv citation schema.".to_string()),
-    }))
-}
-
-fn normalize_citation(citation: &serde_json::Value, idx: usize) -> serde_json::Value {
-    let key = citation_key(citation).unwrap_or_else(|| format!("[{}]", idx + 1));
-    serde_json::json!({
-        "key": key,
-        "raw": nullable_string(citation.get("raw")).or_else(|| Some(citation.to_string())),
-        "title": nullable_string(citation.get("title")),
-        "authors": citation
-            .get("authors")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
-        "year": citation.get("year").and_then(|v| v.as_i64()),
-        "venue": nullable_string(citation.get("venue")),
-        "doi": nullable_string(citation.get("doi")),
-        "arxiv_id": nullable_string(citation.get("arxiv_id")),
-        "url": nullable_string(citation.get("url")),
-    })
-}
-
-fn citation_key(citation: &serde_json::Value) -> Option<String> {
-    citation
-        .get("key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            let raw = citation.get("raw")?.as_str()?.trim();
-            if !raw.is_empty() && raw.len() <= 96 && !raw.contains(' ') {
-                Some(raw.to_string())
-            } else {
-                None
-            }
-        })
-}
-
-fn normalize_relevance(raw: Option<&str>) -> &'static str {
-    match raw.unwrap_or("").to_ascii_lowercase().as_str() {
-        "high" => "high",
-        "medium" => "medium",
-        "low" => "low",
-        "unrelated" => "unrelated",
-        _ => "medium",
-    }
-}
-
-fn nullable_string(v: Option<&serde_json::Value>) -> Option<String> {
-    match v {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
-        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn nullable_bool(v: Option<&serde_json::Value>) -> Option<bool> {
-    match v {
-        Some(serde_json::Value::Bool(b)) => Some(*b),
-        _ => None,
-    }
-}
-
-fn text_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        match value.get(*key) {
-            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
-                return Some(s.clone());
-            }
-            Some(other) if other.is_object() || other.is_array() => {
-                if let Some(s) = text_field(other, &["title", "raw", "key"]) {
-                    return Some(s);
-                }
-            }
-            Some(other) if !other.is_null() => return Some(other.to_string()),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Render `AgentRole` to a stable snake-case slug (used to name the codex
-/// schema temp file).
-fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
-    use grokrxiv_schemas::AgentRole;
-    match role {
-        AgentRole::Summary => "summary",
-        AgentRole::TechnicalCorrectness => "technical_correctness",
-        AgentRole::Novelty => "novelty",
-        AgentRole::Reproducibility => "reproducibility",
-        AgentRole::Citation => "citation",
-        AgentRole::MetaReviewer => "meta_reviewer",
-    }
+/// Normalize a manifest role id to a filesystem-safe schema filename stem.
+fn role_slug(role: &str) -> String {
+    role.trim()
+        .replace('.', "_")
+        .replace('-', "_")
+        .to_ascii_lowercase()
 }
 
 /// Persist the role's JSON schema to `$TMPDIR/grokrxiv-schemas/<role>.schema.json`
@@ -2033,11 +1543,9 @@ pub fn ensure_grokrxiv_review_skill_installed() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::agents::types::{AgentSpec, SandboxPolicy};
-    use grokrxiv_schemas::AgentRole;
 
     fn stub_spec(provider: &str, model: &str) -> AgentSpec {
-        let mut s =
-            AgentSpec::api_default(AgentRole::Summary, provider.to_string(), model.to_string());
+        let mut s = AgentSpec::api_default("summary", provider.to_string(), model.to_string());
         s.runner = AgentRunnerKind::Cli;
         s.schema = std::sync::Arc::new(serde_json::json!({}));
         s
@@ -2133,22 +1641,22 @@ mod tests {
         // 1. per-role env var wins over everything.
         {
             let _guard = EnvVarGuard::set(&[
-                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", "77"),
+                ("GROKRXIV_CUSTOM_VALIDATOR_TIMEOUT_SECS", "77"),
                 ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
-            spec.role = AgentRole::TechnicalCorrectness;
+            spec.role = "custom_validator".to_string();
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(77));
         }
         // 2. invalid/blank per-role env var is ignored.
         {
             let _guard = EnvVarGuard::set(&[
-                ("GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS", ""),
+                ("GROKRXIV_CUSTOM_VALIDATOR_TIMEOUT_SECS", ""),
                 ("GROKRXIV_CLI_TIMEOUT_SECS", "42"),
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
-            spec.role = AgentRole::TechnicalCorrectness;
+            spec.role = "custom_validator".to_string();
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
@@ -2204,7 +1712,7 @@ mod tests {
         let input = AgentInput {
             paper_id: uuid::Uuid::nil(),
             review_id: uuid::Uuid::nil(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: serde_json::json!({"ignored": true}),
             artifact: serde_json::json!({"title": "Paper", "sections": []}),
             system_prompt: "system instructions".to_string(),
@@ -2406,7 +1914,7 @@ mod tests {
         let input = AgentInput {
             paper_id: uuid::Uuid::nil(),
             review_id: uuid::Uuid::nil(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
             system_prompt: "sys".to_string(),
@@ -2639,140 +2147,6 @@ mod tests {
         assert_eq!(completion.usage.tokens_out, 3);
     }
 
-    #[test]
-    fn novelty_repair_normalizes_common_cli_shape() {
-        let schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../schemas/novelty_review.schema.json"
-        ))
-        .expect("novelty schema parses");
-        let raw = serde_json::json!({
-            "novelty_score": 0.82,
-            "related_work": [{
-                "citation": {"key": "Smith2024", "title": "Baseline Work"},
-                "relation": "complementary",
-                "comment": "The submitted paper uses a different technique."
-            }],
-            "missing_prior_art": [{"work": "Older Method", "comment": "Should be discussed."}],
-            "verdict": "The paper is a significant contribution.",
-            "confidence": 0.7
-        })
-        .to_string();
-
-        let repaired =
-            repair_review_output(AgentRole::Novelty, &raw, &schema, &serde_json::json!({}))
-                .expect("repair validates");
-
-        assert_eq!(repaired["verdict"], "significant");
-        assert_eq!(repaired["related_work"][0]["citation_key"], "Smith2024");
-        assert_eq!(repaired["related_work"][0]["relation"], "orthogonal");
-        assert_eq!(
-            repaired["related_work"][0]["delta"],
-            "The submitted paper uses a different technique."
-        );
-    }
-
-    #[test]
-    fn citation_repair_does_not_build_schema_only_fallback_from_bibliography() {
-        let schema = citation_review_schema_for_test();
-        let artifact = serde_json::json!({
-            "bibliography": [{
-                "raw": "doe2024",
-                "title": "A Useful Paper",
-                "doi": "10.1234/example",
-                "arxiv_id": null
-            }],
-            "sections": [{
-                "heading": "Introduction",
-                "body_markdown": "This result follows earlier work [@doe2024]."
-            }]
-        });
-
-        let repaired = repair_review_output(AgentRole::Citation, "", &schema, &artifact);
-
-        assert!(
-            repaired.is_none(),
-            "citation fallback must not create a schema-shaped review without an LLM citation judgment"
-        );
-    }
-
-    #[test]
-    fn reproducibility_repair_builds_schema_valid_fallback() {
-        let schema = reproducibility_review_schema_for_test();
-        let artifact = serde_json::json!({
-            "sections": [{
-                "heading": "Methods",
-                "body_markdown": "We solve the equations numerically and do not provide source code."
-            }]
-        });
-
-        let repaired = repair_review_output(AgentRole::Reproducibility, "", &schema, &artifact)
-            .expect("fallback validates");
-
-        assert_eq!(repaired["code_availability"], "unspecified");
-        assert_eq!(repaired["data_availability"], "unspecified");
-        assert_eq!(
-            repaired["environment"]["dependencies"]
-                .as_array()
-                .unwrap()
-                .len(),
-            0
-        );
-        assert!(repaired["concerns"].as_array().unwrap().len() >= 2);
-        assert_eq!(repaired["concerns"][0]["area"], "code");
-    }
-
-    fn citation_review_schema_for_test() -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "entries": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "citation": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "key": {"type": "string"},
-                                    "raw": {"type": ["string", "null"]},
-                                    "title": {"type": ["string", "null"]},
-                                    "authors": {"type": "array", "items": {"type": "string"}},
-                                    "year": {"type": ["integer", "null"]},
-                                    "venue": {"type": ["string", "null"]},
-                                    "doi": {"type": ["string", "null"]},
-                                    "arxiv_id": {"type": ["string", "null"]},
-                                    "url": {"type": ["string", "null"]}
-                                },
-                                "required": ["key", "raw", "title", "authors", "year", "venue", "doi", "arxiv_id", "url"]
-                            },
-                            "exists": {"type": ["boolean", "null"]},
-                            "resolved_doi": {"type": ["string", "null"]},
-                            "resolved_url": {"type": ["string", "null"]},
-                            "relevance": {"type": "string", "enum": ["high", "medium", "low", "unrelated"]},
-                            "notes": {"type": ["string", "null"]},
-                            "explanation": {"type": "string"}
-                        },
-                        "required": ["citation", "exists", "resolved_doi", "resolved_url", "relevance", "notes", "explanation"]
-                    }
-                },
-                "missing_references": {"type": "array"},
-                "summary": {"type": "string"},
-                "confidence": {"type": "number"}
-            },
-            "required": ["entries", "missing_references", "summary", "confidence"]
-        })
-    }
-
-    fn reproducibility_review_schema_for_test() -> serde_json::Value {
-        serde_json::from_str(include_str!(
-            "../../../../../schemas/reproducibility_review.schema.json"
-        ))
-        .unwrap()
-    }
-
     /// Integration test gated on `which claude`. Skips silently if claude
     /// isn't installed in PATH.
     #[tokio::test]
@@ -2875,14 +2249,9 @@ mod tests {
             cwd: None,
         };
 
-        let err = exec_and_capture(
-            &built,
-            Duration::from_secs(5),
-            grokrxiv_schemas::AgentRole::Summary,
-            "openai",
-        )
-        .await
-        .expect_err("subprocess should exit non-zero");
+        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "openai")
+            .await
+            .expect_err("subprocess should exit non-zero");
 
         let downcast = err
             .chain()
@@ -2925,14 +2294,9 @@ mod tests {
             cwd: None,
         };
 
-        let err = exec_and_capture(
-            &built,
-            Duration::from_secs(5),
-            grokrxiv_schemas::AgentRole::Summary,
-            "claude",
-        )
-        .await
-        .expect_err("subprocess should exit non-zero");
+        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "claude")
+            .await
+            .expect_err("subprocess should exit non-zero");
 
         let downcast = err
             .chain()
@@ -2972,14 +2336,9 @@ mod tests {
             cwd: None,
         };
 
-        let err = exec_and_capture(
-            &built,
-            Duration::from_secs(3),
-            grokrxiv_schemas::AgentRole::Novelty,
-            "gemini",
-        )
-        .await
-        .expect_err("subprocess should time out");
+        let err = exec_and_capture(&built, Duration::from_secs(3), "custom_validator", "gemini")
+            .await
+            .expect_err("subprocess should time out");
         assert!(err.to_string().contains("timed out"), "{err:#}");
 
         let pid = read_pid_file(&pid_file).await.expect("pid file");
@@ -3065,14 +2424,9 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
             cwd: None,
         };
 
-        let stdout = exec_and_capture(
-            &built,
-            Duration::from_secs(5),
-            grokrxiv_schemas::AgentRole::Summary,
-            "gemini",
-        )
-        .await
-        .expect("subprocess should succeed");
+        let stdout = exec_and_capture(&built, Duration::from_secs(5), "summary", "gemini")
+            .await
+            .expect("subprocess should succeed");
         let observed: serde_json::Value =
             serde_json::from_str(&stdout).expect("fake script should emit JSON");
 

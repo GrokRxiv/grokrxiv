@@ -13,6 +13,13 @@ verifiers:
   - json_schema
   - tone
   - citation_existence
+prompt_context:
+  body_budget_chars: 240000
+  bibliography: full
+  fact_blocks:
+    - technical_structure
+system_overlays:
+  - proof_as_code_technical
 max_retries: 2
 timeout_secs: 600
-escalation: human
+escalation: agent

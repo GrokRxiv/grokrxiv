@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec};
+use crate::agents::AgentRunner;
 
 /// Polling interval used while waiting for a Vercel run to finish.
 const POLL_INTERVAL: Duration = Duration::from_millis(2_000);
@@ -187,7 +187,7 @@ impl CloudRunner {
 
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
         Ok(AgentRun {
-            role: spec.role,
+            role: spec.role.clone(),
             runner: AgentRunnerKind::Cloud,
             model: spec.model.clone(),
             output: parsed,
@@ -381,7 +381,6 @@ fn strip_fences(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grokrxiv_schemas::AgentRole;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -390,11 +389,7 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     fn sample_spec() -> AgentSpec {
-        let mut spec = AgentSpec::api_default(
-            AgentRole::Summary,
-            "claude".into(),
-            "claude-opus-4-7".into(),
-        );
+        let mut spec = AgentSpec::api_default("summary", "claude".into(), "claude-opus-4-7".into());
         spec.runner = AgentRunnerKind::Cloud;
         spec.schema = std::sync::Arc::new(json!({ "type": "object" }));
         spec.timeout_secs = 5; // keep tests bounded
@@ -405,7 +400,7 @@ mod tests {
         AgentInput {
             paper_id: Uuid::nil(),
             review_id: Uuid::nil(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: json!({}),
             artifact: json!({}),
             system_prompt: "be helpful".into(),
@@ -605,7 +600,7 @@ mod tests {
 
         assert_eq!(run.sandbox_ref.as_deref(), Some("sandbox-deadbeef"));
         assert_eq!(run.runner, AgentRunnerKind::Cloud);
-        assert_eq!(run.role, AgentRole::Summary);
+        assert_eq!(run.role, "summary");
         assert!(!run.cache_hit);
         assert!(run.tokens_in.is_none());
         assert!(run.tokens_out.is_none());

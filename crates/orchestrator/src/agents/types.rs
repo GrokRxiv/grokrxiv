@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use grokrxiv_schemas::{AgentRole, PaperExtract, VerifierStatus};
+use grokrxiv_schemas::{PaperExtract, VerifierStatus};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -185,12 +185,12 @@ impl Default for RevisionTarget {
     }
 }
 
-/// Per-role configuration assembled from `agents/<role>.yaml` plus any TOML
+/// Per-role configuration assembled from `agents/<dag>/<role>.yaml` plus any TOML
 /// profile overrides and CLI flag overrides.
 #[derive(Debug, Clone)]
 pub struct AgentSpec {
-    /// Which review role this spec is for.
-    pub role: AgentRole,
+    /// DAG-scoped role id, e.g. `summary` or `type_theory_validator`.
+    pub role: String,
     /// Which backend executes the role.
     pub runner: AgentRunnerKind,
     /// Isolation policy applied to the runner.
@@ -212,9 +212,9 @@ pub struct AgentSpec {
 impl AgentSpec {
     /// Convenience for tests / Phase-1 wiring: a minimal spec defaulting to
     /// the API runner.
-    pub fn api_default(role: AgentRole, provider: String, model: String) -> Self {
+    pub fn api_default(role: impl Into<String>, provider: String, model: String) -> Self {
         Self {
-            role,
+            role: role.into(),
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
             provider,
@@ -233,8 +233,8 @@ pub struct AgentInput {
     pub paper_id: Uuid,
     /// Review ID the run belongs to.
     pub review_id: Uuid,
-    /// Role being executed.
-    pub role: AgentRole,
+    /// DAG-scoped role id being executed.
+    pub role: String,
     /// Bytes used to derive the cache content hash. Typically the JSON of the
     /// upstream artifact (paper extract for specialists; specialists bundle
     /// for meta-reviewer).
@@ -254,8 +254,8 @@ pub struct AgentInput {
 /// Structured output from one runner execution.
 #[derive(Debug, Clone)]
 pub struct AgentRun {
-    /// Role that produced the run.
-    pub role: AgentRole,
+    /// DAG-scoped role id that produced the run.
+    pub role: String,
     /// Runner that executed it.
     pub runner: AgentRunnerKind,
     /// Model id reported by the runner (may differ from `spec.model` if a
@@ -287,7 +287,7 @@ impl AgentRun {
     /// Cache-hit constructor used by the supervisor when the cache short-circuits
     /// the runner call.
     pub fn from_cache(
-        role: AgentRole,
+        role: impl Into<String>,
         runner: AgentRunnerKind,
         model: String,
         output: serde_json::Value,
@@ -295,7 +295,7 @@ impl AgentRun {
         tokens_out: Option<i32>,
     ) -> Self {
         Self {
-            role,
+            role: role.into(),
             runner,
             model,
             output,
@@ -311,4 +311,4 @@ impl AgentRun {
 }
 
 /// Convenience type for per-role spec overrides assembled from layered config.
-pub type RoleSpecMap = HashMap<AgentRole, AgentSpec>;
+pub type RoleSpecMap = HashMap<String, AgentSpec>;

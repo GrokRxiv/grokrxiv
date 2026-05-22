@@ -225,7 +225,7 @@ pub trait ExtractionAgent: Send + Sync {
     /// custom behaviour.
     async fn run(
         &self,
-        runner: Arc<dyn crate::agents::traits::AgentRunner>,
+        runner: Arc<dyn crate::agents::AgentRunner>,
         spec: &crate::agents::types::AgentSpec,
         ctx: ExtractionContext<'_>,
     ) -> anyhow::Result<ExtractionRun>

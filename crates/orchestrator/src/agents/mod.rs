@@ -1,25 +1,24 @@
-//! Agent runtime: configured role bindings + `AgentRunner` + 4 runner backends.
+//! Agent runtime: review bindings, extraction agents, and runner backends.
 //!
 //! See `research/agent-runner.md` for the design and
 //! `~/.claude/plans/rpt2-real-agent-runtime.md` for the implementation plan.
 //!
 //! Layout:
 //! - [`types`] — taxonomy enums + `AgentSpec` / `AgentInput` / `AgentRun`
-//! - [`traits`] — `AgentRunner` async trait
-//! - [`review_agents`] — configured role binding plus a separate render helper
-//! - [`runners`] — 4 backend impls (`api`, `cli`, `cloud`, `local_inference`)
+//! - [`review`] — configured review roles, render helper, and review facts
+//! - [`runners`] — `AgentRunner` plus 4 backend impls (`api`, `cli`, `cloud`,
+//!   `local_inference`)
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
+pub mod config;
 pub mod extraction;
-pub mod review_agents;
+pub mod review;
 pub mod runners;
 pub mod sandbox;
-pub mod specialist_facts;
-pub mod traits;
 pub mod types;
 
-pub use review_agents::{build_agent, ConfiguredAgent, RenderAgent};
-pub use traits::AgentRunner;
+pub use review::{build_agent, ConfiguredAgent};
+pub use runners::AgentRunner;
 pub use types::{
     AgentInput, AgentMode, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, RevisionTarget,
     RoleSpecMap, SandboxPolicy,
@@ -28,12 +27,11 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use grokrxiv_schemas::AgentRole;
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::traits::AgentRunner;
     use super::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec, SandboxPolicy};
+    use super::AgentRunner;
     use super::ConfiguredAgent;
 
     /// Test double that hands back a synthetic [`AgentRun`] without making
@@ -57,7 +55,7 @@ mod tests {
 
     fn fake_spec() -> AgentSpec {
         AgentSpec {
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             runner: AgentRunnerKind::Api,
             sandbox: SandboxPolicy::None,
             provider: "claude".to_string(),
@@ -68,12 +66,17 @@ mod tests {
         }
     }
 
-    fn fake_input(role: AgentRole) -> AgentInput {
-        let artifact = json!({ "hello": "world" });
+    fn fake_input(role: &str) -> AgentInput {
+        let artifact = json!({
+            "arxiv_id": "2605.00000",
+            "title": "Synthetic Agent Runtime Fixture",
+            "sections": [],
+            "bibliography": []
+        });
         AgentInput {
             paper_id: Uuid::new_v4(),
             review_id: Uuid::new_v4(),
-            role,
+            role: role.to_string(),
             content_hash_material: artifact.clone(),
             artifact,
             system_prompt: "test-system".to_string(),
@@ -87,7 +90,7 @@ mod tests {
         let spec = fake_spec();
         let agent = ConfiguredAgent::new(spec.clone());
         let canned = AgentRun {
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             runner: AgentRunnerKind::Api,
             model: spec.model.clone(),
             output: json!({ "tldr": "ok" }),
@@ -104,11 +107,11 @@ mod tests {
         };
 
         let run = agent
-            .run(&runner, fake_input(AgentRole::Summary))
+            .run(&runner, fake_input("summary"))
             .await
             .expect("fake runner succeeds");
 
-        assert_eq!(agent.role(), AgentRole::Summary);
+        assert_eq!(agent.role(), "summary");
         assert_eq!(run.role, canned.role);
         assert_eq!(run.runner, canned.runner);
         assert_eq!(run.model, canned.model);
@@ -123,7 +126,7 @@ mod tests {
     #[test]
     fn cache_hit_run_preserves_original_runner() {
         let run = AgentRun::from_cache(
-            AgentRole::Summary,
+            "summary",
             AgentRunnerKind::Cli,
             "claude-sonnet-4".to_string(),
             json!({ "tldr": "cached" }),

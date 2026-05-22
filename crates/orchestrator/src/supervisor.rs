@@ -41,10 +41,8 @@ use merge_facts::{
     merge_citation_verifier_into_output, merge_novelty_facts_into_output,
     merge_reproducibility_facts_into_output,
 };
-#[cfg(all(test, feature = "grokrxiv-ingest"))]
-use prompts::{body_budget_chars, build_specialist_prompt};
 #[cfg(test)]
-use prompts::{build_meta_synthesis_prompt, is_code_amenable_field, role_system_prompt};
+use prompts::is_code_amenable_field;
 #[cfg(all(test, feature = "grokrxiv-publisher"))]
 use publish::{
     real_pr_url, reconcile_published_reviews_with, PublishFinalizer, PublishPrLookup,
@@ -74,7 +72,7 @@ pub struct WorkItem {
 pub const MAX_RETRIES: u32 = 3;
 
 /// Minimum number of usable specialist outputs required before meta-review synthesis.
-pub const MIN_SPECIALIST_QUORUM: usize = crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM;
+pub const MIN_SPECIALIST_QUORUM: usize = 3;
 
 /// In-memory supervisor handle.
 #[derive(Clone)]
@@ -260,10 +258,6 @@ pub async fn run_review_dag(
     review_flow::run_review_dag_inner(state, pool, Some(provider), paper_id, extract).await
 }
 
-fn role_slug(role: grokrxiv_schemas::AgentRole) -> &'static str {
-    crate::review_dag::role_slug(role)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +279,7 @@ mod tests {
         ) -> anyhow::Result<crate::agents::AgentRun> {
             tokio::time::sleep(Duration::from_secs(5)).await;
             Ok(crate::agents::AgentRun {
-                role: spec.role,
+                role: spec.role.clone(),
                 runner: crate::agents::AgentRunnerKind::Cli,
                 model: spec.model.clone(),
                 output: serde_json::json!({}),
@@ -317,7 +311,7 @@ mod tests {
         ) -> anyhow::Result<crate::agents::AgentRun> {
             tokio::time::sleep(Duration::from_millis(1200)).await;
             Ok(crate::agents::AgentRun {
-                role: spec.role,
+                role: spec.role.clone(),
                 runner: crate::agents::AgentRunnerKind::Cli,
                 model: spec.model.clone(),
                 output: serde_json::json!({}),
@@ -338,11 +332,10 @@ mod tests {
         use crate::agents::{
             AgentInput, AgentRunnerKind, AgentSpec, ConfiguredAgent, SandboxPolicy,
         };
-        use grokrxiv_schemas::AgentRole;
         use std::sync::Arc;
 
         let spec = AgentSpec {
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             runner: AgentRunnerKind::Cli,
             sandbox: SandboxPolicy::None,
             provider: "claude".to_string(),
@@ -354,7 +347,7 @@ mod tests {
         let input = AgentInput {
             paper_id: Uuid::nil(),
             review_id: Uuid::nil(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
             system_prompt: "system".to_string(),
@@ -380,11 +373,10 @@ mod tests {
         use crate::agents::{
             AgentInput, AgentRunnerKind, AgentSpec, ConfiguredAgent, SandboxPolicy,
         };
-        use grokrxiv_schemas::AgentRole;
         use std::sync::Arc;
 
         let spec = AgentSpec {
-            role: AgentRole::Citation,
+            role: "citation".to_string(),
             runner: AgentRunnerKind::Cli,
             sandbox: SandboxPolicy::None,
             provider: "gemini".to_string(),
@@ -396,7 +388,7 @@ mod tests {
         let input = AgentInput {
             paper_id: Uuid::nil(),
             review_id: Uuid::nil(),
-            role: AgentRole::Citation,
+            role: "citation".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
             system_prompt: "system".to_string(),
@@ -700,305 +692,6 @@ mod tests {
         assert_eq!(defaults.revision_target, RevisionTarget::PaperLatex);
     }
 
-    // build_specialist_prompt fidelity tests cover body inclusion, truncation,
-    // bibliography rendering, and the MetaReviewer input contract.
-
-    #[cfg(feature = "grokrxiv-ingest")]
-    fn fake_extract(
-        sections: Vec<(&str, String)>,
-        bibliography: Vec<&str>,
-    ) -> grokrxiv_schemas::PaperExtract {
-        use grokrxiv_schemas::{Citation, PaperExtract, Section};
-        PaperExtract {
-            arxiv_id: "test/0001".into(),
-            title: "Test Title".into(),
-            authors: vec![],
-            abstract_: "Test abstract sentence.".into(),
-            field: Some("cs.LG".into()),
-            sections: sections
-                .into_iter()
-                .map(|(h, b)| Section {
-                    heading: h.into(),
-                    body_markdown: b,
-                })
-                .collect(),
-            figures: vec![],
-            bibliography: bibliography
-                .into_iter()
-                .map(|raw| Citation {
-                    raw: raw.into(),
-                    doi: None,
-                    arxiv_id: None,
-                    title: None,
-                })
-                .collect(),
-            source_format: None,
-        }
-    }
-
-    /// Body-review specialist prompts include section body markdown.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn specialist_prompt_includes_section_body() {
-        use grokrxiv_schemas::AgentRole;
-        let body = "Introductory text. ".repeat(50);
-        let head_200: String = body.chars().take(200).collect();
-        let extract = fake_extract(
-            vec![
-                ("1. Introduction", body.clone()),
-                ("2. Methods", "Methods text.".to_string()),
-            ],
-            vec![],
-        );
-
-        for role in [
-            AgentRole::Summary,
-            AgentRole::TechnicalCorrectness,
-            AgentRole::Novelty,
-            AgentRole::Reproducibility,
-        ] {
-            let prompt = build_specialist_prompt(role, &extract, None, None, None, None);
-            assert!(
-                prompt.contains("## 1. Introduction"),
-                "role {role:?}: prompt missing heading: {}",
-                &prompt[..prompt.len().min(400)]
-            );
-            assert!(
-                prompt.contains(&head_200),
-                "role {role:?}: first 200 chars of body not in prompt"
-            );
-            assert!(
-                prompt.contains("## 2. Methods"),
-                "role {role:?}: second section heading missing"
-            );
-        }
-    }
-
-    /// Oversized paper bodies are truncated within the per-role prompt budget.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn specialist_prompt_respects_per_role_budget() {
-        use grokrxiv_schemas::AgentRole;
-        // Reproducibility has an 80k body budget; this fixture exceeds it.
-        let big = "x".repeat(15_000);
-        let extract = fake_extract(
-            (0..8)
-                .map(|i| {
-                    (
-                        // headings need 'static-ish lifetime → leak intentionally OK in tests
-                        Box::leak(format!("Section {i}").into_boxed_str()) as &str,
-                        big.clone(),
-                    )
-                })
-                .collect(),
-            vec![],
-        );
-
-        let budget = body_budget_chars(AgentRole::Reproducibility);
-        let prompt =
-            build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
-
-        // Sanity: actually exceeded budget with raw bodies (8 * 15_000 = 120_000 > 80_000).
-        let total_raw: usize = extract.sections.iter().map(|s| s.body_markdown.len()).sum();
-        assert!(total_raw > budget);
-
-        // Either the per-section truncation marker is present, or the
-        // remaining-sections footer is present (both indicate truncation
-        // actually fired).
-        let has_section_marker = prompt.contains("[…truncated…]");
-        let has_footer_marker = prompt.contains("[…remaining sections truncated; headings:");
-        assert!(
-            has_section_marker || has_footer_marker,
-            "expected a truncation marker in the rendered prompt"
-        );
-
-        // Body block must fit inside its budget plus a small slack for the
-        // headings + truncation markers we render in this test. Use the
-        // raw byte length of the rendered "Paper body:" region.
-        let body_start = prompt
-            .find("Paper body:\n\n")
-            .expect("Paper body block present")
-            + "Paper body:\n\n".len();
-        let body_end = prompt.find("\nTask:").unwrap_or(prompt.len());
-        let body_region_chars = prompt[body_start..body_end].chars().count();
-        // Allow up to 5% slack for the trailing remaining-sections-footer line.
-        let allowed = budget + (budget / 20);
-        assert!(
-            body_region_chars <= allowed,
-            "body region {body_region_chars} chars exceeds allowed {allowed} (budget {budget})"
-        );
-    }
-
-    /// Bibliography entries appear in prompts with 1-indexed synthesized keys.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn specialist_prompt_renders_bibliography() {
-        use grokrxiv_schemas::AgentRole;
-        let mut extract = fake_extract(
-            vec![(
-                "1. Introduction",
-                "The result builds on prior work [@alice2020].".to_string(),
-            )],
-            vec!["alice2020", "Bob, A second paper, 2021."],
-        );
-        extract.bibliography[0].title = Some("A foundational paper".to_string());
-
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None, None);
-        assert!(
-            prompt.contains("Bibliography (2 entries):"),
-            "expected bibliography header in prompt"
-        );
-        assert!(
-            prompt.contains("[1] alice2020 | title: A foundational paper"),
-            "expected first bib entry with key and title"
-        );
-        assert!(
-            prompt.contains("[2] Bob, A second paper, 2021."),
-            "expected second bib entry with key [2]"
-        );
-        assert!(
-            prompt.contains("Citation contexts:"),
-            "expected citation contexts block"
-        );
-        assert!(
-            prompt.contains("The result builds on prior work [@alice2020]."),
-            "expected cited sentence in compact citation prompt"
-        );
-        assert!(
-            !prompt.contains("Paper body:"),
-            "citation prompt should not include the full body block"
-        );
-    }
-
-    /// Large bibliography prompts must stay bounded for local CLI runners.
-    /// The verifier preserves full citation existence data; the LLM relevance
-    /// pass only needs a representative capped slice plus in-text contexts.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn citation_prompt_caps_large_bibliography_for_cli_runtime() {
-        use grokrxiv_schemas::AgentRole;
-        let bibliography = (1..=40)
-            .map(|i| Box::leak(format!("Reference {i}").into_boxed_str()) as &str)
-            .collect();
-        let extract = fake_extract(
-            vec![(
-                "1. Introduction",
-                "The result follows earlier work [@ref1].".to_string(),
-            )],
-            bibliography,
-        );
-
-        let prompt = build_specialist_prompt(AgentRole::Citation, &extract, None, None, None, None);
-
-        assert!(
-            prompt.contains("Bibliography (40 entries; showing 32):"),
-            "expected capped bibliography header in prompt"
-        );
-        assert!(prompt.contains("[32] Reference 32"));
-        assert!(
-            !prompt.contains("[33] Reference 33"),
-            "entry past the prompt cap should be omitted"
-        );
-        assert!(
-            prompt.contains("additional bibliography entries omitted from citation LLM prompt"),
-            "expected explicit truncation marker"
-        );
-        assert!(
-            prompt.contains("for each bibliography entry included below"),
-            "task text must not ask the CLI to classify omitted entries"
-        );
-    }
-
-    /// The MetaReviewer specialist prompt is empty because it receives only
-    /// specialist outputs through `build_meta_synthesis_prompt`.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn meta_reviewer_prompt_omits_paper_body() {
-        use grokrxiv_schemas::AgentRole;
-        let extract = fake_extract(
-            vec![(
-                "1. Introduction",
-                "This is the introductory body markdown that must NOT leak.".into(),
-            )],
-            vec!["Some citation, 2020."],
-        );
-        let prompt =
-            build_specialist_prompt(AgentRole::MetaReviewer, &extract, None, None, None, None);
-        assert_eq!(prompt, "", "MetaReviewer prompt must be empty");
-        assert!(!prompt.contains("introductory body markdown"));
-        assert!(!prompt.contains("Bibliography"));
-    }
-
-    /// A single oversized section uses the 60/40 truncation marker.
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn single_giant_section_uses_60_40_truncation() {
-        use grokrxiv_schemas::AgentRole;
-        // Summary budget = 48_000. Build a single 100_000-char section.
-        let huge = "abcdefghij".repeat(10_000); // 100_000 chars
-        let extract = fake_extract(vec![("1. Introduction", huge)], vec![]);
-        let prompt = build_specialist_prompt(AgentRole::Summary, &extract, None, None, None, None);
-        assert!(
-            prompt.contains("[…truncated…]"),
-            "expected the 60/40 truncation marker for single oversized section"
-        );
-    }
-
-    // Proof-as-code prompt tests.
-
-    #[test]
-    fn role_system_prompt_adds_proof_as_code_for_code_amenable_field() {
-        use grokrxiv_schemas::AgentRole;
-        let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("math.AG"));
-        assert!(
-            tc.contains("PROOF-AS-CODE AXIOM"),
-            "math.* should trigger axiom for technical_correctness"
-        );
-        let rp = role_system_prompt(AgentRole::Reproducibility, Some("cs.LO"));
-        assert!(
-            rp.contains("PROOF-AS-CODE AXIOM"),
-            "cs.* should trigger axiom for reproducibility"
-        );
-        let mr = role_system_prompt(AgentRole::MetaReviewer, Some("hep-th"));
-        assert!(
-            mr.contains("RECOMMENDATION GATE"),
-            "hep-* should trigger gate for meta_reviewer"
-        );
-    }
-
-    #[test]
-    fn role_system_prompt_skips_axiom_for_non_amenable_field() {
-        use grokrxiv_schemas::AgentRole;
-        let tc = role_system_prompt(AgentRole::TechnicalCorrectness, Some("q-bio.GN"));
-        assert!(
-            !tc.contains("PROOF-AS-CODE AXIOM"),
-            "q-bio.* should NOT trigger the axiom"
-        );
-        let mr = role_system_prompt(AgentRole::MetaReviewer, None);
-        assert!(
-            !mr.contains("RECOMMENDATION GATE"),
-            "missing field should NOT trigger the gate"
-        );
-    }
-
-    #[test]
-    fn role_system_prompt_skips_axiom_for_unrelated_roles() {
-        use grokrxiv_schemas::AgentRole;
-        let s = role_system_prompt(AgentRole::Summary, Some("cs.LO"));
-        let n = role_system_prompt(AgentRole::Novelty, Some("math.AG"));
-        let c = role_system_prompt(AgentRole::Citation, Some("hep-th"));
-        for p in [&s, &n, &c] {
-            assert!(
-                !p.contains("PROOF-AS-CODE AXIOM"),
-                "axiom should only fire for TC/Reproducibility"
-            );
-            assert!(
-                !p.contains("RECOMMENDATION GATE"),
-                "gate should only fire for MetaReviewer"
-            );
-        }
-    }
-
     #[test]
     fn merge_citation_verifier_into_output_keeps_verifier_facts_out_of_llm_output() {
         let llm_output = serde_json::json!({
@@ -1073,8 +766,8 @@ mod tests {
             "verdict": "significant",
             "confidence": 0.8
         });
-        let facts = crate::agents::specialist_facts::NoveltyFacts {
-            related_papers: vec![crate::agents::specialist_facts::RelatedPaper {
+        let facts = crate::agents::review::facts::NoveltyFacts {
+            related_papers: vec![crate::agents::review::facts::RelatedPaper {
                 title: "Nearby Work".into(),
                 abstract_snippet: Some("A nearby result.".into()),
                 year: Some(2025),
@@ -1095,7 +788,7 @@ mod tests {
 
     #[test]
     fn merge_reproducibility_facts_appends_concerns_for_dead_urls_and_archived_repos() {
-        use crate::agents::specialist_facts::{
+        use crate::agents::review::facts::{
             GithubRepoFact, ReproducibilityFacts, UrlCheck, UrlKind,
         };
         let llm = serde_json::json!({
@@ -1174,7 +867,7 @@ mod tests {
 
     #[test]
     fn merge_reproducibility_facts_dedupes_urls_and_marks_other_minor() {
-        use crate::agents::specialist_facts::{ReproducibilityFacts, UrlCheck, UrlKind};
+        use crate::agents::review::facts::{ReproducibilityFacts, UrlCheck, UrlKind};
         let llm = serde_json::json!({
             "code_availability": "not_applicable",
             "code_url": null,
@@ -1233,60 +926,6 @@ mod tests {
         assert_eq!(merged, llm_output);
     }
 
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn specialist_prompt_renders_moderator_notes_when_present() {
-        use grokrxiv_schemas::AgentRole;
-        let extract = fake_extract(
-            vec![("1. Intro", "Some content.".to_string())],
-            vec!["[Foo23] Foo et al."],
-        );
-        let prompt = build_specialist_prompt(
-            AgentRole::TechnicalCorrectness,
-            &extract,
-            Some("Please tighten the proof of Theorem 3."),
-            None,
-            None,
-            None,
-        );
-        assert!(
-            prompt.contains("Moderator notes from a prior `request-changes` round"),
-            "moderator-notes section should be rendered"
-        );
-        assert!(
-            prompt.contains("tighten the proof of Theorem 3"),
-            "operator's notes should be embedded verbatim"
-        );
-    }
-
-    #[cfg(feature = "grokrxiv-ingest")]
-    #[test]
-    fn specialist_prompt_omits_moderator_notes_when_absent_or_blank() {
-        use grokrxiv_schemas::AgentRole;
-        let extract = fake_extract(
-            vec![("1. Intro", "Some content.".to_string())],
-            vec!["[Foo23] Foo et al."],
-        );
-        let p_none =
-            build_specialist_prompt(AgentRole::Reproducibility, &extract, None, None, None, None);
-        assert!(
-            !p_none.contains("Moderator notes"),
-            "None should not emit the section"
-        );
-        let p_blank = build_specialist_prompt(
-            AgentRole::Reproducibility,
-            &extract,
-            Some("  "),
-            None,
-            None,
-            None,
-        );
-        assert!(
-            !p_blank.contains("Moderator notes"),
-            "whitespace-only should not emit the section"
-        );
-    }
-
     #[test]
     fn is_code_amenable_field_matches_expected_prefixes() {
         for f in [
@@ -1320,39 +959,6 @@ mod tests {
                 "expected {f} to NOT be code-amenable"
             );
         }
-    }
-
-    /// The meta-synthesis prompt documents only the `specialists` input key.
-    #[test]
-    fn meta_synthesis_prompt_does_not_document_paper_key() {
-        let meta_input = serde_json::json!({
-            "specialists": {
-                "summary": {"tldr": "x"},
-                "technical_correctness": {"claims": [], "overall_correctness": "pass", "confidence": 0.5},
-                "novelty": {"verdict": "moderate", "novelty_score": 0.5, "related_work": [], "missing_prior_art": [], "confidence": 0.5},
-                "reproducibility": {"reproducibility_score": 0.5, "code_availability": "present", "code_url": null, "data_availability": "present", "data_url": null, "environment": "x", "concerns": [], "confidence": 0.5},
-                "citation": {"entries": [], "missing_references": [], "summary": "x", "confidence": 0.5},
-            }
-        });
-        let prompt = build_meta_synthesis_prompt(&meta_input);
-
-        // Guard both the explicit key name and the older two-key wording.
-        assert!(
-            !prompt.contains("`paper`"),
-            "prompt must not document a `paper` input key, got: {prompt}"
-        );
-        assert!(
-            !prompt.contains("two keys"),
-            "prompt must say `one key`, not `two keys`, got: {prompt}"
-        );
-        assert!(
-            prompt.contains("one key"),
-            "prompt should describe the single-key shape, got: {prompt}"
-        );
-        assert!(
-            prompt.contains("`specialists`"),
-            "prompt should document the `specialists` key, got: {prompt}"
-        );
     }
 
     /// The specialist quorum constant remains three usable outputs.
@@ -1462,9 +1068,8 @@ mod tests {
 
     #[test]
     fn specialist_failure_output_records_role_and_error() {
-        use grokrxiv_schemas::AgentRole;
         let output = specialist_failure_output(
-            AgentRole::Citation,
+            "citation",
             "CliRunner timed out after 120s for role Citation",
         );
         assert_eq!(

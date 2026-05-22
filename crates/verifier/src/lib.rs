@@ -15,7 +15,7 @@ pub mod support;
 pub mod tone;
 
 use async_trait::async_trait;
-use grokrxiv_schemas::{AgentRole, PaperExtract, VerifierResult};
+use grokrxiv_schemas::{PaperExtract, VerifierResult};
 
 pub use citation::CitationVerifier;
 pub use json_schema::JsonSchemaVerifier;
@@ -68,11 +68,16 @@ impl VerifierLadder {
         Self::with_citation(schema, true)
     }
 
-    /// Construct a role-aware standard ladder. Citation lookups are restricted
-    /// to the citation role so non-citation specialists are not penalized for
-    /// missing citation-shaped artifacts.
-    pub fn standard_for_role(role: AgentRole, schema: Option<serde_json::Value>) -> Self {
-        Self::with_citation(schema, matches!(role, AgentRole::Citation))
+    /// Construct a ladder from YAML verifier names. Citation lookups run only
+    /// when the agent config declares a citation verifier.
+    pub fn standard_for_config(verifiers: &[String], schema: Option<serde_json::Value>) -> Self {
+        Self::with_citation(
+            schema,
+            verifiers.iter().any(|name| {
+                let name = name.to_ascii_lowercase();
+                matches!(name.as_str(), "citation" | "citation_existence")
+            }),
+        )
     }
 
     fn with_citation(schema: Option<serde_json::Value>, include_citation: bool) -> Self {
@@ -163,8 +168,8 @@ mod tests {
 
     #[tokio::test]
     async fn role_aware_ladder_excludes_citation_for_non_citation_roles() {
-        let ladder = VerifierLadder::standard_for_role(
-            AgentRole::Summary,
+        let ladder = VerifierLadder::standard_for_config(
+            &["json_schema".to_string()],
             Some(json!({ "type": "object" })),
         );
         let http = reqwest::Client::new();
@@ -186,8 +191,8 @@ mod tests {
 
     #[tokio::test]
     async fn role_aware_ladder_includes_citation_for_citation_role() {
-        let ladder = VerifierLadder::standard_for_role(
-            AgentRole::Citation,
+        let ladder = VerifierLadder::standard_for_config(
+            &["json_schema".to_string(), "citation".to_string()],
             Some(json!({ "type": "object" })),
         );
         let http = reqwest::Client::new();

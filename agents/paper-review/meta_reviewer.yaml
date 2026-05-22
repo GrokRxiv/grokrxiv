@@ -14,6 +14,12 @@ verifiers:
   - tone
   - render
   - cross_agent_consistency
+prompt_context:
+  body_budget_chars: 0
+  bibliography: none
+  meta_input: true
+system_overlays:
+  - meta_recommendation_gate
 max_retries: 2
 timeout_secs: 300
-escalation: human
+escalation: agent

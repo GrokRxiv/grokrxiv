@@ -20,7 +20,6 @@ pub mod html_review;
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 pub mod ingest_pipeline;
 #[allow(dead_code)]
-pub(crate) mod review_dag;
 pub(crate) mod review_gate;
 pub(crate) mod revision_targets;
 pub mod routes;

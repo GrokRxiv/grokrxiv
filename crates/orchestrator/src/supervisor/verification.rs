@@ -6,7 +6,7 @@ use serde_json::json;
 pub(super) async fn verify_artifact(
     state: &AppState,
     extract: &grokrxiv_schemas::PaperExtract,
-    role: grokrxiv_schemas::AgentRole,
+    role: &str,
     artifact: &serde_json::Value,
 ) -> (
     Option<grokrxiv_schemas::VerifierStatus>,
@@ -15,7 +15,7 @@ pub(super) async fn verify_artifact(
     use grokrxiv_schemas::VerifierStatus;
     use serde_json::json;
 
-    let Some(ladder) = state.verifiers.get(&role) else {
+    let Some(ladder) = state.verifiers.get(role) else {
         return (None, None);
     };
     let ctx = grokrxiv_verifier::VerifierContext {
@@ -46,13 +46,10 @@ pub(super) async fn verify_artifact(
     (Some(worst), Some(notes_obj))
 }
 
-pub(super) fn specialist_failure_output(
-    role: grokrxiv_schemas::AgentRole,
-    error: &str,
-) -> serde_json::Value {
+pub(super) fn specialist_failure_output(role: &str, error: &str) -> serde_json::Value {
     json!({
         "error": error,
-        "role": super::role_slug(role),
+        "role": role,
         "status": "agent_failed",
     })
 }
@@ -73,15 +70,8 @@ pub(super) fn meta_failure_output(error: &str) -> serde_json::Value {
     })
 }
 
-pub(super) fn role_status_label(role: grokrxiv_schemas::AgentRole) -> &'static str {
-    match role {
-        grokrxiv_schemas::AgentRole::Summary => "summary",
-        grokrxiv_schemas::AgentRole::TechnicalCorrectness => "technical correctness",
-        grokrxiv_schemas::AgentRole::Novelty => "novelty",
-        grokrxiv_schemas::AgentRole::Reproducibility => "reproducibility",
-        grokrxiv_schemas::AgentRole::Citation => "citation",
-        grokrxiv_schemas::AgentRole::MetaReviewer => "meta reviewer",
-    }
+pub(super) fn role_status_label(role: &str) -> &str {
+    role
 }
 
 pub(super) fn verifier_status_mark(status: Option<grokrxiv_schemas::VerifierStatus>) -> StatusMark {
@@ -94,15 +84,15 @@ pub(super) fn verifier_status_mark(status: Option<grokrxiv_schemas::VerifierStat
 
 #[cfg(feature = "grokrxiv-verifier")]
 pub(super) fn validate_role_output_after_merge(
-    role: grokrxiv_schemas::AgentRole,
+    role: &str,
     output: &serde_json::Value,
     schemas: &crate::state::AgentSchemaMap,
 ) -> anyhow::Result<()> {
-    let Some(schema) = schemas.get(&role) else {
+    let Some(schema) = schemas.get(role) else {
         return Ok(());
     };
     let validator = jsonschema::validator_for(schema)
-        .map_err(|e| anyhow::anyhow!("invalid schema for {role:?}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("invalid schema for {role}: {e}"))?;
     let errors: Vec<String> = validator
         .iter_errors(output)
         .map(|e| e.to_string())
@@ -111,7 +101,7 @@ pub(super) fn validate_role_output_after_merge(
         Ok(())
     } else {
         anyhow::bail!(
-            "post-merge schema validation failed for {role:?}: {}",
+            "post-merge schema validation failed for {role}: {}",
             errors.join("; ")
         )
     }

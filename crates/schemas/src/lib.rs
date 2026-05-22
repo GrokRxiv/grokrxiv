@@ -117,29 +117,6 @@ pub struct Citation {
 }
 
 // ---------------------------------------------------------------------------
-// Agent role identifiers
-// ---------------------------------------------------------------------------
-
-/// Distinct review-agent roles in the DAG. Persisted on `review_agents.role`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "json-schema", derive(JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRole {
-    /// Plain-language summary specialist.
-    Summary,
-    /// Technical / mathematical correctness specialist.
-    TechnicalCorrectness,
-    /// Novelty and related-work specialist.
-    Novelty,
-    /// Reproducibility (code/data/instructions) specialist.
-    Reproducibility,
-    /// Citation existence/quality specialist.
-    Citation,
-    /// Synthesizing meta-reviewer.
-    MetaReviewer,
-}
-
-// ---------------------------------------------------------------------------
 // Per-agent typed outputs
 // ---------------------------------------------------------------------------
 
@@ -536,12 +513,6 @@ mod tests {
         assert_eq!(s, serde_json::Value::String("critical".into()));
         let js = serde_json::to_value(JobState::Queued).unwrap();
         assert_eq!(js, serde_json::Value::String("queued".into()));
-    }
-
-    #[test]
-    fn agent_role_serializes_snake_case() {
-        let r = serde_json::to_value(AgentRole::TechnicalCorrectness).unwrap();
-        assert_eq!(r, serde_json::Value::String("technical_correctness".into()));
     }
 
     #[test]

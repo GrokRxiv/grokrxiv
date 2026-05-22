@@ -11,6 +11,9 @@ input_schema: schemas/render_artifact.schema.json
 output_schema: schemas/html_quality_review.schema.json
 verifiers:
   - json_schema
+prompt_context:
+  body_budget_chars: 0
+  bibliography: none
 max_retries: 1
 timeout_secs: 180
-escalation: human
+escalation: agent

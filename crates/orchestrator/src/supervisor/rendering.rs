@@ -1,5 +1,8 @@
 use crate::state::AppState;
+use std::collections::HashSet;
 use uuid::Uuid;
+
+const PAPER_REVIEW_DAG_ID: &str = "paper-review";
 
 fn html_quality_disabled() -> bool {
     matches!(
@@ -58,6 +61,23 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     let meta: MetaReview = meta_json
         .and_then(|v| serde_json::from_value::<MetaReview>(v).ok())
         .unwrap_or_else(|| fallback_meta(&title));
+    let specialist_roles: HashSet<String> =
+        crate::agents::config::dag_feeds_meta_roles(PAPER_REVIEW_DAG_ID)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    let meta_input_roles: HashSet<String> =
+        crate::agents::config::dag_meta_input_roles(PAPER_REVIEW_DAG_ID)
+            .unwrap_or_else(|_| {
+                state
+                    .agent_configs
+                    .iter()
+                    .filter(|(_, cfg)| cfg.prompt_context.meta_input)
+                    .map(|(role, _)| role.clone())
+                    .collect()
+            })
+            .into_iter()
+            .collect();
 
     // Reconstruct the input artifact each persisted agent saw so the render
     // bundle mirrors the review database state.
@@ -68,7 +88,7 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
     let meta_input_for_render = {
         let mut specialists_map = serde_json::Map::new();
         for row in &bundle.agents {
-            if row.role != "meta_reviewer" {
+            if specialist_roles.contains(&row.role) {
                 specialists_map.insert(row.role.clone(), row.output.clone());
             }
         }
@@ -89,7 +109,7 @@ pub async fn render_to_disk(state: &AppState, review_id: Uuid) -> anyhow::Result
             status,
             notes: notes.clone(),
         };
-        let input_artifact = if role_slug == "meta_reviewer" {
+        let input_artifact = if meta_input_roles.contains(&role_slug) {
             meta_input_for_render.clone()
         } else {
             specialist_input.clone()

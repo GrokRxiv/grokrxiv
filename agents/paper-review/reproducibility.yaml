@@ -12,6 +12,15 @@ output_schema: schemas/reproducibility_review.schema.json
 verifiers:
   - json_schema
   - tone
+prompt_context:
+  body_budget_chars: 80000
+  bibliography: full
+  fact_blocks:
+    - reproducibility_availability
+system_overlays:
+  - proof_as_code_reproducibility
+postprocessors:
+  - merge_reproducibility_facts
 max_retries: 2
 timeout_secs: 240
 escalation: skip

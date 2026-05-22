@@ -2,15 +2,15 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use grokrxiv_dag_runtime::{AgentKind, DagExecutionMode, DagManifest};
 use grokrxiv_llm_adapter::{provider_by_name, LLMProvider, ProviderConfig};
 use reqwest::Client;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
+use crate::agents::config::{self, AgentConfig};
 use crate::agents::runners::api::ApiRunner;
 use crate::agents::{
     build_agent, AgentRunner, AgentRunnerKind, AgentSchema, AgentSpec, ConfiguredAgent,
@@ -22,16 +22,18 @@ use crate::runtime_config::{direct_provider_api_allowed_from_env, model_override
 
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
-/// Per-role configured-agent registry, keyed by review role.
-pub type AgentRegistry = HashMap<grokrxiv_schemas::AgentRole, Arc<ConfiguredAgent>>;
+/// Per-role configured-agent registry, keyed by DAG-scoped role id.
+pub type AgentRegistry = HashMap<String, Arc<ConfiguredAgent>>;
 /// Per-kind `AgentRunner` registry, keyed by runner backend.
 pub type RunnerRegistry = HashMap<AgentRunnerKind, Arc<dyn AgentRunner>>;
-/// Role-specific JSON schema documents.
+/// Parsed agent YAML configs, keyed by DAG-scoped role id.
+pub type AgentConfigMap = HashMap<String, AgentConfig>;
+/// Role-specific JSON schema documents, keyed by DAG-scoped role id.
 #[cfg(feature = "grokrxiv-verifier")]
-pub type AgentSchemaMap = HashMap<grokrxiv_schemas::AgentRole, AgentSchema>;
-/// Role-specific verifier ladders.
+pub type AgentSchemaMap = HashMap<String, AgentSchema>;
+/// Role-specific verifier ladders, keyed by DAG-scoped role id.
 #[cfg(feature = "grokrxiv-verifier")]
-pub type VerifierMap = HashMap<grokrxiv_schemas::AgentRole, grokrxiv_verifier::VerifierLadder>;
+pub type VerifierMap = HashMap<String, grokrxiv_verifier::VerifierLadder>;
 
 /// Registry of all configured LLM providers, keyed by short name.
 ///
@@ -123,6 +125,9 @@ pub struct AppState {
     /// Per-role configured agents built from `agents/*.yaml`. This is the
     /// single role registry for review dispatch.
     pub agents: Arc<AgentRegistry>,
+    /// Parsed YAML config for each DAG role. Runtime code reads behavior flags
+    /// from this map instead of matching role ids.
+    pub agent_configs: Arc<AgentConfigMap>,
     /// Per-`AgentRunnerKind` runner backends. RPT2 Track A registers only the
     /// `ApiRunner`; CLI/cloud/local-inference are filled by other tracks.
     pub runners: Arc<RunnerRegistry>,
@@ -155,12 +160,18 @@ impl AppState {
         let providers = ProviderRegistry::from_env();
         let arxiv = Arc::new(ArxivGate::new(std::time::Duration::from_secs(3)));
 
-        #[cfg(feature = "grokrxiv-verifier")]
-        let (agent_schemas, verifiers) = build_agent_schemas_and_verifiers();
-
         let role_yaml = load_role_configs();
         validate_role_configs(&role_yaml)?;
         validate_required_cli_runners(&role_yaml)?;
+        let agent_configs = Arc::new(
+            role_yaml
+                .iter()
+                .filter_map(|(role, cfg)| cfg.as_ref().map(|cfg| (role.clone(), cfg.clone())))
+                .collect::<AgentConfigMap>(),
+        );
+
+        #[cfg(feature = "grokrxiv-verifier")]
+        let (agent_schemas, verifiers) = build_agent_schemas_and_verifiers(&role_yaml)?;
 
         // Build the runner registry. API can be empty in CLI-only setups;
         // CLI/cloud/local-inference are still registered and fail only when
@@ -221,6 +232,7 @@ impl AppState {
             #[cfg(feature = "grokrxiv-verifier")]
             verifiers,
             agents,
+            agent_configs,
             runners,
             supervisor_tx: None,
         })
@@ -233,98 +245,22 @@ impl AppState {
     }
 }
 
-/// YAML shape read from agent config files. The legacy review runtime still
-/// executes only the routing subset, but startup validates the declarative
-/// fields so prompt/schema/tool-loop config cannot drift silently.
-#[derive(Debug, serde::Deserialize, Clone)]
-struct AgentRouting {
-    #[serde(default)]
-    kind: Option<AgentKind>,
-    provider: String,
-    model: String,
-    #[serde(default)]
-    runner: Option<AgentRunnerKind>,
-    #[serde(default)]
-    execution_mode: DagExecutionMode,
-    #[serde(default)]
-    prompt_template: Option<String>,
-    #[serde(default)]
-    input_schema: Option<String>,
-    #[serde(default)]
-    output_schema: Option<String>,
-    #[serde(default)]
-    verifiers: Vec<String>,
-    #[serde(default)]
-    tools: Vec<String>,
-    #[serde(default)]
-    max_iters: Option<u32>,
-    #[serde(default)]
-    max_cost_usd: Option<f64>,
-    #[serde(default)]
-    max_retries: Option<u8>,
-    #[serde(default)]
-    timeout_secs: Option<u32>,
-    #[serde(default)]
-    escalation: Option<String>,
-}
-
-/// Per-role YAML config map. `None` for a role means the YAML was missing or
-/// malformed; the consumer falls back to the default provider/model.
-type RoleYamlMap = HashMap<grokrxiv_schemas::AgentRole, Option<AgentRouting>>;
+/// Per-role YAML config map. `None` means the DAG-declared YAML was missing or
+/// malformed; startup validation refuses to continue in that state.
+type RoleYamlMap = HashMap<String, Option<AgentConfig>>;
 
 const PAPER_REVIEW_DAG_ID: &str = "paper-review";
 
-/// Legacy root-level review agent YAML names, retained as a fallback for tests
-/// and older local layouts. Normal runtime loading goes through
-/// `dags/paper-review.yaml`.
-const LEGACY_ROLE_FILES: &[(grokrxiv_schemas::AgentRole, &str)] = &[
-    (grokrxiv_schemas::AgentRole::Summary, "summary.yaml"),
-    (
-        grokrxiv_schemas::AgentRole::TechnicalCorrectness,
-        "technical_correctness.yaml",
-    ),
-    (grokrxiv_schemas::AgentRole::Novelty, "novelty.yaml"),
-    (
-        grokrxiv_schemas::AgentRole::Reproducibility,
-        "reproducibility.yaml",
-    ),
-    (grokrxiv_schemas::AgentRole::Citation, "citation.yaml"),
-    (
-        grokrxiv_schemas::AgentRole::MetaReviewer,
-        "meta_reviewer.yaml",
-    ),
-];
-
-#[derive(Debug, Clone)]
-struct RoleConfigRef {
-    role: grokrxiv_schemas::AgentRole,
-    expected_kind: AgentKind,
-    label: String,
-    path: PathBuf,
-}
-
 /// Read each configured review role YAML once for the configured-agent
-/// registry. `paper-review.yaml` is the source of truth; the legacy root-level
-/// layout is only a compatibility path for older test/local layouts.
+/// registry. `paper-review.yaml` is the source of truth.
 fn load_role_configs() -> RoleYamlMap {
     let mut out: RoleYamlMap = HashMap::new();
     for config_ref in review_role_config_refs() {
-        let cfg = match std::fs::read_to_string(&config_ref.path) {
-            Ok(s) => match serde_yaml::from_str::<AgentRouting>(&s) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    tracing::warn!(
-                        role = ?config_ref.role,
-                        path = %config_ref.path.display(),
-                        err = %e,
-                        "could not parse agent yaml; startup validation will fail"
-                    );
-                    None
-                }
-            },
+        let cfg = match config::read_agent_config(&config_ref.path) {
+            Ok(config) => Some(config),
             Err(e) => {
                 tracing::warn!(
-                    role = ?config_ref.role,
+                    role = %config_ref.role_id,
                     path = %config_ref.path.display(),
                     err = %e,
                     "agent yaml missing; startup validation will fail"
@@ -332,7 +268,7 @@ fn load_role_configs() -> RoleYamlMap {
                 None
             }
         };
-        out.insert(config_ref.role, cfg);
+        out.insert(config_ref.role_id, cfg);
     }
     out
 }
@@ -341,9 +277,9 @@ fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
     let config_refs = review_role_config_refs();
     let missing: Vec<String> = config_refs
         .iter()
-        .filter_map(|config_ref| match role_yaml.get(&config_ref.role) {
+        .filter_map(|config_ref| match role_yaml.get(&config_ref.role_id) {
             Some(Some(_)) => None,
-            _ => Some(format!("{:?} ({})", config_ref.role, config_ref.label)),
+            _ => Some(format!("{} ({})", config_ref.role_id, config_ref.label)),
         })
         .collect();
     if !missing.is_empty() {
@@ -353,95 +289,15 @@ fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
         )
     }
     for config_ref in config_refs {
-        if let Some(Some(cfg)) = role_yaml.get(&config_ref.role) {
-            validate_agent_routing_detail(
-                &format!("{:?}", config_ref.role),
+        if let Some(Some(cfg)) = role_yaml.get(&config_ref.role_id) {
+            config::validate_agent_config_detail(
+                &config_ref.role_id,
                 &config_ref.expected_kind,
                 cfg,
             )?;
         }
     }
     Ok(())
-}
-
-fn validate_agent_routing_detail(
-    label: &str,
-    expected_kind: &AgentKind,
-    cfg: &AgentRouting,
-) -> anyhow::Result<()> {
-    if let Some(kind) = &cfg.kind {
-        if kind != expected_kind {
-            anyhow::bail!(
-                "agent role YAML for {label} declares kind={}, but DAG expects kind={}",
-                kind,
-                expected_kind
-            );
-        }
-    }
-    for (field, declared_path) in [
-        ("prompt_template", cfg.prompt_template.as_deref()),
-        ("input_schema", cfg.input_schema.as_deref()),
-        ("output_schema", cfg.output_schema.as_deref()),
-    ] {
-        if let Some(declared_path) = declared_path {
-            let path = resolve_declared_runtime_path(declared_path);
-            if !path.exists() {
-                anyhow::bail!(
-                    "agent role YAML for {label} declares {field}={}, but {} does not exist",
-                    declared_path,
-                    path.display()
-                );
-            }
-        }
-    }
-    if cfg.execution_mode == DagExecutionMode::ToolLoop {
-        if cfg.max_iters.unwrap_or(0) == 0 {
-            anyhow::bail!(
-                "agent role YAML for {label} uses execution_mode=tool_loop but max_iters is missing or zero"
-            );
-        }
-        match cfg.max_cost_usd {
-            Some(cost) if cost > 0.0 => {}
-            _ => anyhow::bail!(
-                "agent role YAML for {label} uses execution_mode=tool_loop but max_cost_usd is missing or non-positive"
-            ),
-        }
-        if cfg.tools.is_empty() {
-            anyhow::bail!(
-                "agent role YAML for {label} uses execution_mode=tool_loop but declares no tools"
-            );
-        }
-    }
-    validate_unique_names(label, "verifiers", &cfg.verifiers)?;
-    validate_unique_names(label, "tools", &cfg.tools)?;
-    if let Some(escalation) = cfg.escalation.as_deref() {
-        match escalation {
-            "skip" | "human" | "retry" => {}
-            other => anyhow::bail!(
-                "agent role YAML for {label} declares unsupported escalation `{other}`"
-            ),
-        }
-    }
-    Ok(())
-}
-
-fn validate_unique_names(label: &str, field: &str, names: &[String]) -> anyhow::Result<()> {
-    let mut seen = BTreeSet::new();
-    for name in names {
-        if !seen.insert(name.as_str()) {
-            anyhow::bail!("agent role YAML for {label} declares duplicate {field} entry `{name}`");
-        }
-    }
-    Ok(())
-}
-
-fn resolve_declared_runtime_path(path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        default_repo_root().join(path)
-    }
 }
 
 fn validate_required_cli_runners(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
@@ -489,7 +345,7 @@ fn required_cli_bins(role_yaml: &RoleYamlMap) -> anyhow::Result<BTreeSet<String>
 fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();
     for config_ref in review_role_config_refs() {
-        let role = config_ref.role;
+        let role = config_ref.role_id;
         let Some(cfg) = role_yaml.get(&role).and_then(|c| c.as_ref()) else {
             continue;
         };
@@ -498,11 +354,11 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
             .cloned()
             .expect("role schema loaded for configured role");
         let spec = AgentSpec {
-            role,
+            role: role.clone(),
             runner: cfg.runner.unwrap_or_default(),
             sandbox: SandboxPolicy::None,
             provider: cfg.provider.clone(),
-            model: model_override_for_role(role).unwrap_or_else(|| cfg.model.clone()),
+            model: model_override_for_role(&role).unwrap_or_else(|| cfg.model.clone()),
             schema,
             max_retries: cfg.max_retries.unwrap_or(2),
             timeout_secs: cfg.timeout_secs.unwrap_or(180),
@@ -512,224 +368,103 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
     out
 }
 
-fn review_role_config_refs() -> Vec<RoleConfigRef> {
-    match manifest_role_config_refs() {
-        Ok(refs) if refs.iter().all(|config_ref| config_ref.path.exists()) => refs,
-        Ok(refs) => {
-            if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
-                tracing::warn!(
-                    "paper-review DAG config paths did not exist under GROKRXIV_AGENTS_DIR; using legacy agent YAML paths"
-                );
-                legacy_role_config_refs(&agents_dir)
-            } else {
-                refs
-            }
-        }
-        Err(err) => {
-            tracing::warn!(err = %err, "could not load paper-review DAG manifest; using legacy agent YAML paths");
-            legacy_role_config_refs(&default_agents_dir())
-        }
-    }
+fn review_role_config_refs() -> Vec<config::AgentConfigRef> {
+    config::dag_agent_config_refs(PAPER_REVIEW_DAG_ID).unwrap_or_else(|err| {
+        panic!("could not load `{PAPER_REVIEW_DAG_ID}` DAG agent configs: {err:#}")
+    })
 }
 
-fn legacy_role_config_refs(agents_dir: &Path) -> Vec<RoleConfigRef> {
-    LEGACY_ROLE_FILES
-        .iter()
-        .map(|(role, filename)| RoleConfigRef {
-            role: *role,
-            expected_kind: agent_role_kind(*role),
-            label: (*filename).to_string(),
-            path: agents_dir.join(filename),
-        })
-        .collect()
-}
+#[cfg(feature = "grokrxiv-verifier")]
+fn build_agent_schemas_and_verifiers(
+    role_yaml: &RoleYamlMap,
+) -> anyhow::Result<(Arc<AgentSchemaMap>, Arc<VerifierMap>)> {
+    let mut schemas: AgentSchemaMap = HashMap::new();
+    let mut ladders: VerifierMap = HashMap::new();
 
-fn manifest_role_config_refs() -> anyhow::Result<Vec<RoleConfigRef>> {
-    let manifest_path = paper_review_manifest_path();
-    let repo_root = manifest_path
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(default_repo_root);
-    let manifest = DagManifest::from_path(&manifest_path)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", manifest_path.display()))?;
-    if manifest.id.as_str() != PAPER_REVIEW_DAG_ID {
-        anyhow::bail!(
-            "expected DAG id `{PAPER_REVIEW_DAG_ID}`, found `{}`",
-            manifest.id
-        );
-    }
-
-    let mut refs = Vec::new();
-    for role in manifest.roles {
-        let Some(known_role) = agent_role_from_manifest_id(role.id.as_str()) else {
+    for (role_id, cfg) in role_yaml {
+        let Some(cfg) = cfg.as_ref() else {
             continue;
         };
-        let Some(config) = role.config else {
-            anyhow::bail!("manifest role `{}` has no config path", role.id);
+        let Some(output_schema) = cfg.output_schema.as_deref() else {
+            anyhow::bail!("agent role YAML for {role_id} is missing output_schema");
         };
-        let path = resolve_agent_config_path(&repo_root, &config);
-        refs.push(RoleConfigRef {
-            role: known_role,
-            expected_kind: role.kind,
-            label: config,
-            path,
-        });
-    }
-
-    if refs.is_empty() {
-        anyhow::bail!("paper-review manifest did not define any known executable review roles");
-    }
-    Ok(refs)
-}
-
-fn agent_role_kind(role: grokrxiv_schemas::AgentRole) -> AgentKind {
-    match role {
-        grokrxiv_schemas::AgentRole::Summary
-        | grokrxiv_schemas::AgentRole::TechnicalCorrectness
-        | grokrxiv_schemas::AgentRole::Novelty
-        | grokrxiv_schemas::AgentRole::Reproducibility
-        | grokrxiv_schemas::AgentRole::Citation => AgentKind::Critic,
-        grokrxiv_schemas::AgentRole::MetaReviewer => AgentKind::Synthesizer,
-    }
-}
-
-fn paper_review_manifest_path() -> PathBuf {
-    if let Some(dags_dir) = std::env::var_os("GROKRXIV_DAGS_DIR").map(PathBuf::from) {
-        return dags_dir.join("paper-review.yaml");
-    }
-    default_repo_root().join("dags").join("paper-review.yaml")
-}
-
-fn default_agents_dir() -> PathBuf {
-    default_repo_root().join("agents")
-}
-
-fn default_repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-}
-
-fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
-    let path = PathBuf::from(config);
-    if path.is_absolute() {
-        return path;
-    }
-    if let Some(agents_dir) = std::env::var_os("GROKRXIV_AGENTS_DIR").map(PathBuf::from) {
-        if let Ok(stripped) = path.strip_prefix("agents") {
-            return agents_dir.join(stripped);
-        }
-    }
-    repo_root.join(path)
-}
-
-fn agent_role_from_manifest_id(id: &str) -> Option<grokrxiv_schemas::AgentRole> {
-    match id {
-        "summary" => Some(grokrxiv_schemas::AgentRole::Summary),
-        "technical_correctness" => Some(grokrxiv_schemas::AgentRole::TechnicalCorrectness),
-        "novelty" => Some(grokrxiv_schemas::AgentRole::Novelty),
-        "reproducibility" => Some(grokrxiv_schemas::AgentRole::Reproducibility),
-        "citation" => Some(grokrxiv_schemas::AgentRole::Citation),
-        "meta_reviewer" => Some(grokrxiv_schemas::AgentRole::MetaReviewer),
-        _ => None,
-    }
-}
-
-#[cfg(feature = "grokrxiv-verifier")]
-fn build_agent_schemas_and_verifiers() -> (Arc<AgentSchemaMap>, Arc<VerifierMap>) {
-    use grokrxiv_schemas::AgentRole;
-    use std::collections::HashMap;
-
-    // The six per-role JSON Schema documents live alongside the workspace
-    // (under `/schemas`). Embedding them with `include_str!` keeps the
-    // orchestrator binary self-contained and avoids a runtime filesystem
-    // dependency in container images.
-    let summary: serde_json::Value =
-        serde_json::from_str(include_str!("../../../schemas/summary_review.schema.json"))
-            .expect("summary_review schema");
-    let technical: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../schemas/technical_review.schema.json"
-    ))
-    .expect("technical_review schema");
-    let novelty: serde_json::Value =
-        serde_json::from_str(include_str!("../../../schemas/novelty_review.schema.json"))
-            .expect("novelty_review schema");
-    let reproducibility: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../schemas/reproducibility_review.schema.json"
-    ))
-    .expect("reproducibility_review schema");
-    // The citation review schema $refs citation.schema.json. The jsonschema
-    // validator we use does not resolve external $refs at runtime, so we
-    // inline the referenced subschema once at boot.
-    let citation_review_raw: serde_json::Value =
-        serde_json::from_str(include_str!("../../../schemas/citation_review.schema.json"))
-            .expect("citation_review schema");
-    let citation_subschema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../schemas/citation.schema.json"))
-            .expect("citation schema");
-    let citation = inline_citation_ref(citation_review_raw, &citation_subschema);
-    let meta: serde_json::Value =
-        serde_json::from_str(include_str!("../../../schemas/meta_review.schema.json"))
-            .expect("meta_review schema");
-
-    let mut schemas: HashMap<AgentRole, AgentSchema> = HashMap::new();
-    schemas.insert(AgentRole::Summary, Arc::new(summary));
-    schemas.insert(AgentRole::TechnicalCorrectness, Arc::new(technical));
-    schemas.insert(AgentRole::Novelty, Arc::new(novelty));
-    schemas.insert(AgentRole::Reproducibility, Arc::new(reproducibility));
-    schemas.insert(AgentRole::Citation, Arc::new(citation));
-    schemas.insert(AgentRole::MetaReviewer, Arc::new(meta));
-
-    let mut ladders: HashMap<AgentRole, grokrxiv_verifier::VerifierLadder> = HashMap::new();
-    for (role, schema) in &schemas {
+        let schema_path = config::resolve_declared_runtime_path(output_schema);
+        let schema_text = std::fs::read_to_string(&schema_path).map_err(|e| {
+            anyhow::anyhow!(
+                "read output_schema {} for {role_id}: {e}",
+                schema_path.display()
+            )
+        })?;
+        let schema: serde_json::Value = serde_json::from_str(&schema_text).map_err(|e| {
+            anyhow::anyhow!(
+                "parse output_schema {} for {role_id}: {e}",
+                schema_path.display()
+            )
+        })?;
+        let base_dir = schema_path.parent().unwrap_or_else(|| Path::new("."));
+        let schema = inline_local_schema_refs(schema, base_dir)?;
+        schemas.insert(role_id.clone(), Arc::new(schema.clone()));
         ladders.insert(
-            *role,
-            grokrxiv_verifier::VerifierLadder::standard_for_role(
-                *role,
-                Some(schema.as_ref().clone()),
-            ),
+            role_id.clone(),
+            grokrxiv_verifier::VerifierLadder::standard_for_config(&cfg.verifiers, Some(schema)),
         );
     }
 
-    (Arc::new(schemas), Arc::new(ladders))
+    Ok((Arc::new(schemas), Arc::new(ladders)))
 }
 
-/// Walk `value` and rewrite any `{ "$ref": "citation.schema.json" }` node so
-/// it points at the inlined `citation` subschema. Keeps the on-disk schema
-/// human-friendly while making the runtime validator self-contained.
+/// Walk `value` and inline local JSON-schema `$ref` files. Keeps on-disk
+/// schemas human-readable while making runtime validators self-contained.
 #[cfg(feature = "grokrxiv-verifier")]
-fn inline_citation_ref(
+fn inline_local_schema_refs(
     value: serde_json::Value,
-    citation: &serde_json::Value,
-) -> serde_json::Value {
+    base_dir: &Path,
+) -> anyhow::Result<serde_json::Value> {
     match value {
         serde_json::Value::Object(mut map) => {
             if let Some(serde_json::Value::String(s)) = map.get("$ref") {
-                if s == "citation.schema.json" {
-                    return citation.clone();
+                if is_local_schema_ref(s) {
+                    let ref_path = base_dir.join(s);
+                    let ref_text = std::fs::read_to_string(&ref_path).map_err(|e| {
+                        anyhow::anyhow!("read local schema ref {}: {e}", ref_path.display())
+                    })?;
+                    let ref_value: serde_json::Value =
+                        serde_json::from_str(&ref_text).map_err(|e| {
+                            anyhow::anyhow!("parse local schema ref {}: {e}", ref_path.display())
+                        })?;
+                    let ref_base = ref_path.parent().unwrap_or(base_dir);
+                    return inline_local_schema_refs(ref_value, ref_base);
                 }
             }
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map.iter_mut() {
-                out.insert(k.clone(), inline_citation_ref(v.take(), citation));
+                out.insert(k.clone(), inline_local_schema_refs(v.take(), base_dir)?);
             }
-            serde_json::Value::Object(out)
+            Ok(serde_json::Value::Object(out))
         }
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.into_iter()
-                .map(|v| inline_citation_ref(v, citation))
-                .collect(),
-        ),
-        other => other,
+        serde_json::Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(inline_local_schema_refs(v, base_dir)?);
+            }
+            Ok(serde_json::Value::Array(out))
+        }
+        other => Ok(other),
     }
+}
+
+#[cfg(feature = "grokrxiv-verifier")]
+fn is_local_schema_ref(reference: &str) -> bool {
+    !reference.starts_with('#')
+        && !reference.starts_with("http://")
+        && !reference.starts_with("https://")
 }
 
 #[cfg(all(test, feature = "grokrxiv-verifier"))]
 mod tests {
     use super::*;
     use crate::runtime_config::ALLOW_PROVIDER_API_ENV;
-    use grokrxiv_schemas::AgentRole;
+    use grokrxiv_dag_runtime::{AgentKind, DagExecutionMode};
 
     struct EnvVarGuard {
         key: String,
@@ -759,155 +494,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn agent_routing_parses_declarative_runtime_fields() {
-        let routing: AgentRouting = serde_yaml::from_str(
-            r#"
-kind: extractor
-provider: gemini
-model: gemini-2.5-flash
-runner: cli
-execution_mode: tool_loop
-prompt_template: prompts/extraction/citations.md
-input_schema: schemas/paper_extract.schema.json
-output_schema: schemas/extraction/citations.schema.json
-verifiers: [json_schema, citation]
-tools: [read_file, crossref_lookup, submit]
-max_iters: 80
-max_cost_usd: 0.5
-max_retries: 2
-timeout_secs: 240
-escalation: human
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(routing.kind, Some(AgentKind::Extractor));
-        assert_eq!(
-            routing.execution_mode,
-            grokrxiv_dag_runtime::DagExecutionMode::ToolLoop
-        );
-        assert_eq!(
-            routing.prompt_template.as_deref(),
-            Some("prompts/extraction/citations.md")
-        );
-        assert_eq!(
-            routing.input_schema.as_deref(),
-            Some("schemas/paper_extract.schema.json")
-        );
-        assert_eq!(
-            routing.output_schema.as_deref(),
-            Some("schemas/extraction/citations.schema.json")
-        );
-        assert_eq!(routing.verifiers, vec!["json_schema", "citation"]);
-        assert_eq!(
-            routing.tools,
-            vec!["read_file", "crossref_lookup", "submit"]
-        );
-        assert_eq!(routing.max_iters, Some(80));
-        assert_eq!(routing.max_cost_usd, Some(0.5));
-        assert_eq!(routing.escalation.as_deref(), Some("human"));
-    }
-
-    #[test]
-    fn agent_routing_validation_rejects_missing_declared_runtime_files() {
-        let routing: AgentRouting = serde_yaml::from_str(
-            r#"
-kind: critic
-provider: claude
-model: claude-haiku-4-5-20251001
-runner: cli
-prompt_template: prompts/summary.md
-input_schema: schemas/paper_extract.schema.json
-output_schema: schemas/does-not-exist.schema.json
-"#,
-        )
-        .unwrap();
-
-        let err = validate_agent_routing_detail("summary", &AgentKind::Critic, &routing)
-            .expect_err("missing output schema must fail startup validation");
-
-        assert!(err.to_string().contains("output_schema"));
-        assert!(err.to_string().contains("does-not-exist"));
-    }
-
-    #[test]
-    fn agent_routing_validation_rejects_invalid_tool_loop_config() {
-        let routing: AgentRouting = serde_yaml::from_str(
-            r#"
-kind: extractor
-provider: gemini
-model: gemini-2.5-flash
-runner: cli
-execution_mode: tool_loop
-tools: [read_file, read_file]
-max_iters: 0
-max_cost_usd: 0
-"#,
-        )
-        .unwrap();
-
-        let err = validate_agent_routing_detail(
-            "citation_contextualizer",
-            &AgentKind::Extractor,
-            &routing,
-        )
-        .expect_err("invalid tool-loop config should fail validation");
-
-        assert!(err.to_string().contains("max_iters"));
-    }
-
-    #[test]
-    fn agent_routing_validation_rejects_kind_drift_from_manifest() {
-        let routing: AgentRouting = serde_yaml::from_str(
-            r#"
-kind: extractor
-provider: claude
-model: claude-haiku-4-5-20251001
-runner: cli
-"#,
-        )
-        .unwrap();
-
-        let err = validate_agent_routing_detail("summary", &AgentKind::Critic, &routing)
-            .expect_err("agent YAML kind must match DAG role kind");
-
-        assert!(err.to_string().contains("kind=extractor"));
-        assert!(err.to_string().contains("kind=critic"));
+    fn test_agent_config(runner: AgentRunnerKind) -> AgentConfig {
+        AgentConfig {
+            id: Some("summary".to_string()),
+            kind: Some(AgentKind::Critic),
+            role: Some("Test summary agent".to_string()),
+            provider: "claude".to_string(),
+            model: "claude-haiku-4-5-20251001".to_string(),
+            runner: Some(runner),
+            execution_mode: DagExecutionMode::OneShot,
+            prompt_template: Some("prompts/summary.md".to_string()),
+            input_schema: Some("schemas/paper_extract.schema.json".to_string()),
+            output_schema: Some("schemas/summary_review.schema.json".to_string()),
+            verifiers: vec!["json_schema".to_string()],
+            tools: Vec::new(),
+            prompt_context: Default::default(),
+            system_overlays: Vec::new(),
+            postprocessors: Vec::new(),
+            max_iters: None,
+            max_cost_usd: None,
+            max_retries: Some(2),
+            timeout_secs: Some(90),
+            escalation: Some("skip".to_string()),
+        }
     }
 
     #[test]
     fn build_agent_registry_applies_resolved_model_override() {
         let _guard = EnvVarGuard::set(
-            crate::runtime_config::role_model_override_env_var(AgentRole::Summary),
+            crate::runtime_config::role_model_override_env_var("summary"),
             "claude-sonnet-test",
         );
         let mut role_yaml = RoleYamlMap::new();
         role_yaml.insert(
-            AgentRole::Summary,
-            Some(AgentRouting {
-                kind: Some(AgentKind::Critic),
-                provider: "claude".to_string(),
-                model: "claude-haiku-4-5-20251001".to_string(),
-                runner: Some(AgentRunnerKind::Cli),
-                execution_mode: DagExecutionMode::OneShot,
-                prompt_template: Some("prompts/summary.md".to_string()),
-                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
-                output_schema: Some("schemas/summary_review.schema.json".to_string()),
-                verifiers: vec!["json_schema".to_string()],
-                tools: Vec::new(),
-                max_iters: None,
-                max_cost_usd: None,
-                max_retries: Some(2),
-                timeout_secs: Some(90),
-                escalation: Some("skip".to_string()),
-            }),
+            "summary".to_string(),
+            Some(test_agent_config(AgentRunnerKind::Cli)),
         );
         let mut schemas = AgentSchemaMap::new();
         let schema = Arc::new(serde_json::json!({ "type": "object" }));
-        schemas.insert(AgentRole::Summary, schema.clone());
+        schemas.insert("summary".to_string(), schema.clone());
         let registry = build_agent_registry(&role_yaml, &Arc::new(schemas));
-        let agent = registry.get(&AgentRole::Summary).expect("summary agent");
+        let agent = registry.get("summary").expect("summary agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
         assert!(
@@ -946,24 +573,8 @@ runner: cli
         let _bin = EnvVarGuard::unset("GROKRXIV_CLAUDE_BIN".to_string());
         let mut role_yaml = RoleYamlMap::new();
         role_yaml.insert(
-            AgentRole::Summary,
-            Some(AgentRouting {
-                kind: Some(AgentKind::Critic),
-                provider: "claude".to_string(),
-                model: "claude-haiku-4-5-20251001".to_string(),
-                runner: Some(AgentRunnerKind::Cli),
-                execution_mode: DagExecutionMode::OneShot,
-                prompt_template: Some("prompts/summary.md".to_string()),
-                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
-                output_schema: Some("schemas/summary_review.schema.json".to_string()),
-                verifiers: vec!["json_schema".to_string()],
-                tools: Vec::new(),
-                max_iters: None,
-                max_cost_usd: None,
-                max_retries: Some(2),
-                timeout_secs: Some(90),
-                escalation: Some("skip".to_string()),
-            }),
+            "summary".to_string(),
+            Some(test_agent_config(AgentRunnerKind::Cli)),
         );
 
         let err = validate_required_cli_runners_with_path(&role_yaml, &std::ffi::OsString::new())
@@ -979,24 +590,8 @@ runner: cli
     fn api_role_does_not_require_cli_binary_at_startup() {
         let mut role_yaml = RoleYamlMap::new();
         role_yaml.insert(
-            AgentRole::Summary,
-            Some(AgentRouting {
-                kind: Some(AgentKind::Critic),
-                provider: "claude".to_string(),
-                model: "claude-haiku-4-5-20251001".to_string(),
-                runner: Some(AgentRunnerKind::Api),
-                execution_mode: DagExecutionMode::OneShot,
-                prompt_template: Some("prompts/summary.md".to_string()),
-                input_schema: Some("schemas/paper_extract.schema.json".to_string()),
-                output_schema: Some("schemas/summary_review.schema.json".to_string()),
-                verifiers: vec!["json_schema".to_string()],
-                tools: Vec::new(),
-                max_iters: None,
-                max_cost_usd: None,
-                max_retries: Some(2),
-                timeout_secs: Some(90),
-                escalation: Some("skip".to_string()),
-            }),
+            "summary".to_string(),
+            Some(test_agent_config(AgentRunnerKind::Api)),
         );
 
         validate_required_cli_runners_with_path(&role_yaml, &std::ffi::OsString::new())
@@ -1004,8 +599,17 @@ runner: cli
     }
 
     #[tokio::test]
-    async fn role_ladders_include_citation_only_for_citation_role() {
-        let (_schemas, ladders) = build_agent_schemas_and_verifiers();
+    async fn configured_ladders_follow_yaml_verifier_names() {
+        let mut role_yaml = RoleYamlMap::new();
+        let mut summary = test_agent_config(AgentRunnerKind::Api);
+        summary.verifiers = vec!["json_schema".to_string()];
+        role_yaml.insert("summary".to_string(), Some(summary));
+        let mut citation = test_agent_config(AgentRunnerKind::Api);
+        citation.output_schema = Some("schemas/citation_review.schema.json".to_string());
+        citation.verifiers = vec!["json_schema".to_string(), "citation_existence".to_string()];
+        role_yaml.insert("citation".to_string(), Some(citation));
+
+        let (_schemas, ladders) = build_agent_schemas_and_verifiers(&role_yaml).unwrap();
         let http = reqwest::Client::new();
         let paper = grokrxiv_schemas::PaperExtract {
             arxiv_id: "2605.00001".to_string(),
@@ -1024,7 +628,7 @@ runner: cli
         };
 
         let summary_names: Vec<String> = ladders
-            .get(&AgentRole::Summary)
+            .get("summary")
             .expect("summary ladder")
             .run(&serde_json::json!({}), &ctx)
             .await
@@ -1032,7 +636,7 @@ runner: cli
             .map(|(name, _)| name)
             .collect();
         let citation_names: Vec<String> = ladders
-            .get(&AgentRole::Citation)
+            .get("citation")
             .expect("citation ladder")
             .run(&serde_json::json!({}), &ctx)
             .await
@@ -1042,41 +646,5 @@ runner: cli
 
         assert!(!summary_names.contains(&"citation".to_string()));
         assert!(citation_names.contains(&"citation".to_string()));
-    }
-
-    fn write_api_role_configs(dir: &std::path::Path) {
-        for (_role, filename) in LEGACY_ROLE_FILES {
-            std::fs::write(
-                dir.join(filename),
-                "provider: claude\nmodel: claude-haiku-4-5-20251001\nrunner: api\n",
-            )
-            .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn state_does_not_register_api_runner_when_direct_api_is_disabled() {
-        let _allow = EnvVarGuard::set(ALLOW_PROVIDER_API_ENV.to_string(), "0");
-        let tmp = tempfile::tempdir().unwrap();
-        write_api_role_configs(tmp.path());
-        let _agents_dir = EnvVarGuard::set(
-            "GROKRXIV_AGENTS_DIR".to_string(),
-            tmp.path().to_str().unwrap(),
-        );
-        let mut config = Config::from_env();
-        config.database_url = None;
-
-        let state = AppState::from_config(config)
-            .await
-            .expect("state should still boot for CLI-only runtime");
-
-        assert!(
-            state.providers.is_none(),
-            "provider registry should not be built when direct provider API is disabled"
-        );
-        assert!(
-            !state.runners.contains_key(&AgentRunnerKind::Api),
-            "state should not register an API runner that is guaranteed to fail under the API guard"
-        );
     }
 }

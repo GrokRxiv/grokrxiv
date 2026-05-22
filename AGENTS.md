@@ -14,8 +14,10 @@ work exists.
 
 ## Orchestration Model
 
-Rust owns orchestration. Agent chat sessions, CLI tools, and other languages are
-workers behind Rust-controlled DAG nodes.
+Rust owns orchestration. Agent chat sessions, CLI tools, Rust-native functions,
+non-Rust programs, and future remote service nodes are workers behind
+Rust-controlled DAG nodes. The research review/revise pipeline is the first DAG
+app, not the orchestration contract itself.
 
 - DAG manifests live in `dags/*.yaml`.
 - Agent configs live in `agents/<dag-type>/*.yaml`.
@@ -27,6 +29,8 @@ workers behind Rust-controlled DAG nodes.
 - Extraction-agent callable tools live under
   `crates/orchestrator/src/agents/extraction/tools/` or the owning extraction
   agent module.
+- Role identity is a DAG/YAML string contract. Do not introduce Rust enums for
+  app-specific agent roles.
 
 Manifest rules:
 
@@ -40,6 +44,10 @@ Manifest rules:
   manifests, not by hardcoding supervisor control flow.
 - `dag_call` composes DAGs. Prefer a separate DAG plus `dag_call` when a
   pipeline can stand alone, such as citation validation.
+- The scheduler/executor may place work on local Tokio tasks, local CLI
+  subprocesses, Rust handlers, cloud runners, local inference, or future remote
+  GrokRxiv service nodes. DAG apps must not depend on a paper-review-specific
+  supervisor branch.
 
 ## LLM-Readable Contracts
 
@@ -81,9 +89,12 @@ Rules:
 
 1. Add an agent YAML under `agents/<dag-type>/<role-id>.yaml`.
 2. Add prompt and schema files.
-3. Add the role and node to the DAG manifest.
-4. Use `<dag-type>.<role-id>` as the durable role key.
-5. Validate output against the schema; emit raw JSON when invoked with an
+3. Declare `prompt_context`, `system_overlays`, `verifiers`, and
+   `postprocessors` explicitly when the agent needs reusable Rust hook
+   behavior.
+4. Add the role and node to the DAG manifest.
+5. Use `<dag-type>.<role-id>` as the durable role key.
+6. Validate output against the schema; emit raw JSON when invoked with an
    output schema.
 
 ## Verification

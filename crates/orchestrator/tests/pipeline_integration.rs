@@ -382,7 +382,7 @@ async fn write_body_md_to_workdir_puts_body_where_tools_read_it() -> anyhow::Res
 
 /// The `load_paper_extract` helper reconstructs a `PaperExtract` from
 /// `review_input.json` + the referenced Tier-1 files. This is the bridge
-/// between the persisted artifacts and the review DAG's `build_specialist_prompt`.
+/// between persisted artifacts and YAML-driven review prompt rendering.
 #[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
 #[tokio::test]
 async fn load_paper_extract_resolves_section_bodies() -> anyhow::Result<()> {
@@ -404,8 +404,8 @@ async fn load_paper_extract_resolves_section_bodies() -> anyhow::Result<()> {
     let extract = grokrxiv_orchestrator::ingest_pipeline::load_paper_extract(&repo_path, &ri)?;
     assert_eq!(extract.title, "A Toy Paper on Category Theory");
     assert_eq!(extract.sections.len(), 2);
-    // Body markdown for at least one section must be non-empty so the
-    // review DAG's `build_specialist_prompt` has something to feed the LLM.
+    // Body markdown for at least one section must be non-empty so configured
+    // review agents have source text to feed the LLM.
     let bodies_with_content: usize = extract
         .sections
         .iter()

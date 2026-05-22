@@ -34,5 +34,8 @@ Abstract:
 Bibliography:
 {{bibliography}}
 
+Citation contexts:
+{{citation_contexts}}
+
 Respond ONLY with JSON matching the schema **citation_review.schema.json**; no
 prose, no markdown fences, no commentary outside the JSON object.

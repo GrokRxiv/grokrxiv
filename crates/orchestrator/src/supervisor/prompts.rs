@@ -1,81 +1,71 @@
-pub(super) fn role_system_prompt(role: grokrxiv_schemas::AgentRole, field: Option<&str>) -> String {
-    use grokrxiv_schemas::AgentRole;
-    let task = match role {
-        AgentRole::Summary => "summarize papers in plain language for a literate non-expert",
-        AgentRole::TechnicalCorrectness => {
-            "assess mathematical, logical, and empirical correctness claim-by-claim"
-        }
-        AgentRole::Novelty => "compare against prior work and judge novelty",
-        AgentRole::Reproducibility => "judge whether the work can be reproduced from the paper",
-        AgentRole::Citation => "verify cited references and surface missing ones",
-        AgentRole::MetaReviewer => {
-            "synthesize five specialist reviews into a single recommendation"
-        }
+use std::collections::HashMap;
+
+use crate::agents::config::{self, AgentConfig, BibliographyMode};
+
+#[cfg(feature = "grokrxiv-ingest")]
+pub(super) struct ReviewPromptFacts<'a> {
+    pub(super) moderator_notes: Option<&'a str>,
+    pub(super) reproducibility: Option<&'a crate::agents::review::facts::ReproducibilityFacts>,
+    pub(super) novelty: Option<&'a crate::agents::review::facts::NoveltyFacts>,
+    pub(super) technical: Option<&'a crate::agents::review::facts::TechnicalCorrectnessFacts>,
+}
+
+pub(super) fn render_system_prompt(
+    role_id: &str,
+    cfg: &AgentConfig,
+    field: Option<&str>,
+) -> String {
+    let (system_template, _) = prompt_template_sections(cfg);
+    let description = cfg.role.as_deref().unwrap_or(role_id);
+    let mut vars = HashMap::new();
+    vars.insert("role_id", role_id.to_string());
+    vars.insert("role", description.to_string());
+    vars.insert("field", field.unwrap_or("").to_string());
+    let mut system = if system_template.trim().is_empty() {
+        format!(
+            "You are the `{role_id}` agent in a GrokRxiv DAG app. \
+             {description} Respond with strict JSON conforming to the supplied schema. \
+             No prose, no code fences, no commentary."
+        )
+    } else {
+        render_template(&system_template, &vars)
     };
-    let mut s = format!(
-        "You are a careful, honest specialist peer reviewer. You {task}. \
-         Respond with strict JSON conforming to the supplied schema. No prose, \
-         no code fences, no commentary."
-    );
-    let amenable = field.map(is_code_amenable_field).unwrap_or(false);
-    if amenable {
-        match role {
-            AgentRole::TechnicalCorrectness => {
-                s.push_str(
-                    "\n\nPROOF-AS-CODE AXIOM. The paper is in a code-amenable field \
-                     (cs.*, math.*, hep-*, gr-qc, astro-ph, cond-mat, nlin, quant-ph, nucl-*). \
-                     For every load-bearing claim that COULD be supported by an executable \
-                     artifact — a formal proof in Coq/Lean/Agda/Isabelle, a simulation or \
-                     numerical method as Python/Julia/Rust, a complexity argument as \
-                     benchmarks, an ML claim as training/eval scripts — and the paper does \
-                     NOT ship that artifact: record the claim with assessment 'unsupported' \
-                     and severity at least 'major' (use 'critical' if it blocks a headline \
-                     result), and write a concrete suggested_fix that names where the code \
-                     should live, e.g. `src/proofs/Thm3.lean`, `experiments/figure3/run.py`, \
-                     `benchmarks/complexity_test.rs`. Override the default 'be conservative' \
-                     guidance for these cases — absence of executable verification IS evidence \
-                     of weakness in this field.",
-                );
+    for overlay in &cfg.system_overlays {
+        if let Some(text) = system_overlay_text(overlay, field) {
+            if !system.ends_with('\n') {
+                system.push('\n');
             }
-            AgentRole::Reproducibility => {
-                s.push_str(
-                    "\n\nPROOF-AS-CODE AXIOM. The paper is in a code-amenable field. \
-                     Theory papers are NOT exempt from reproducibility analysis: formal \
-                     verification or numerical reproduction of theoretical results counts \
-                     as reproducibility, and a claimed theorem without a formal proof or \
-                     numerical evidence IS a reproducibility gap. For every load-bearing \
-                     theoretical or empirical claim that lacks a code/proof artifact, add a \
-                     `concerns` entry with area='proof_as_code', a description naming the \
-                     specific artifact that would close the gap (path included), and \
-                     severity at least 'major' ('critical' if the headline result depends on it).",
-                );
-            }
-            AgentRole::MetaReviewer => {
-                s.push_str(
-                    "\n\nRECOMMENDATION GATE. When technical_correctness OR reproducibility \
-                     flagged a missing proof-as-code artifact at severity 'major' or 'critical', \
-                     default `recommendation` to `major_revision`. If the missing artifact \
-                     blocks a headline claim, recommend `reject`. Only allow `accept` or \
-                     `minor_revision` when (a) code exists and was acknowledged by the \
-                     specialists, or (b) the paper explicitly justifies the absence (e.g. \
-                     existence proof in a field where Coq tooling does not yet cover the \
-                     theory). When applying this gate, cite the specific specialist findings \
-                     in `summary` and add the missing artifacts to `weaknesses`.\n\n\
-                     VERIFIED-FACT WEIGHTING. Deterministic verifier facts are stored in \
-                     each specialist row's `verifier_notes`, not in LLM-authored fields. \
-                     For citation, `verifier_notes.citation.notes.entries[*].status` is \
-                     authoritative: `resolved` and `unresolved` are definitive, \
-                     `transient_unknown` means the external service failed and must not \
-                     be treated as a fake citation, and `malformed` means the identifier \
-                     shape was invalid. Reproducibility reachability and novelty retrieval \
-                     facts are also verifier-side provenance. Do not convert unknown or \
-                     verifier-only facts into LLM judgments.",
-                );
-            }
-            _ => {}
+            system.push('\n');
+            system.push_str(text);
         }
     }
-    s
+    system
+}
+
+fn system_overlay_text(name: &str, field: Option<&str>) -> Option<&'static str> {
+    let code_amenable = field.map(is_code_amenable_field).unwrap_or(false);
+    match name {
+        "proof_as_code_technical" if code_amenable => Some(
+            "PROOF-AS-CODE AXIOM. The paper is in a code-amenable field. For every \
+             load-bearing claim that could be supported by an executable artifact and \
+             the paper does not ship that artifact: record the claim as unsupported, \
+             severity at least major, and name a concrete file path for the missing \
+             proof, simulation, benchmark, or evaluation script.",
+        ),
+        "proof_as_code_reproducibility" if code_amenable => Some(
+            "PROOF-AS-CODE AXIOM. The paper is in a code-amenable field. Theory papers \
+             are not exempt from reproducibility analysis: formal verification or \
+             numerical reproduction counts as reproducibility. Missing proof/code \
+             artifacts for load-bearing claims are reproducibility concerns.",
+        ),
+        "meta_recommendation_gate" if code_amenable => Some(
+            "RECOMMENDATION GATE. If specialist outputs flagged a missing proof-as-code \
+             artifact at major or critical severity, default recommendation to \
+             major_revision. If the missing artifact blocks a headline claim, recommend \
+             reject. Verified facts in verifier_notes are authoritative provenance.",
+        ),
+        _ => None,
+    }
 }
 
 pub(super) fn is_code_amenable_field(field: &str) -> bool {
@@ -84,25 +74,6 @@ pub(super) fn is_code_amenable_field(field: &str) -> bool {
         "stat.",
     ];
     PREFIXES.iter().any(|p| field.starts_with(p))
-}
-
-/// Per-role character budget for the rendered section bodies. Reserved for
-/// the body block only; title, abstract, heading index, and bibliography are
-/// outside this budget. The budgets keep specialist prompts inside the target
-/// model context window after schema overhead.
-///
-/// `MetaReviewer` is `0` because it only receives specialist outputs.
-#[cfg(feature = "grokrxiv-ingest")]
-pub(super) fn body_budget_chars(role: grokrxiv_schemas::AgentRole) -> usize {
-    use grokrxiv_schemas::AgentRole;
-    match role {
-        AgentRole::Summary => 48_000,
-        AgentRole::TechnicalCorrectness => 240_000,
-        AgentRole::Novelty => 120_000,
-        AgentRole::Reproducibility => 80_000,
-        AgentRole::Citation => 0,
-        AgentRole::MetaReviewer => 0,
-    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -117,16 +88,11 @@ fn citation_prompt_max_bib_entries() -> usize {
         .unwrap_or(DEFAULT_CITATION_PROMPT_MAX_BIB_ENTRIES)
 }
 
-/// Render a single section in its canonical `## {heading}\n\n{body}\n\n`
-/// form. The trailing blank line keeps adjacent sections visually separated.
 #[cfg(feature = "grokrxiv-ingest")]
 fn render_section(heading: &str, body: &str) -> String {
     format!("## {heading}\n\n{body}\n\n")
 }
 
-/// Truncate `s` to roughly `budget` chars using the "first 60%, last 40%"
-/// split. Char-based (not byte-based) so we never split a multi-byte codepoint.
-/// If `s` already fits, returns it untouched.
 #[cfg(feature = "grokrxiv-ingest")]
 fn truncate_60_40(s: &str, budget: usize) -> String {
     let total = s.chars().count();
@@ -143,20 +109,6 @@ fn truncate_60_40(s: &str, budget: usize) -> String {
     format!("{head}{marker}{tail}")
 }
 
-/// Render the section body block within `budget` chars.
-///
-/// Behavior:
-/// - Iterate sections in document order. For each:
-///   - Render `## {heading}\n\n{body}\n\n`.
-///   - If the rendered single section exceeds `budget` on its own AND nothing
-///     has been emitted yet, truncate it with the 60/40 split and emit it as
-///     the sole survivor.
-///   - Otherwise, if it fits in remaining budget, append it.
-///   - Otherwise, skip it and record the heading as truncated.
-/// - If any sections are skipped, append a single
-///   `[…remaining sections truncated; headings: a; b; c]` block.
-///
-/// `budget == 0` returns an empty string (used for `MetaReviewer`).
 #[cfg(feature = "grokrxiv-ingest")]
 fn render_section_block(sections: &[grokrxiv_schemas::Section], budget: usize) -> String {
     if budget == 0 || sections.is_empty() {
@@ -169,14 +121,12 @@ fn render_section_block(sections: &[grokrxiv_schemas::Section], budget: usize) -
     for s in sections {
         let rendered = render_section(&s.heading, &s.body_markdown);
         let rendered_chars = rendered.chars().count();
-
         if consumed == 0 && rendered_chars > budget {
             let truncated = truncate_60_40(&rendered, budget);
             consumed = truncated.chars().count();
             out.push_str(&truncated);
             continue;
         }
-
         if consumed + rendered_chars <= budget {
             out.push_str(&rendered);
             consumed += rendered_chars;
@@ -194,10 +144,6 @@ fn render_section_block(sections: &[grokrxiv_schemas::Section], budget: usize) -
     out
 }
 
-/// Render the bibliography block. Keys are synthesised 1-indexed
-/// (`[1] …`, `[2] …`) since `Citation` doesn't carry a BibTeX key field; this
-/// keeps the format stable across runs and is what the citation specialist
-/// expects to cross-reference.
 #[cfg(feature = "grokrxiv-ingest")]
 fn render_bibliography(bibliography: &[grokrxiv_schemas::Citation]) -> String {
     render_bibliography_limited(bibliography, None)
@@ -244,7 +190,7 @@ fn render_bibliography_limited(
     if shown < total {
         let omitted = total - shown;
         out.push_str(&format!(
-            "[…{omitted} additional bibliography entries omitted from citation LLM prompt; \
+            "[…{omitted} additional bibliography entries omitted from this LLM prompt; \
              verifier and render artifacts preserve the full bibliography.]\n"
         ));
     }
@@ -263,8 +209,7 @@ fn render_citation_contexts(sections: &[grokrxiv_schemas::Section], budget: usiz
             let next_len = out.chars().count() + line.chars().count();
             if next_len > budget {
                 if out.is_empty() {
-                    let truncated = truncate_60_40(&line, budget);
-                    out.push_str(&truncated);
+                    out.push_str(&truncate_60_40(&line, budget));
                 }
                 return out;
             }
@@ -296,293 +241,291 @@ fn push_citation_sentence(sentences: &mut Vec<String>, sentence: &str) {
     if trimmed.is_empty() {
         return;
     }
-    if trimmed.contains("[@") || trimmed.contains("@") || trimmed.contains("\\cite") {
+    if trimmed.contains("[@") || trimmed.contains('@') || trimmed.contains("\\cite") {
         sentences.push(truncate_60_40(trimmed, 1_200));
     }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
-pub(super) fn build_specialist_prompt(
-    role: grokrxiv_schemas::AgentRole,
+pub(super) fn render_agent_user_prompt(
+    role_id: &str,
+    cfg: &AgentConfig,
     extract: &grokrxiv_schemas::PaperExtract,
-    moderator_notes: Option<&str>,
-    reproducibility_facts: Option<&crate::agents::specialist_facts::ReproducibilityFacts>,
-    novelty_facts: Option<&crate::agents::specialist_facts::NoveltyFacts>,
-    tc_facts: Option<&crate::agents::specialist_facts::TechnicalCorrectnessFacts>,
+    facts: ReviewPromptFacts<'_>,
 ) -> String {
-    use grokrxiv_schemas::AgentRole;
-
-    // MetaReviewer receives only the specialist-output bundle, not the paper body.
-    if matches!(role, AgentRole::MetaReviewer) {
+    if cfg.prompt_context.meta_input {
         return String::new();
     }
+    let (_, user_template) = prompt_template_sections(cfg);
+    let template = if user_template.trim().is_empty() {
+        "Title: {{title}}\n\nAbstract:\n{{abstract}}\n\nSections:\n{{sections}}\n\nBibliography:\n{{bibliography}}\n\n{{fact_blocks}}"
+            .to_string()
+    } else {
+        user_template
+    };
 
-    let budget = body_budget_chars(role);
-    let heading_index: String = extract
+    let heading_index = extract
         .sections
         .iter()
         .take(40)
         .map(|s| format!("- {}", s.heading))
         .collect::<Vec<_>>()
         .join("\n");
-    let body_block = render_section_block(&extract.sections, budget);
-    let bib_block = if matches!(role, AgentRole::Citation) {
-        render_bibliography_limited(
-            &extract.bibliography,
-            Some(citation_prompt_max_bib_entries()),
-        )
-    } else {
-        render_bibliography(&extract.bibliography)
-    };
-    let citation_contexts = if matches!(role, AgentRole::Citation) {
-        render_citation_contexts(&extract.sections, 24_000)
-    } else {
-        String::new()
-    };
-
-    let task = match role {
-        AgentRole::Summary => {
-            "Produce a plain-language summary of the paper. Populate the schema's \
-             `plain_language_summary`, `key_contributions`, `tldr`, and (optionally) \
-             `audience` fields."
-        }
-        AgentRole::TechnicalCorrectness => {
-            "Walk through the paper's main claims and assess each. Populate the schema's \
-             `claims` (with id, claim, assessment, severity, and optionally location, \
-             evidence, suggested_fix), `overall_correctness`, and `confidence`."
-        }
-        AgentRole::Novelty => {
-            "Compare this paper against the most relevant prior work and judge its \
-             novelty. Populate `novelty_score`, `verdict`, `confidence`, and optionally \
-             `related_work` and `missing_prior_art`."
-        }
-        AgentRole::Reproducibility => {
-            "Evaluate reproducibility. Populate `code_availability`, `data_availability`, \
-             `reproducibility_score`, `confidence`, and optionally `code_url`, `data_url`, \
-             `environment`, `concerns`."
-        }
-        AgentRole::Citation => {
-            "Focus on RELEVANCE and MISSING WORK — a separate deterministic \
-             verifier (Crossref + arXiv batch lookups) handles existence and \
-             DOI/URL resolution and writes its results to `verifier_notes`. \
-             Your job: for each bibliography entry included below, set `relevance` \
-             from the extracted in-text contexts (`high`/`medium`/`low`/`unrelated`), \
-             write `explanation` describing where and why it's cited, and \
-             leave `exists`/`resolved_doi`/`resolved_url` at their defaults \
-             (`null`/`null`/`null`) since verifier provenance in \
-             `verifier_notes` is authoritative. \
-             If the bibliography block says entries were omitted, do not invent \
-             entries for the omitted references; the verifier and render pipeline \
-             preserve the full bibliography separately. \
-             Populate `missing_references` with prior work you would expect \
-             the paper to cite but doesn't, with reasons. Provide `summary` \
-             and `confidence`."
-        }
-        AgentRole::MetaReviewer => unreachable!("MetaReviewer handled above"),
-    };
-
-    let field_line = match extract.field.as_deref() {
-        Some(f) if !f.is_empty() => format!("Paper field: {f}\n\n"),
-        _ => String::new(),
-    };
-    let mut out = format!(
-        "{field_line}Paper title: {title}\n\nAbstract:\n{abstract_}\n\nSection headings:\n{heading_index}\n\n",
-        title = extract.title,
-        abstract_ = extract.abstract_,
+    let sections = render_section_block(
+        &extract.sections,
+        cfg.prompt_context.body_budget_chars.unwrap_or(0),
     );
-    if !body_block.is_empty() {
-        out.push_str("Paper body:\n\n");
-        out.push_str(&body_block);
-        if !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    if !citation_contexts.is_empty() {
-        out.push_str("Citation contexts:\n\n");
-        out.push_str(&citation_contexts);
-        if !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    if !bib_block.is_empty() {
-        out.push_str(&bib_block);
-        out.push('\n');
-    }
-    if let Some(notes) = moderator_notes.filter(|s| !s.trim().is_empty()) {
-        out.push_str(
-            "Moderator notes from a prior `request-changes` round — treat these as authoritative \
-             priorities for this review pass:\n\n",
-        );
-        out.push_str(notes.trim());
-        out.push_str("\n\n");
-    }
-    if let Some(facts) = reproducibility_facts {
-        if !facts.urls_checked.is_empty() || !facts.github_repos.is_empty() {
-            out.push_str(
-                "Verified availability facts (deterministically retrieved — do NOT re-check, \
-                 treat as authoritative):\n\n",
-            );
-            if !facts.urls_checked.is_empty() {
-                out.push_str("URLs checked:\n");
-                for u in &facts.urls_checked {
-                    let status_str = u
-                        .status
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "network_error".to_string());
-                    let kind = match u.kind {
-                        crate::agents::specialist_facts::UrlKind::Code => "code",
-                        crate::agents::specialist_facts::UrlKind::Dataset => "dataset",
-                        crate::agents::specialist_facts::UrlKind::Other => "other",
-                    };
-                    out.push_str(&format!(
-                        "- [{kind}] {url} → {state} (status={status_str})\n",
-                        url = u.url,
-                        state = if u.reachable {
-                            "REACHABLE"
-                        } else {
-                            "UNREACHABLE"
-                        },
-                    ));
-                }
-                out.push('\n');
-            }
-            if !facts.github_repos.is_empty() {
-                out.push_str("GitHub repositories:\n");
-                for r in &facts.github_repos {
-                    if !r.exists {
-                        out.push_str(&format!(
-                            "- {}/{}: NOT FOUND (404 or private without token)\n",
-                            r.owner, r.repo
-                        ));
-                        continue;
-                    }
-                    let mut tags: Vec<String> = Vec::new();
-                    if let Some(p) = &r.pushed_at {
-                        tags.push(format!("last_pushed={p}"));
-                    }
-                    if let Some(s) = r.stargazers_count {
-                        tags.push(format!("stars={s}"));
-                    }
-                    if let Some(l) = &r.license_spdx {
-                        tags.push(format!("license={l}"));
-                    }
-                    if matches!(r.archived, Some(true)) {
-                        tags.push("ARCHIVED".to_string());
-                    }
-                    out.push_str(&format!(
-                        "- {}/{}: exists; {}\n",
-                        r.owner,
-                        r.repo,
-                        if tags.is_empty() {
-                            "no metadata".to_string()
-                        } else {
-                            tags.join(", ")
-                        }
-                    ));
-                }
-                out.push('\n');
-            }
-            out.push_str(
-                "Rules:\n\
-                 - A `code_url` from the paper is only resolved iff its entry above is REACHABLE.\n\
-                 - A repository marked ARCHIVED implies the work is no longer maintained — \
-                   surface as a `severity: minor` concern.\n\
-                 - An UNREACHABLE code/dataset URL is a `severity: major` reproducibility concern; \
-                   add a `concerns` entry naming the URL and the status code.\n\n",
-            );
-        }
-    }
-    if let Some(facts) = novelty_facts {
-        if !facts.related_papers.is_empty() {
-            out.push_str(
-                "Verified prior-art candidates (retrieved by metadata similarity — judge novelty \
-                 against these, do NOT rely on memory of pre-2024 literature):\n\n",
-            );
-            for (i, p) in facts.related_papers.iter().enumerate().take(20) {
-                let year = p
-                    .year
-                    .map(|y| y.to_string())
-                    .unwrap_or_else(|| "n.d.".to_string());
-                let author = p.primary_author.as_deref().unwrap_or("unknown");
-                let snippet = p
-                    .abstract_snippet
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("(no abstract)");
-                out.push_str(&format!(
-                    "{:>2}. [{year}] {author} — {title}\n    {snippet}\n",
-                    i + 1,
-                    title = p.title,
-                ));
-                if let Some(arxiv) = &p.arxiv_id {
-                    out.push_str(&format!("    arXiv:{arxiv}\n"));
-                }
-                if let Some(doi) = &p.doi {
-                    out.push_str(&format!("    doi:{doi}\n"));
+    let bibliography = match cfg.prompt_context.bibliography {
+        BibliographyMode::None => String::new(),
+        BibliographyMode::Full => render_bibliography(&extract.bibliography),
+        BibliographyMode::Limited => render_bibliography_limited(
+            &extract.bibliography,
+            Some(
+                cfg.prompt_context
+                    .max_bibliography_entries
+                    .unwrap_or_else(citation_prompt_max_bib_entries),
+            ),
+        ),
+    };
+    let citation_contexts = render_citation_contexts(
+        &extract.sections,
+        cfg.prompt_context
+            .citation_context_budget_chars
+            .unwrap_or_default(),
+    );
+    let fact_blocks = render_configured_fact_blocks(cfg, &facts);
+    let moderator_notes = facts
+        .moderator_notes
+        .filter(|s| !s.trim().is_empty())
+        .map(|notes| {
+            format!(
+                "Moderator notes from a prior request-changes round. Treat these as authoritative priorities:\n\n{}",
+                notes.trim()
+            )
+        })
+        .unwrap_or_default();
+
+    let mut vars = HashMap::new();
+    vars.insert("role_id", role_id.to_string());
+    vars.insert("role", cfg.role.as_deref().unwrap_or(role_id).to_string());
+    vars.insert("field", extract.field.clone().unwrap_or_default());
+    vars.insert("title", extract.title.clone());
+    vars.insert("abstract", extract.abstract_.clone());
+    vars.insert("sections", sections);
+    vars.insert("heading_index", heading_index);
+    vars.insert("bibliography", bibliography);
+    vars.insert("citation_contexts", citation_contexts);
+    vars.insert("fact_blocks", fact_blocks);
+    vars.insert("moderator_notes", moderator_notes);
+    render_template(&template, &vars)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_configured_fact_blocks(cfg: &AgentConfig, facts: &ReviewPromptFacts<'_>) -> String {
+    let mut out = String::new();
+    for block in &cfg.prompt_context.fact_blocks {
+        match block.as_str() {
+            "reproducibility_availability" => {
+                if let Some(facts) = facts.reproducibility {
+                    out.push_str(&render_reproducibility_fact_block(facts));
                 }
             }
-            out.push_str(
-                "\nRules:\n\
-                 - Each related paper above is a real, retrievable neighbor — treat its existence \
-                   as ground truth. Do NOT claim a paper does not exist if it's listed here.\n\
-                 - When the manuscript's novelty claim conflicts with a related paper, lower \
-                   `novelty_score` and add a `missing_prior_art` entry citing the related paper.\n\n",
-            );
-        } else if !facts.retrieval_error.is_empty() {
+            "novelty_prior_art" => {
+                if let Some(facts) = facts.novelty {
+                    out.push_str(&render_novelty_fact_block(facts));
+                }
+            }
+            "technical_structure" => {
+                if let Some(facts) = facts.technical {
+                    out.push_str(&render_technical_fact_block(facts));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_reproducibility_fact_block(
+    facts: &crate::agents::review::facts::ReproducibilityFacts,
+) -> String {
+    if facts.urls_checked.is_empty() && facts.github_repos.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "Verified availability facts (deterministically retrieved; treat as authoritative):\n\n",
+    );
+    if !facts.urls_checked.is_empty() {
+        out.push_str("URLs checked:\n");
+        for u in &facts.urls_checked {
+            let status_str = u
+                .status
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "network_error".to_string());
+            let kind = match u.kind {
+                crate::agents::review::facts::UrlKind::Code => "code",
+                crate::agents::review::facts::UrlKind::Dataset => "dataset",
+                crate::agents::review::facts::UrlKind::Other => "other",
+            };
             out.push_str(&format!(
-                "Prior-art retrieval failed ({}); fall back to memory but flag the gap in confidence.\n\n",
-                facts.retrieval_error,
+                "- [{kind}] {url} -> {state} (status={status_str})\n",
+                url = u.url,
+                state = if u.reachable {
+                    "REACHABLE"
+                } else {
+                    "UNREACHABLE"
+                },
             ));
         }
+        out.push('\n');
     }
-    if let Some(facts) = tc_facts {
-        if !facts.tables.is_empty()
-            || !facts.equation_labels.is_empty()
-            || !facts.complexity_mentions.is_empty()
-        {
-            out.push_str(
-                "Verified structural facts about the paper (use these to cross-check claims \
-                 against actual tables and equations; do NOT reason from memory of the body):\n\n",
-            );
-            if !facts.tables.is_empty() {
-                out.push_str("Tables found:\n");
-                for t in facts.tables.iter().take(20) {
-                    out.push_str(&format!(
-                        "- [{section}] {rows} rows; header: {header}\n",
-                        section = t.section,
-                        rows = t.row_count,
-                        header = t.header_row.chars().take(160).collect::<String>(),
-                    ));
-                }
-                out.push('\n');
+    if !facts.github_repos.is_empty() {
+        out.push_str("GitHub repositories:\n");
+        for r in &facts.github_repos {
+            if !r.exists {
+                out.push_str(&format!(
+                    "- {}/{}: NOT FOUND (404 or private without token)\n",
+                    r.owner, r.repo
+                ));
+                continue;
             }
-            if !facts.equation_labels.is_empty() {
-                out.push_str("Equation labels found:\n");
-                for e in facts.equation_labels.iter().take(20) {
-                    out.push_str(&format!("- [{}] {}\n", e.section, e.label));
-                }
-                out.push('\n');
+            let mut tags: Vec<String> = Vec::new();
+            if let Some(p) = &r.pushed_at {
+                tags.push(format!("last_pushed={p}"));
             }
-            if !facts.complexity_mentions.is_empty() {
-                out.push_str("Complexity notations found:\n");
-                for c in facts.complexity_mentions.iter().take(20) {
-                    out.push_str(&format!("- [{}] {}\n", c.section, c.notation));
-                }
-                out.push('\n');
+            if let Some(s) = r.stargazers_count {
+                tags.push(format!("stars={s}"));
             }
-            out.push_str(
-                "Rules:\n\
-                 - When a claim references a number that should appear in a table above, cite \
-                   the table by header and verify the number against the source body block.\n\
-                 - When the paper claims a complexity bound not listed above, flag it as \
-                   `unsupported` unless the body explicitly derives it.\n\n",
-            );
+            if let Some(l) = &r.license_spdx {
+                tags.push(format!("license={l}"));
+            }
+            if matches!(r.archived, Some(true)) {
+                tags.push("ARCHIVED".to_string());
+            }
+            out.push_str(&format!(
+                "- {}/{}: exists; {}\n",
+                r.owner,
+                r.repo,
+                if tags.is_empty() {
+                    "no metadata".to_string()
+                } else {
+                    tags.join(", ")
+                }
+            ));
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "Rules:\n\
+         - A code_url from the paper is resolved only if its entry above is REACHABLE.\n\
+         - ARCHIVED repositories are maintenance concerns.\n\
+         - UNREACHABLE code/dataset URLs are major reproducibility concerns.\n\n",
+    );
+    out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_novelty_fact_block(facts: &crate::agents::review::facts::NoveltyFacts) -> String {
+    if facts.related_papers.is_empty() {
+        if facts.retrieval_error.is_empty() {
+            return String::new();
+        }
+        return format!(
+            "Prior-art retrieval failed ({}); fall back to memory but lower confidence.\n\n",
+            facts.retrieval_error
+        );
+    }
+    let mut out = String::from(
+        "Verified prior-art candidates (retrieved by metadata similarity; judge novelty against these):\n\n",
+    );
+    for (i, p) in facts.related_papers.iter().enumerate().take(20) {
+        let year = p
+            .year
+            .map(|y| y.to_string())
+            .unwrap_or_else(|| "n.d.".to_string());
+        let author = p.primary_author.as_deref().unwrap_or("unknown");
+        let snippet = p
+            .abstract_snippet
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(no abstract)");
+        out.push_str(&format!(
+            "{:>2}. [{year}] {author} - {title}\n    {snippet}\n",
+            i + 1,
+            title = p.title,
+        ));
+        if let Some(arxiv) = &p.arxiv_id {
+            out.push_str(&format!("    arXiv:{arxiv}\n"));
+        }
+        if let Some(doi) = &p.doi {
+            out.push_str(&format!("    doi:{doi}\n"));
         }
     }
-    out.push_str(&format!("Task: {task}"));
+    out.push_str(
+        "\nRules:\n\
+         - Papers listed here are real, retrievable neighbors.\n\
+         - If a listed paper conflicts with the manuscript's novelty claim, lower novelty_score and add missing_prior_art.\n\n",
+    );
     out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn render_technical_fact_block(
+    facts: &crate::agents::review::facts::TechnicalCorrectnessFacts,
+) -> String {
+    if facts.tables.is_empty()
+        && facts.equation_labels.is_empty()
+        && facts.complexity_mentions.is_empty()
+    {
+        return String::new();
+    }
+    let mut out = String::from(
+        "Verified structural facts about the paper (use these to cross-check claims):\n\n",
+    );
+    if !facts.tables.is_empty() {
+        out.push_str("Tables found:\n");
+        for t in facts.tables.iter().take(20) {
+            out.push_str(&format!(
+                "- [{section}] {rows} rows; header: {header}\n",
+                section = t.section,
+                rows = t.row_count,
+                header = t.header_row.chars().take(160).collect::<String>(),
+            ));
+        }
+        out.push('\n');
+    }
+    if !facts.equation_labels.is_empty() {
+        out.push_str("Equation labels found:\n");
+        for e in facts.equation_labels.iter().take(20) {
+            out.push_str(&format!("- [{}] {}\n", e.section, e.label));
+        }
+        out.push('\n');
+    }
+    if !facts.complexity_mentions.is_empty() {
+        out.push_str("Complexity notations found:\n");
+        for c in facts.complexity_mentions.iter().take(20) {
+            out.push_str(&format!("- [{}] {}\n", c.section, c.notation));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+pub(super) fn render_meta_synthesis_prompt(
+    cfg: &AgentConfig,
+    meta_input: &serde_json::Value,
+) -> String {
+    let (_, user_template) = prompt_template_sections(cfg);
+    let pretty = serde_json::to_string_pretty(meta_input).unwrap_or_else(|_| "{}".into());
+    if user_template.trim().is_empty() {
+        return format!("Specialist reviews:\n{pretty}");
+    }
+    let mut vars = HashMap::new();
+    vars.insert("specialists", pretty.clone());
+    vars.insert("meta_input", pretty);
+    render_template(&user_template, &vars)
 }
 
 /// Resolve the debug-prompt directory from the `GROKRXIV_DEBUG_PROMPT_DIR`
@@ -605,7 +548,7 @@ pub(super) fn debug_prompt_root() -> Option<std::path::PathBuf> {
 pub(super) fn dump_debug_prompt(
     root: &std::path::Path,
     arxiv_id: &str,
-    role: grokrxiv_schemas::AgentRole,
+    role_id: &str,
     prompt: &str,
 ) {
     let safe_id: String = arxiv_id
@@ -619,30 +562,65 @@ pub(super) fn dump_debug_prompt(
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let file = dir.join(format!("{}.md", super::role_slug(role)));
+    let file = dir.join(format!("{}.md", role_id.replace('.', "_")));
     let _ = std::fs::write(&file, prompt);
 }
 
-pub(super) fn build_meta_synthesis_prompt(meta_input: &serde_json::Value) -> String {
-    let pretty = serde_json::to_string_pretty(meta_input).unwrap_or_else(|_| "{}".into());
-    // The meta input contract contains only the `specialists` key; the paper
-    // extract is intentionally omitted because each specialist already used it.
-    format!(
-        "Below is a JSON object with one key, `specialists`, containing the five \
-         specialist reviewers' outputs keyed by role slug:\n\
-         - `summary` → {{tldr, plain_language_summary, key_contributions[], audience}}\n\
-         - `technical_correctness` → {{claims[], overall_correctness, confidence}}\n\
-         - `novelty` → {{verdict, novelty_score, related_work[], missing_prior_art[], confidence}}\n\
-         - `reproducibility` → {{reproducibility_score, code_availability, code_url, \
-            data_availability, data_url, environment, concerns[], confidence}}\n\
-         - `citation` → {{entries[], missing_references[], summary, confidence}}\n\n\
-         The paper extract itself is NOT included — each specialist already reasoned \
-         over it. Treat the specialist outputs as your sole evidence.\n\n\
-         {pretty}\n\n\
-         Task: Synthesize these five specialist reviews into a single MetaReview JSON \
-         object with fields summary, strengths, weaknesses, questions, recommendation \
-         (one of accept|minor_revision|major_revision|reject), confidence (0..1), and \
-         optional revision_targets entries mapping concrete weaknesses to source, code, \
-         data, bibliography, or review updates."
-    )
+fn prompt_template_sections(cfg: &AgentConfig) -> (String, String) {
+    let Some(path) = cfg.prompt_template.as_deref() else {
+        return (String::new(), String::new());
+    };
+    let path = config::resolve_declared_runtime_path(path);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (String::new(), String::new());
+    };
+    split_prompt_template(&text)
+}
+
+fn split_prompt_template(text: &str) -> (String, String) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Section {
+        None,
+        System,
+        User,
+    }
+    let mut current = Section::None;
+    let mut system = String::new();
+    let mut user = String::new();
+    for line in text.lines() {
+        match line.trim() {
+            "# System" => {
+                current = Section::System;
+                continue;
+            }
+            "# User" => {
+                current = Section::User;
+                continue;
+            }
+            _ => {}
+        }
+        match current {
+            Section::System => {
+                system.push_str(line);
+                system.push('\n');
+            }
+            Section::User => {
+                user.push_str(line);
+                user.push('\n');
+            }
+            Section::None => {}
+        }
+    }
+    if system.is_empty() && user.is_empty() {
+        user = text.to_string();
+    }
+    (system.trim().to_string(), user.trim().to_string())
+}
+
+fn render_template(template: &str, vars: &HashMap<&str, String>) -> String {
+    let mut out = template.to_string();
+    for (key, value) in vars {
+        out = out.replace(&format!("{{{{{key}}}}}"), value);
+    }
+    out
 }

@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::agents::extraction::{run_tool_loop, ExtractionAgent, ExtractionRole, ToolRegistry};
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{AgentSpec, ExtractionContext, ExtractionRun, ToolSpec};
+use crate::agents::AgentRunner;
 
 /// Built-in strict schema for the `submit(...)` payload. Mirrors
 /// `schemas/extraction/vlm.schema.json` (OpenAI-strict-compatible: every
@@ -225,11 +225,11 @@ impl ExtractionAgent for VlmExtractorAgent {
 mod tests {
     use super::*;
     use crate::agents::extraction::ToolRegistry;
-    use crate::agents::traits::AgentRunner;
     use crate::agents::types::{AgentSpec, ExtractionContext, Message, ToolCallRecord};
+    use crate::agents::AgentRunner;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, ToolSpec, Usage};
-    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use grokrxiv_schemas::PaperExtract;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -342,7 +342,7 @@ mod tests {
 
     fn spec() -> AgentSpec {
         AgentSpec::api_default(
-            AgentRole::Summary,
+            "summary",
             "gemini".to_string(),
             "gemini-2.5-pro".to_string(),
         )

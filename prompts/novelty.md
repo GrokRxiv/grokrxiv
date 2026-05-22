@@ -32,5 +32,8 @@ Sections:
 Bibliography:
 {{bibliography}}
 
+Verified fact blocks:
+{{fact_blocks}}
+
 Respond ONLY with JSON matching the schema **novelty_review.schema.json**; no
 prose, no markdown fences, no commentary outside the JSON object.

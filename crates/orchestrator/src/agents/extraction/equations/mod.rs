@@ -141,7 +141,7 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
 
     async fn run(
         &self,
-        runner: Arc<dyn crate::agents::traits::AgentRunner>,
+        runner: Arc<dyn crate::agents::AgentRunner>,
         spec: &crate::agents::types::AgentSpec,
         ctx: ExtractionContext<'_>,
     ) -> anyhow::Result<ExtractionRun>
@@ -167,11 +167,11 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
 mod agent_tests {
     use super::*;
     use crate::agents::extraction::run_tool_loop;
-    use crate::agents::traits::AgentRunner;
     use crate::agents::types::{AgentSpec, Message};
+    use crate::agents::AgentRunner;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, Usage};
-    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use grokrxiv_schemas::PaperExtract;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -253,7 +253,7 @@ mod agent_tests {
 
     fn fake_spec() -> AgentSpec {
         AgentSpec::api_default(
-            AgentRole::Summary,
+            "summary",
             "gemini".to_string(),
             "gemini-2.5-pro".to_string(),
         )

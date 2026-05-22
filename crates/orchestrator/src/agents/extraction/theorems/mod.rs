@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agents::extraction::{ExtractionAgent, ExtractionRole, ToolRegistry, ToolSpec};
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{AgentSpec, ExtractionContext, ExtractionRun};
+use crate::agents::AgentRunner;
 
 pub mod tools;
 
@@ -126,13 +126,13 @@ mod tests {
     use super::*;
     use crate::agents::extraction::r#loop::run_tool_loop;
     use crate::agents::extraction::ToolCtx;
-    use crate::agents::traits::AgentRunner;
     use crate::agents::types::{AgentSpec, ExtractionContext, Message};
+    use crate::agents::AgentRunner;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{
         FinishReason, ProviderToolCall, ToolCompletion, ToolSpec as LlmToolSpec, Usage,
     };
-    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use grokrxiv_schemas::PaperExtract;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -173,11 +173,7 @@ mod tests {
     }
 
     fn fake_spec() -> AgentSpec {
-        AgentSpec::api_default(
-            AgentRole::Summary,
-            "claude".to_string(),
-            "claude-test".to_string(),
-        )
+        AgentSpec::api_default("summary", "claude".to_string(), "claude-test".to_string())
     }
 
     /// Scripted runner — hands back canned tool-call turns in order. Mirrors

@@ -36,8 +36,8 @@ the paper does not ship that artifact, record the claim with:
   `benchmarks/complexity_test.rs`.
 
 Absence of executable verification IS evidence of weakness in this field. The
-live `role_system_prompt` (see `crates/orchestrator/src/supervisor.rs`) wires
-this axiom into the system prompt when `paper.field` matches the prefix list.
+DAG app may also add field-gated proof-as-code system overlays when
+`paper.field` matches the prefix list.
 
 # User
 
@@ -51,6 +51,9 @@ Sections:
 
 Bibliography:
 {{bibliography}}
+
+Verified fact blocks:
+{{fact_blocks}}
 
 Respond ONLY with JSON matching the schema **technical_review.schema.json**; no
 prose, no markdown fences, no commentary outside the JSON object.

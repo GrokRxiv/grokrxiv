@@ -19,8 +19,8 @@ use crate::agents::extraction::{
     tools as core_tools, ExtractionAgent, ExtractionContext, ExtractionRole, ExtractionRun, Tool,
     ToolSpec,
 };
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::AgentSpec;
+use crate::agents::AgentRunner;
 
 pub mod tools;
 
@@ -233,7 +233,7 @@ mod tests {
     use crate::agents::types::{AgentInput, AgentRun, AgentSpec, ExtractionContext, Message};
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, Usage};
-    use grokrxiv_schemas::{AgentRole, PaperExtract};
+    use grokrxiv_schemas::PaperExtract;
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -435,7 +435,7 @@ mod tests {
             max_iters: 80,
         };
         let spec = AgentSpec::api_default(
-            AgentRole::Citation,
+            "citation",
             "gemini".to_string(),
             "gemini-2.5-pro".to_string(),
         );

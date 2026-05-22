@@ -12,6 +12,13 @@ output_schema: schemas/citation_review.schema.json
 verifiers:
   - json_schema
   - citation_existence
+prompt_context:
+  body_budget_chars: 0
+  bibliography: limited
+  max_bibliography_entries: 32
+  citation_context_budget_chars: 24000
+postprocessors:
+  - merge_citation_verifier
 max_retries: 2
 timeout_secs: 360
-escalation: human
+escalation: agent

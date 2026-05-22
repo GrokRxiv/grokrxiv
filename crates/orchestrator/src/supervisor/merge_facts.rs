@@ -1,6 +1,6 @@
 pub(super) fn merge_novelty_facts_into_output(
     output: serde_json::Value,
-    _facts: &crate::agents::specialist_facts::NoveltyFacts,
+    _facts: &crate::agents::review::facts::NoveltyFacts,
 ) -> serde_json::Value {
     output
 }
@@ -12,7 +12,7 @@ pub(super) fn merge_novelty_facts_into_output(
 /// LLM are preserved; we only append.
 pub(super) fn merge_reproducibility_facts_into_output(
     mut output: serde_json::Value,
-    facts: &crate::agents::specialist_facts::ReproducibilityFacts,
+    facts: &crate::agents::review::facts::ReproducibilityFacts,
 ) -> serde_json::Value {
     let Some(obj) = output.as_object_mut() else {
         return output;
@@ -24,7 +24,7 @@ pub(super) fn merge_reproducibility_facts_into_output(
     let Some(concerns_arr) = concerns.as_array_mut() else {
         return output;
     };
-    use crate::agents::specialist_facts::UrlKind;
+    use crate::agents::review::facts::UrlKind;
     for u in &facts.urls_checked {
         if u.reachable {
             continue;

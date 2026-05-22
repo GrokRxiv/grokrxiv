@@ -24,7 +24,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use base64::Engine;
 use grokrxiv_llm_adapter::{ChatRequest, ContentPart, Message, ResponseFormat, Role};
-use grokrxiv_schemas::{AgentRole, Author, FigureRef, MetaReview, PaperExtract};
+use grokrxiv_schemas::{Author, FigureRef, MetaReview, PaperExtract};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -376,7 +376,7 @@ async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::
     let paper_json = serde_json::to_value(paper)
         .map_err(|e| anyhow::anyhow!("serialize preview paper extract: {e}"))?;
     let spec = AgentSpec {
-        role: AgentRole::MetaReviewer,
+        role: "preview_meta_reviewer".to_string(),
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
         provider,
@@ -388,7 +388,7 @@ async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::
     let input = AgentInput {
         paper_id: Uuid::new_v4(),
         review_id: Uuid::new_v4(),
-        role: AgentRole::MetaReviewer,
+        role: "preview_meta_reviewer".to_string(),
         content_hash_material: paper_json.clone(),
         artifact: paper_json,
         system_prompt: SYSTEM_PROMPT.to_string(),

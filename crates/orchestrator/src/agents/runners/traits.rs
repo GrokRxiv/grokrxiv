@@ -1,4 +1,4 @@
-//! Trait definitions for the agent runtime.
+//! Runner trait for the agent runtime.
 //!
 //! - [`AgentRunner`] is the execution backend. There are 4 concrete impls:
 //!   `ApiRunner`, `CliRunner`, `CloudRunner`, `LocalInferenceRunner`.
@@ -7,18 +7,19 @@
 //! render, publish). Agents and runners are pure-ish — they reason and
 //! execute; they don't touch the DB or open PRs.
 
-use super::extraction::ToolCtx;
-use super::types::{AgentInput, AgentRun, AgentSpec, Message, ToolCompletion, ToolSpec};
 use async_trait::async_trait;
+
+use crate::agents::extraction::ToolCtx;
+use crate::agents::types::{AgentInput, AgentRun, AgentSpec, Message, ToolCompletion, ToolSpec};
 
 /// Execution backend. Receives a fully prepared spec + input and returns the
 /// structured run result. Implementations:
 ///
-/// - [`super::runners::api::ApiRunner`] — direct LLM provider API calls
-/// - [`super::runners::cli::CliRunner`] — local subprocess (`claude` /
+/// - [`super::api::ApiRunner`] — direct LLM provider API calls
+/// - [`super::cli::CliRunner`] — local subprocess (`claude` /
 ///   `codex` / `gemini` based on `spec.provider`)
-/// - [`super::runners::cloud::CloudRunner`] — Vercel Open Agents / E2B
-/// - [`super::runners::local_inference::LocalInferenceRunner`] — Ollama via
+/// - [`super::cloud::CloudRunner`] — Vercel Open Agents / E2B
+/// - [`super::local_inference::LocalInferenceRunner`] — Ollama via
 ///   LiteLLM (preferred) or direct
 #[async_trait]
 pub trait AgentRunner: Send + Sync {

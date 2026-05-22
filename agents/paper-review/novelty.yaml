@@ -12,6 +12,13 @@ output_schema: schemas/novelty_review.schema.json
 verifiers:
   - json_schema
   - tone
+prompt_context:
+  body_budget_chars: 120000
+  bibliography: full
+  fact_blocks:
+    - novelty_prior_art
+postprocessors:
+  - merge_novelty_facts
 max_retries: 2
 timeout_secs: 360
-escalation: human
+escalation: agent

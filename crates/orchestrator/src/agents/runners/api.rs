@@ -17,11 +17,11 @@ use grokrxiv_llm_adapter::{
 use tracing::warn;
 
 use crate::agents::extraction::ToolCtx;
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, Message, ToolCompletion,
     ToolSpec,
 };
+use crate::agents::AgentRunner;
 use crate::runtime_config::direct_provider_api_allowed_from_env;
 
 /// Holds a registry of `LLMProvider` impls keyed by name (`"claude"`,
@@ -189,7 +189,7 @@ impl AgentRunner for ApiRunner {
         let latency_ms = started.elapsed().as_millis() as i32;
 
         Ok(AgentRun {
-            role: input.role,
+            role: input.role.clone(),
             runner: AgentRunnerKind::Api,
             model: spec.model.clone(),
             output,
@@ -369,7 +369,6 @@ mod tests {
         ChatResponse, ClaudeProvider, FinishReason, GeminiProvider, OpenAIProvider, ProviderConfig,
         Role as LlmRole, ToolContent, ToolMessage, ToolSpec, Usage,
     };
-    use grokrxiv_schemas::AgentRole;
     use serde_json::json;
     use std::collections::VecDeque;
     use std::path::PathBuf;
@@ -434,7 +433,7 @@ mod tests {
     }
 
     fn spec(provider: &str, model: &str) -> AgentSpec {
-        AgentSpec::api_default(AgentRole::Summary, provider.to_string(), model.to_string())
+        AgentSpec::api_default("summary", provider.to_string(), model.to_string())
     }
 
     fn make_ctx(workdir: &std::path::Path) -> ToolCtx<'_> {
@@ -450,7 +449,7 @@ mod tests {
         AgentInput {
             paper_id: uuid::Uuid::new_v4(),
             review_id: uuid::Uuid::new_v4(),
-            role: AgentRole::Summary,
+            role: "summary".to_string(),
             content_hash_material: json!({ "paper": "x" }),
             artifact: json!({ "paper": "x" }),
             system_prompt: "Base system prompt.".to_string(),

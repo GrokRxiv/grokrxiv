@@ -10,20 +10,20 @@ use grokrxiv_dag_runtime::{
     AgentKind, DagEdge, DagManifest, DagNode, DagNodeKind, DagRole, DagTool, OneOrMany, RoleId,
     ToolExecutorKind,
 };
-use grokrxiv_schemas::AgentRole;
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
+use crate::agents::config as agent_config;
 use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 use crate::cli_status;
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
     parse_role_model, parse_role_runner, provider_api_allowed, render as render_runtime_config,
     role_env_suffix, role_model_override_env_var, ExtractorKind, RuntimeConfig,
-    RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV, REVIEW_AGENT_ROLES,
+    RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV,
 };
 
 type PaperListRow = (
@@ -36,6 +36,9 @@ type PaperListRow = (
     Option<String>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
+
+const PAPER_REVIEW_DAG_ID: &str = "paper-review";
+const CITATION_VERIFIER_POSTPROCESSOR: &str = "merge_citation_verifier";
 
 /// GrokRxiv — agentic peer-review pipeline for arXiv.
 #[derive(Debug, Parser)]
@@ -73,7 +76,7 @@ pub struct Cli {
     /// Per-role runner override, e.g. `--runner-for technical_correctness=cli`.
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_runner, value_name = "ROLE=RUNNER", hide = true)]
-    pub runner_for: Vec<(AgentRole, AgentRunnerKind)>,
+    pub runner_for: Vec<(String, AgentRunnerKind)>,
     /// Sandbox policy applied to runners that support it.
     #[arg(long, value_enum, global = true, hide = true)]
     pub sandbox: Option<SandboxPolicy>,
@@ -89,7 +92,7 @@ pub struct Cli {
     /// Per-role model override, e.g. `--model-for summary=claude-haiku-4-5`.
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_model, value_name = "ROLE=MODEL")]
-    pub model_for: Vec<(AgentRole, String)>,
+    pub model_for: Vec<(String, String)>,
     /// Hard cap on total cost (USD) for one review.
     #[arg(long, global = true, hide = true)]
     pub max_cost_usd: Option<f64>,
@@ -774,18 +777,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let bare = s.trim_matches('"');
             std::env::set_var("GROKRXIV_RUNNER_OVERRIDE", bare);
         }
-        for role in REVIEW_AGENT_ROLES {
-            std::env::remove_var(role_model_override_env_var(role));
+        for role in crate::runtime_config::configured_review_agent_roles() {
+            std::env::remove_var(role_model_override_env_var(&role));
         }
         for (role, kind) in &rt.runner_for {
-            let role_slug = role_env_suffix(*role);
+            let role_slug = role_env_suffix(role);
             if let Ok(s) = serde_json::to_string(kind) {
                 let bare = s.trim_matches('"');
                 std::env::set_var(format!("GROKRXIV_RUNNER_OVERRIDE_{role_slug}"), bare);
             }
         }
         for (role, model) in &rt.model_for {
-            std::env::set_var(role_model_override_env_var(*role), model);
+            std::env::set_var(role_model_override_env_var(role), model);
         }
         std::env::set_var("GROKRXIV_EXTRACTOR", rt.extractor.as_str());
         std::env::set_var(
@@ -3822,6 +3825,23 @@ struct CitationVerifierSummary {
     artifact_hint: String,
 }
 
+fn paper_review_citation_verifier_role() -> Option<String> {
+    let roles = agent_config::dag_roles_with_postprocessor(
+        PAPER_REVIEW_DAG_ID,
+        CITATION_VERIFIER_POSTPROCESSOR,
+    )
+    .ok()?;
+    roles.into_iter().next()
+}
+
+fn paper_review_specialist_roles() -> anyhow::Result<Vec<String>> {
+    let roles = agent_config::dag_feeds_meta_roles(PAPER_REVIEW_DAG_ID)?;
+    if roles.is_empty() {
+        anyhow::bail!("DAG `{PAPER_REVIEW_DAG_ID}` declares no feeds_meta specialist roles");
+    }
+    Ok(roles)
+}
+
 impl CitationVerifierSummary {
     fn to_markdown(&self) -> String {
         if self.checked == 0 {
@@ -4146,14 +4166,16 @@ async fn citation_verifier_summary(
     pool: &sqlx::PgPool,
     review_id: Uuid,
 ) -> Option<CitationVerifierSummary> {
+    let role = paper_review_citation_verifier_role()?;
     let row: Option<(Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
         "select verifier_status, verifier_notes \
          from review_agents \
-         where review_id = $1 and role = 'citation' \
+         where review_id = $1 and role = $2 \
          order by created_at desc \
          limit 1",
     )
     .bind(review_id)
+    .bind(&role)
     .fetch_optional(pool)
     .await
     .ok()?;
@@ -4268,7 +4290,7 @@ async fn citation_verifier_summary(
         malformed,
         unresolved_fraction,
         evidence,
-        artifact_hint: format!("artifacts/{review_id}/bundle.zip agents/citation.json"),
+        artifact_hint: format!("artifacts/{review_id}/bundle.zip agents/{role}.json"),
     })
 }
 
@@ -4383,13 +4405,15 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
         anyhow::bail!("refresh-review: review {review_id} not found or missing meta_review");
     };
 
+    let specialist_roles = paper_review_specialist_roles()?;
     let agent_rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
         "select distinct on (role) role, output \
          from review_agents \
-         where review_id = $1 and role <> 'meta_reviewer' \
+         where review_id = $1 and role = any($2) \
          order by role, created_at desc",
     )
     .bind(review_id)
+    .bind(&specialist_roles)
     .fetch_all(pool)
     .await?;
     if agent_rows.is_empty() {
@@ -4441,10 +4465,14 @@ async fn repair_zero_checked_citation_agents(
     pool: &sqlx::PgPool,
     review_id: Uuid,
 ) -> anyhow::Result<u64> {
+    let Some(role) = paper_review_citation_verifier_role() else {
+        return Ok(0);
+    };
     let rows: Vec<(Uuid, Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
-        "select id, verifier_status, verifier_notes from review_agents where review_id = $1 and role = 'citation'",
+        "select id, verifier_status, verifier_notes from review_agents where review_id = $1 and role = $2",
     )
     .bind(review_id)
+    .bind(&role)
     .fetch_all(pool)
     .await?;
     let mut repaired = 0u64;

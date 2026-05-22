@@ -52,9 +52,9 @@ use crate::agents::extraction::{
     macros::MacroExpanderAgent, theorems::TheoremGraphExtractorAgent, vlm::VlmExtractorAgent,
     ExtractionAgent, ToolRegistry,
 };
-use crate::agents::traits::AgentRunner;
 use crate::agents::types::AgentRunnerKind;
 use crate::agents::types::{AgentSpec, ExtractionContext, ToolCallRecord};
+use crate::agents::AgentRunner;
 use crate::db;
 use crate::runtime_config::{parse_extractor, ExtractorKind};
 use crate::state::AppState;
@@ -1420,13 +1420,6 @@ fn extraction_budget_from_routing(
 }
 
 fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
-    use grokrxiv_schemas::AgentRole;
-    // The review-side AgentRole enum doesn't have extraction variants — we
-    // reuse `Summary` as a stable seed since the role field is only used for
-    // logging/observability inside the spec. The provider+model come from
-    // `agents/extraction/<role>.yaml` so each stage actually hits its
-    // configured backend (e.g. citations.yaml -> gemini-2.5-flash, not the
-    // claude-haiku-4-5 fallback the audit caught us hardcoding).
     let routing = load_extraction_routing(role);
     let (provider, model) = match routing.as_ref() {
         Some(r) => (r.provider.clone(), r.model.clone()),
@@ -1436,7 +1429,7 @@ fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpe
                 .unwrap_or_else(|_| "claude-haiku-4-5".to_string()),
         ),
     };
-    let mut spec = AgentSpec::api_default(AgentRole::Summary, provider, model);
+    let mut spec = AgentSpec::api_default(role.to_string(), provider, model);
     spec.runner = runner_kind;
     if let Some(r) = routing {
         if let Some(t) = r.timeout_secs {

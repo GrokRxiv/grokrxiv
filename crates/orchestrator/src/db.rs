@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::agents::AgentRunnerKind;
-use grokrxiv_schemas::{AgentRole, JobKind, JobState, PaperExtract, ReviewStatus, VerifierStatus};
+use grokrxiv_schemas::{JobKind, JobState, PaperExtract, ReviewStatus, VerifierStatus};
 
 /// Insert a new row into `jobs` and return its id.
 pub async fn create_job(pool: &PgPool, kind: JobKind, ref_id: Option<Uuid>) -> sqlx::Result<Uuid> {
@@ -183,18 +183,6 @@ pub(crate) fn verifier_status_from_db_str(s: &str) -> Option<VerifierStatus> {
     }
 }
 
-fn agent_role_from_db_str(s: &str) -> Option<AgentRole> {
-    match s {
-        "summary" => Some(AgentRole::Summary),
-        "technical_correctness" => Some(AgentRole::TechnicalCorrectness),
-        "novelty" => Some(AgentRole::Novelty),
-        "reproducibility" => Some(AgentRole::Reproducibility),
-        "citation" => Some(AgentRole::Citation),
-        "meta_reviewer" => Some(AgentRole::MetaReviewer),
-        _ => None,
-    }
-}
-
 pub(crate) fn agent_runner_from_db_str(s: &str) -> Option<AgentRunnerKind> {
     match s {
         "api" => Some(AgentRunnerKind::Api),
@@ -220,21 +208,19 @@ pub(crate) async fn load_specialist_gate_for_review(
     .bind(review_id)
     .fetch_all(pool)
     .await?;
-    let statuses: Vec<(AgentRole, Option<VerifierStatus>)> = rows
+    let statuses: Vec<(String, Option<VerifierStatus>)> = rows
         .into_iter()
-        .filter_map(|(role, status)| {
-            agent_role_from_db_str(&role).map(|role| {
-                (
-                    role,
-                    status.as_deref().and_then(verifier_status_from_db_str),
-                )
-            })
+        .map(|(role, status)| {
+            (
+                role,
+                status.as_deref().and_then(verifier_status_from_db_str),
+            )
         })
         .collect();
     let expected_total = statuses.len();
     Ok(crate::review_gate::SpecialistGate::evaluate(
         &statuses,
-        crate::review_dag::DEFAULT_MIN_SPECIALIST_QUORUM.min(expected_total),
+        3usize.min(expected_total),
         expected_total,
     ))
 }

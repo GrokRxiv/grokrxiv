@@ -20,7 +20,6 @@ use crate::agents::{
 };
 use crate::state::AppState;
 use anyhow::{Context, Result};
-use grokrxiv_schemas::AgentRole;
 use serde_json::Value;
 use std::path::Path;
 use uuid::Uuid;
@@ -84,7 +83,7 @@ pub async fn clean_pr_text(
         }
     };
     let spec = AgentSpec {
-        role: AgentRole::MetaReviewer,
+        role: "pr_text_quality".to_string(),
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
         provider: "openai".to_string(),
@@ -100,7 +99,7 @@ pub async fn clean_pr_text(
     let input = AgentInput {
         paper_id: Uuid::nil(),
         review_id,
-        role: AgentRole::MetaReviewer,
+        role: "pr_text_quality".to_string(),
         content_hash_material: Value::String("pr_text_quality".into()),
         artifact: Value::String(format!("{title}\n\n{body}")),
         system_prompt: "You are the PR text formatter. Output strict JSON only.".into(),
@@ -217,7 +216,7 @@ pub async fn review_and_fix_html(
     let schema: Value =
         serde_json::from_str(HTML_QUALITY_SCHEMA).context("html_quality schema parse")?;
     let spec = AgentSpec {
-        role: AgentRole::MetaReviewer, // closest existing role; not persisted to review_agents
+        role: "html_quality".to_string(),
         runner: AgentRunnerKind::Cli,
         sandbox: SandboxPolicy::None,
         provider: "openai".to_string(),
@@ -231,7 +230,7 @@ pub async fn review_and_fix_html(
     let input = AgentInput {
         paper_id: Uuid::nil(),
         review_id,
-        role: AgentRole::MetaReviewer,
+        role: "html_quality".to_string(),
         content_hash_material: Value::String("html_quality".into()),
         artifact: Value::String(original_html.clone()),
         system_prompt: "You are the HTML Quality harness. Output strict JSON only.".into(),
