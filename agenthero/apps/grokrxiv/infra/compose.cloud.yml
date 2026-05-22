@@ -2,8 +2,6 @@
 # Cloud topology: full containerization, optional GPU passthrough.
 # Use on Linux hosts with nvidia-container-toolkit installed.
 
-version: "3.9"
-
 services:
   ollama:
     image: ollama/ollama:latest
@@ -43,7 +41,7 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     container_name: grokrxiv-litellm
     environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
     volumes:
       - ./litellm/config.cloud.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -62,10 +60,10 @@ services:
     image: grokrxiv/orchestrator:latest-amd64
     container_name: grokrxiv-orchestrator
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-}
       OLLAMA_HOST: http://ollama:11434
       VLLM_BASE_URL: http://vllm:8000
-      GROKRXIV_LITELLM_URL: http://litellm:4000
+      AGENTHERO_LITELLM_URL: http://litellm:4000
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY:-}

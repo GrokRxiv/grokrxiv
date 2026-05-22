@@ -50,11 +50,14 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:-}"
       # Do not inherit the host's absolute GROKRXIV_DATA_REPO_PATH here; inside
       # Docker the repo is mounted at the container path below.
+      AGENTHERO_APPS_ROOT: "/etc/agenthero/apps"
+      AGENTHERO_AGENTS_DIR: "/etc/agenthero/apps/grokrxiv/agents"
+      AGENTHERO_DAGS_DIR: "/etc/agenthero/apps/grokrxiv/dags"
       GROKRXIV_DATA_REPO_PATH: "${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}"
-      GROKRXIV_RUNNER: "${GROKRXIV_RUNNER:-cli}"
-      GROKRXIV_EXTRACTOR: "${GROKRXIV_EXTRACTOR:-cli}"
+      AGENTHERO_RUNNER: "${AGENTHERO_RUNNER:-cli}"
+      AGENTHERO_EXTRACTOR: "${AGENTHERO_EXTRACTOR:-cli}"
       GROKRXIV_DISABLE_SCHEDULER: "${GROKRXIV_DISABLE_SCHEDULER:-0}"
-      GROKRXIV_ALLOW_PROVIDER_API: "${GROKRXIV_ALLOW_PROVIDER_API:-0}"
+      AGENTHERO_ALLOW_PROVIDER_API: "${AGENTHERO_ALLOW_PROVIDER_API:-0}"
       GROKRXIV_REQUIRE_CLI_AUTH: "${GROKRXIV_REQUIRE_CLI_AUTH:-1}"
       GROKRXIV_SUMMARY_MODEL: "${GROKRXIV_SUMMARY_MODEL:-claude-haiku-4-5-20251001}"
       GROKRXIV_TECHNICAL_CORRECTNESS_MODEL: "${GROKRXIV_TECHNICAL_CORRECTNESS_MODEL:-claude-opus-4-7}"
@@ -88,15 +91,17 @@ services:
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-local-dev-secret}"
       WEB_REVALIDATE_URL: "http://web:3000/api/revalidate"
       REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
-      RUST_LOG: "info,grokrxiv_orchestrator=debug"
+      RUST_LOG: "info,grokrxiv_app_runtime=debug,agenthero_orchestrator=debug"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     volumes:
-      - ../../../../agenthero/apps/grokrxiv/agents:/etc/grokrxiv/agents:ro
-      - ../../../../agenthero/apps/grokrxiv/schemas:/etc/grokrxiv/schemas:ro
-      - ../../../../agenthero/apps/grokrxiv/prompts:/etc/grokrxiv/prompts:ro
+      - ../../../../agenthero/apps/grokrxiv/app.yaml:/etc/agenthero/apps/grokrxiv/app.yaml:ro
+      - ../../../../agenthero/apps/grokrxiv/dags:/etc/agenthero/apps/grokrxiv/dags:ro
+      - ../../../../agenthero/apps/grokrxiv/agents:/etc/agenthero/apps/grokrxiv/agents:ro
+      - ../../../../agenthero/apps/grokrxiv/schemas:/etc/agenthero/apps/grokrxiv/schemas:ro
+      - ../../../../agenthero/apps/grokrxiv/prompts:/etc/agenthero/apps/grokrxiv/prompts:ro
       - ${GROKRXIV_DOCKER_DATA_REPO_SOURCE:-../../../../../grokrxiv-data}:${GROKRXIV_DOCKER_DATA_REPO_PATH:-/workspace/grokrxiv-data}
       # Provider CLI auth is mounted read-only, copied into /home/grokrxiv at
       # container startup, and never baked into the image.
@@ -139,6 +144,7 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU}"
       # Inside the docker network, web reaches the orchestrator by service name.
       ORCHESTRATOR_INTERNAL_URL: "http://orchestrator:8080"
+      AGENTHERO_SERVICE_TOKEN: "${AGENTHERO_SERVICE_TOKEN:-local-dev-service-token}"
       REVALIDATE_SECRET: "${REVALIDATE_SECRET:-local-dev-revalidate-secret}"
       GROKRXIV_PUBLIC_URL: "${GROKRXIV_PUBLIC_URL:-https://grokrxiv.org}"
       GROKRXIV_BILLING_ENABLED: "${GROKRXIV_BILLING_ENABLED:-0}"

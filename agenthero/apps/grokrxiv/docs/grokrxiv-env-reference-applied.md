@@ -12,7 +12,7 @@ The root `.env` is now a selector. It should normally contain only
 `AGENTHERO_ENV_FILES`, for example:
 
 ```sh
-AGENTHERO_ENV_FILES=.env_core,.env_ingest,.env_extract,.env_review,.env_publish,.env_web,.env_billing,.env_dev
+AGENTHERO_ENV_FILES=agenthero/apps/grokrxiv/env/.env_core,agenthero/apps/grokrxiv/env/.env_ingest,agenthero/apps/grokrxiv/env/.env_extract,agenthero/apps/grokrxiv/env/.env_review,agenthero/apps/grokrxiv/env/.env_publish,agenthero/apps/grokrxiv/env/.env_web,agenthero/apps/grokrxiv/env/.env_billing,agenthero/apps/grokrxiv/env/.env_dev
 ```
 
 The Rust CLI/orchestrator loads `.env` first, then loads the files named in
@@ -35,9 +35,9 @@ set +a
 | `.env_core` | Supabase/Postgres, orchestrator bind URLs, service/admin tokens, public base URLs |
 | `.env_ingest` | arXiv/Crossref endpoints, data repo paths, storage, ingest scheduler and cache controls |
 | `.env_extract` | Pandoc, LaTeXML, extraction mode, and extraction-agent toggles |
-| `.env_review` | LLM provider keys, runners, role models, timeouts, review/verifier controls |
+| `.env_review` | LLM provider keys, AgentHero runner controls, optional role model/timeouts, review/verifier controls |
 | `.env_publish` | GitHub publisher, webhook/revalidate secrets, publish-path E2E controls |
-| `.env_web` | Next.js public env, web Supabase URLs, admin seed, SMTP |
+| `.env_web` | Next.js public env, web Supabase URLs, admin seed |
 | `.env_billing` | Stripe billing keys and billing enablement |
 | `.env_dev` | Docker platform/build toggles, diagnostics, supervisor sizing, local safety switches |
 
@@ -87,19 +87,11 @@ files are gitignored.
 | `AGENTHERO_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
 | `AGENTHERO_ALLOW_PROVIDER_API`  | _internal_                  | Set by `agh`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
 | `AGENTHERO_SERVICE_TOKEN`       | _none_                      | Operator token for non-public web proxy routes; public `/api/v1` is read-only |
-| `AGENTHERO_AGENTS_DIR`          | _none_                      | Override `./agents` location |
-| `GROKRXIV_SUMMARY_MODEL`       | `claude-haiku-4-5-20251001` | Plain-language summary model; same role as `--model-for summary=...` |
-| `GROKRXIV_TECHNICAL_CORRECTNESS_MODEL` | `claude-opus-4-7`      | Technical correctness model; same role as `--model-for technical_correctness=...` |
-| `GROKRXIV_NOVELTY_MODEL`       | `gemini-3-flash-preview`    | Novelty model; same role as `--model-for novelty=...` |
-| `GROKRXIV_REPRODUCIBILITY_MODEL` | `gpt-5.5`                  | Reproducibility model; same role as `--model-for reproducibility=...` |
-| `GROKRXIV_CITATION_MODEL`      | `gemini-3-flash-preview`    | Citation model; same role as `--model-for citation=...` |
-| `GROKRXIV_META_REVIEWER_MODEL` | `claude-sonnet-4-6`         | Meta-review synthesis model; same role as `--model-for meta_reviewer=...` |
-| `GROKRXIV_SUMMARY_TIMEOUT_SECS` | `90`                       | CLI subprocess timeout for the summary role |
-| `GROKRXIV_TECHNICAL_CORRECTNESS_TIMEOUT_SECS` | `600`           | CLI subprocess timeout for the technical correctness role |
-| `GROKRXIV_NOVELTY_TIMEOUT_SECS` | `360`                      | CLI subprocess timeout for the novelty role |
-| `GROKRXIV_REPRODUCIBILITY_TIMEOUT_SECS` | `240`              | CLI subprocess timeout for the reproducibility role |
-| `GROKRXIV_CITATION_TIMEOUT_SECS` | `360`                     | CLI subprocess timeout for the citation role |
-| `GROKRXIV_META_REVIEWER_TIMEOUT_SECS` | `300`               | CLI subprocess timeout for the meta reviewer role |
+| `AGENTHERO_APPS_ROOT`           | _none_                      | Override installed `agenthero/apps` root, mainly for packaged/container runtimes |
+| `AGENTHERO_AGENTS_DIR`          | _none_                      | Override app agent config directory, mainly for packaged/container runtimes |
+| `AGENTHERO_DAGS_DIR`            | _none_                      | Override app DAG manifest directory, mainly for packaged/container runtimes |
+| `GROKRXIV_<ROLE>_MODEL`         | YAML default                | Optional role model override; same role as `--model-for <role>=...` |
+| `GROKRXIV_<ROLE>_TIMEOUT_SECS`  | YAML default                | Optional CLI subprocess timeout override for one role |
 | `GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES` | `32`             | Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data |
 | `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
@@ -178,7 +170,7 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 | `GROKRXIV_PUBLIC_REVIEWS_REPO` | Public review repo, e.g. `GrokRxiv/grokrxiv-reviews` |
 | `GROKRXIV_PRIVATE_REVIEWS_REPO` | Optional paid-private archive repo, e.g. `GrokRxiv/grokrxiv-private-reviews` |
 
-## Web tier (`apps/web`)
+## Web tier (`agenthero/apps/grokrxiv/web`)
 
 | Env                                  | Notes |
 |--------------------------------------|-------|
@@ -188,12 +180,15 @@ Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 | `AGENTHERO_SERVICE_TOKEN`             | Operator token for private proxy routes, not public read API access |
 | `NEXT_PUBLIC_SUPABASE_URL`           | Supabase URL for read endpoints |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`      | Supabase anon key |
+| `SUPABASE_SERVICE_ROLE_KEY`          | Server-only key for privileged web routes |
 | `REVALIDATE_SECRET`                  | Required on the revalidate route |
 | `GROKRXIV_BILLING_ENABLED`           | Set to `1` only when Stripe checkout is configured |
 | `STRIPE_SECRET_KEY`                  | Stripe server key for checkout, portal, and webhooks |
 | `STRIPE_WEBHOOK_SECRET`              | Stripe webhook signing secret |
 | `STRIPE_SUPPORTER_PRICE_ID`          | Stripe recurring price id for the Supporter plan |
 | `STRIPE_RESEARCHER_PRICE_ID`         | Stripe recurring price id for the Researcher plan |
+| `GROKRXIV_SUPER_ADMIN_EMAIL`         | Optional admin seed/default account |
+| `GROKRXIV_FREE_REVIEW_LIMIT`         | Free review quota shown in the dashboard; default `3` |
 
 ## Supabase Auth SMTP
 

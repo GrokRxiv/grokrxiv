@@ -9,9 +9,33 @@ fn app_registry_groups_dag_types_behind_product_apps() {
         .expect("GrokRxiv app descriptor");
     assert_eq!(grokrxiv.deployments.len(), 1);
     let deployment = &grokrxiv.deployments[0];
-    let agenthero_orchestrator::dag_apps::AppDeployment::Vercel { project, root, .. } = deployment;
+    let agenthero_orchestrator::dag_apps::AppDeployment::Vercel {
+        project, root, env, ..
+    } = deployment;
     assert_eq!(project, "grokrxiv");
     assert_eq!(root, "web");
+    for required in [
+        "NEXT_PUBLIC_SITE_URL",
+        "NEXT_PUBLIC_SUPABASE_URL",
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "ORCHESTRATOR_INTERNAL_URL",
+        "AGENTHERO_SERVICE_TOKEN",
+        "REVALIDATE_SECRET",
+        "GROKRXIV_PUBLIC_URL",
+        "GROKRXIV_BILLING_ENABLED",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_SUPPORTER_PRICE_ID",
+        "STRIPE_RESEARCHER_PRICE_ID",
+        "GROKRXIV_SUPER_ADMIN_EMAIL",
+        "GROKRXIV_FREE_REVIEW_LIMIT",
+    ] {
+        assert!(
+            env.iter().any(|name| name == required),
+            "GrokRxiv Vercel deployment must declare `{required}`"
+        );
+    }
 
     let grokrxiv_actions = grokrxiv
         .actions
@@ -269,12 +293,106 @@ fn app_contracts_are_owned_by_app_roots() {
     );
 }
 
+#[test]
+fn grokrxiv_env_templates_use_agenthero_operator_contract() {
+    let root = workspace_root();
+    let keys = active_env_template_keys(&root);
+
+    for required in [
+        "AGENTHERO_ENV_FILES",
+        "AGENTHERO_ARTIFACTS_DIR",
+        "AGENTHERO_RUNNER",
+        "AGENTHERO_EXTRACTOR",
+        "AGENTHERO_ALLOW_PROVIDER_API",
+        "AGENTHERO_SERVICE_TOKEN",
+        "AGENTHERO_CLOUD_PROVIDER",
+        "AGENTHERO_CLAUDE_BIN",
+        "AGENTHERO_CODEX_BIN",
+        "AGENTHERO_ANTIGRAVITY_BIN",
+        "AGENTHERO_CLI_TIMEOUT_SECS",
+        "AGENTHERO_LOCAL_TIMEOUT_SECS",
+        "AGENTHERO_MAX_COST_USD",
+        "AGENTHERO_MODE",
+        "AGENTHERO_OFFLINE",
+        "AGENTHERO_SANDBOX",
+        "AGENTHERO_EXTRACTION_TOOL_FALLBACK",
+        "AGENTHERO_APPS_ROOT",
+    ] {
+        assert!(
+            keys.contains(required),
+            "template must declare `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "GROKRXIV_RUNNER",
+        "GROKRXIV_EXTRACTOR",
+        "GROKRXIV_ALLOW_PROVIDER_API",
+        "GROKRXIV_SERVICE_TOKEN",
+        "GROKRXIV_CLOUD_PROVIDER",
+        "GROKRXIV_LITELLM_URL",
+        "GROKRXIV_CLAUDE_BIN",
+        "GROKRXIV_CODEX_BIN",
+        "GROKRXIV_RUNNER_OVERRIDE",
+        "GROKRXIV_RUNNER_OVERRIDE_CITATION",
+        "GROKRXIV_MODEL_OVERRIDE_CITATION",
+        "GROKRXIV_CLI_TIMEOUT_SECS",
+        "GROKRXIV_LOCAL_TIMEOUT_SECS",
+        "GROKRXIV_MAX_COST_USD",
+        "GROKRXIV_MODERATOR",
+        "GROKRXIV_MODE",
+        "GROKRXIV_OFFLINE",
+        "GROKRXIV_SANDBOX",
+        "GROKRXIV_EXTRACTION_TOOL_FALLBACK",
+        "GROKRXIV_AGENTS_DIR",
+        "GROKRXIV_SCHEMAS_DIR",
+        "GROKRXIV_PROMPTS_DIR",
+        "SUPABASE_ANON_KEY",
+    ] {
+        assert!(
+            !keys.contains(forbidden),
+            "template must not declare stale env key `{forbidden}`"
+        );
+    }
+}
+
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
         .expect("workspace root")
         .to_path_buf()
+}
+
+fn active_env_template_keys(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let mut paths = vec![root.join(".env.example")];
+    let env_dir = root.join("agenthero/apps/grokrxiv/env");
+    for entry in std::fs::read_dir(&env_dir).expect("read GrokRxiv env templates") {
+        let path = entry.expect("env template entry").path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(".env_") && name.ends_with(".example") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+
+    let mut keys = std::collections::BTreeSet::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some((key, _)) = trimmed.split_once('=') {
+                keys.insert(key.trim().to_string());
+            }
+        }
+    }
+    keys
 }
 
 fn walk_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {

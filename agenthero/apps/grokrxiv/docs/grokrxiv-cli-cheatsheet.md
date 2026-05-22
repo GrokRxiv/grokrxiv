@@ -4,9 +4,11 @@
 
 ```sh
 cp .env.example .env
+cd agenthero/apps/grokrxiv/env
 for name in core ingest extract review publish web billing dev; do
   cp ".env_${name}.example" ".env_${name}"
 done
+cd ../../../..
 supabase start
 cargo build --workspace
 agh doctor

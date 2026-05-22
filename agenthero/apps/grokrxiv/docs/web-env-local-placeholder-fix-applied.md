@@ -1,8 +1,8 @@
-# apps/web/.env.local — replaced placeholder Supabase keys with the real ones (2026-05-15)
+# agenthero/apps/grokrxiv/web/.env.local — replaced placeholder Supabase keys with the real ones (2026-05-15)
 
 ## What
 
-`apps/web/.env.local` used to contain literal `placeholder-anon-key-for-dev` and `placeholder-service-role-key`. Replaced with the real local-Supabase keys from `supabase status --output env`.
+`agenthero/apps/grokrxiv/web/.env.local` used to contain literal `placeholder-anon-key-for-dev` and `placeholder-service-role-key`. Replaced with the real local-Supabase keys from `supabase status --output env`.
 
 ## Why
 
@@ -14,14 +14,14 @@ Diagnosis: Next.js loads `.env.local` AFTER `.env`. The placeholder anon key in 
 
 | Change | Location |
 |---|---|
-| Real `NEXT_PUBLIC_SUPABASE_ANON_KEY` (sourced from `supabase status`) | `apps/web/.env.local` |
-| Real `SUPABASE_SERVICE_ROLE_KEY` (sourced from `supabase status`) | `apps/web/.env.local` |
-| Supabase URL normalized to `http://127.0.0.1:54321` (matches the running Docker stack) | `apps/web/.env.local` |
+| Real `NEXT_PUBLIC_SUPABASE_ANON_KEY` (sourced from `supabase status`) | `agenthero/apps/grokrxiv/web/.env.local` |
+| Real `SUPABASE_SERVICE_ROLE_KEY` (sourced from `supabase status`) | `agenthero/apps/grokrxiv/web/.env.local` |
+| Supabase URL normalized to `http://127.0.0.1:54321` (matches the running Docker stack) | `agenthero/apps/grokrxiv/web/.env.local` |
 
 `.env.local` is gitignored, so this is a per-machine setup step when running
-the web app directly with `cd apps/web && pnpm dev`. When running through the
+the web app directly with `cd agenthero/apps/grokrxiv/web && pnpm dev`. When running through the
 root `docker-compose.yml`, Compose passes env vars into the container before
-Next.js reads `apps/web/.env*`; the Compose file therefore now defaults to the
+Next.js reads `agenthero/apps/grokrxiv/web/.env*`; the Compose file therefore now defaults to the
 Supabase CLI local-dev keys instead of passing empty strings that override the
 app-local env files.
 
@@ -41,14 +41,14 @@ app-local env files.
 # Re-derive keys from the running stack:
 REAL_ANON=$(supabase status --output env | grep ANON_KEY | cut -d= -f2 | tr -d '"')
 REAL_SERVICE=$(supabase status --output env | grep SERVICE_ROLE_KEY | cut -d= -f2 | tr -d '"')
-sed -i.bak "s|^NEXT_PUBLIC_SUPABASE_ANON_KEY=.*|NEXT_PUBLIC_SUPABASE_ANON_KEY=$REAL_ANON|" apps/web/.env.local
-sed -i.bak "s|^SUPABASE_SERVICE_ROLE_KEY=.*|SUPABASE_SERVICE_ROLE_KEY=$REAL_SERVICE|" apps/web/.env.local
+sed -i.bak "s|^NEXT_PUBLIC_SUPABASE_ANON_KEY=.*|NEXT_PUBLIC_SUPABASE_ANON_KEY=$REAL_ANON|" agenthero/apps/grokrxiv/web/.env.local
+sed -i.bak "s|^SUPABASE_SERVICE_ROLE_KEY=.*|SUPABASE_SERVICE_ROLE_KEY=$REAL_SERVICE|" agenthero/apps/grokrxiv/web/.env.local
 ```
 
 ## Verification
 
 ```sh
-cd apps/web && pnpm dev
+cd agenthero/apps/grokrxiv/web && pnpm dev
 # In another shell:
 curl -s http://localhost:3000/api/v1/papers/2605.00403 | head -c 200
 # Should return real paper JSON, not {"error":"not_found"}.

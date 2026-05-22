@@ -9,14 +9,14 @@ recovery. It assumes you have already run the M1 smoke test
 
 ```
                 ┌──────────────────────┐
-   browser ──▶  │ Vercel (apps/web)    │  Next.js 16 (App Router, Turbopack)
+   browser ──▶  │ Vercel (app web)     │  Next.js 16 (App Router, Turbopack)
                 │  /                   │  Anon Supabase JS reads
                 │  /reviews            │  Service-token write proxies
                 │  /reviews/<id>       │
                 │  /papers/<arxiv_id>  │
                 │  /api/v1/*           │  (auth + proxy → Rust)
                 └─────────┬────────────┘
-                          │   Bearer GROKRXIV_SERVICE_TOKEN
+                        │   private network / proxy
                           ▼
                 ┌──────────────────────┐
                 │ Railway (Rust)       │  axum + tokio supervisor
@@ -40,20 +40,23 @@ recovery. It assumes you have already run the M1 smoke test
                                               merge webhook → Railway
 ```
 
-The CLI binary (`grokrxiv`) is the same Rust workspace as the orchestrator —
-it exists for operator scripts and CI. It is NOT shipped to end users.
+The operator CLI is `agh`; GrokRxiv runs as an installed DAGOps app behind
+`agh app run grokrxiv ...`. The app runtime binary is used by the orchestrator
+adapter and deployment containers, not as the end-user product surface.
 
 ## Component 1 — Orchestrator on Railway
 
 ### Build
 
-* `infra/railway.json` points Railway at `infra/docker/orchestrator.Dockerfile`.
+* `agenthero/apps/grokrxiv/infra/railway.json` points Railway at
+  `agenthero/apps/grokrxiv/infra/docker/orchestrator.Dockerfile`.
 * The Dockerfile is a 2-stage musl-friendly build: `rust:1.82-slim` for the
   release binary, `debian:bookworm-slim` for the runtime image. The image
-  bakes official Pandoc plus `agents/`, `schemas/`, and `prompts/` into the
-  runtime image, so a schema or converter-version change requires a fresh
-  build. Set Docker build arg `INSTALL_PANDOC=0` only for a slim image that
-  will provide `pandoc` separately via PATH or `GROKRXIV_PANDOC_BIN`.
+  bakes official Pandoc plus the app manifest, DAGs, agents, schemas, and
+  prompts into `/etc/agenthero/apps/grokrxiv`, so an app contract change
+  requires a fresh build. Set Docker build arg `INSTALL_PANDOC=0` only for a
+  slim image that will provide `pandoc` separately via PATH or
+  `GROKRXIV_PANDOC_BIN`.
 * Start command (from `railway.json`): `/usr/local/bin/orchestrator`.
 * Health check path: `/healthz` (handled in `crates/orchestrator/src/routes/healthz.rs`).
 * Restart policy: ON_FAILURE up to 5 retries.
@@ -78,25 +81,25 @@ if absent (see `crates/orchestrator/src/config.rs`).
 | `GOOGLE_GENERATIVE_AI_API_KEY`    | Gemini key                                                 |
 | `VLLM_BASE_URL`                   | Optional vLLM endpoint                                     |
 | `GROKRXIV_DATA_REPO_PATH`         | Path to the `grokrxiv-data` Git checkout in the container  |
-| `GROKRXIV_DATA_REMOTE`            | `git@github.com:GrokRxiv/grokrxiv-data.git`                |
+| `GROKRXIV_DATA_REPO_REMOTE`       | `git@github.com:GrokRxiv/grokrxiv-data.git`                |
 | `WEB_REVALIDATE_URL`              | `https://<vercel-domain>/api/revalidate` (web revalidate)  |
 | `REVALIDATE_SECRET`               | Bearer the webhook posts to `WEB_REVALIDATE_URL`           |
-| `GROKRXIV_SERVICE_TOKEN`          | Bearer expected on `/internal/v1/*` write endpoints        |
 | `ORCHESTRATOR_BIND`               | Default `0.0.0.0:8080`; Railway maps to its public port    |
 | `ARXIV_USER_AGENT`                | RFC-conformant user agent, e.g. `GrokRxiv/0.1 (+contact)`  |
-| `PREVIEW_MODEL`                   | Default `claude-opus-4-7`; controls landing-page previews  |
-| `RUST_LOG`                        | `info,grokrxiv_orchestrator=info` is a good prod default   |
+| `GROKRXIV_PREVIEW_MODEL`          | Controls landing-page previews                             |
+| `RUST_LOG`                        | `info,grokrxiv_app_runtime=info,agenthero_orchestrator=info` |
 
 ### Optional / niche variables
 
 | Variable                          | Purpose                                                    |
 |-----------------------------------|------------------------------------------------------------|
-| `GROKRXIV_RUNNER`                 | `api` (default) / `cli` / `cloud` / `local_inference`      |
-| `GROKRXIV_MAX_COST_USD`           | Hard ceiling per review run                                |
+| `AGENTHERO_RUNNER`                | `api` / `cli` / `cloud` / `local_inference`                |
+| `AGENTHERO_EXTRACTOR`             | `cli` / `api` staged extraction backend                    |
+| `AGENTHERO_MAX_COST_USD`          | Hard ceiling per review run                                |
+| `AGENTHERO_APPS_ROOT`             | Defaults to the image-baked `/etc/agenthero/apps`          |
+| `AGENTHERO_AGENTS_DIR`            | Defaults to `/etc/agenthero/apps/grokrxiv/agents`          |
+| `AGENTHERO_DAGS_DIR`              | Defaults to `/etc/agenthero/apps/grokrxiv/dags`            |
 | `GROKRXIV_NO_CACHE`               | Set `1` to force-bust the FP6 review cache                 |
-| `GROKRXIV_AGENTS_DIR`             | Defaults to the image-baked `/etc/grokrxiv/agents`         |
-| `GROKRXIV_SCHEMAS_DIR`            | Same for `schemas/`                                        |
-| `GROKRXIV_PROMPTS_DIR`            | Same for `prompts/`                                        |
 | `ADMIN_TOKEN`                     | Bearer for the `/ingest` admin endpoint                    |
 
 ### Reachable check
@@ -112,10 +115,10 @@ curl -sf "https://<railway-domain>/version"   # expect git sha + build time
 
 ### Build
 
-* The `apps/web` workspace is a vanilla Next.js 16 app (App Router, Turbopack,
-  Tailwind 4). Vercel auto-detects via `pnpm` and `package.json`. No
-  `vercel.json` is required.
-* The Vercel project must be set up with the monorepo root at `apps/web`.
+* The `agenthero/apps/grokrxiv/web` workspace is a vanilla Next.js 16 app (App
+  Router, Turbopack, Tailwind 4). Vercel auto-detects via `pnpm` and
+  `package.json`. No `vercel.json` is required.
+* The Vercel project root must be `agenthero/apps/grokrxiv/web`.
 * Output is statically rendered for `/`, `/about`, `/api-docs`, `/legal`,
   `/reviews`, and dynamically rendered for `/reviews/<id>` and `/papers/<id>`
   with ISR via the `/api/revalidate` route.
@@ -129,14 +132,22 @@ In the Vercel project Settings → Environment Variables, scope to `Production`
 |-------------------------------------|----------------------------------------------------------|
 | `NEXT_PUBLIC_SUPABASE_URL`          | Supabase project URL (public — anon reads only)          |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY`     | Supabase anon key (public — RLS-gated)                   |
-| `GROKRXIV_SERVICE_TOKEN`            | Bearer the web sends to the Rust orchestrator            |
+| `SUPABASE_SERVICE_ROLE_KEY`         | Server-only key for server routes                        |
+| `AGENTHERO_SERVICE_TOKEN`           | Bearer the web sends to the Rust orchestrator            |
 | `ORCHESTRATOR_INTERNAL_URL`         | e.g. `https://<railway-domain>` — Rust API base          |
 | `REVALIDATE_SECRET`                 | Bearer required by `/api/revalidate`                     |
 | `NEXT_PUBLIC_SITE_URL`              | e.g. `https://grokrxiv.org`                              |
 | `GROKRXIV_PUBLIC_URL`               | Canonical URL for OG / sitemap / JSON-LD                 |
+| `GROKRXIV_BILLING_ENABLED`          | Set `1` only when Stripe is configured                   |
+| `STRIPE_SECRET_KEY`                 | Required when billing is enabled                         |
+| `STRIPE_WEBHOOK_SECRET`             | Required when billing is enabled                         |
+| `STRIPE_SUPPORTER_PRICE_ID`         | Required when billing is enabled                         |
+| `STRIPE_RESEARCHER_PRICE_ID`        | Required when billing is enabled                         |
+| `GROKRXIV_SUPER_ADMIN_EMAIL`        | Optional admin seed/default account                      |
+| `GROKRXIV_FREE_REVIEW_LIMIT`        | Free review quota shown in dashboard; default `3`        |
 
 Note: in the FP-RPT3c plan the orchestrator-reach env was called
-`INTERNAL_RUST_URL`. The actual name shipped in `apps/web/lib/env.ts` is
+`INTERNAL_RUST_URL`. The actual name shipped in `agenthero/apps/grokrxiv/web/lib/env.ts` is
 `ORCHESTRATOR_INTERNAL_URL`. Set BOTH if you want belt-and-suspenders during
 the cut-over — the env-reader only consults the latter today.
 

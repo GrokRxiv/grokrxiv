@@ -76,16 +76,18 @@ RUN set -eux; \
     useradd --system --create-home --shell /usr/sbin/nologin grokrxiv
 
 COPY --from=builder /app/agenthero/apps/grokrxiv/target/release/grokrxiv-app /usr/local/bin/orchestrator
-COPY agenthero/apps/grokrxiv/agents  /etc/grokrxiv/agents
-COPY agenthero/apps/grokrxiv/schemas /etc/grokrxiv/schemas
-COPY agenthero/apps/grokrxiv/prompts /etc/grokrxiv/prompts
+COPY agenthero/apps/grokrxiv/app.yaml /etc/agenthero/apps/grokrxiv/app.yaml
+COPY agenthero/apps/grokrxiv/dags    /etc/agenthero/apps/grokrxiv/dags
+COPY agenthero/apps/grokrxiv/agents  /etc/agenthero/apps/grokrxiv/agents
+COPY agenthero/apps/grokrxiv/schemas /etc/agenthero/apps/grokrxiv/schemas
+COPY agenthero/apps/grokrxiv/prompts /etc/agenthero/apps/grokrxiv/prompts
 COPY agenthero/apps/grokrxiv/infra/docker/orchestrator-entrypoint.sh /usr/local/bin/grokrxiv-orchestrator-entrypoint
 RUN chmod 0755 /usr/local/bin/grokrxiv-orchestrator-entrypoint
 
 ENV ORCHESTRATOR_BIND=0.0.0.0:8080 \
-    GROKRXIV_AGENTS_DIR=/etc/grokrxiv/agents \
-    GROKRXIV_SCHEMAS_DIR=/etc/grokrxiv/schemas \
-    GROKRXIV_PROMPTS_DIR=/etc/grokrxiv/prompts \
+    AGENTHERO_APPS_ROOT=/etc/agenthero/apps \
+    AGENTHERO_AGENTS_DIR=/etc/agenthero/apps/grokrxiv/agents \
+    AGENTHERO_DAGS_DIR=/etc/agenthero/apps/grokrxiv/dags \
     GROKRXIV_CLI_AUTH_SOURCE=/run/secrets/grokrxiv-cli-auth \
     GROKRXIV_CLI_AUTH_HOME=/home/grokrxiv \
     HOME=/home/grokrxiv \
