@@ -120,7 +120,7 @@ pub(super) async fn run_review_dag_from_state_with_context(
 
 // CLI runner overrides are passed through environment variables before review dispatch.
 // Format:
-//   AGENTHERO_RUNNER_OVERRIDE        = "cli" | "api" | "cloud" | "local_inference"
+//   AGENTHERO_RUNNER_OVERRIDE        = "cli" | "api"
 //   AGENTHERO_RUNNER_OVERRIDE_<ROLE> = same enum, per role
 #[cfg(feature = "grokrxiv-ingest")]
 pub(super) fn review_runner_override_for(role: &str) -> Option<crate::agents::AgentRunnerKind> {
@@ -136,8 +136,6 @@ pub(super) fn review_runner_override_for(role: &str) -> Option<crate::agents::Ag
         .and_then(|s| match s.as_str() {
             "api" => Some(AgentRunnerKind::Api),
             "cli" => Some(AgentRunnerKind::Cli),
-            "cloud" => Some(AgentRunnerKind::Cloud),
-            "local_inference" => Some(AgentRunnerKind::LocalInference),
             _ => None,
         })
 }

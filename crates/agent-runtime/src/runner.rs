@@ -1,7 +1,7 @@
 //! Runner trait for the agent runtime.
 //!
-//! - [`AgentRunner`] is the execution backend. There are 4 concrete impls:
-//!   `ApiRunner`, `CliRunner`, `CloudRunner`, `LocalInferenceRunner`.
+//! - [`AgentRunner`] is the execution backend. Active implementations are
+//!   `ApiRunner` and `CliRunner`.
 //!
 //! The supervisor owns side effects (cache, verifier ladder, DB persist,
 //! render, publish). Agents and runners are pure-ish — they reason and
@@ -18,9 +18,6 @@ use crate::types::{AgentInput, AgentRun, AgentSpec, Message, ToolCompletion, Too
 /// - [`super::api::ApiRunner`] — direct LLM provider API calls
 /// - [`super::cli::CliRunner`] — local subprocess (`claude` /
 ///   `codex` / `gemini` based on `spec.provider`)
-/// - [`super::cloud::CloudRunner`] — Vercel Open Agents / E2B
-/// - [`super::local_inference::LocalInferenceRunner`] — Ollama via
-///   LiteLLM (preferred) or direct
 #[async_trait]
 pub trait AgentRunner: Send + Sync {
     /// Friendly name for logs and the `doctor` preflight.
@@ -28,8 +25,7 @@ pub trait AgentRunner: Send + Sync {
 
     /// Execute the call. The runner is responsible for:
     ///
-    /// - issuing the LLM request / spawning the subprocess / posting to the
-    ///   cloud service
+    /// - issuing the LLM request / spawning the subprocess
     /// - one-shot corrective retry on JSON parse failure
     /// - returning a valid [`AgentRun`] with `cache_hit: false`
     ///

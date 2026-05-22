@@ -4,7 +4,7 @@
 # ollama/vllm services rather than host.docker.internal.
 
 model_list:
-  # Local Ollama (Mac native host) — for LocalInferenceRunner default targets
+  # Local Ollama (Mac native host) — available to provider-gateway experiments.
   - model_name: qwen-32b
     litellm_params:
       model: ollama/qwen2.5:32b-instruct-q4_K_M

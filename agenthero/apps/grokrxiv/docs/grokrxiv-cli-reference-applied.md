@@ -10,7 +10,7 @@ same CLI commands that operators run.
 
 | Flag | Purpose |
 |---|---|
-| `--runner <api|cli|cloud|local_inference>` | Default review runner backend |
+| `--runner <api|cli>` | Default review runner backend |
 | `--extractor <api|cli>` | Extraction backend |
 | `--runner-for ROLE=RUNNER` | Per-role runner override |
 | `--model-for ROLE=MODEL` | Per-role model override |

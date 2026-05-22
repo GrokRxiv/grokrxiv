@@ -67,10 +67,6 @@ pub struct DoctorReport {
     pub api_runners: ApiRunnerStatus,
     /// CLI runners (claude / codex / Gemini-family CLI).
     pub cli_runners: CliRunnerStatus,
-    /// Cloud runner connectivity.
-    pub cloud_runners: CloudRunnerStatus,
-    /// Local inference reachability.
-    pub local_inference: LocalInferenceStatus,
     /// Publisher (GitHub) status.
     pub publisher: Option<CheckResult>,
     /// Frontend revalidate endpoint reachability.
@@ -110,24 +106,6 @@ pub struct CliRunnerStatus {
     /// Gemini-family CLI on PATH. Defaults to Antigravity `agy`; legacy
     /// `gemini` is opt-in via `AGENTHERO_GEMINI_BIN`.
     pub gemini: Option<CheckResult>,
-}
-
-/// Cloud runner reachability.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct CloudRunnerStatus {
-    /// Vercel Open Agents.
-    pub vercel_open_agents: Option<CheckResult>,
-    /// E2B sandbox.
-    pub e2b: Option<CheckResult>,
-}
-
-/// Local inference reachability.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct LocalInferenceStatus {
-    /// LiteLLM gateway.
-    pub litellm: Option<CheckResult>,
-    /// Ollama.
-    pub ollama: Option<CheckResult>,
 }
 
 /// Per-extraction-agent YAML config parse outcome.
@@ -190,19 +168,7 @@ impl DoctorReport {
                     && check.message.contains("required by configured CLI role")
             })
         });
-        let any_cloud_ok = [
-            &self.cloud_runners.vercel_open_agents,
-            &self.cloud_runners.e2b,
-        ]
-        .iter()
-        .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
-        let any_local_ok = [&self.local_inference.litellm, &self.local_inference.ollama]
-            .iter()
-            .any(|c| matches!(c.as_ref().map(|c| c.status), Some(CheckStatus::Ok)));
-        db_fail
-            || required_cli_fail
-            || (require_review_runner
-                && !(any_api_ok || any_cli_ok || any_cloud_ok || any_local_ok))
+        db_fail || required_cli_fail || (require_review_runner && !(any_api_ok || any_cli_ok))
     }
 
     /// Pretty-print the report to stdout.
@@ -222,17 +188,6 @@ impl DoctorReport {
         print_line("claude", self.cli_runners.claude.as_ref());
         print_line("codex", self.cli_runners.codex.as_ref());
         print_line("gemini-cli", self.cli_runners.gemini.as_ref());
-        println!();
-        println!("Cloud runners:");
-        print_line(
-            "vercel_open_agents",
-            self.cloud_runners.vercel_open_agents.as_ref(),
-        );
-        print_line("e2b", self.cloud_runners.e2b.as_ref());
-        println!();
-        println!("Local inference:");
-        print_line("litellm", self.local_inference.litellm.as_ref());
-        print_line("ollama", self.local_inference.ollama.as_ref());
         println!();
         println!("Publisher:");
         print_line("github", self.publisher.as_ref());
@@ -285,8 +240,6 @@ pub async fn doctor(profile: &str, json: bool) -> anyhow::Result<i32> {
     check_database(&mut report).await;
     check_api_runners(&mut report).await;
     check_cli_runners(&mut report);
-    check_cloud_runners(&mut report).await;
-    check_local_inference(&mut report).await;
     check_publisher(&mut report);
     check_refresh_pipeline(&mut report).await;
     check_doc_converters(&mut report);
@@ -572,67 +525,6 @@ fn cli_binary_basename(binary: &str) -> &str {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(binary)
-}
-
-async fn check_cloud_runners(report: &mut DoctorReport) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    // Vercel Open Agents
-    report.cloud_runners.vercel_open_agents = Some(match std::env::var("VERCEL_OPEN_AGENTS_URL") {
-        Ok(url) => match client.get(format!("{url}/healthz")).send().await {
-            Ok(r) if r.status().is_success() => CheckResult::ok(format!("{url} reachable")),
-            Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
-            Err(e) => CheckResult::fail(format!("{url} unreachable: {e}")),
-        },
-        Err(_) => CheckResult::skipped("VERCEL_OPEN_AGENTS_URL unset"),
-    });
-    // E2B
-    report.cloud_runners.e2b = Some(match std::env::var("E2B_API_KEY") {
-        Ok(_) => CheckResult::ok("E2B_API_KEY set"),
-        Err(_) => CheckResult::skipped("E2B_API_KEY unset"),
-    });
-}
-
-async fn check_local_inference(report: &mut DoctorReport) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    report.local_inference.litellm = Some(
-        match std::env::var("AGENTHERO_LITELLM_URL").or_else(|_| std::env::var("LITELLM_URL")) {
-            Ok(url) => match client.get(format!("{url}/health")).send().await {
-                Ok(r) if r.status().is_success() => CheckResult::ok(format!("{url} reachable")),
-                Ok(r) => CheckResult::fail(format!("{url} returned HTTP {}", r.status())),
-                Err(e) => CheckResult::fail(format!("{url} unreachable: {e}")),
-            },
-            Err(_) => CheckResult::skipped("AGENTHERO_LITELLM_URL unset"),
-        },
-    );
-    report.local_inference.ollama = Some(match std::env::var("OLLAMA_HOST") {
-        Ok(url) => {
-            let normalized = if url.starts_with("http") {
-                url.clone()
-            } else {
-                format!("http://{url}")
-            };
-            match client.get(format!("{normalized}/api/tags")).send().await {
-                Ok(r) if r.status().is_success() => {
-                    CheckResult::ok(format!("{normalized} reachable"))
-                }
-                Ok(r) => CheckResult::fail(format!("{normalized} returned HTTP {}", r.status())),
-                Err(e) => CheckResult::fail(format!("{normalized} unreachable: {e}")),
-            }
-        }
-        Err(_) => CheckResult::skipped("OLLAMA_HOST unset"),
-    });
 }
 
 fn check_publisher(report: &mut DoctorReport) {

@@ -187,8 +187,6 @@ pub(crate) fn agent_runner_from_db_str(s: &str) -> Option<AgentRunnerKind> {
     match s {
         "api" => Some(AgentRunnerKind::Api),
         "cli" => Some(AgentRunnerKind::Cli),
-        "cloud" => Some(AgentRunnerKind::Cloud),
-        "local_inference" => Some(AgentRunnerKind::LocalInference),
         _ => None,
     }
 }
@@ -1703,14 +1701,8 @@ mod tests {
             agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::Cli)),
             Some(AgentRunnerKind::Cli)
         );
-        assert_eq!(
-            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::Cloud)),
-            Some(AgentRunnerKind::Cloud)
-        );
-        assert_eq!(
-            agent_runner_from_db_str(&serde_plain(&AgentRunnerKind::LocalInference)),
-            Some(AgentRunnerKind::LocalInference)
-        );
+        assert_eq!(agent_runner_from_db_str("cloud"), None);
+        assert_eq!(agent_runner_from_db_str("local_inference"), None);
         assert_eq!(agent_runner_from_db_str("api_fallback"), None);
     }
 

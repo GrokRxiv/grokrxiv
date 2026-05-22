@@ -37,6 +37,14 @@ pub fn spawn(pool: PgPool, config: SchedulerConfig) -> Vec<tokio::task::JoinHand
 async fn worker_loop(pool: Arc<PgPool>, name: String, interval: Duration) -> anyhow::Result<()> {
     let worker_id = app_runs::register_worker(&pool, &name).await?;
     loop {
+        let recovery = app_runs::recover_expired_leases(&pool).await?;
+        if recovery.requeued > 0 || recovery.system_failed > 0 {
+            tracing::warn!(
+                requeued = recovery.requeued,
+                system_failed = recovery.system_failed,
+                "recovered expired AgentHero app-run leases"
+            );
+        }
         match app_runs::claim_next(&pool, worker_id).await? {
             Some(run) => execute_claimed(&pool, run).await?,
             None => tokio::time::sleep(interval).await,
@@ -51,7 +59,7 @@ async fn execute_claimed(pool: &PgPool, run: ClaimedAppRun) -> anyhow::Result<()
         "info",
         "app_run.started",
         Some("app run started"),
-        json!({ "app": run.app_id, "action": run.action_id }),
+        json!({ "app": run.app_id, "action": run.action_id, "attempt": run.attempt }),
     )
     .await?;
 

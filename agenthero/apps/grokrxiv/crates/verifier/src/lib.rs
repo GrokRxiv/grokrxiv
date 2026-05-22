@@ -15,7 +15,7 @@ pub mod support;
 pub mod tone;
 
 use async_trait::async_trait;
-use grokrxiv_schemas::{PaperExtract, VerifierResult};
+use grokrxiv_schemas::{Citation, PaperExtract, VerifierResult};
 
 pub use citation::CitationVerifier;
 pub use json_schema::JsonSchemaVerifier;
@@ -26,11 +26,68 @@ pub use tone::ToneVerifier;
 
 /// Context every verifier receives at run time.
 pub struct VerifierContext<'a> {
-    /// The paper currently being reviewed; verifiers can use it for citation
-    /// cross-checks and similar.
-    pub paper: &'a PaperExtract,
+    /// Artifact kind, e.g. `paper`, `codebase`, or `schema`.
+    pub subject_kind: String,
+    /// Generic subject metadata. Paper-specific callers convert
+    /// [`PaperExtract`] into this JSON form before invoking the verifier.
+    pub subject: serde_json::Value,
     /// Shared HTTP client (reqwest) so verifiers don't each spin up their own.
     pub http: &'a reqwest::Client,
+}
+
+impl<'a> VerifierContext<'a> {
+    /// Construct a verifier context for any DAG artifact subject.
+    pub fn new(
+        subject_kind: impl Into<String>,
+        subject: serde_json::Value,
+        http: &'a reqwest::Client,
+    ) -> Self {
+        Self {
+            subject_kind: subject_kind.into(),
+            subject,
+            http,
+        }
+    }
+
+    /// Construct a verifier context for a GrokRxiv paper extract.
+    pub fn for_paper(paper: &PaperExtract, http: &'a reqwest::Client) -> Self {
+        Self::new("paper", paper_subject(paper), http)
+    }
+
+    /// Whether this context represents a paper artifact.
+    pub fn is_paper(&self) -> bool {
+        self.subject_kind == "paper"
+            || self
+                .subject
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .is_some_and(|kind| kind == "paper")
+    }
+
+    /// Read a string field from the generic subject.
+    pub fn subject_str(&self, key: &str) -> Option<&str> {
+        self.subject.get(key).and_then(|value| value.as_str())
+    }
+
+    /// Extract bibliography entries when the subject is a paper.
+    pub fn paper_bibliography(&self) -> Option<Vec<Citation>> {
+        if !self.is_paper() {
+            return None;
+        }
+        serde_json::from_value(self.subject.get("bibliography")?.clone()).ok()
+    }
+}
+
+/// Convert a GrokRxiv paper extract into the generic verifier subject shape.
+pub fn paper_subject(paper: &PaperExtract) -> serde_json::Value {
+    let mut subject = serde_json::to_value(paper).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(map) = subject.as_object_mut() {
+        map.insert("kind".to_string(), serde_json::json!("paper"));
+        map.insert("id".to_string(), serde_json::json!(paper.arxiv_id.clone()));
+        map.entry("summary".to_string())
+            .or_insert_with(|| serde_json::json!(paper.abstract_.clone()));
+    }
+    subject
 }
 
 /// A single rung in the verifier ladder. Implementations are stateless aside
@@ -147,10 +204,7 @@ mod tests {
         let ladder = VerifierLadder::standard(Some(json!({ "type": "object" })));
         let http = reqwest::Client::new();
         let paper = paper();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let names: Vec<String> = ladder
             .run(
@@ -174,10 +228,7 @@ mod tests {
         );
         let http = reqwest::Client::new();
         let paper = paper();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let names: Vec<String> = ladder
             .run(&json!({ "summary": "supported review" }), &ctx)
@@ -197,10 +248,7 @@ mod tests {
         );
         let http = reqwest::Client::new();
         let paper = paper();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let names: Vec<String> = ladder
             .run(&json!({ "entries": [] }), &ctx)
@@ -210,5 +258,44 @@ mod tests {
             .collect();
 
         assert!(names.contains(&"citation".to_string()));
+    }
+
+    #[tokio::test]
+    async fn standard_ladder_accepts_non_paper_subjects_without_paper_extract() {
+        let ladder = VerifierLadder::standard_for_config(
+            &["json_schema".to_string()],
+            Some(json!({ "type": "object" })),
+        );
+        let http = reqwest::Client::new();
+        let subject = json!({
+            "kind": "codebase",
+            "id": "repo-agenthero-demo",
+            "title": "AgentHero Demo",
+            "summary": "A small codebase artifact."
+        });
+        let ctx = VerifierContext::new("codebase", subject, &http);
+
+        let names: Vec<String> = ladder
+            .run(&json!({ "summary": "supported review" }), &ctx)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        assert!(names.contains(&"metadata".to_string()));
+        assert!(names.contains(&"support".to_string()));
+    }
+
+    #[tokio::test]
+    async fn citation_verifier_reports_unsupported_for_non_paper_subjects() {
+        let verifier = CitationVerifier::new();
+        let http = reqwest::Client::new();
+        let subject = json!({ "kind": "codebase", "id": "repo-agenthero-demo" });
+        let ctx = VerifierContext::new("codebase", subject, &http);
+
+        let result = verifier.verify(&json!({}), &ctx).await;
+
+        assert_eq!(result.status, grokrxiv_schemas::VerifierStatus::Warn);
+        assert_eq!(result.notes["coverage_status"], "unsupported_subject");
     }
 }

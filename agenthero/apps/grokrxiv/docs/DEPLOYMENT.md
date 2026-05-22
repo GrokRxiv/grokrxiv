@@ -93,7 +93,7 @@ if absent (see `crates/orchestrator/src/config.rs`).
 
 | Variable                          | Purpose                                                    |
 |-----------------------------------|------------------------------------------------------------|
-| `AGENTHERO_RUNNER`                | `api` / `cli` / `cloud` / `local_inference`                |
+| `AGENTHERO_RUNNER`                | `api` / `cli`                                               |
 | `AGENTHERO_EXTRACTOR`             | `cli` / `api` staged extraction backend                    |
 | `AGENTHERO_MAX_COST_USD`          | Hard ceiling per review run                                |
 | `AGENTHERO_APPS_ROOT`             | Defaults to the image-baked `/etc/agenthero/apps`          |

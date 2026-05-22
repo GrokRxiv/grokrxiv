@@ -1,7 +1,7 @@
 //! Public types for the agent runtime.
 //!
 //! The taxonomy:
-//! - [`AgentRunnerKind`]: how a role's work is executed (4 backends).
+//! - [`AgentRunnerKind`]: how a role's work is executed.
 //! - [`SandboxPolicy`]: orthogonal isolation policy applied to a runner.
 //! - [`AgentMode`]: review-only vs revision-capable.
 //! - [`RevisionTarget`]: when revising, what to patch.
@@ -33,9 +33,9 @@ pub type AgentSchema = Arc<serde_json::Value>;
 
 /// Which execution backend handles this role's work.
 ///
-/// Concrete sub-providers (which CLI binary; which cloud service; which OSS
-/// inference server) are selected by environment variables or by the role's
-/// existing `provider:` field in `agents/*.yaml` — not by this enum.
+/// Concrete sub-providers, such as which CLI binary to spawn, are selected by
+/// environment variables or by the role's existing `provider:` field in
+/// `agents/*.yaml` — not by this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]
@@ -46,13 +46,6 @@ pub enum AgentRunnerKind {
     /// review roles. The role's
     /// `provider:` field in YAML drives which binary is spawned.
     Cli,
-    /// Cloud agent backend (Vercel Open Agents primary; E2B alternate).
-    /// `AGENTHERO_CLOUD_PROVIDER` selects.
-    Cloud,
-    /// Local OSS inference (Ollama via direct URL or LiteLLM gateway).
-    /// `AGENTHERO_LITELLM_URL` (preferred) or `OLLAMA_HOST` (fallback) selects
-    /// the endpoint.
-    LocalInference,
 }
 
 impl Default for AgentRunnerKind {
@@ -61,11 +54,32 @@ impl Default for AgentRunnerKind {
     }
 }
 
-/// Orthogonal isolation policy. Applied UNDER any runner kind that wants
-/// container isolation (typically `Cli` or `LocalInference`).
-///
-/// `Cloud` runners are inherently sandboxed by the cloud provider and ignore
-/// this policy.
+#[cfg(test)]
+mod tests {
+    use super::AgentRunnerKind;
+
+    #[test]
+    fn runner_kind_only_accepts_active_backends() {
+        assert_eq!(
+            serde_json::from_str::<AgentRunnerKind>(r#""api""#).unwrap(),
+            AgentRunnerKind::Api
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentRunnerKind>(r#""cli""#).unwrap(),
+            AgentRunnerKind::Cli
+        );
+
+        for stale in [r#""cloud""#, r#""local_inference""#] {
+            assert!(
+                serde_json::from_str::<AgentRunnerKind>(stale).is_err(),
+                "{stale} must not deserialize as an active runner backend"
+            );
+        }
+    }
+}
+
+/// Orthogonal isolation policy. Applied UNDER runner kinds that want
+/// container isolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]

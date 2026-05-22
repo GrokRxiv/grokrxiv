@@ -84,10 +84,7 @@ mod tests {
         }));
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({ "foo": "bar" }), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Pass));
     }
@@ -101,10 +98,7 @@ mod tests {
         }));
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({ "foo": 42 }), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Fail));
         assert!(r.notes.get("errors").is_some());

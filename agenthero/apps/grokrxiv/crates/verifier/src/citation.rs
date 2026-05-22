@@ -451,10 +451,20 @@ impl Verifier for CitationVerifier {
         _artifact: &serde_json::Value,
         ctx: &VerifierContext<'_>,
     ) -> VerifierResult {
+        let Some(bibliography) = ctx.paper_bibliography() else {
+            return VerifierResult {
+                status: VerifierStatus::Warn,
+                notes: json!({
+                    "checked": 0,
+                    "coverage_status": "unsupported_subject",
+                    "reason": "Citation verification requires a paper subject with bibliography entries.",
+                    "subject_kind": ctx.subject_kind.as_str(),
+                    "entries": [],
+                }),
+            };
+        };
         // Phase 1: batch the arXiv-id-only refs so we hit the arXiv API once.
-        let arxiv_ids: Vec<String> = ctx
-            .paper
-            .bibliography
+        let arxiv_ids: Vec<String> = bibliography
             .iter()
             .filter_map(|c| {
                 if c.doi.is_none() {
@@ -475,8 +485,8 @@ impl Verifier for CitationVerifier {
         let mut unknown: Vec<String> = Vec::new();
         let mut malformed: Vec<String> = Vec::new();
         let mut resolved_via_biblio: u32 = 0;
-        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(ctx.paper.bibliography.len());
-        for c in &ctx.paper.bibliography {
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(bibliography.len());
+        for c in &bibliography {
             total += 1;
             let mut lookup: Option<CitationLookup> = None;
 
@@ -879,10 +889,7 @@ mod tests {
         let v = CitationVerifier::new();
         let paper = paper_with(vec![]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Fail));
         assert_eq!(r.notes["checked"], 0);
@@ -930,10 +937,7 @@ mod tests {
             },
         ]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         // 50% unresolved > 30% → Fail.
         assert!(matches!(r.status, VerifierStatus::Fail));
@@ -966,10 +970,7 @@ mod tests {
             title: Some("Repository DOI".into()),
         }]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let r = v.verify(&json!({}), &ctx).await;
 
@@ -1050,10 +1051,7 @@ mod tests {
             },
         ]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         // 1 / 3 = 33% unresolved → Fail (threshold is 30%).
         assert!(
@@ -1091,10 +1089,7 @@ mod tests {
             title: None,
         }]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         assert!(
             matches!(r.status, VerifierStatus::Pass),
@@ -1129,10 +1124,7 @@ mod tests {
             title: None,
         }]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         // Crossref bibliographic search is not a definitive existence proof.
         // A weak/noisy top hit should ask for human review, not mark the
@@ -1173,10 +1165,7 @@ mod tests {
             title: None,
         }]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v.verify(&json!({}), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Pass));
     }
@@ -1199,10 +1188,7 @@ mod tests {
             title: None,
         }]);
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let r = v.verify(&json!({}), &ctx).await;
 
@@ -1246,10 +1232,7 @@ mod tests {
                 .collect(),
         );
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
 
         let r = v.verify(&json!({}), &ctx).await;
 

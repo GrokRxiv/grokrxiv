@@ -95,10 +95,7 @@ mod tests {
     #[tokio::test]
     async fn warns_on_empty_artifact() {
         let (paper, http) = ctx();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let result = SupportVerifier::new()
             .verify(&serde_json::json!({}), &ctx)
             .await;

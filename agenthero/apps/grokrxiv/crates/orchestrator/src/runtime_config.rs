@@ -71,7 +71,7 @@ impl ExtractorKind {
 /// the TOML file, which overrides the built-in defaults.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
-    /// Default runner backend (API / CLI / cloud / local-inference).
+    /// Default runner backend (API / CLI).
     pub default_runner: AgentRunnerKind,
     /// Default extraction backend (CLI by default; API when explicitly opted in).
     pub extractor: ExtractorKind,
@@ -87,20 +87,12 @@ pub struct RuntimeConfig {
     pub no_cache: bool,
     /// Offline mode — disallow network for runners that can avoid it.
     pub offline: bool,
-    /// Selected cloud-agent provider (e.g. `vercel_open_agents`, `e2b`).
-    pub cloud_provider: Option<String>,
-    /// LiteLLM gateway URL (preferred for local-inference + multi-provider routing).
-    pub litellm_url: Option<String>,
-    /// Direct Ollama host (fallback when no LiteLLM gateway).
-    pub ollama_host: Option<String>,
     /// Bearer token clients must present to call the web API write endpoints.
     pub service_token: Option<String>,
     /// Per-role runner override.
     pub runner_for: HashMap<String, AgentRunnerKind>,
     /// Per-role sandbox override.
     pub sandbox_for: HashMap<String, SandboxPolicy>,
-    /// Per-role cloud-provider override.
-    pub cloud_provider_for: HashMap<String, String>,
     /// Per-role model override (lands as `AgentSpec.model`).
     pub model_for: HashMap<String, String>,
 }
@@ -116,13 +108,9 @@ impl Default for RuntimeConfig {
             max_cost_usd: None,
             no_cache: false,
             offline: false,
-            cloud_provider: None,
-            litellm_url: None,
-            ollama_host: None,
             service_token: None,
             runner_for: HashMap::new(),
             sandbox_for: HashMap::new(),
-            cloud_provider_for: HashMap::new(),
             model_for: HashMap::new(),
         }
     }
@@ -147,12 +135,6 @@ pub struct TomlProfile {
     pub sandbox: Option<String>,
     /// Default mode.
     pub mode: Option<String>,
-    /// Cloud provider.
-    pub cloud_provider: Option<String>,
-    /// LiteLLM URL.
-    pub litellm_url: Option<String>,
-    /// Ollama host.
-    pub ollama_host: Option<String>,
     /// Service token (web API).
     pub service_token: Option<String>,
     /// Max-cost ceiling (USD).
@@ -167,9 +149,6 @@ pub struct TomlProfile {
     /// Per-role sandbox overrides.
     #[serde(default)]
     pub sandbox_for: HashMap<String, String>,
-    /// Per-role cloud-provider overrides.
-    #[serde(default)]
-    pub cloud_provider_for: HashMap<String, String>,
     /// Per-role model overrides.
     #[serde(default)]
     pub model_for: HashMap<String, String>,
@@ -239,12 +218,6 @@ pub struct RuntimeConfigOverrides {
     pub mode: Option<AgentMode>,
     /// `--revision-target`.
     pub revision_target: Option<RevisionTarget>,
-    /// `--cloud-provider`.
-    pub cloud_provider: Option<String>,
-    /// `--litellm-url`.
-    pub litellm_url: Option<String>,
-    /// `--ollama-host`.
-    pub ollama_host: Option<String>,
     /// `--max-cost-usd`.
     pub max_cost_usd: Option<f64>,
     /// `--no-cache`.
@@ -284,15 +257,6 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
             out.default_mode = r;
         }
     }
-    if let Some(s) = &p.cloud_provider {
-        out.cloud_provider = Some(s.clone());
-    }
-    if let Some(s) = &p.litellm_url {
-        out.litellm_url = Some(s.clone());
-    }
-    if let Some(s) = &p.ollama_host {
-        out.ollama_host = Some(s.clone());
-    }
     if let Some(s) = &p.service_token {
         out.service_token = Some(s.clone());
     }
@@ -313,11 +277,6 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
     for (role_s, sandbox_s) in &p.sandbox_for {
         if let (Some(role), Some(sandbox)) = (parse_role(role_s), parse_sandbox(sandbox_s)) {
             out.sandbox_for.insert(role, sandbox);
-        }
-    }
-    for (role_s, cp) in &p.cloud_provider_for {
-        if let Some(role) = parse_role(role_s) {
-            out.cloud_provider_for.insert(role, cp.clone());
         }
     }
     for (role_s, model) in &p.model_for {
@@ -352,15 +311,6 @@ fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
         if let Some(r) = parse_mode(&v) {
             out.default_mode = r;
         }
-    }
-    if let Ok(v) = std::env::var("AGENTHERO_CLOUD_PROVIDER") {
-        out.cloud_provider = Some(v);
-    }
-    if let Ok(v) = std::env::var("AGENTHERO_LITELLM_URL") {
-        out.litellm_url = Some(v);
-    }
-    if let Ok(v) = std::env::var("OLLAMA_HOST") {
-        out.ollama_host = Some(v);
     }
     if let Ok(v) = std::env::var("AGENTHERO_SERVICE_TOKEN") {
         out.service_token = Some(v);
@@ -406,15 +356,6 @@ fn apply_cli(out: &mut RuntimeConfig, cli: &RuntimeConfigOverrides) {
     if let Some(t) = cli.revision_target {
         out.revision_target = t;
     }
-    if let Some(s) = &cli.cloud_provider {
-        out.cloud_provider = Some(s.clone());
-    }
-    if let Some(s) = &cli.litellm_url {
-        out.litellm_url = Some(s.clone());
-    }
-    if let Some(s) = &cli.ollama_host {
-        out.ollama_host = Some(s.clone());
-    }
     if let Some(v) = cli.max_cost_usd {
         out.max_cost_usd = Some(v);
     }
@@ -436,8 +377,6 @@ fn parse_runner(s: &str) -> Option<AgentRunnerKind> {
     match s.trim().to_ascii_lowercase().as_str() {
         "api" => Some(AgentRunnerKind::Api),
         "cli" => Some(AgentRunnerKind::Cli),
-        "cloud" => Some(AgentRunnerKind::Cloud),
-        "local_inference" | "local-inference" | "local" => Some(AgentRunnerKind::LocalInference),
         _ => None,
     }
 }
@@ -574,9 +513,6 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
         "max_cost_usd": cfg.max_cost_usd,
         "no_cache": cfg.no_cache,
         "offline": cfg.offline,
-        "cloud_provider": cfg.cloud_provider,
-        "litellm_url": cfg.litellm_url,
-        "ollama_host": cfg.ollama_host,
         "service_token": redact(&cfg.service_token),
         "runner_for": runner_for,
         "model_for": model_for,
@@ -602,18 +538,6 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
         ));
         s.push_str(&format!("no_cache         = {}\n", cfg.no_cache));
         s.push_str(&format!("offline          = {}\n", cfg.offline));
-        s.push_str(&format!(
-            "cloud_provider   = {}\n",
-            cfg.cloud_provider.as_deref().unwrap_or("<unset>")
-        ));
-        s.push_str(&format!(
-            "litellm_url      = {}\n",
-            cfg.litellm_url.as_deref().unwrap_or("<unset>")
-        ));
-        s.push_str(&format!(
-            "ollama_host      = {}\n",
-            cfg.ollama_host.as_deref().unwrap_or("<unset>")
-        ));
         s.push_str(&format!(
             "service_token    = {}\n",
             redact(&cfg.service_token).as_deref().unwrap_or("<unset>")
@@ -784,7 +708,7 @@ mod tests {
         over.extractor = Some(ExtractorKind::Api);
         over.no_cache = true;
         over.runner_for
-            .push(("summary".to_string(), AgentRunnerKind::Cloud));
+            .push(("summary".to_string(), AgentRunnerKind::Api));
         let cfg = with_clean_extractor_env(|| {
             RuntimeConfig::resolve(
                 &over,
@@ -798,8 +722,17 @@ mod tests {
         assert!(cfg.no_cache);
         assert_eq!(
             cfg.runner_for.get("summary").copied(),
-            Some(AgentRunnerKind::Cloud)
+            Some(AgentRunnerKind::Api)
         );
+    }
+
+    #[test]
+    fn parse_runner_rejects_pruned_backends() {
+        assert_eq!(parse_runner("api"), Some(AgentRunnerKind::Api));
+        assert_eq!(parse_runner("cli"), Some(AgentRunnerKind::Cli));
+        assert_eq!(parse_runner("cloud"), None);
+        assert_eq!(parse_runner("local_inference"), None);
+        assert!(parse_role_runner("summary=cloud").is_err());
     }
 
     #[test]

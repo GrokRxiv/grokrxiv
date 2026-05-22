@@ -93,10 +93,7 @@ mod tests {
         let v = ToneVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v
             .verify(
                 &json!({ "summary": "Clear, well-structured argument." }),
@@ -111,10 +108,7 @@ mod tests {
         let v = ToneVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let r = v
             .verify(
                 &json!({ "summary": "The author is stupid and the work is garbage." }),

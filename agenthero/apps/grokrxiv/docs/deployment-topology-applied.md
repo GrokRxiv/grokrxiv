@@ -54,12 +54,10 @@ deploy:
           capabilities: [gpu]
 ```
 
-The orchestrator container points its `OLLAMA_HOST` env var at
-`http://ollama:11434` (the in-network service DNS name) and is otherwise
-identical to the Mac build. vLLM is gated behind a compose `profiles: [vllm]`
-so it only starts when explicitly requested (`docker compose --profile vllm
-up`); some operators will skip vLLM entirely and route everything through
-Ollama for simpler ops.
+vLLM is gated behind a compose `profiles: [vllm]` so it only starts when
+explicitly requested (`docker compose --profile vllm up`). The active runner
+surface is `api` or `cli`; dormant local-inference runner wiring has been
+removed until a production topology needs it.
 
 ## The surrounding services
 

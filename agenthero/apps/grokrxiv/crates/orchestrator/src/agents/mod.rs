@@ -6,8 +6,7 @@
 //! Layout:
 //! - [`types`] — taxonomy enums + `AgentSpec` / `AgentInput` / `AgentRun`
 //! - [`review`] — configured review roles, render helper, and review facts
-//! - [`runners`] — `AgentRunner` plus 4 backend impls (`api`, `cli`, `cloud`,
-//!   `local_inference`)
+//! - [`runners`] — `AgentRunner` plus active backend impls (`api`, `cli`)
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
 pub mod config;

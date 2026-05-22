@@ -6,7 +6,7 @@ const Body = z.object({
   source: z.string().min(1),
   type: z.enum(["arxiv", "pdf", "tex", "mixed"]).optional(),
   mode: z.enum(["review_only", "review_and_revise"]).optional(),
-  runner: z.enum(["api", "cli", "cloud", "local_inference"]).optional(),
+  runner: z.enum(["api", "cli"]).optional(),
   extractor: z.enum(["api", "cli"]).optional(),
   visibility: z.enum(["public", "private"]).default("public"),
   compute_profile: z

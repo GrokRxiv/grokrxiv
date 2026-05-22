@@ -1,10 +1,10 @@
 //! Metadata consistency verifier.
 //!
-//! This rung checks that the paper context attached to an agent artifact is
-//! usable for public provenance: a non-empty source id, title, and abstract,
-//! plus a syntactically plausible arXiv or synthetic local/git source
-//! identifier. It does not make network requests; live arXiv lookups belong in
-//! the ingest layer so they stay behind the rate gate.
+//! This rung checks that the subject context attached to an agent artifact is
+//! usable for provenance: a non-empty source id, title, and summary/abstract.
+//! Paper subjects additionally get arXiv or synthetic local/git source-shape
+//! checks. It does not make network requests; live arXiv lookups belong in the
+//! ingest layer so they stay behind the rate gate.
 
 use async_trait::async_trait;
 use grokrxiv_schemas::{VerifierResult, VerifierStatus};
@@ -34,19 +34,38 @@ impl Verifier for MetadataVerifier {
         _artifact: &serde_json::Value,
         ctx: &VerifierContext<'_>,
     ) -> VerifierResult {
-        let paper = ctx.paper;
         let mut missing = Vec::new();
-        if paper.arxiv_id.trim().is_empty() {
-            missing.push("arxiv_id");
+        let id = ctx
+            .subject_str("id")
+            .or_else(|| ctx.subject_str("arxiv_id"))
+            .unwrap_or("");
+        let title = ctx.subject_str("title").unwrap_or("");
+        let summary = ctx
+            .subject_str("summary")
+            .or_else(|| ctx.subject_str("abstract"))
+            .unwrap_or("");
+
+        if id.trim().is_empty() {
+            missing.push(if ctx.is_paper() { "arxiv_id" } else { "id" });
         }
-        if paper.title.trim().is_empty() {
+        if title.trim().is_empty() {
             missing.push("title");
         }
-        if paper.abstract_.trim().is_empty() {
-            missing.push("abstract");
+        if summary.trim().is_empty() {
+            missing.push(if ctx.is_paper() {
+                "abstract"
+            } else {
+                "summary"
+            });
         }
-        let arxiv_shape_ok = arxiv_id_shape_ok(&paper.arxiv_id);
-        let source_id_kind = source_id_kind(&paper.arxiv_id);
+        let arxiv_shape_ok = ctx.is_paper() && arxiv_id_shape_ok(id);
+        let source_id_kind = if ctx.is_paper() {
+            source_id_kind(id)
+        } else if id.trim().is_empty() {
+            None
+        } else {
+            Some("generic")
+        };
         let source_id_shape_ok = source_id_kind.is_some();
         let status = if missing.is_empty() && source_id_shape_ok {
             VerifierStatus::Pass
@@ -60,7 +79,8 @@ impl Verifier for MetadataVerifier {
                 "source_id_shape_ok": source_id_shape_ok,
                 "source_id_kind": source_id_kind,
                 "arxiv_shape_ok": arxiv_shape_ok,
-                "field_present": paper.field.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()),
+                "field_present": ctx.subject_str("field").map(str::trim).is_some_and(|s| !s.is_empty()),
+                "subject_kind": ctx.subject_kind.as_str(),
             }),
         }
     }
@@ -151,10 +171,7 @@ mod tests {
     #[tokio::test]
     async fn passes_modern_arxiv_id_with_metadata() {
         let (paper, http) = ctx("2605.12345v2");
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let result = MetadataVerifier::new()
             .verify(&serde_json::json!({}), &ctx)
             .await;
@@ -170,10 +187,7 @@ mod tests {
             "git-repo-feature_source-review-abstraction",
         ] {
             let (paper, http) = ctx(source_id);
-            let ctx = VerifierContext {
-                paper: &paper,
-                http: &http,
-            };
+            let ctx = VerifierContext::for_paper(&paper, &http);
             let result = MetadataVerifier::new()
                 .verify(&serde_json::json!({}), &ctx)
                 .await;
@@ -191,10 +205,7 @@ mod tests {
     #[tokio::test]
     async fn warns_on_unknown_source_id_shape() {
         let (paper, http) = ctx("not-a-valid-source-id");
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let result = MetadataVerifier::new()
             .verify(&serde_json::json!({}), &ctx)
             .await;

@@ -80,15 +80,6 @@ pub struct Cli {
     /// Sandbox policy applied to runners that support it.
     #[arg(long, value_enum, global = true, hide = true)]
     pub sandbox: Option<SandboxPolicy>,
-    /// Cloud agent provider (e.g. `vercel_open_agents`, `e2b`).
-    #[arg(long, global = true, hide = true)]
-    pub cloud_provider: Option<String>,
-    /// LiteLLM gateway URL (overrides env).
-    #[arg(long, global = true, hide = true)]
-    pub litellm_url: Option<String>,
-    /// Ollama host (overrides env).
-    #[arg(long, global = true, hide = true)]
-    pub ollama_host: Option<String>,
     /// Per-role model override, e.g. `--model-for summary=claude-haiku-4-5`.
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_model, value_name = "ROLE=MODEL")]
@@ -536,9 +527,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         sandbox: cli.sandbox,
         mode: Some(cli.mode),
         revision_target: Some(cli.revision_target),
-        cloud_provider: cli.cloud_provider.clone(),
-        litellm_url: cli.litellm_url.clone(),
-        ollama_host: cli.ollama_host.clone(),
         max_cost_usd: cli.max_cost_usd,
         no_cache: cli.no_cache,
         offline: cli.offline,

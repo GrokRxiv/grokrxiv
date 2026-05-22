@@ -129,7 +129,7 @@ pub struct AppState {
     /// from this map instead of matching role ids.
     pub agent_configs: Arc<AgentConfigMap>,
     /// Per-`AgentRunnerKind` runner backends. RPT2 Track A registers only the
-    /// `ApiRunner`; CLI/cloud/local-inference are filled by other tracks.
+    /// `ApiRunner`; CLI is registered separately.
     pub runners: Arc<RunnerRegistry>,
     /// Supervisor sender used by internal HTTP write endpoints to enqueue
     /// durable work items.
@@ -173,9 +173,7 @@ impl AppState {
         #[cfg(feature = "grokrxiv-verifier")]
         let (agent_schemas, verifiers) = build_agent_schemas_and_verifiers(&role_yaml)?;
 
-        // Build the runner registry. API can be empty in CLI-only setups;
-        // CLI/cloud/local-inference are still registered and fail only when
-        // invoked without their own prerequisites.
+        // Build the runner registry. API can be empty in CLI-only setups.
         let mut runners_map: RunnerRegistry = HashMap::new();
         if direct_provider_api_allowed_from_env() {
             let provider_map_by_string: HashMap<String, Arc<dyn LLMProvider>> = match &providers {
@@ -189,22 +187,9 @@ impl AppState {
             let api_runner: Arc<dyn AgentRunner> = Arc::new(ApiRunner::new(provider_map_by_string));
             runners_map.insert(AgentRunnerKind::Api, api_runner);
         }
-        // RPT2 G follow-up: register the other 3 runner kinds so the supervisor's
-        // `--runner cli` / `--runner cloud` / `--runner local_inference` flag
-        // can route through them at runtime. Each constructs cheaply; they only
-        // hit network / spawn subprocesses when actually invoked.
         runners_map.insert(
             AgentRunnerKind::Cli,
             Arc::new(crate::agents::runners::cli::CliRunner::new()) as Arc<dyn AgentRunner>,
-        );
-        runners_map.insert(
-            AgentRunnerKind::Cloud,
-            Arc::new(crate::agents::runners::cloud::CloudRunner::new()) as Arc<dyn AgentRunner>,
-        );
-        runners_map.insert(
-            AgentRunnerKind::LocalInference,
-            Arc::new(crate::agents::runners::local_inference::LocalInferenceRunner::new())
-                as Arc<dyn AgentRunner>,
         );
         let runners = Arc::new(runners_map);
 
@@ -340,7 +325,7 @@ fn required_cli_bins(role_yaml: &RoleYamlMap) -> anyhow::Result<BTreeSet<String>
 /// in-memory per-role JSON schemas. Startup validation already rejected
 /// missing/malformed YAML, so this registry is the complete role source of
 /// truth. Runtime flags/env select the actual runner, so
-/// CLI/cloud/local-inference paths do not depend on provider APIs.
+/// CLI paths do not depend on provider APIs.
 #[cfg(feature = "grokrxiv-verifier")]
 fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
     let mut out: AgentRegistry = HashMap::new();
@@ -622,10 +607,7 @@ mod tests {
             bibliography: Vec::new(),
             source_format: None,
         };
-        let ctx = grokrxiv_verifier::VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = grokrxiv_verifier::VerifierContext::for_paper(&paper, &http);
 
         let summary_names: Vec<String> = ladders
             .get("summary")

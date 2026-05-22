@@ -22,7 +22,7 @@ It's also one merge away from being a real framework.
 
 2. **Schema as `Arc<serde_json::Value>` via `AgentSchema` type alias.** No more 50KB clones per call. `AgentSpec` is now cheap to pass around.
 
-3. **Cache + persistence honour the resolved runner.** Migration `20260520000001_agent_runner_persistence.sql` adds `runner text not null default 'api' check (runner in ('api','cli','cloud','local_inference'))` on both `review_agents` and `review_cache`. `AgentRun::from_cache` now takes `runner: AgentRunnerKind` and threads it through. Cost attribution is honest.
+3. **Cache + persistence honour the resolved runner.** Migration `20260520000001_agent_runner_persistence.sql` adds `runner text not null default 'api' check (runner in ('api','cli'))` on both `review_agents` and `review_cache`; the later runner-prune migration normalizes old dormant runner values to `cli`. `AgentRun::from_cache` now takes `runner: AgentRunnerKind` and threads it through. Cost attribution is honest.
 
 4. **`role_routing` deleted.** The dead parallel registry is gone. `state.agents` is the sole source of truth. ~80 lines of dead-code removed.
 
@@ -52,7 +52,7 @@ It's also one merge away from being a real framework.
 
 1. **Item 1 (`AgentRole::Render` variant) was sidestepped, not fixed.** RenderAgent was moved outside the configured-review-agent registry — it's a separate `RenderAgent` struct in `review_agents.rs` with its own `run()` method. `RenderAgent::spec().role` still returns `AgentRole::MetaReviewer`. The test `test_render_agent_keeps_spec_without_review_role_identity` literally pins this. **Today's collision risk is real if any new observability code keys by `spec.role`**: a render run would silently land in the MetaReviewer bucket. The architectural smell remained; only the immediate collision symptom was avoided.
 
-2. **Item 20 (delete Cloud + LocalInference runners) didn't happen.** `cloud.rs` is still 613 lines, `local_inference.rs` 493 lines, both still in `AgentRunnerKind` enum, both still registered in the runner registry at boot — none invoked by the default CLI smoke. ~1,100 LoC of speculative code lives on.
+2. **Item 20 (delete Cloud + LocalInference runners) is now closed.** The active runner surface is `api` / `cli`; the dormant Cloud and LocalInference implementations were removed until a production topology needs them.
 
 3. **Item 18 partial — `AgentMode` and `RevisionTarget` were *relocated*, not deleted.** They moved off `AgentSpec` (good) but stayed in `runtime_config.rs` as `default_mode` and `revision_target` fields, still exposed as hidden CLI flags. `AgentMode::ReviewAndRevise` still has no caller in the live pipeline. Either wire it or remove the runtime config field — it's now an indirection over an unused enum.
 
@@ -72,7 +72,7 @@ It's also one merge away from being a real framework.
 
 These are now demonstrably framework-shaped:
 
-- **`AgentRunner` trait + 4 backends.** Genuine pluggability. CliRunner, ApiRunner, CloudRunner, LocalInferenceRunner all conform to one signature. Adding a 5th (e.g. Bedrock, Together, your-own-gateway) is a single trait impl. The trait stayed cleanly minimal.
+- **`AgentRunner` trait + 2 active backends.** Genuine pluggability remains via CliRunner and ApiRunner. Adding a new production-backed runner should be a deliberate trait impl plus manifest/config surface, not speculative dormant code.
 - **`AgentSpec` / `AgentInput` / `AgentRun` lifecycle.** Cheap to clone (post-`Arc<Value>`), schema-enforced, runner-agnostic. The contract is portable.
 - **Verifier ladder with per-role composition.** `VerifierLadder::standard_for_role(role, schema)`. New rungs are one trait impl. Citation/metadata/render/support/tone/json_schema already swappable.
 - **Fact-merge pattern.** `merge_*_into_output` per specialist. The killer architectural primitive: deterministic verifier owns ground truth, LLM owns judgment, merge before persistence. Generalizes to any domain that has "facts you can compute" plus "judgments you need a model for."

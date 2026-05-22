@@ -63,6 +63,8 @@ pub struct AppRunRecord {
     pub error_message: Option<String>,
     /// Optional retryability marker.
     pub error_retryable: Option<bool>,
+    /// Number of worker attempts that have claimed this run.
+    pub attempt: i32,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Start timestamp.
@@ -84,6 +86,8 @@ pub struct ClaimedAppRun {
     pub input: StoredAppRunInput,
     /// Worker lease id.
     pub lease_id: Uuid,
+    /// Attempt number assigned to this claim.
+    pub attempt: i32,
 }
 
 /// App-run event row.
@@ -101,6 +105,34 @@ pub struct AppRunEvent {
     pub payload: serde_json::Value,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
+}
+
+/// Decision for an expired worker lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpiredLeaseDecision {
+    /// Requeue the run for one more worker attempt.
+    Requeue,
+    /// Mark the run as a terminal system failure.
+    SystemFailed,
+}
+
+/// Result of one expired-lease recovery pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LeaseRecoverySummary {
+    /// App runs requeued for one more attempt.
+    pub requeued: usize,
+    /// App runs marked `system_failed`.
+    pub system_failed: usize,
+}
+
+/// Decide how to handle an expired lease for a run that has already started
+/// `attempt` worker attempts.
+pub fn expired_lease_decision(attempt: i32) -> ExpiredLeaseDecision {
+    if attempt < 2 {
+        ExpiredLeaseDecision::Requeue
+    } else {
+        ExpiredLeaseDecision::SystemFailed
+    }
 }
 
 fn default_json() -> bool {
@@ -159,9 +191,9 @@ pub async fn register_worker(pool: &PgPool, name: &str) -> anyhow::Result<Uuid> 
 pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option<ClaimedAppRun>> {
     let mut tx = pool.begin().await?;
     let row = sqlx::query(
-        "select id, app_id, action_id, input \
+        "select id, app_id, action_id, input, attempt \
          from app_runs \
-         where state = 'queued' \
+         where state = 'queued' and attempt < 2 \
          order by created_at asc \
          for update skip locked \
          limit 1",
@@ -174,9 +206,11 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
     };
 
     let id: Uuid = row.get("id");
+    let attempt = row.get::<i32, _>("attempt") + 1;
     sqlx::query(
-        "update app_runs set state = 'running', started_at = coalesce(started_at, now()), \
-         updated_at = now() where id = $1",
+        "update app_runs set state = 'running', attempt = attempt + 1, \
+         started_at = coalesce(started_at, now()), finished_at = null, updated_at = now() \
+         where id = $1",
     )
     .bind(id)
     .execute(&mut *tx)
@@ -199,7 +233,90 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
         action_id: row.get("action_id"),
         input,
         lease_id,
+        attempt,
     }))
+}
+
+/// Recover app runs whose worker lease expired while still marked running.
+///
+/// Runs are requeued once; after the second expired attempt they become
+/// `system_failed` and remain retryable by explicit operator action.
+pub async fn recover_expired_leases(pool: &PgPool) -> anyhow::Result<LeaseRecoverySummary> {
+    let requeued_rows = sqlx::query(
+        "with expired as ( \
+           update worker_leases wl set state = 'expired', updated_at = now() \
+           from app_runs ar \
+           where wl.app_run_id = ar.id \
+             and wl.state = 'leased' \
+             and wl.leased_until < now() \
+             and ar.state = 'running' \
+             and ar.attempt < 2 \
+           returning wl.app_run_id \
+         ) \
+         update app_runs ar set state = 'queued', recovered_at = now(), \
+           last_lease_expired_at = now(), updated_at = now(), \
+           error_code = 'lease_expired', \
+           error_message = 'worker lease expired; run requeued', \
+           error_retryable = true \
+         from expired \
+         where ar.id = expired.app_run_id \
+         returning ar.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let failed_rows = sqlx::query(
+        "with expired as ( \
+           update worker_leases wl set state = 'expired', updated_at = now() \
+           from app_runs ar \
+           where wl.app_run_id = ar.id \
+             and wl.state = 'leased' \
+             and wl.leased_until < now() \
+             and ar.state = 'running' \
+             and ar.attempt >= 2 \
+           returning wl.app_run_id \
+         ) \
+         update app_runs ar set state = 'system_failed', finished_at = coalesce(finished_at, now()), \
+           last_lease_expired_at = now(), updated_at = now(), \
+           error_code = 'lease_expired', \
+           error_message = 'worker lease expired after retry', \
+           error_retryable = true \
+         from expired \
+         where ar.id = expired.app_run_id \
+         returning ar.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for row in &requeued_rows {
+        let run_id: Uuid = row.get("id");
+        insert_event(
+            pool,
+            run_id,
+            "warn",
+            "app_run.lease_expired_requeued",
+            Some("worker lease expired; app run requeued"),
+            json!({ "decision": "requeue" }),
+        )
+        .await?;
+    }
+    for row in &failed_rows {
+        let run_id: Uuid = row.get("id");
+        insert_event(
+            pool,
+            run_id,
+            "error",
+            "app_run.lease_expired_failed",
+            Some("worker lease expired after retry"),
+            json!({ "decision": "system_failed" }),
+        )
+        .await?;
+    }
+
+    Ok(LeaseRecoverySummary {
+        requeued: requeued_rows.len(),
+        system_failed: failed_rows.len(),
+    })
 }
 
 /// Persist a successful adapter response.
@@ -285,7 +402,7 @@ pub async fn list_runs(
 ) -> anyhow::Result<Vec<AppRunRecord>> {
     let rows = sqlx::query(
         "select id, app_id, action_id, state, input, output, error_code, error_message, \
-                error_retryable, created_at, started_at, finished_at \
+                error_retryable, attempt, created_at, started_at, finished_at \
          from app_runs \
          where ($1::text is null or app_id = $1) \
            and ($2::text is null or state = $2) \
@@ -304,7 +421,7 @@ pub async fn list_runs(
 pub async fn get_run(pool: &PgPool, run_id: Uuid) -> anyhow::Result<Option<AppRunRecord>> {
     let row = sqlx::query(
         "select id, app_id, action_id, state, input, output, error_code, error_message, \
-                error_retryable, created_at, started_at, finished_at \
+                error_retryable, attempt, created_at, started_at, finished_at \
          from app_runs where id = $1",
     )
     .bind(run_id)
@@ -412,6 +529,7 @@ fn record_from_row(row: sqlx::postgres::PgRow) -> AppRunRecord {
         error_code: row.get("error_code"),
         error_message: row.get("error_message"),
         error_retryable: row.get("error_retryable"),
+        attempt: row.get("attempt"),
         created_at: row.get("created_at"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
@@ -435,5 +553,23 @@ fn node_state(status: DagNodeStatus) -> &'static str {
         DagNodeStatus::Degraded => "degraded",
         DagNodeStatus::Failed => "failed",
         DagNodeStatus::Skipped => "skipped",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_lease_recovery_requeues_once_then_fails() {
+        assert_eq!(expired_lease_decision(1), ExpiredLeaseDecision::Requeue);
+        assert_eq!(
+            expired_lease_decision(2),
+            ExpiredLeaseDecision::SystemFailed
+        );
+        assert_eq!(
+            expired_lease_decision(3),
+            ExpiredLeaseDecision::SystemFailed
+        );
     }
 }

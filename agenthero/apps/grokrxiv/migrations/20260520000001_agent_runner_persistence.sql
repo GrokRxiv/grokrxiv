@@ -4,8 +4,8 @@
 
 alter table review_agents
   add column if not exists runner text not null default 'api'
-    check (runner in ('api', 'cli', 'cloud', 'local_inference'));
+    check (runner in ('api', 'cli'));
 
 alter table review_cache
   add column if not exists runner text not null default 'api'
-    check (runner in ('api', 'cli', 'cloud', 'local_inference'));
+    check (runner in ('api', 'cli'));

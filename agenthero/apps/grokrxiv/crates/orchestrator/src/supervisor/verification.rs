@@ -18,10 +18,7 @@ pub(super) async fn verify_artifact(
     let Some(ladder) = state.verifiers.get(role) else {
         return (None, None);
     };
-    let ctx = grokrxiv_verifier::VerifierContext {
-        paper: extract,
-        http: &state.http,
-    };
+    let ctx = grokrxiv_verifier::VerifierContext::for_paper(extract, &state.http);
     let rungs: Vec<(String, grokrxiv_schemas::VerifierResult)> = ladder.run(artifact, &ctx).await;
     let worst = rungs
         .iter()

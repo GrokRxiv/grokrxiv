@@ -145,10 +145,7 @@ mod tests {
         let v = RenderVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let html = "<!doctype html><html><body><h1>Hi</h1><p>x</p></body></html>";
         let tex = "\\begin{document}\\section{X}\\end{document}";
         let r = v.verify(&json!({ "html": html, "tex": tex }), &ctx).await;
@@ -160,10 +157,7 @@ mod tests {
         let v = RenderVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let html = "<!doctype html><html><body><p>no heading</p></body></html>";
         let r = v.verify(&json!({ "html": html }), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Fail));
@@ -174,10 +168,7 @@ mod tests {
         let v = RenderVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let html = "<!doctype html><html><body><h1>Ok</h1><script>alert(1)</script></body></html>";
         let r = v.verify(&json!({ "html": html }), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Fail));
@@ -188,10 +179,7 @@ mod tests {
         let v = RenderVerifier::new();
         let paper = ctx_paper();
         let http = reqwest::Client::new();
-        let ctx = VerifierContext {
-            paper: &paper,
-            http: &http,
-        };
+        let ctx = VerifierContext::for_paper(&paper, &http);
         let tex = "\\begin{document}\\begin{itemize}\\end{document}"; // 2 begins, 1 end
         let r = v.verify(&json!({ "tex": tex }), &ctx).await;
         assert!(matches!(r.status, VerifierStatus::Fail));

@@ -3,10 +3,9 @@
 //! Wraps a runner invocation in a Docker container with read-only CLI auth
 //! mounts and a per-run scratch workdir. Track D fills in the body.
 //!
-//! The wrapper is invoked by `CliRunner` and `LocalInferenceRunner` when
-//! their spec carries `SandboxPolicy::Container`. `CloudRunner` ignores it
-//! (cloud is inherently sandboxed). `ApiRunner` ignores it (no execution
-//! environment to isolate).
+//! The wrapper is invoked by supported local execution runners when their spec
+//! carries `SandboxPolicy::Container`. `ApiRunner` ignores it because there is
+//! no local execution environment to isolate.
 
 use crate::agents::types::{AgentInput, AgentRun, AgentSpec};
 

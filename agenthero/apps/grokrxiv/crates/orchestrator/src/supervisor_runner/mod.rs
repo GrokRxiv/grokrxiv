@@ -91,7 +91,7 @@ pub struct AgentJob {
 /// only when at least one runner needs them.
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
-    /// Model identifier for cloud runners; for `LocalCommandRunner` the
+    /// Model identifier for remote runners; for `LocalCommandRunner` the
     /// string is interpreted as the binary path / name to spawn.
     pub model: String,
     /// Soft cap — runners SHOULD respect this; the supervisor surfaces it

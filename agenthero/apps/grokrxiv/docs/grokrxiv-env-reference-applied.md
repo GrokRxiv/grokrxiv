@@ -74,13 +74,10 @@ files are gitignored.
 
 | Env                            | CLI equivalent              | Notes |
 |--------------------------------|-----------------------------|-------|
-| `AGENTHERO_RUNNER`              | `--runner`                  | `api` / `cli` / `cloud` / `local_inference` |
+| `AGENTHERO_RUNNER`              | `--runner`                  | `api` / `cli` |
 | `AGENTHERO_EXTRACTOR`           | `--extractor`               | Staged ingest extraction backend: `cli` / `api`; default `cli` |
 | `AGENTHERO_SANDBOX`             | `--sandbox`                 | `none` / `container` |
 | `AGENTHERO_MODE`                | `--mode`                    | `review_only` / `review_and_revise` |
-| `AGENTHERO_CLOUD_PROVIDER`      | `--cloud-provider`          | `vercel_open_agents` / `e2b` / ... |
-| `AGENTHERO_LITELLM_URL`         | `--litellm-url`             | LiteLLM gateway base URL |
-| `OLLAMA_HOST`                  | `--ollama-host`             | Ollama direct base URL |
 | `AGENTHERO_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
 | `GROKRXIV_FREE_REVIEW_LIMIT`   | _none_                      | Lifetime free full-review cap per logged-in user; default `3` |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
@@ -143,22 +140,6 @@ The orchestrator entrypoint copies that file into Claude Code's Linux
 credentials paths inside `/home/grokrxiv`. Codex uses `~/.codex/auth.json`.
 Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
 `~/.gemini/oauth_creds.json` plus `~/.gemini/google_accounts.json`.
-
-## Cloud runner
-
-| Env                          | Notes |
-|------------------------------|-------|
-| `VERCEL_OPEN_AGENTS_URL`     | Health-checked via `GET /healthz` by `doctor` |
-| `VERCEL_OPEN_AGENTS_TOKEN`   | Bearer for Vercel Open Agents |
-| `E2B_API_KEY`                | E2B sandbox key (presence-only check) |
-
-## Local inference
-
-| Env                          | Notes |
-|------------------------------|-------|
-| `AGENTHERO_LITELLM_URL`       | Preferred over `OLLAMA_HOST` |
-| `LITELLM_URL`                | Alias accepted by `doctor` |
-| `OLLAMA_HOST`                | e.g. `http://localhost:11434` |
 
 ## Publisher
 

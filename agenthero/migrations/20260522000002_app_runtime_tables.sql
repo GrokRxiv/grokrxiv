@@ -19,9 +19,12 @@ create table if not exists app_runs (
   error_code          text,
   error_message       text,
   error_retryable     boolean,
+  attempt             int not null default 0,
   created_by          text,
   started_at          timestamptz,
   finished_at         timestamptz,
+  recovered_at        timestamptz,
+  last_lease_expired_at timestamptz,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
 );
