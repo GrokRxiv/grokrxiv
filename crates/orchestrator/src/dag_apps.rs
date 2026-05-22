@@ -4,12 +4,17 @@
 //! behind `agenthero/apps/<app>/app.yaml` and its declared adapter process.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use agenthero_agent_runtime::{AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL};
 use agenthero_dag_executor::{DagExecutionReport, DagIo};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+
+const DEFAULT_ADAPTER_TIMEOUT_SECS: u64 = 60 * 60 * 2;
+const DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Metadata for one DAG type discovered from installed app manifests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -29,6 +34,8 @@ pub struct RegisteredAppDescriptor {
     pub id: String,
     /// Human-readable label.
     pub label: String,
+    /// Operator-facing description.
+    pub description: String,
     /// Actions exposed by this app.
     pub actions: Vec<AppActionDescriptor>,
     /// Deployment targets exposed by this app.
@@ -40,6 +47,8 @@ pub struct RegisteredAppDescriptor {
 pub struct AppActionDescriptor {
     /// Action id used by `agh app run <app> <action>`.
     pub id: String,
+    /// Command path after the app slug, e.g. `["validate", "citations"]`.
+    pub command: Vec<String>,
     /// DAG type that supplies this action's runtime topology.
     pub dag_type: String,
     /// Short operator-facing description.
@@ -106,6 +115,18 @@ pub enum AppAdapter {
         /// Fixed adapter arguments.
         #[serde(default)]
         args: Vec<String>,
+        /// Optional local-development fallback executable.
+        #[serde(default)]
+        fallback_command: Option<String>,
+        /// Fixed fallback arguments.
+        #[serde(default)]
+        fallback_args: Vec<String>,
+        /// Optional process timeout override in seconds.
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        /// Optional stdout/stderr cap override in bytes.
+        #[serde(default)]
+        output_limit_bytes: Option<usize>,
     },
 }
 
@@ -182,12 +203,14 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
         .map(|manifest| RegisteredAppDescriptor {
             id: manifest.slug,
             label: manifest.label,
+            description: manifest.description,
             deployments: manifest.deployments,
             actions: manifest
                 .actions
                 .into_iter()
                 .map(|action| AppActionDescriptor {
                     id: action.id,
+                    command: action.command,
                     dag_type: action.dag_type,
                     description: action.description,
                     options: action.options,
@@ -198,26 +221,25 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
 }
 
 /// Return all installed product app ids in deterministic order.
-pub fn registered_app_ids() -> Vec<String> {
-    registered_apps()
-        .map(|apps| apps.into_iter().map(|app| app.id).collect())
-        .unwrap_or_default()
+pub fn registered_app_ids() -> anyhow::Result<Vec<String>> {
+    Ok(registered_apps()?.into_iter().map(|app| app.id).collect())
 }
 
 /// Find one installed product app descriptor.
-pub fn registered_app(app_id: &str) -> Option<RegisteredAppDescriptor> {
-    registered_apps()
-        .ok()?
-        .into_iter()
-        .find(|app| app.id == app_id)
+pub fn registered_app(app_id: &str) -> anyhow::Result<Option<RegisteredAppDescriptor>> {
+    Ok(registered_apps()?.into_iter().find(|app| app.id == app_id))
 }
 
 /// Find one installed product app action.
-pub fn registered_app_action(app_id: &str, action_id: &str) -> Option<AppActionDescriptor> {
-    registered_app(app_id)?
+pub fn registered_app_action(
+    app_id: &str,
+    action_id: &str,
+) -> anyhow::Result<Option<AppActionDescriptor>> {
+    Ok(registered_app(app_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown app `{app_id}`"))?
         .actions
         .into_iter()
-        .find(|action| action.id == action_id)
+        .find(|action| action.id == action_id))
 }
 
 /// Resolve one product app action from the YAML app manifest.
@@ -239,6 +261,14 @@ pub fn app_action_binding(app_id: &str, action_id: &str) -> anyhow::Result<AppAc
 /// Resolve raw app-run args against the app manifest command paths.
 pub fn resolve_app_action_args(app_id: &str, args: &[String]) -> anyhow::Result<ResolvedAppAction> {
     let manifest = load_app_manifest_by_slug(app_id)?;
+    resolve_app_action_args_in_manifest(&manifest, args)
+}
+
+/// Resolve raw app-run args against an already loaded app manifest.
+pub fn resolve_app_action_args_in_manifest(
+    manifest: &AppManifest,
+    args: &[String],
+) -> anyhow::Result<ResolvedAppAction> {
     let action = manifest
         .actions
         .iter()
@@ -246,10 +276,10 @@ pub fn resolve_app_action_args(app_id: &str, args: &[String]) -> anyhow::Result<
         .max_by_key(|action| action.command.len())
         .ok_or_else(|| {
             let requested = args.first().map(String::as_str).unwrap_or("<none>");
-            anyhow::anyhow!("unknown app action `{app_id} {requested}`")
+            anyhow::anyhow!("unknown app action `{} {requested}`", manifest.slug)
         })?;
     Ok(ResolvedAppAction {
-        app: manifest.slug,
+        app: manifest.slug.clone(),
         id: action.id.clone(),
         dag_type: action.dag_type.clone(),
         description: action.description.clone(),
@@ -282,6 +312,7 @@ pub fn load_app_manifests() -> anyhow::Result<Vec<AppManifest>> {
         }
     }
     manifests.sort_by(|a, b| a.slug.cmp(&b.slug));
+    validate_unique_dag_types(&manifests)?;
     Ok(manifests)
 }
 
@@ -377,6 +408,24 @@ fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_unique_dag_types(manifests: &[AppManifest]) -> anyhow::Result<()> {
+    let mut owners = BTreeMap::<&str, &str>::new();
+    for manifest in manifests {
+        for action in &manifest.actions {
+            if let Some(owner) = owners.insert(action.dag_type.as_str(), manifest.slug.as_str()) {
+                if owner != manifest.slug {
+                    anyhow::bail!(
+                        "dag_type `{}` is declared by both app `{owner}` and app `{}`",
+                        action.dag_type,
+                        manifest.slug
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Return all discovered DAG type descriptors.
 pub fn registered_dag_apps() -> anyhow::Result<Vec<DagAppDescriptor>> {
     let mut dag_to_app: BTreeMap<String, String> = BTreeMap::new();
@@ -401,18 +450,18 @@ pub fn registered_dag_apps() -> anyhow::Result<Vec<DagAppDescriptor>> {
 }
 
 /// Return all discovered DAG type ids in deterministic order.
-pub fn registered_dag_app_ids() -> Vec<String> {
-    registered_dag_apps()
-        .map(|apps| apps.into_iter().map(|app| app.dag_type).collect())
-        .unwrap_or_default()
+pub fn registered_dag_app_ids() -> anyhow::Result<Vec<String>> {
+    Ok(registered_dag_apps()?
+        .into_iter()
+        .map(|app| app.dag_type)
+        .collect())
 }
 
 /// Find one discovered DAG type descriptor.
-pub fn registered_dag_app(dag_type: &str) -> Option<DagAppDescriptor> {
-    registered_dag_apps()
-        .ok()?
+pub fn registered_dag_app(dag_type: &str) -> anyhow::Result<Option<DagAppDescriptor>> {
+    Ok(registered_dag_apps()?
         .into_iter()
-        .find(|app| app.dag_type == dag_type)
+        .find(|app| app.dag_type == dag_type))
 }
 
 /// Run an action through its app's declared adapter process.
@@ -422,13 +471,26 @@ pub async fn run_app_action(
     args: Vec<String>,
     input: DagIo,
     json: bool,
+    dry_run: bool,
 ) -> anyhow::Result<AppAdapterResponse> {
     let manifest = load_app_manifest_by_slug(app_id)?;
+    run_app_action_with_manifest(&manifest, action_id, args, input, json, dry_run).await
+}
+
+/// Run an action through an already loaded app manifest.
+pub async fn run_app_action_with_manifest(
+    manifest: &AppManifest,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+) -> anyhow::Result<AppAdapterResponse> {
     let action = manifest
         .actions
         .iter()
         .find(|action| action.id == action_id)
-        .ok_or_else(|| anyhow::anyhow!("unknown app action `{app_id} {action_id}`"))?;
+        .ok_or_else(|| anyhow::anyhow!("unknown app action `{} {action_id}`", manifest.slug))?;
     let request = AppAdapterRequest::new(
         manifest.slug.clone(),
         action.id.clone(),
@@ -436,6 +498,7 @@ pub async fn run_app_action(
         args,
         input,
         json,
+        dry_run,
     );
     run_adapter_process(&manifest, &request).await
 }
@@ -453,6 +516,7 @@ pub async fn run_registered_dag_app(
         Vec::new(),
         input,
         true,
+        false,
     );
     let response = run_adapter_process(&manifest, &request).await?;
     if !response.ok {
@@ -491,17 +555,59 @@ async fn run_adapter_process(
     manifest: &AppManifest,
     request: &AppAdapterRequest,
 ) -> anyhow::Result<AppAdapterResponse> {
-    let AppAdapter::Process { command, args } = &manifest.adapter;
-    let mut child = tokio::process::Command::new(command)
-        .args(args)
-        .current_dir(workspace_root())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| {
-            anyhow::anyhow!("spawn app `{}` adapter `{command}`: {err}", manifest.slug)
-        })?;
+    let AppAdapter::Process {
+        command,
+        args,
+        fallback_command,
+        fallback_args,
+        timeout_secs,
+        output_limit_bytes,
+    } = &manifest.adapter;
+    let timeout = Duration::from_secs(
+        timeout_secs
+            .or_else(adapter_timeout_from_env)
+            .unwrap_or(DEFAULT_ADAPTER_TIMEOUT_SECS),
+    );
+    let output_limit = output_limit_bytes
+        .or_else(adapter_output_limit_from_env)
+        .unwrap_or(DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES);
+    let workdir = adapter_workdir();
+
+    let mut child = match spawn_adapter(command, args, &workdir).await {
+        Ok(child) => child,
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == ErrorKind::NotFound)
+                && fallback_command.is_some()
+                && adapter_fallback_allowed() =>
+        {
+            let fallback = fallback_command.as_deref().expect("checked fallback");
+            spawn_adapter(fallback, fallback_args, &workdir).await.map_err(|fallback_err| {
+                anyhow::anyhow!(
+                    "spawn app `{}` adapter `{command}` failed and fallback `{fallback}` failed: {fallback_err}",
+                    manifest.slug
+                )
+            })?
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "spawn app `{}` adapter `{command}`: {err}",
+                manifest.slug
+            ));
+        }
+    };
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("adapter `{}` stdout unavailable", manifest.slug))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("adapter `{}` stderr unavailable", manifest.slug))?;
+    let stdout_task = tokio::spawn(async move { read_limited(&mut stdout, output_limit).await });
+    let stderr_task = tokio::spawn(async move { read_limited(&mut stderr, output_limit).await });
 
     let payload = serde_json::to_vec(request)?;
     let mut stdin = child
@@ -512,37 +618,189 @@ async fn run_adapter_process(
     stdin.shutdown().await?;
     drop(stdin);
 
-    let output = child
-        .wait_with_output()
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(result) => result
+            .map_err(|err| anyhow::anyhow!("wait for app `{}` adapter: {err}", manifest.slug))?,
+        Err(_) => {
+            let _ = child.kill().await;
+            anyhow::bail!(
+                "app `{}` adapter timed out after {}s",
+                manifest.slug,
+                timeout.as_secs()
+            );
+        }
+    };
+    let stdout = stdout_task
         .await
-        .map_err(|err| anyhow::anyhow!("wait for app `{}` adapter: {err}", manifest.slug))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        .map_err(|err| anyhow::anyhow!("join app `{}` stdout task: {err}", manifest.slug))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|err| anyhow::anyhow!("join app `{}` stderr task: {err}", manifest.slug))??;
+    if stdout.truncated {
+        anyhow::bail!(
+            "app `{}` adapter stdout exceeded {} bytes",
+            manifest.slug,
+            output_limit
+        );
+    }
+    if stderr.truncated {
+        anyhow::bail!(
+            "app `{}` adapter stderr exceeded {} bytes",
+            manifest.slug,
+            output_limit
+        );
+    }
+    let stdout = stdout.bytes;
+    let stderr = stderr.bytes;
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         anyhow::bail!(
             "app `{}` adapter exited with {}: {}",
             manifest.slug,
-            output.status,
-            stderr.trim()
+            status,
+            truncate_for_error(stderr.trim(), 2048)
         );
     }
 
-    let response: AppAdapterResponse = serde_json::from_slice(&output.stdout).map_err(|err| {
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: AppAdapterResponse = serde_json::from_slice(&stdout).map_err(|err| {
+        let stdout = String::from_utf8_lossy(&stdout);
         anyhow::anyhow!(
             "parse app `{}` adapter response as JSON: {err}; stdout={}",
             manifest.slug,
-            stdout.trim()
+            truncate_for_error(stdout.trim(), 2048)
         )
     })?;
+    validate_adapter_response(request, &response)?;
+    Ok(response)
+}
+
+async fn spawn_adapter(
+    command: &str,
+    args: &[String],
+    workdir: &Path,
+) -> anyhow::Result<tokio::process::Child> {
+    let command_path = resolve_process_command(command, "AGENTHERO_ADAPTER_BIN_DIR");
+    tokio::process::Command::new(command_path)
+        .args(args)
+        .current_dir(workdir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(Into::into)
+}
+
+async fn read_limited<R>(reader: &mut R, limit: usize) -> anyhow::Result<LimitedOutput>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut buf = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            return Ok(LimitedOutput {
+                bytes: out,
+                truncated,
+            });
+        }
+        let remaining = limit.saturating_sub(out.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+        if read > remaining {
+            out.extend_from_slice(&buf[..remaining]);
+            truncated = true;
+        } else {
+            out.extend_from_slice(&buf[..read]);
+        }
+    }
+}
+
+struct LimitedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn validate_adapter_response(
+    request: &AppAdapterRequest,
+    response: &AppAdapterResponse,
+) -> anyhow::Result<()> {
     if response.protocol != APP_ADAPTER_PROTOCOL {
         anyhow::bail!(
             "app `{}` adapter returned protocol `{}`, expected `{}`",
-            manifest.slug,
+            request.app,
             response.protocol,
             APP_ADAPTER_PROTOCOL
         );
     }
-    Ok(response)
+    if response.app != request.app {
+        anyhow::bail!(
+            "adapter response app `{}` did not match request app `{}`",
+            response.app,
+            request.app
+        );
+    }
+    if response.action != request.action {
+        anyhow::bail!(
+            "adapter response action `{}` did not match request action `{}`",
+            response.action,
+            request.action
+        );
+    }
+    if response.dag_type != request.dag_type {
+        anyhow::bail!(
+            "adapter response dag_type `{}` did not match request dag_type `{}`",
+            response.dag_type,
+            request.dag_type
+        );
+    }
+    Ok(())
+}
+
+fn adapter_timeout_from_env() -> Option<u64> {
+    std::env::var("AGENTHERO_ADAPTER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn adapter_output_limit_from_env() -> Option<usize> {
+    std::env::var("AGENTHERO_ADAPTER_OUTPUT_LIMIT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn adapter_fallback_allowed() -> bool {
+    cfg!(debug_assertions)
+        || std::env::var("AGENTHERO_ALLOW_ADAPTER_FALLBACK")
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+fn adapter_workdir() -> PathBuf {
+    std::env::var_os("AGENTHERO_ADAPTER_CWD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            discover_workspace_root()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        })
+}
+
+fn truncate_for_error(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        value.to_string()
+    } else {
+        format!(
+            "{}...<truncated>",
+            value.chars().take(limit).collect::<String>()
+        )
+    }
 }
 
 /// Root directory containing installed DAGOps apps.
@@ -552,10 +810,15 @@ pub fn apps_root() -> PathBuf {
         return if path.is_absolute() {
             path
         } else {
-            workspace_root().join(path)
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
         };
     }
-    workspace_root().join("agenthero").join("apps")
+    discover_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join("agenthero")
+        .join("apps")
 }
 
 /// Root directory for one installed DAGOps app.
@@ -563,10 +826,45 @@ pub fn app_root(app: &str) -> PathBuf {
     apps_root().join(app)
 }
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+fn discover_workspace_root() -> Option<PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            starts.push(parent.to_path_buf());
+        }
+    }
+    starts.into_iter().find_map(|start| {
+        start.ancestors().find_map(|candidate| {
+            candidate
+                .join("agenthero")
+                .join("apps")
+                .is_dir()
+                .then(|| candidate.to_path_buf())
+        })
+    })
+}
+
+fn resolve_process_command(command: &str, bin_dir_env: &str) -> PathBuf {
+    let command_path = PathBuf::from(command);
+    if command_path.is_absolute() || command_path.components().count() > 1 {
+        return command_path;
+    }
+    if let Some(path) = std::env::var_os(bin_dir_env).map(PathBuf::from) {
+        let candidate = path.join(command);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let candidate = parent.join(command);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    command_path
 }

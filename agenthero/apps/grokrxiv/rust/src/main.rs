@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::io::ErrorKind;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -84,38 +85,27 @@ async fn run_app_runtime_action(request: &AppAdapterRequest) -> anyhow::Result<A
         .join("crates")
         .join("orchestrator")
         .join("Cargo.toml");
-    let mut command = tokio::process::Command::new("cargo");
-    command
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(&runtime_manifest)
-        .arg("--quiet")
-        .arg("--bin")
-        .arg("grokrxiv-app")
-        .arg("--")
-        .current_dir(repo_root())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if request.json {
-        command.arg("--json");
-    }
-    if request
-        .input
-        .values
-        .get("dry_run")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        command.arg("--dry-run");
-    }
-    command.arg(&request.action).args(&request.args);
-    let output = command.output().await.map_err(|err| {
-        anyhow::anyhow!(
-            "run GrokRxiv app action `{}` through {}: {err}",
-            request.action,
-            runtime_manifest.display()
-        )
-    })?;
+    let mut command = runtime_command(&runtime_manifest);
+    build_runtime_args(&mut command, request);
+    let output = match command.output().await {
+        Ok(output) => output,
+        Err(err) if err.kind() == ErrorKind::NotFound && runtime_fallback_allowed() => {
+            let mut fallback = runtime_fallback_command(&runtime_manifest);
+            build_runtime_args(&mut fallback, request);
+            fallback.output().await.map_err(|fallback_err| {
+                anyhow::anyhow!(
+                    "run GrokRxiv app action `{}`: compiled binary was not found and cargo fallback failed: {fallback_err}",
+                    request.action
+                )
+            })?
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "run GrokRxiv app action `{}` with compiled grokrxiv-app binary: {err}",
+                request.action
+            ));
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !output.status.success() {
@@ -140,6 +130,70 @@ async fn run_app_runtime_action(request: &AppAdapterRequest) -> anyhow::Result<A
         })),
         error: None,
     })
+}
+
+fn runtime_command(runtime_manifest: &Path) -> tokio::process::Command {
+    let mut command =
+        tokio::process::Command::new(resolve_runtime_binary("GROKRXIV_APP_BIN", "grokrxiv-app"));
+    if let Some(parent) = runtime_manifest.parent() {
+        command.current_dir(parent);
+    }
+    command
+}
+
+fn runtime_fallback_command(runtime_manifest: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(runtime_manifest)
+        .arg("--quiet")
+        .arg("--bin")
+        .arg("grokrxiv-app")
+        .arg("--")
+        .current_dir(repo_root());
+    command
+}
+
+fn build_runtime_args(command: &mut tokio::process::Command, request: &AppAdapterRequest) {
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if request.json {
+        command.arg("--json");
+    }
+    if request.dry_run {
+        command.arg("--dry-run");
+    }
+    command.arg(&request.action).args(&request.args);
+}
+
+fn runtime_fallback_allowed() -> bool {
+    cfg!(debug_assertions)
+        || std::env::var("AGENTHERO_ALLOW_ADAPTER_FALLBACK")
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+fn resolve_runtime_binary(env_key: &str, name: &str) -> PathBuf {
+    if let Some(path) = std::env::var_os(env_key).map(PathBuf::from) {
+        return path;
+    }
+    if let Some(path) = std::env::var_os("AGENTHERO_APP_BIN_DIR").map(PathBuf::from) {
+        let candidate = path.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let candidate = parent.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(name)
 }
 
 fn app_root() -> PathBuf {

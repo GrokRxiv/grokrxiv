@@ -3,8 +3,11 @@ label: C2Rust
 description: C to Rust migration DAG app.
 adapter:
   kind: process
-  command: cargo
-  args: ["run", "--manifest-path", "agenthero/apps/c2rust/rust/Cargo.toml", "--quiet", "--", "adapter"]
+  command: agenthero-dag-app-c2rust
+  fallback_command: cargo
+  fallback_args: ["run", "--manifest-path", "agenthero/apps/c2rust/rust/Cargo.toml", "--quiet", "--"]
+  timeout_secs: 900
+  output_limit_bytes: 1048576
 actions:
   - id: migrate
     command: [migrate]

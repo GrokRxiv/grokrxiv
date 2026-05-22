@@ -318,6 +318,7 @@ pub async fn run_app_action(
     args: Vec<String>,
     input: DagIo,
     json: bool,
+    dry_run: bool,
 ) -> anyhow::Result<AppAdapterResponse> {
     let manifest = load_app_manifest_by_slug(app_id)?;
     let action = manifest
@@ -332,6 +333,7 @@ pub async fn run_app_action(
         args,
         input,
         json,
+        dry_run,
     );
     run_adapter_process(&manifest, &request).await
 }
@@ -349,6 +351,7 @@ pub async fn run_registered_dag_app(
         Vec::new(),
         input,
         true,
+        false,
     );
     let response = run_adapter_process(&manifest, &request).await?;
     if !response.ok {

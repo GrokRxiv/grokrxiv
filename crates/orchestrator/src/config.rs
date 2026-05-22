@@ -13,6 +13,10 @@ pub struct Config {
     pub bind: SocketAddr,
     /// Optional platform database URL for app run/job state.
     pub database_url: Option<String>,
+    /// Optional bearer token for private app-run write routes.
+    pub service_token: Option<String>,
+    /// Number of local scheduler workers started by `agh serve`.
+    pub scheduler_workers: usize,
 }
 
 impl Config {
@@ -25,7 +29,20 @@ impl Config {
         let database_url = std::env::var("DATABASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty());
-        Ok(Self { bind, database_url })
+        let service_token = std::env::var("AGENTHERO_SERVICE_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let scheduler_workers = std::env::var("AGENTHERO_SCHEDULER_WORKERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        Ok(Self {
+            bind,
+            database_url,
+            service_token,
+            scheduler_workers,
+        })
     }
 }
 

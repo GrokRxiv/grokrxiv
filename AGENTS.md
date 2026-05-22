@@ -65,6 +65,10 @@ Manifest rules:
 - A new DAG app needs an app root, `app.yaml`, DAG manifests, and an adapter
   executable. Do not add an orchestrator Cargo dependency, static registry
   entry, or one-off supervisor branch for the app.
+- App adapters should run as compiled binaries in production. Use
+  `AGENTHERO_ADAPTER_BIN_DIR` for adapter binaries and `AGENTHERO_APP_BIN_DIR`
+  or app-specific binary vars such as `GROKRXIV_APP_BIN` for app runtime
+  binaries. `fallback_command: cargo` is a local development fallback only.
 - The scheduler/executor may place work on local Tokio tasks, local CLI
   subprocesses, Rust handlers, cloud runners, local inference, or future remote
   AgentHero worker nodes. DAG apps must not depend on a paper-review-specific

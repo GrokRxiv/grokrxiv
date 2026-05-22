@@ -38,6 +38,10 @@ agh app run c2rust migrate --dry-run
 Do not add root commands such as `agh review` or resurrect the legacy
 `grokrxiv` root CLI.
 
+App adapters are process binaries declared in `app.yaml`. Production runtimes
+should resolve them from `PATH`, `AGENTHERO_ADAPTER_BIN_DIR`, or the directory
+next to the `agh` binary; cargo fallbacks are for local development only.
+
 ## Database
 
 Every DAG app shares the AgentHero runtime tables: `app_runs`, `dag_runs`,

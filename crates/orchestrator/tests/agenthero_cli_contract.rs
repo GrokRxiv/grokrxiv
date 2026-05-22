@@ -1,5 +1,10 @@
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
+use tower::ServiceExt;
 
 use agenthero_orchestrator::cli::{AppCommand, Cli, Command};
 
@@ -145,6 +150,10 @@ fn app_run_c2rust_command_parses_and_direct_app_commands_do_not() {
         Cli::try_parse_from(["agh", "c2rust", "migrate", "fixtures/kernel.c"]).is_err(),
         "direct c2rust app path must not remain callable"
     );
+    assert!(
+        Cli::try_parse_from(["agh", "apps", "list"]).is_err(),
+        "legacy top-level `apps` alias must not remain callable"
+    );
 }
 
 #[test]
@@ -163,6 +172,88 @@ fn app_run_with_no_action_is_action_catalog_request() {
         },
         other => panic!("expected App command, got {other:?}"),
     }
+}
+
+#[test]
+fn app_runs_accepts_state_and_limit_filters() {
+    let cli = Cli::try_parse_from([
+        "agh", "app", "runs", "--app", "grokrxiv", "--state", "queued", "--limit", "10",
+    ])
+    .expect("app runs filters should parse");
+
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Runs { app, state, limit } => {
+                assert_eq!(app.as_deref(), Some("grokrxiv"));
+                assert_eq!(state.as_deref(), Some("queued"));
+                assert_eq!(limit, 10);
+            }
+            other => panic!("expected App::Runs command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn app_run_http_write_route_requires_service_token() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::post("/apps/grokrxiv/actions/validate-citations/runs")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn app_run_http_write_route_requires_authorization_when_configured() {
+    let router = agenthero_orchestrator::router_with_state(agenthero_orchestrator::PlatformState {
+        pool: None,
+        service_token: Some("secret".to_string()),
+    });
+
+    let response = router
+        .oneshot(
+            Request::post("/apps/grokrxiv/actions/validate-citations/runs")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn app_run_http_write_route_reports_missing_database_after_auth() {
+    let router = agenthero_orchestrator::router_with_state(agenthero_orchestrator::PlatformState {
+        pool: None,
+        service_token: Some("secret".to_string()),
+    });
+
+    let response = router
+        .oneshot(
+            Request::post("/apps/grokrxiv/actions/validate-citations/runs")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn app_show_http_route_is_read_only_and_db_free() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(Request::get("/apps/grokrxiv").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[test]
