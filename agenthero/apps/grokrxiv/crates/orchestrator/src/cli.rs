@@ -825,7 +825,9 @@ async fn app_run_command(
         .values
         .insert("dag_type".into(), serde_json::json!(binding.dag_type));
     input.values.insert("args".into(), serde_json::json!(args));
-    input.values.insert("dry_run".into(), serde_json::json!(dry_run));
+    input
+        .values
+        .insert("dry_run".into(), serde_json::json!(dry_run));
 
     let response = crate::dag_apps::run_app_action(app, action, args, input, json).await?;
     if !response.ok {
@@ -2386,7 +2388,9 @@ fn print_config(
 }
 
 async fn migrate() -> anyhow::Result<()> {
-    eprintln!("`migrate` is handled by `bash infra/supabase/setup.sh` in this checkout.");
+    eprintln!(
+        "`migrate` is handled by `bash agenthero/apps/grokrxiv/infra/supabase/setup.sh` in this checkout."
+    );
     Ok(())
 }
 
@@ -4953,7 +4957,10 @@ async fn citation_verifier_summary(
         malformed,
         unresolved_fraction,
         evidence,
-        artifact_hint: format!("artifacts/{review_id}/bundle.zip agents/{role}.json"),
+        artifact_hint: format!(
+            "{}/bundle.zip agents/{role}.json",
+            crate::artifacts::review_artifact_ref(review_id)
+        ),
     })
 }
 
@@ -5026,7 +5033,10 @@ async fn render(
         let config = super::Config::from_env();
         let state = super::AppState::from_config(config).await?;
         super::supervisor::render_to_disk(&state, review_id).await?;
-        println!("review_id={review_id} artifacts=artifacts/{review_id}");
+        println!(
+            "review_id={review_id} artifacts={}",
+            crate::artifacts::review_artifact_ref(review_id)
+        );
         Ok(())
     }
     #[cfg(not(feature = "grokrxiv-render"))]
@@ -5821,7 +5831,7 @@ async fn open_publication_pr_impl(
     // Attach rendered artifacts from the completed review run.
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
-    let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
+    let dir_local = crate::artifacts::review_artifact_dir(review_id);
     let repo_prefix = format!(
         "reviews/{year}/{month:02}/{field}/{artifact_id}",
         year = now.format("%Y"),
@@ -5839,8 +5849,9 @@ async fn open_publication_pr_impl(
     }
     if files.is_empty() {
         anyhow::bail!(
-            "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh app run grokrxiv ingest <arxiv_id>` to regenerate."
+            "no rendered artifacts found under {} — \
+             re-run `agh app run grokrxiv ingest <arxiv_id>` to regenerate.",
+            crate::artifacts::review_artifact_ref(review_id)
         );
     }
 
@@ -6024,7 +6035,7 @@ async fn request_revisions_impl(
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
-    let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
+    let dir_local = crate::artifacts::review_artifact_dir(review_id);
     let repo_prefix = format!(
         "reviews/{year}/{month:02}/{field}/{artifact_id}",
         year = now.format("%Y"),
@@ -6042,8 +6053,9 @@ async fn request_revisions_impl(
     }
     if files.is_empty() {
         anyhow::bail!(
-            "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `agh app run grokrxiv review ...` to regenerate."
+            "no rendered artifacts found under {} — \
+             re-run `agh app run grokrxiv review ...` to regenerate.",
+            crate::artifacts::review_artifact_ref(review_id)
         );
     }
 
@@ -7143,7 +7155,7 @@ async fn html_review_cmd(review_id: Option<Uuid>, all: bool, json: bool) -> anyh
 
     let mut summaries: Vec<serde_json::Value> = Vec::new();
     for id in &ids {
-        let dir = std::path::PathBuf::from(format!("artifacts/{id}"));
+        let dir = crate::artifacts::review_artifact_dir(*id);
         if !dir.exists() {
             tracing::warn!(review_id = %id, "html-review: artifact dir missing, skipping");
             summaries.push(serde_json::json!({
@@ -8248,8 +8260,9 @@ mod tests {
         assert!(text.contains(
             "show_command=agh app run grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
         ));
-        assert!(text
-            .contains("force_command=agh app run grokrxiv review-extracted --force 2605.00561"));
+        assert!(
+            text.contains("force_command=agh app run grokrxiv review-extracted --force 2605.00561")
+        );
 
         let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
         assert_eq!(json["status"], "already_reviewed");
@@ -8532,7 +8545,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             malformed: 0,
             unresolved_fraction: 0.0,
             evidence: vec![],
-            artifact_hint: "artifacts/review-id/bundle.zip agents/citation.json".to_string(),
+            artifact_hint: ".agenthero/artifacts/grokrxiv/reviews/review-id/bundle.zip agents/citation.json".to_string(),
         };
         let markdown = summary.to_markdown();
         assert!(markdown.contains("not externally checked"));

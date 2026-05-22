@@ -8,8 +8,7 @@ use agenthero_dag_runtime::DagManifest;
 async fn c2rust_runs_through_generic_executor_without_paper_contracts() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root")
+        .expect("app root")
         .to_path_buf();
     let manifest = DagManifest::from_path(root.join("dags/c2rust.yaml")).expect("manifest");
     let app = C2RustDagApp::default();

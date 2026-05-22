@@ -1,16 +1,21 @@
 # Don't ship local build/dev artifacts into the orchestrator image.
 target
+**/target
 node_modules
 **/node_modules
 .next
 **/.next
 .turbo
-tests/screenshots
-tests/e2e-web/test-results
-tests/e2e-web/playwright-report
-tests/e2e-web/__snapshots__
+**/.turbo
+**/test-results
+**/playwright-report
+**/__snapshots__
+.agenthero
+artifacts
+**/artifacts
 .git
 .env
+.env_*
 .env.local
 .env.*.local
 .DS_Store

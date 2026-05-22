@@ -1,6 +1,10 @@
 //! Platform configuration loading.
 
-use std::net::SocketAddr;
+use std::{
+    io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 /// Generic AgentHero runtime config.
 #[derive(Debug, Clone)]
@@ -25,11 +29,45 @@ impl Config {
     }
 }
 
-/// Load the root dotenv file when present.
+/// Load root `.env` and optional files listed in `AGENTHERO_ENV_FILES`.
 pub fn load_env() -> anyhow::Result<()> {
-    match dotenvy::dotenv() {
-        Ok(_) => Ok(()),
-        Err(dotenvy::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
+    let root = match dotenvy::dotenv() {
+        Ok(path) => Some(path),
+        Err(dotenvy::Error::Io(err)) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+    let raw = match std::env::var("AGENTHERO_ENV_FILES") {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) | Err(std::env::VarError::NotPresent) => return Ok(()),
+        Err(err) => return Err(anyhow::anyhow!("read AGENTHERO_ENV_FILES: {err}")),
+    };
+    let base_dir = root
+        .as_ref()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or(std::env::current_dir()?);
+    for entry in raw
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let path = resolve_env_path(&base_dir, entry);
+        if !path.exists() {
+            anyhow::bail!(
+                "AGENTHERO_ENV_FILES references missing file {}",
+                path.display()
+            );
+        }
+        dotenvy::from_path(&path)
+            .map_err(|err| anyhow::anyhow!("load included env {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn resolve_env_path(base_dir: &Path, entry: &str) -> PathBuf {
+    let path = PathBuf::from(entry);
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.join(path)
     }
 }

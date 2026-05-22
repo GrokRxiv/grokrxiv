@@ -183,7 +183,7 @@ pub async fn render_to_disk_with_options(
     });
     let zip = grokrxiv_render::build_zip(&html, &md, &tex, None, &agent_jsons, &metadata)
         .map_err(|e| anyhow::anyhow!("build_zip: {e}"))?;
-    let dir = std::path::PathBuf::from(format!("artifacts/{review_id}"));
+    let dir = crate::artifacts::review_artifact_dir(review_id);
     tokio::fs::create_dir_all(&dir).await.ok();
     tokio::fs::write(dir.join("review.html"), &html).await?;
     tokio::fs::write(dir.join("review.md"), md).await?;
@@ -213,7 +213,7 @@ pub async fn render_to_disk_with_options(
         }
     }
 
-    let dir_str = format!("artifacts/{review_id}");
+    let dir_str = crate::artifacts::review_artifact_ref(review_id);
     let _ = crate::db::set_review_artifacts(
         pool,
         review_id,

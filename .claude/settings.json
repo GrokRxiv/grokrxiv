@@ -23,9 +23,7 @@
       "Bash(supabase stop:*)",
       "Bash(sqlx migrate run:*)",
       "Bash(sqlx migrate add:*)",
-      "Bash(bash tests/m1-pipeline.sh:*)",
-      "Bash(bash .claude/hooks/*:*)",
-      "Bash(node research/_template/build.mjs:*)",
+      "Bash(bash agenthero/apps/grokrxiv/tests/m1-pipeline.sh:*)",
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
@@ -46,17 +44,5 @@
       "Bash(supabase db reset --force:*)"
     ]
   },
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/maybe-publish-research.sh"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }

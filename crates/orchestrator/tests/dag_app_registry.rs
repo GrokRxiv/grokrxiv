@@ -7,6 +7,12 @@ fn app_registry_groups_dag_types_behind_product_apps() {
 
     let grokrxiv = agenthero_orchestrator::dag_apps::registered_app("grokrxiv")
         .expect("GrokRxiv app descriptor");
+    assert_eq!(grokrxiv.deployments.len(), 1);
+    let deployment = &grokrxiv.deployments[0];
+    let agenthero_orchestrator::dag_apps::AppDeployment::Vercel { project, root, .. } = deployment;
+    assert_eq!(project, "grokrxiv");
+    assert_eq!(root, "web");
+
     let grokrxiv_actions = grokrxiv
         .actions
         .iter()
@@ -115,7 +121,9 @@ fn root_workspace_only_contains_platform_crates() {
         ]
     );
     assert!(
-        members.iter().all(|member| !member.starts_with("agenthero/apps/")),
+        members
+            .iter()
+            .all(|member| !member.starts_with("agenthero/apps/")),
         "apps must build from their own manifests, not root workspace membership"
     );
 }
@@ -203,8 +211,8 @@ fn app_manifest_resolves_action_command_paths() {
 
 #[test]
 fn every_registered_app_has_a_valid_manifest() {
-    for app in agenthero_orchestrator::dag_apps::registered_dag_apps()
-        .expect("registered DAG apps load")
+    for app in
+        agenthero_orchestrator::dag_apps::registered_dag_apps().expect("registered DAG apps load")
     {
         let path = app.manifest_path;
         let manifest = DagManifest::from_path(&path)
@@ -231,12 +239,34 @@ fn app_contracts_are_owned_by_app_roots() {
         );
     }
 
-    for legacy_root in ["dags", "agents", "prompts"] {
+    for legacy_root in [
+        "dags",
+        "agents",
+        "prompts",
+        "apps",
+        "scripts",
+        "grokrxiv-skills",
+        "research",
+        "migrations",
+    ] {
         assert!(
             !root.join(legacy_root).exists(),
             "legacy root-level `{legacy_root}/` must not remain an app contract source"
         );
     }
+
+    assert!(
+        root.join("agenthero").join("migrations").is_dir(),
+        "generic platform migrations stay under agenthero/migrations"
+    );
+    assert!(
+        root.join("agenthero")
+            .join("apps")
+            .join("grokrxiv")
+            .join("migrations")
+            .is_dir(),
+        "GrokRxiv migrations live with the app"
+    );
 }
 
 fn workspace_root() -> std::path::PathBuf {
@@ -267,13 +297,12 @@ fn walk_rs_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[tokio::test]
 async fn registry_runs_c2rust_manifest_through_declared_adapter() {
-    let report =
-        agenthero_orchestrator::dag_apps::run_registered_dag_app(
-            "c2rust",
-            agenthero_dag_executor::DagIo::default(),
-        )
-            .await
-            .expect("c2rust run");
+    let report = agenthero_orchestrator::dag_apps::run_registered_dag_app(
+        "c2rust",
+        agenthero_dag_executor::DagIo::default(),
+    )
+    .await
+    .expect("c2rust run");
 
     assert_eq!(report.status, DagNodeStatus::Ok);
     assert_eq!(report.nodes.len(), 4);

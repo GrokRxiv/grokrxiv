@@ -19,13 +19,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use agenthero_agent_runtime::ToolCtx;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSpec, Message, SandboxPolicy, ToolCompletion,
     ToolSpec,
 };
 use crate::agents::AgentRunner;
 use crate::runtime_config::{role_env_suffix, ALLOW_PROVIDER_API_ENV};
+use agenthero_agent_runtime::ToolCtx;
 use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
 
 /// FP-RPT3b B5: structured errors returned by `CliRunner::run`. Wrapped into
@@ -2615,7 +2615,6 @@ printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
             workdir: &workdir,
             semantic_ast: None,
             source_id: "2401.00001",
-            arxiv_id: "2401.00001",
             http: std::sync::Arc::new(reqwest::Client::new()),
         };
 

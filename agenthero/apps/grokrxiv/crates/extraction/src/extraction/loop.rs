@@ -24,8 +24,8 @@ use crate::extraction::{
     tool_ctx_from_extraction, ExtractionAgent, ExtractionContext, ExtractionRun, ToolCallRecord,
     ToolCtx,
 };
-use agenthero_agent_runtime::{AgentSpec, Message, ToolCall, ToolContent};
 use agenthero_agent_runtime::AgentRunner;
+use agenthero_agent_runtime::{AgentSpec, Message, ToolCall, ToolContent};
 use grokrxiv_llm_adapter::Role as LlmRole;
 
 /// Run the multi-turn tool-call loop until the agent calls `submit(...)`.

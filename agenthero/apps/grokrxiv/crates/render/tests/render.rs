@@ -172,7 +172,7 @@ fn disclaimer_lives_on_the_web_legal_page() {
     // here — we just verify the disclaimer text is present in the `/legal`
     // source file so a careless future edit that strips it from `/legal`
     // (the single surface that should carry it) fails the test suite.
-    let legal_src = include_str!("../../../apps/web/app/legal/page.tsx");
+    let legal_src = include_str!("../../../web/app/legal/page.tsx");
     assert!(
         legal_src.contains("GrokRxiv reviews are AI-generated"),
         "/legal page must carry the AI-generated disclosure"

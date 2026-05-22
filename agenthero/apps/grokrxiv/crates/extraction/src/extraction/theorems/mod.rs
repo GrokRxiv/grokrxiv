@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::extraction::{ExtractionAgent, ExtractionRole, ToolRegistry, ToolSpec};
-use agenthero_agent_runtime::AgentSpec;
 use crate::extraction::{ExtractionContext, ExtractionRun};
 use agenthero_agent_runtime::AgentRunner;
+use agenthero_agent_runtime::AgentSpec;
 
 pub mod tools;
 
@@ -23,9 +23,7 @@ pub const NAME: &str = "theorem_graph_extractor";
 
 /// Bytes of the output schema, embedded so the agent doesn't need to read
 /// from disk at runtime.
-const SCHEMA_JSON: &str = include_str!(
-    "../../../../../schemas/extraction/theorems.schema.json"
-);
+const SCHEMA_JSON: &str = include_str!("../../../../../schemas/extraction/theorems.schema.json");
 
 /// Concrete agent. Wraps an embedded output schema + a per-agent
 /// [`ToolRegistry`] populated with both the core toolkit and the three
@@ -119,8 +117,7 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
         );
         let max_iters = ctx.max_iters as usize;
         let max_cost_usd = ctx.max_cost_usd;
-        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
-            .await
+        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
 }
 
@@ -128,10 +125,10 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
 mod tests {
     use super::*;
     use crate::extraction::r#loop::run_tool_loop;
-    use crate::extraction::ToolCtx;
-    use agenthero_agent_runtime::{AgentSpec, Message};
     use crate::extraction::ExtractionContext;
+    use crate::extraction::ToolCtx;
     use agenthero_agent_runtime::AgentRunner;
+    use agenthero_agent_runtime::{AgentSpec, Message};
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{
         FinishReason, ProviderToolCall, ToolCompletion, ToolSpec as LlmToolSpec, Usage,

@@ -1,6 +1,0 @@
-# Marks research/site/ as its own (single-package) workspace root, isolating
-# it from the parent grokrxiv workspace. Also approves pnpm 11's strict
-# ignored-build prompt for `sharp` (a Next.js optional dep) so installs and
-# builds run unattended.
-allowBuilds:
-  sharp: true

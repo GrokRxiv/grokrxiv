@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agenthero_orchestrator::supervisor_runner::{
+use grokrxiv_app_runtime::supervisor_runner::{
     supervisor::{RunnerConfigPartial, Supervisor},
     AgentRunner, ClaudeRunner, LocalCommandRunner, RunStatus, Stage,
 };
@@ -17,13 +17,13 @@ use agenthero_orchestrator::supervisor_runner::{
 const PAPER_REF: &str = "test-paper-id";
 
 fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR points at crates/orchestrator. Pop two to reach
-    // the repo root where `schemas/` lives.
+    // CARGO_MANIFEST_DIR points at the GrokRxiv app runtime crate. Pop two to
+    // reach the GrokRxiv app root where `schemas/` lives.
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest)
         .parent()
         .and_then(Path::parent)
-        .expect("workspace root")
+        .expect("app root")
         .to_path_buf()
 }
 

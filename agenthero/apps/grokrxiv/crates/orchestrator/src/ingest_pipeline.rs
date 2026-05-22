@@ -47,17 +47,17 @@ use grokrxiv_storage::{
     SupabaseStorage,
 };
 
-use grokrxiv_extraction::extraction::{
-    citations::CitationContextualizerAgent, equations::EquationCanonicalizerAgent,
-    macros::MacroExpanderAgent, theorems::TheoremGraphExtractorAgent, vlm::VlmExtractorAgent,
-    ExtractionAgent, ExtractionContext, ToolCallRecord, ToolRegistry,
-};
 use crate::agents::types::AgentRunnerKind;
 use crate::agents::types::AgentSpec;
 use crate::agents::AgentRunner;
 use crate::db;
 use crate::runtime_config::{parse_extractor, ExtractorKind};
 use crate::state::AppState;
+use grokrxiv_extraction::extraction::{
+    citations::CitationContextualizerAgent, equations::EquationCanonicalizerAgent,
+    macros::MacroExpanderAgent, theorems::TheoremGraphExtractorAgent, vlm::VlmExtractorAgent,
+    ExtractionAgent, ExtractionContext, ToolCallRecord, ToolRegistry,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExtractionMode {
@@ -2022,7 +2022,8 @@ fn deterministic_equations_outcome(
         .map(grokrxiv_extraction::extraction::equations::tools::list_from_ast)
         .unwrap_or_default();
     if listed.is_empty() {
-        listed = grokrxiv_extraction::extraction::equations::tools::list_from_markdown_body(body_md);
+        listed =
+            grokrxiv_extraction::extraction::equations::tools::list_from_markdown_body(body_md);
     }
     let equations: Vec<Value> = listed
         .into_iter()
@@ -2078,7 +2079,8 @@ fn deterministic_theorems_or_empty(_arxiv_id: &str, body_md: &str) -> Option<Sta
 
 fn deterministic_theorems_outcome(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
     let started = std::time::Instant::now();
-    let sections = grokrxiv_extraction::extraction::theorems::tools::sections_from_markdown(body_md);
+    let sections =
+        grokrxiv_extraction::extraction::theorems::tools::sections_from_markdown(body_md);
     let mut nodes: Vec<Value> = Vec::new();
     if sections.is_empty() {
         append_theorem_blocks(&mut nodes, None, body_md);
@@ -2119,7 +2121,8 @@ fn should_use_citation_fallback(
         return false;
     }
     let has_sites =
-        !grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md).is_empty();
+        !grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md)
+            .is_empty();
     if !has_sites {
         return false;
     }

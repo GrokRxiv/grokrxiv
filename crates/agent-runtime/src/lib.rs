@@ -6,14 +6,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod runner;
 pub mod app_protocol;
+pub mod runner;
 pub mod tool_context;
 pub mod types;
 
-pub use app_protocol::{
-    AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL,
-};
+pub use app_protocol::{AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL};
 pub use runner::AgentRunner;
 pub use tool_context::ToolCtx;
 pub use types::{

@@ -175,10 +175,9 @@ fn app_action_catalog_exposes_options_from_yaml() {
         .find(|action| action.id == "review")
         .expect("review action");
     assert!(
-        review
-            .options
-            .iter()
-            .any(|option| option.name == "source" && option.kind == "positional" && option.required),
+        review.options.iter().any(|option| option.name == "source"
+            && option.kind == "positional"
+            && option.required),
         "review action must document its required source argument"
     );
     assert!(

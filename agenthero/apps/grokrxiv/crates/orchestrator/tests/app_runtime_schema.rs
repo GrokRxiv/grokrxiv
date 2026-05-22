@@ -1,20 +1,17 @@
 #[test]
 fn app_runtime_migration_declares_generic_tables_once() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root")
-        .to_path_buf();
-    let sql =
-        std::fs::read_to_string(root.join("migrations/20260522000002_app_runtime_tables.sql"))
-            .expect("app runtime migration should exist");
+    let root = repo_root();
+    let sql = std::fs::read_to_string(
+        root.join("agenthero/migrations/20260522000002_app_runtime_tables.sql"),
+    )
+    .expect("app runtime migration should exist");
     let supabase_sql = std::fs::read_to_string(
         root.join("supabase/migrations/20260522000002_app_runtime_tables.sql"),
     )
     .expect("supabase app runtime migration should exist");
     assert_eq!(
         sql, supabase_sql,
-        "root and supabase migration copies must stay identical"
+        "platform and supabase migration views must stay identical"
     );
     let compact = sql.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -27,13 +24,24 @@ fn app_runtime_migration_declares_generic_tables_once() {
         "worker_nodes",
         "worker_leases",
         "agent_output_cache",
-        "research_sources",
-        "research_reviews",
-        "research_moderation_queue",
     ] {
         assert!(
             sql.contains(&format!("create table if not exists {table}")),
-            "migration must create generic/projection table `{table}`"
+            "migration must create generic runtime table `{table}`"
+        );
+    }
+
+    for app_table in [
+        "research_sources",
+        "research_reviews",
+        "research_moderation_queue",
+        "grokrxiv_sources",
+        "grokrxiv_reviews",
+        "grokrxiv_moderation_queue",
+    ] {
+        assert!(
+            !sql.contains(app_table),
+            "platform migration must not create app projection table `{app_table}`"
         );
     }
 
@@ -45,14 +53,10 @@ fn app_runtime_migration_declares_generic_tables_once() {
 }
 
 #[test]
-fn agenthero_projection_migration_renames_research_tables_to_grokrxiv() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root")
-        .to_path_buf();
+fn grokrxiv_projection_migration_owns_grokrxiv_tables() {
+    let root = repo_root();
     let sql = std::fs::read_to_string(
-        root.join("migrations/20260522000003_agenthero_grokrxiv_projection_rename.sql"),
+        root.join("agenthero/apps/grokrxiv/migrations/20260522000003_agenthero_grokrxiv_projection_rename.sql"),
     )
     .expect("AgentHero projection rename migration should exist");
     let supabase_sql = std::fs::read_to_string(
@@ -61,16 +65,33 @@ fn agenthero_projection_migration_renames_research_tables_to_grokrxiv() {
     .expect("supabase AgentHero projection rename migration should exist");
     assert_eq!(
         sql, supabase_sql,
-        "root and supabase migration copies must stay identical"
+        "app and supabase migration views must stay identical"
     );
 
-    for rename in [
+    for required in [
+        "create table if not exists grokrxiv_sources",
+        "create table if not exists grokrxiv_reviews",
+        "create table if not exists grokrxiv_moderation_queue",
         "research_sources rename to grokrxiv_sources",
         "research_reviews rename to grokrxiv_reviews",
         "research_moderation_queue rename to grokrxiv_moderation_queue",
         "research_reviews_state_idx",
         "grokrxiv_reviews_state_idx",
+        "insert into grokrxiv_sources",
+        "insert into grokrxiv_reviews",
+        "insert into grokrxiv_moderation_queue",
     ] {
-        assert!(sql.contains(rename), "migration must contain `{rename}`");
+        assert!(
+            sql.contains(required),
+            "migration must contain `{required}`"
+        );
     }
+}
+
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(5)
+        .expect("repo root")
+        .to_path_buf()
 }

@@ -19,8 +19,8 @@ use crate::extraction::{
     tools as core_tools, ExtractionAgent, ExtractionContext, ExtractionRole, ExtractionRun, Tool,
     ToolSpec,
 };
-use agenthero_agent_runtime::AgentSpec;
 use agenthero_agent_runtime::AgentRunner;
+use agenthero_agent_runtime::AgentSpec;
 
 pub mod tools;
 
@@ -221,17 +221,16 @@ impl ExtractionAgent for CitationContextualizerAgent {
         );
         let max_iters = ctx.max_iters as usize;
         let max_cost_usd = ctx.max_cost_usd;
-        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
-            .await
+        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extraction::ExtractionContext;
     use crate::extraction::ToolRegistry;
     use agenthero_agent_runtime::{AgentInput, AgentRun, AgentSpec, Message};
-use crate::extraction::ExtractionContext;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, Usage};
     use grokrxiv_schemas::PaperExtract;
@@ -369,9 +368,7 @@ use crate::extraction::ExtractionContext;
         r.register(Arc::new(
             crate::extraction::tools::arxiv_lookup::ArxivLookupTool,
         ));
-        r.register(Arc::new(
-            crate::extraction::tools::submit::SubmitTool,
-        ));
+        r.register(Arc::new(crate::extraction::tools::submit::SubmitTool));
         Arc::new(r)
     }
 

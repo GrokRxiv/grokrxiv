@@ -354,9 +354,10 @@ pub async fn run_registered_dag_app(
     if !response.ok {
         anyhow::bail!(
             "{}",
-            response
-                .error
-                .unwrap_or_else(|| format!("app `{}` action `{}` failed", manifest.slug, action.id))
+            response.error.unwrap_or_else(|| format!(
+                "app `{}` action `{}` failed",
+                manifest.slug, action.id
+            ))
         );
     }
     response.report.ok_or_else(|| {
@@ -394,7 +395,9 @@ async fn run_adapter_process(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|err| anyhow::anyhow!("spawn app `{}` adapter `{command}`: {err}", manifest.slug))?;
+        .map_err(|err| {
+            anyhow::anyhow!("spawn app `{}` adapter `{command}`: {err}", manifest.slug)
+        })?;
 
     let payload = serde_json::to_vec(request)?;
     let mut stdin = child
@@ -441,7 +444,12 @@ async fn run_adapter_process(
 /// Root directory containing installed DAGOps apps.
 pub fn apps_root() -> PathBuf {
     if let Some(path) = std::env::var_os("AGENTHERO_APPS_ROOT") {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            workspace_root().join(path)
+        };
     }
     workspace_root().join("agenthero").join("apps")
 }
@@ -453,8 +461,8 @@ pub fn app_root(app: &str) -> PathBuf {
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
+        .ancestors()
+        .nth(5)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
 }

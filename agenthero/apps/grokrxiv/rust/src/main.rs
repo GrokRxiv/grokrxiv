@@ -59,7 +59,9 @@ async fn run(request: &AppAdapterRequest) -> anyhow::Result<AppAdapterResponse> 
 }
 
 async fn run_manifest_dag(request: &AppAdapterRequest) -> anyhow::Result<DagExecutionReport> {
-    let manifest_path = app_root().join("dags").join(format!("{}.yaml", request.dag_type));
+    let manifest_path = app_root()
+        .join("dags")
+        .join(format!("{}.yaml", request.dag_type));
     let manifest = DagManifest::from_path(&manifest_path)
         .map_err(|err| anyhow::anyhow!("load {}: {err}", manifest_path.display()))?;
     if manifest.id.as_str() != request.dag_type {

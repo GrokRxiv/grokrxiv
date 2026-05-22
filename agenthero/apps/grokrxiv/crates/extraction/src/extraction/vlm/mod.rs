@@ -25,9 +25,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::extraction::{run_tool_loop, ExtractionAgent, ExtractionRole, ToolRegistry};
-use agenthero_agent_runtime::{AgentSpec, ToolSpec};
 use crate::extraction::{ExtractionContext, ExtractionRun};
 use agenthero_agent_runtime::AgentRunner;
+use agenthero_agent_runtime::{AgentSpec, ToolSpec};
 
 /// Built-in strict schema for the `submit(...)` payload. Mirrors
 /// `schemas/extraction/vlm.schema.json` (OpenAI-strict-compatible: every
@@ -109,9 +109,7 @@ pub fn build_registry() -> ToolRegistry {
     r.register(Arc::new(tools::ReadPdfPageTool));
     r.register(Arc::new(tools::SearchPdfTool));
     r.register(Arc::new(tools::ExtractPageRegionTool));
-    r.register(Arc::new(
-        crate::extraction::tools::submit::SubmitTool,
-    ));
+    r.register(Arc::new(crate::extraction::tools::submit::SubmitTool));
     r
 }
 
@@ -226,9 +224,9 @@ impl ExtractionAgent for VlmExtractorAgent {
 mod tests {
     use super::*;
     use crate::extraction::ToolRegistry;
-    use agenthero_agent_runtime::{AgentSpec, Message};
-use crate::extraction::{ExtractionContext, ToolCallRecord};
+    use crate::extraction::{ExtractionContext, ToolCallRecord};
     use agenthero_agent_runtime::AgentRunner;
+    use agenthero_agent_runtime::{AgentSpec, Message};
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, ToolSpec, Usage};
     use grokrxiv_schemas::PaperExtract;

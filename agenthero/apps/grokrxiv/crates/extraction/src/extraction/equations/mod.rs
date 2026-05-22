@@ -38,8 +38,7 @@ pub use tools::{
 };
 
 /// Embedded schema — kept in sync with the GrokRxiv app-owned extraction schema.
-const SCHEMA_JSON: &str =
-    include_str!("../../../../../schemas/extraction/equations.schema.json");
+const SCHEMA_JSON: &str = include_str!("../../../../../schemas/extraction/equations.schema.json");
 
 /// The Stage-5 equation canonicalisation agent.
 pub struct EquationCanonicalizerAgent {
@@ -155,8 +154,7 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
         );
         let max_iters = ctx.max_iters as usize;
         let max_cost_usd = ctx.max_cost_usd;
-        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
-            .await
+        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
 }
 
@@ -168,8 +166,8 @@ impl ExtractionAgent for EquationCanonicalizerAgent {
 mod agent_tests {
     use super::*;
     use crate::extraction::run_tool_loop;
-    use agenthero_agent_runtime::{AgentSpec, Message};
     use agenthero_agent_runtime::AgentRunner;
+    use agenthero_agent_runtime::{AgentSpec, Message};
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, Usage};
     use grokrxiv_schemas::PaperExtract;

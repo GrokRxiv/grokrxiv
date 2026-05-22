@@ -1,7 +1,7 @@
 //! Agent runtime: review bindings, extraction agents, and runner backends.
 //!
-//! See `research/agent-runner.md` for the design and
-//! `~/.claude/plans/rpt2-real-agent-runtime.md` for the implementation plan.
+//! Historical design notes live under `agenthero/apps/grokrxiv/docs/`; runtime
+//! behavior is defined by app YAML and strict schema contracts.
 //!
 //! Layout:
 //! - [`types`] — taxonomy enums + `AgentSpec` / `AgentInput` / `AgentRun`

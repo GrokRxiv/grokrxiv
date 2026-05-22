@@ -49,8 +49,8 @@ pub struct DeterministicIngest {
 /// Deterministic Stages 1 + 2: arXiv metadata fetch → TeX source (preferred)
 /// or PDF (fallback) → [`DeterministicIngest`].
 ///
-/// Stage 3+ extraction agents and Stage 8 persistence live in the
-/// orchestrator crate (see `agenthero_orchestrator::ingest_pipeline`).
+/// Stage 3+ extraction agents and Stage 8 persistence live in the GrokRxiv
+/// app runtime crate (see `grokrxiv_app_runtime::ingest_pipeline`).
 pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
     let meta = fetch_metadata(arxiv_id).await?;
     let primary = meta.primary_category();

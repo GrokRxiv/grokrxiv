@@ -9,7 +9,8 @@
 //! - [`AgentInput`]: the payload a runner receives.
 //! - [`AgentRun`]: structured output from a single runner execution.
 //!
-//! See `research/agent-runner.md` for the historical design rationale.
+//! Historical design notes live with the GrokRxiv app docs, not in the
+//! platform runtime contract.
 
 use std::collections::HashMap;
 use std::sync::Arc;

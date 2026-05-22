@@ -19,7 +19,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::extraction::{ExtractionAgent, ExtractionContext, ExtractionRole, ExtractionRun, ToolRegistry};
+use crate::extraction::{
+    ExtractionAgent, ExtractionContext, ExtractionRole, ExtractionRun, ToolRegistry,
+};
 use agenthero_agent_runtime::ToolSpec;
 
 pub mod tools;
@@ -52,14 +54,10 @@ impl MacroExpanderAgent {
         registry.register(Arc::new(
             crate::extraction::tools::list_files::ListFilesTool,
         ));
-        registry.register(Arc::new(
-            crate::extraction::tools::read_file::ReadFileTool,
-        ));
+        registry.register(Arc::new(crate::extraction::tools::read_file::ReadFileTool));
         registry.register(Arc::new(FindDefinitionsTool));
         registry.register(Arc::new(ApplyExpansionsTool));
-        registry.register(Arc::new(
-            crate::extraction::tools::submit::SubmitTool,
-        ));
+        registry.register(Arc::new(crate::extraction::tools::submit::SubmitTool));
         let tool_specs = registry.specs();
         Self { schema, tool_specs }
     }
@@ -72,14 +70,10 @@ impl MacroExpanderAgent {
         registry.register(Arc::new(
             crate::extraction::tools::list_files::ListFilesTool,
         ));
-        registry.register(Arc::new(
-            crate::extraction::tools::read_file::ReadFileTool,
-        ));
+        registry.register(Arc::new(crate::extraction::tools::read_file::ReadFileTool));
         registry.register(Arc::new(FindDefinitionsTool));
         registry.register(Arc::new(ApplyExpansionsTool));
-        registry.register(Arc::new(
-            crate::extraction::tools::submit::SubmitTool,
-        ));
+        registry.register(Arc::new(crate::extraction::tools::submit::SubmitTool));
         registry
     }
 }
@@ -87,9 +81,7 @@ impl MacroExpanderAgent {
 /// The schema is embedded at compile time so the agent is self-contained and
 /// the unit tests don't have to know about the repo layout. The source of
 /// truth is the GrokRxiv app-owned extraction schema.
-const SCHEMA_JSON: &str = include_str!(
-    "../../../../../schemas/extraction/macros.schema.json"
-);
+const SCHEMA_JSON: &str = include_str!("../../../../../schemas/extraction/macros.schema.json");
 
 #[async_trait]
 impl ExtractionAgent for MacroExpanderAgent {
@@ -139,8 +131,7 @@ impl ExtractionAgent for MacroExpanderAgent {
         );
         let max_iters = ctx.max_iters as usize;
         let max_cost_usd = ctx.max_cost_usd;
-        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd)
-            .await
+        crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
 }
 
@@ -148,8 +139,8 @@ impl ExtractionAgent for MacroExpanderAgent {
 mod agent_tests {
     use super::*;
     use crate::extraction::ToolCtx;
-    use agenthero_agent_runtime::{AgentSpec, Message, ToolCompletion, ToolSpec};
     use agenthero_agent_runtime::AgentRunner;
+    use agenthero_agent_runtime::{AgentSpec, Message, ToolCompletion, ToolSpec};
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, Usage};
     use grokrxiv_schemas::PaperExtract;

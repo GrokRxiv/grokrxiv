@@ -16,13 +16,13 @@ use grokrxiv_llm_adapter::{
 };
 use tracing::warn;
 
-use agenthero_agent_runtime::ToolCtx;
 use crate::agents::types::{
     AgentInput, AgentRun, AgentRunnerKind, AgentSchema, AgentSpec, Message, ToolCompletion,
     ToolSpec,
 };
 use crate::agents::AgentRunner;
 use crate::runtime_config::direct_provider_api_allowed_from_env;
+use agenthero_agent_runtime::ToolCtx;
 
 /// Holds a registry of `LLMProvider` impls keyed by name (`"claude"`,
 /// `"openai"`, `"gemini"`, `"deepseek"`, etc.). The runner dispatches to the
@@ -441,7 +441,6 @@ mod tests {
             workdir,
             semantic_ast: None,
             source_id: "2401.00001v1",
-            arxiv_id: "2401.00001v1",
             http: std::sync::Arc::new(reqwest::Client::new()),
         }
     }

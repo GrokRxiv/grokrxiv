@@ -32,7 +32,10 @@ pub async fn doctor(json: bool) -> anyhow::Result<()> {
         },
     ];
     if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "checks": checks }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "checks": checks }))?
+        );
     } else {
         for check in checks {
             println!(

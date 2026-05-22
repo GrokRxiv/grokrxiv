@@ -6,9 +6,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use agenthero_agent_runtime::{AppAdapterRequest, AppAdapterResponse};
+use agenthero_dag_app_c2rust::C2RustDagApp;
 use agenthero_dag_executor::{DagExecutionReport, DagExecutor};
 use agenthero_dag_runtime::DagManifest;
-use agenthero_dag_app_c2rust::C2RustDagApp;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

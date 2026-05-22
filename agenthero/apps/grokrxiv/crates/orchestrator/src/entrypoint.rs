@@ -1,4 +1,4 @@
-//! Shared process entrypoint for the `agh` CLI and `agenthero` alias.
+//! Shared process entrypoint for the app-local GrokRxiv runtime binary.
 
 use crate::cli::{run, Cli, Command};
 use clap::{error::ErrorKind, Parser};
@@ -34,7 +34,7 @@ pub async fn run_process() -> ExitCode {
 fn init_tracing(cli: &Cli) {
     if tracing_mode(cli) == TracingMode::Structured {
         let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info,agenthero_orchestrator=debug"));
+            .unwrap_or_else(|_| EnvFilter::new("info,grokrxiv_app_runtime=debug"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .json()

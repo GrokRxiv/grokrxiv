@@ -275,7 +275,7 @@ pub(super) async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Re
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let now = chrono::Utc::now();
-    let dir_local = std::path::PathBuf::from(format!("artifacts/{review_id}"));
+    let dir_local = crate::artifacts::review_artifact_dir(review_id);
     let repo_prefix = format!(
         "reviews/{year}/{month:02}/{field}/{artifact_id}",
         year = now.format("%Y"),
@@ -291,8 +291,9 @@ pub(super) async fn run_publish(state: &AppState, item: &WorkItem) -> anyhow::Re
     }
     if files.is_empty() {
         anyhow::bail!(
-            "no rendered artifacts under artifacts/{review_id} — \
-             re-run `agenthero grokrxiv ingest <arxiv_id>` to regenerate."
+            "no rendered artifacts under {} — \
+             re-run `agh app run grokrxiv review ...` to regenerate.",
+            crate::artifacts::review_artifact_ref(review_id)
         );
     }
 

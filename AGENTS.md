@@ -41,9 +41,9 @@ abstraction, not the orchestration contract itself.
 - Rust-native DAG tool handlers are registered in
   `crates/orchestrator/src/dag_tools.rs` only when they are platform-generic.
   App-specific tools belong to the app adapter or an app-owned/domain crate.
-- GrokRxiv extraction-agent callable tools live outside the orchestrator in
-  `crates/grokrxiv-extraction/src/extraction/tools/`, re-exported by the
-  GrokRxiv app.
+- GrokRxiv extraction-agent callable tools live under
+  `agenthero/apps/grokrxiv/crates/extraction/src/extraction/tools/`,
+  re-exported by the GrokRxiv app.
 - Role identity is a DAG/YAML string contract. Do not introduce Rust enums for
   app-specific agent roles.
 - Node I/O at the executor boundary is named JSON values plus artifact
@@ -94,6 +94,14 @@ declared adapter, and keep the action mapped to a DAG type. Running
 Root commands are reserved for platform operations such as `app`, `serve`,
 `doctor`, `config`, `dag`, `agent`, and `jobs`.
 
+## Repository Root Boundary
+
+The repo root is AgentHero platform space. Do not add GrokRxiv app files back
+to root. App-owned web code, Docker/compose files, scripts, env templates,
+migrations, skills, tests, and docs belong under `agenthero/apps/grokrxiv/`.
+Root runtime artifacts belong under ignored `.agenthero/`, never root
+`artifacts/`.
+
 ## Runtime Database Shape
 
 Every DAG does **not** get its own scheduler table set. Runtime state is shared:
@@ -111,6 +119,19 @@ DAG apps may have projection/business tables when the product needs queryable
 domain state. The GrokRxiv app uses `grokrxiv_sources`, `grokrxiv_reviews`, and
 `grokrxiv_moderation_queue` projections, but those tables are not the generic
 executor contract.
+
+Migrations follow the same ownership boundary: generic AgentHero runtime SQL
+goes in `agenthero/migrations/`; GrokRxiv projection/business SQL goes in
+`agenthero/apps/grokrxiv/migrations/`. `supabase/migrations/` is only the
+combined local Supabase view.
+
+## Website Deployments
+
+Apps that generate or own websites declare deployable surfaces in `app.yaml`.
+For Vercel, include the app-relative root, project name, framework/build/output
+metadata, and required env var names. AgentHero schedules the app action that
+generates the site and deploys the declared root; the app owns all website code
+and Vercel-specific config.
 
 ## LLM-Readable Contracts
 
@@ -183,8 +204,8 @@ must emit raw JSON; the first character of stdout is `{`.
 4. Add or point at an adapter executable. A Rust adapter can live at
    `agenthero/apps/<app>/rust/`, but the orchestrator calls it only through the
    process adapter protocol declared in `app.yaml`.
-5. Add the app crate to the workspace only if it is built from this repo. Do
-   not add it to `crates/orchestrator/Cargo.toml`.
+5. Add the app crate to the app-local workspace only if it is built from this
+   repo. Do not add it to `crates/orchestrator/Cargo.toml`.
 6. Add a smoke test that runs through `agh app run <app> <action>` or the
    adapter protocol.
 7. Run `agh --json app run <app>` and one action smoke.
@@ -217,11 +238,13 @@ Minimum checks for DAG/tool work:
 cargo test -p agenthero-dag-runtime --test manifest
 cargo test -p agenthero-dag-executor
 cargo test -p agenthero-orchestrator --test dag_app_registry
-cargo test -p agenthero-orchestrator --lib --features full -- --test-threads=1
-cargo check -p grokrxiv-ingest -p agenthero-dag-runtime -p grokrxiv-storage -p agenthero-orchestrator --features full
-cargo run -p agenthero-orchestrator --features full --bin agh -- validate --dag-type <dag>
-cargo run -p agenthero-orchestrator --features full --bin agh -- --json app run <app>
-cargo run -p agenthero-orchestrator --features full --bin agh -- --json app run <app> <action>
+cargo test -p agenthero-orchestrator --lib
+cargo check --workspace
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo check --manifest-path agenthero/apps/c2rust/Cargo.toml --workspace
+cargo run -p agenthero-orchestrator --bin agh -- validate --dag-type <dag>
+cargo run -p agenthero-orchestrator --bin agh -- --json app run <app>
+cargo run -p agenthero-orchestrator --bin agh -- --json app run <app> <action>
 ```
 
 Update or remove tests that encode obsolete fixed-pipeline assumptions. Keep

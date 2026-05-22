@@ -1,122 +1,79 @@
-# AgentHero / GrokRxiv — Claude conventions
+# AgentHero / GrokRxiv — Claude Conventions
 
-Project-specific instructions for Claude Code working in this repo. Read this before making changes.
+## Product Boundary
 
-## What this project is
+AgentHero is the root platform: Rust/Tokio control plane, DAGOps app discovery,
+generic executor contracts, runtime state, worker scheduling, and process
+adapter dispatch. GrokRxiv is the first installed DAGOps app and lives under
+`agenthero/apps/grokrxiv/`.
 
-AgentHero is the Rust/Tokio DAGOps runtime and distributed control plane.
-Tokio is the async substrate for local tasks, networking, timers, timeouts,
-channels, and worker I/O; AgentHero owns the app/DAG/node/artifact/capability
-contracts. GrokRxiv is the first scaled DAG app proving the abstraction through
-paper ingest/extract/review/revise/publish.
+Do not add GrokRxiv-specific lifecycle code, migrations, scripts, web files, or
+domain crates back to the repository root. Root `crates/` must stay platform
+only.
 
-## Architecture map
+## App Layout
 
-- `apps/web/` — Next.js 16 frontend (App Router, Tailwind 4, shadcn/Radix). Production UI.
-- `crates/dag-runtime/` — DAG manifest parsing and validation.
-- `crates/dag-executor/` — generic manifest-driven DAG executor. It must stay free of paper/review/arXiv dependencies.
-- `agenthero/apps/<app>/` — installed DAGOps product apps. Each app owns
-  `app.yaml`, `dags/`, `agents/`, `prompts/`, `schemas/`, and any app adapter
-  code.
-- `crates/orchestrator/` — AgentHero platform CLI/HTTP/scheduler glue,
-  DB/job ownership, app manifest discovery, and process adapter execution.
-  It must not take a Cargo dependency on concrete app crates.
-- `crates/llm-adapter/` — Multi-provider LLM client (claude / openai / gemini / vllm).
-- `crates/{ingest,render,publisher,schemas,verifier}/` — domain tool/provider crates used by DAG apps.
-- `crates/grokrxiv-extraction/` — GrokRxiv extraction agents, tools, and deterministic scanners; not platform orchestration.
-- `agenthero/apps/<app>/dags/*.yaml` — DAG-type manifests: tools, roles, nodes, edges, and `dag_call` composition.
-- `agenthero/apps/<app>/agents/<dag-type>/*.yaml` — per-role config: provider, model, runner, prompt template, schemas, verifier names, prompt context, overlays, postprocessors, max_retries.
-- `agenthero/apps/<app>/schemas/*.schema.json` — typed output contracts (the single source of truth).
-- `agenthero/apps/<app>/prompts/*.md` — per-role prompt templates.
-- `supabase/migrations/` + `migrations/` — DB schema.
-- `research/` — design docs (`.md` canonical, `.html` auto-generated; see FP6).
-- `~/.claude/plans/` — per-pass plan files (`fpN-*.md`); index at `piped-bubbling-brook.md`.
-- `AGENTS.md` — cross-agent instructions for adding DAGs, Rust tools/functions, CLI tools, and agents.
+- `agenthero/apps/<app>/app.yaml` declares app actions and deployable surfaces.
+- `agenthero/apps/<app>/dags/` contains DAG manifests.
+- `agenthero/apps/<app>/agents/`, `prompts/`, and `schemas/` contain app-owned
+  LLM contracts.
+- `agenthero/apps/<app>/rust/` contains the process adapter.
+- `agenthero/apps/grokrxiv/crates/` contains GrokRxiv domain/runtime crates.
+- `agenthero/apps/grokrxiv/web/` is the GrokRxiv Vercel Next.js app.
+- `agenthero/apps/grokrxiv/migrations/` contains GrokRxiv projection/business
+  migrations.
+- `agenthero/migrations/` contains generic AgentHero runtime migrations.
 
-## Hard rules
+## Commands
 
-1. **Never use the user's Claude Code CLI API key for the orchestrator.** The orchestrator reads `ANTHROPIC_API_KEY` from `.env` — that is the **GrokRxiv project key**, not the user's personal CLI key. Confusing them inflates the user's CLI bill against the wrong account.
-2. **`/legal` is the only page that carries the AI-disclaimer.** FP3 locked this directive: do NOT re-add the disclaimer to render artifacts, upload UI, or any other route.
-3. **All schemas are OpenAI-strict-compatible.** Every property must be in `required`; nullable fields use `type: ["X", "null"]`; no `format: uri`, no `minimum/maximum`, no `minLength/maxLength`, no `minItems`. The Gemini adapter has a `sanitize_schema_for_gemini()` shim that migrates from this form.
-4. **Cost-aware role assignment.** Model choice belongs in `agenthero/apps/<app>/agents/<dag-type>/*.yaml` or explicit runtime overrides. Don't promote a role to a more expensive model without measuring.
-5. **`meta_reviewer` input contract (FP6 fix):** receives only the 5 specialist outputs, NOT the full paper extract. The paper is already baked into specialist reasoning.
-6. **New plan runs start from clean lineage.** Commit any existing dirty feature-branch work, merge it locally to `main`, revalidate `main`, then create a fresh branch before applying a new plan.
-7. **Schemas, manifests, prompts, and catalogs are LLM-facing structural contracts.** They must be explicit, stable, and easy for an LLM to follow without inventing fields or breaking shape. If a contract changes, update the schema, prompt, manifest, Rust catalog/types, and tests together.
-8. **Do not add app-specific Rust role enums.** Agent identity is a YAML/string DAG contract. Add reusable Rust hooks/tools, then declare them from YAML.
+Use app-scoped commands:
 
-## DAG/tool/agent authoring
-
-Follow `AGENTS.md` for the standard way to add Rust tools/functions, CLI tools,
-agents, and whole DAG types. Do not add new orchestration by hardcoding a
-special case into the supervisor when a manifest node, registered Rust handler,
-or `dag_call` can express it.
-
-Use `agh app run <app> <action>` for app-path smoke tests. The c2rust DAG app
-is the required non-paper proof path for generic DAG changes.
-
-The operator CLI is app-scoped and does not use a `--` separator after the app
-slug. Use `agh app run grokrxiv review ...`, `agh app run grokrxiv approve ...`,
-and `agh app run c2rust migrate ...`; do not add new GrokRxiv lifecycle
-commands at the root.
-
-LLM readability is a product requirement: prefer explicit names and small
-contract files over implicit conventions or catch-all modules. Reusable
-behavior belongs in named hooks such as `prompt_context`, `system_overlays`,
-`verifiers`, `postprocessors`, or registered tools, not hidden role-name
-matches.
-
-## How to run the M1 smoke test
-
-```
-tests/m1-pipeline.sh
+```sh
+agh app run grokrxiv review <source>
+agh app run grokrxiv extract <source>
+agh app run grokrxiv approve <review_id>
+agh app run c2rust migrate --dry-run
 ```
 
-Must pass 8/8. Exercises all 3 providers end-to-end with `verifier_status=pass` on all 6 agents.
+Do not add root commands such as `agh review` or resurrect the legacy
+`grokrxiv` root CLI.
 
-## DB
+## Database
 
-- `app_runs` — product app action run records.
-- `dag_runs` — manifest execution records under an app run.
-- `dag_run_nodes` — node attempts, state, runner/model/tool/role identity, and output JSON.
-- `dag_artifacts` — named artifact references produced by app/DAG/node runs.
-- `dag_events` — runtime event stream.
-- `worker_nodes` / `worker_leases` — distributed runner presence and work leases.
-- `agent_output_cache` — generic app/DAG/node/role cache.
-- `grokrxiv_sources`, `grokrxiv_reviews`, `grokrxiv_moderation_queue` — GrokRxiv app projection tables for product queries and moderation UI.
-- Existing `papers`, `reviews`, `review_agents`, `review_inputs`, `review_cache`, `moderation_queue`, and `jobs` tables are migration-era GrokRxiv data/projections, not the generic DAG runtime contract.
-- `uploads` — anonymous landing-page samples
+Every DAG app shares the AgentHero runtime tables: `app_runs`, `dag_runs`,
+`dag_run_nodes`, `dag_artifacts`, `dag_events`, worker tables, and generic
+cache tables. Product apps may own projection tables. GrokRxiv owns
+`grokrxiv_*` projections plus legacy migration-era tables until fully migrated.
 
-## Provider keys
+Apply migrations in order: platform migrations from `agenthero/migrations/`,
+then app migrations from `agenthero/apps/grokrxiv/migrations/`. The
+`supabase/migrations/` directory is a combined local Supabase view.
 
-`.env` (gitignored) holds:
-- `ANTHROPIC_API_KEY` — GrokRxiv project key (NOT the user's CLI key)
-- `OPENAI_API_KEY`
-- `GOOGLE_GENERATIVE_AI_API_KEY`
-- `PREVIEW_MODEL` — model used for landing-page previews
+## Web Deployments
 
-`.env.example` is committed; `.env` is not.
+Website-generating apps declare deployment metadata in `app.yaml`.
+For Vercel, the app owns:
 
-## Plan convention (FP nomenclature)
+- Vercel project name
+- app-relative root directory
+- framework/build/output metadata
+- required environment variable names
 
-Each significant change is a fix pass (`fpN`). Plan files live in `~/.claude/plans/`. The current pass is written to `piped-bubbling-brook.md` while plan mode is active; on ship the agent copies it to `fpN-<slug>.md` and restores the index in `piped-bubbling-brook.md`.
+AgentHero should schedule/generate the site, then hand Vercel the declared app
+root. GrokRxiv's Vercel root is `agenthero/apps/grokrxiv/web`.
 
-History:
-- FP1 — Monorepo scaffold
-- FP2 — Honest end-to-end with persistence + moderation
-- FP3 — Codex audit follow-through (the `/legal` disclaimer rule comes from here)
-- FP4 — Real typed DAG, parallel 5 specialists + meta_reviewer
-- FP5 — Processing-costs architecture-of-record (design only — no code)
-- FP6 — Pipeline cost fixes + GrokRxiv site + repo bootstrap (you are here)
-- FP7 — Auth + user/admin consoles (planned)
-- FP8 — API console + pricing + revision agents (planned)
+## Plan Run Workflow
 
-## Style
+For a new implementation plan, first checkpoint existing feature-branch work,
+merge it locally to `main`, revalidate `main`, and create a fresh branch for
+the new plan.
 
-- Don't add comments that restate what the code does.
-- Don't add error handling, fallbacks, or validation for impossible scenarios — trust internal code; validate at boundaries.
-- Don't widen scope on a bug fix. Three similar lines is better than a premature abstraction.
-- Don't proactively create docs (`*.md`, `README.md`); only when the user asks.
+## Hard Rules
 
-## Skills available
-
-See `SKILLS.md` for the index of `.claude/skills/`.
+- Root orchestration code must not depend on concrete app crates.
+- Agent identity is YAML/string DAG contract; do not add app-specific Rust role
+  enums.
+- Schemas, prompts, manifests, and catalogs are LLM-facing structural
+  contracts and must stay explicit.
+- App-specific tools belong in the app adapter or app-owned crates.
+- Use `agh app run <app> <action>` for app-path smoke tests.

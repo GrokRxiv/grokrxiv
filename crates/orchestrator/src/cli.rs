@@ -389,6 +389,33 @@ fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
                 );
             }
         }
+        for deployment in &app.deployments {
+            match deployment {
+                crate::dag_apps::AppDeployment::Vercel {
+                    id,
+                    project,
+                    root,
+                    framework,
+                    build_command,
+                    output_directory,
+                    env,
+                } => {
+                    println!("deployment={id}\n  kind=vercel\n  project={project}\n  root={root}");
+                    if let Some(framework) = framework {
+                        println!("  framework={framework}");
+                    }
+                    if let Some(build_command) = build_command {
+                        println!("  build_command={build_command}");
+                    }
+                    if let Some(output_directory) = output_directory {
+                        println!("  output_directory={output_directory}");
+                    }
+                    if !env.is_empty() {
+                        println!("  env={}", env.join(","));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -398,6 +425,7 @@ fn app_catalog_json(app: &crate::dag_apps::AppManifest) -> serde_json::Value {
         "id": app.slug,
         "label": app.label,
         "description": app.description,
+        "deployments": app.deployments,
         "actions": app.actions.iter().map(|action| json!({
             "id": action.id,
             "command": action.command,
@@ -419,7 +447,9 @@ async fn app_run_command(
     let mut input = agenthero_dag_executor::DagIo::default();
     input.values.insert("app".into(), json!(app));
     input.values.insert("action".into(), json!(action));
-    input.values.insert("dag_type".into(), json!(binding.dag_type));
+    input
+        .values
+        .insert("dag_type".into(), json!(binding.dag_type));
     input.values.insert("args".into(), json!(args));
     input.values.insert("dry_run".into(), json!(dry_run));
 
@@ -480,7 +510,10 @@ async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
     if json {
-        println!("{}", serde_json::to_string_pretty(&json!({ "runs": values }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "runs": values }))?
+        );
     } else if values.is_empty() {
         println!("No app runs found.");
     } else {
@@ -647,7 +680,10 @@ fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<
                 })
             })
             .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&json!({ "dags": rows }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "dags": rows }))?
+        );
     } else {
         for manifest in &manifests {
             println!(
@@ -695,7 +731,11 @@ fn add_agent_to_dag(
     let mut manifest = DagManifest::from_path(&path)
         .with_context(|| format!("load DAG manifest {}", path.display()))?;
     let kind = parse_agent_kind_arg(kind)?;
-    if manifest.roles.iter().any(|role| role.id.as_str() == role_id) {
+    if manifest
+        .roles
+        .iter()
+        .any(|role| role.id.as_str() == role_id)
+    {
         anyhow::bail!("DAG `{dag_type}` already has role `{role_id}`");
     }
     if manifest.nodes.iter().any(|node| node.id == role_id) {
@@ -740,7 +780,12 @@ fn remove_agent_from_dag(
     let removed = manifest
         .nodes
         .iter()
-        .filter(|node| node.role.as_ref().map(|role| role.as_str() == role_id).unwrap_or(false))
+        .filter(|node| {
+            node.role
+                .as_ref()
+                .map(|role| role.as_str() == role_id)
+                .unwrap_or(false)
+        })
         .map(|node| node.id.clone())
         .collect::<HashSet<_>>();
     remove_nodes_and_edges(&mut manifest, &removed);
@@ -1015,8 +1060,7 @@ async fn agent_command(command: AgentCommand, json: bool) -> anyhow::Result<()> 
 }
 
 fn place_agent(path: &Path, json: bool) -> anyhow::Result<()> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let value = serde_yaml::from_str::<serde_yaml::Value>(&text)
         .with_context(|| format!("parse {}", path.display()))?;
     let kind_value = value

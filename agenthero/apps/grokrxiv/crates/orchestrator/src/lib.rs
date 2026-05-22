@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 
 pub mod agents;
+pub mod artifacts;
 pub mod arxiv_rate_limit;
 pub(crate) mod batch;
 pub mod cli;

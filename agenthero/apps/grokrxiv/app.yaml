@@ -5,6 +5,21 @@ adapter:
   kind: process
   command: cargo
   args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--", "adapter"]
+deployments:
+  - kind: vercel
+    id: web
+    project: grokrxiv
+    root: web
+    framework: nextjs
+    build_command: pnpm --filter @grokrxiv/web build
+    output_directory: .next
+    env:
+      - NEXT_PUBLIC_SITE_URL
+      - NEXT_PUBLIC_SUPABASE_URL
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY
+      - SUPABASE_SERVICE_ROLE_KEY
+      - ORCHESTRATOR_INTERNAL_URL
+      - REVALIDATE_SECRET
 actions:
   - id: extract
     command: [extract]

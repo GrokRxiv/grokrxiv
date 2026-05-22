@@ -316,7 +316,9 @@ async fn check_database(report: &mut DoctorReport) {
         )));
     }
     // Migration check: best effort, not performed here to keep doctor offline.
-    report.supabase_migrations = Some(CheckResult::skipped("not checked (run `just supabase`)"));
+    report.supabase_migrations = Some(CheckResult::skipped(
+        "not checked (run `bash agenthero/apps/grokrxiv/infra/supabase/setup.sh`)",
+    ));
 }
 
 async fn check_api_runners(report: &mut DoctorReport) {

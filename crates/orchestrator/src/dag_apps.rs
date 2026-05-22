@@ -31,6 +31,8 @@ pub struct RegisteredAppDescriptor {
     pub label: String,
     /// Actions exposed by this app.
     pub actions: Vec<AppActionDescriptor>,
+    /// Deployment targets exposed by this app.
+    pub deployments: Vec<AppDeployment>,
 }
 
 /// Metadata for one app action.
@@ -61,6 +63,36 @@ pub struct AppManifest {
     /// App actions exposed by this manifest.
     #[serde(default)]
     pub actions: Vec<AppManifestAction>,
+    /// App-owned deployable surfaces, such as generated websites.
+    #[serde(default)]
+    pub deployments: Vec<AppDeployment>,
+}
+
+/// Deployment metadata for an app-owned generated/runtime website.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AppDeployment {
+    /// Vercel project rooted inside an installed DAGOps app.
+    Vercel {
+        /// Stable deployment id inside the app.
+        id: String,
+        /// Vercel project name.
+        project: String,
+        /// Directory containing the Vercel app, relative to the app root.
+        root: String,
+        /// Optional framework hint, for example `nextjs` or `static`.
+        #[serde(default)]
+        framework: Option<String>,
+        /// Build command run from `root`.
+        #[serde(default)]
+        build_command: Option<String>,
+        /// Output directory produced by the build, relative to `root`.
+        #[serde(default)]
+        output_directory: Option<String>,
+        /// Environment variables the deployment expects.
+        #[serde(default)]
+        env: Vec<String>,
+    },
 }
 
 /// Adapter declaration for an installed DAGOps app.
@@ -150,6 +182,7 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
         .map(|manifest| RegisteredAppDescriptor {
             id: manifest.slug,
             label: manifest.label,
+            deployments: manifest.deployments,
             actions: manifest
                 .actions
                 .into_iter()
@@ -302,7 +335,11 @@ fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
                 anyhow::bail!("action `{}` option name is required", action.id);
             }
             if option.kind.trim().is_empty() {
-                anyhow::bail!("action `{}` option `{}` kind is required", action.id, option.name);
+                anyhow::bail!(
+                    "action `{}` option `{}` kind is required",
+                    action.id,
+                    option.name
+                );
             }
             if !option_names.insert(option.name.as_str()) {
                 anyhow::bail!(
@@ -310,6 +347,30 @@ fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
                     option.name,
                     action.id
                 );
+            }
+        }
+    }
+    for deployment in &manifest.deployments {
+        match deployment {
+            AppDeployment::Vercel {
+                id,
+                project,
+                root,
+                env,
+                ..
+            } => {
+                if id.trim().is_empty() {
+                    anyhow::bail!("vercel deployment id is required");
+                }
+                if project.trim().is_empty() {
+                    anyhow::bail!("vercel deployment `{id}` project is required");
+                }
+                if root.trim().is_empty() {
+                    anyhow::bail!("vercel deployment `{id}` root is required");
+                }
+                if env.iter().any(|name| name.trim().is_empty()) {
+                    anyhow::bail!("vercel deployment `{id}` env names must be non-empty");
+                }
             }
         }
     }
@@ -397,9 +458,10 @@ pub async fn run_registered_dag_app(
     if !response.ok {
         anyhow::bail!(
             "{}",
-            response
-                .error
-                .unwrap_or_else(|| format!("app `{}` action `{}` failed", manifest.slug, action.id))
+            response.error.unwrap_or_else(|| format!(
+                "app `{}` action `{}` failed",
+                manifest.slug, action.id
+            ))
         );
     }
     response.report.ok_or_else(|| {
@@ -437,7 +499,9 @@ async fn run_adapter_process(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|err| anyhow::anyhow!("spawn app `{}` adapter `{command}`: {err}", manifest.slug))?;
+        .map_err(|err| {
+            anyhow::anyhow!("spawn app `{}` adapter `{command}`: {err}", manifest.slug)
+        })?;
 
     let payload = serde_json::to_vec(request)?;
     let mut stdin = child
@@ -484,7 +548,12 @@ async fn run_adapter_process(
 /// Root directory containing installed DAGOps apps.
 pub fn apps_root() -> PathBuf {
     if let Some(path) = std::env::var_os("AGENTHERO_APPS_ROOT") {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            workspace_root().join(path)
+        };
     }
     workspace_root().join("agenthero").join("apps")
 }

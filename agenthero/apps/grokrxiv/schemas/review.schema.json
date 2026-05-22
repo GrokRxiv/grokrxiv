@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grokrxiv.org/schemas/review.schema.json",
   "title": "Review",
-  "description": "Top-level review document persisted as JSON. Mirrors apps/web/lib/types.ts::Review.",
+  "description": "Top-level review document persisted as JSON. Mirrors agenthero/apps/grokrxiv/web/lib/types.ts::Review.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
