@@ -59,8 +59,33 @@ fn output_schema() -> Value {
                     "properties": {
                         "key": { "type": "string" },
                         "raw": { "type": "string" },
+                        "title": { "type": ["string", "null"] },
+                        "authors": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "venue": { "type": ["string", "null"] },
+                        "year": { "type": ["integer", "null"] },
                         "resolved_doi": { "type": ["string", "null"] },
                         "resolved_arxiv_id": { "type": ["string", "null"] },
+                        "cited": { "type": "boolean" },
+                        "validation": {
+                            "type": ["object", "null"],
+                            "additionalProperties": false,
+                            "required": ["status", "evidence"],
+                            "properties": {
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["verified", "unresolved", "conflict", "not_checked"]
+                                },
+                                "source": { "type": ["string", "null"] },
+                                "evidence": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "notes": { "type": ["string", "null"] }
+                            }
+                        },
                         "contexts": {
                             "type": "array",
                             "items": {
@@ -86,6 +111,14 @@ fn output_schema() -> Value {
                         }
                     }
                 }
+            },
+            "unmatched_citation_keys": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "uncited_bibliography_keys": {
+                "type": "array",
+                "items": { "type": "string" }
             }
         }
     })
@@ -150,7 +183,11 @@ impl ExtractionAgent for CitationContextualizerAgent {
          (DOIs, arxiv IDs — DO NOT INVENT THEM), and `search_corpus(query)` to \
          find related already-reviewed papers in the GrokRxiv corpus. For each \
          citation, classify each use site as one of: extends, contradicts, \
-         relies_on, compared_with, cited_in_passing, background. Submit the \
+         relies_on, compared_with, cited_in_passing, background. Set \
+         `validation` from the actual lookup evidence: `verified` when CrossRef, \
+         arXiv, or corpus evidence supports the entry, `unresolved` when no \
+         external match is found, `conflict` when sources disagree, and \
+         `not_checked` only if a lookup could not be attempted. Submit the \
          enriched citation graph by calling submit(...) with a payload matching \
          the schema. If a metadata lookup returns no result, set `resolved_doi` \
          or `resolved_arxiv_id` to null — never fabricate identifiers."

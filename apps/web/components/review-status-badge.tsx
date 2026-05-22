@@ -15,6 +15,7 @@ const STATUS_VARIANT: Record<
   corrected: "success",
   withdrawn: "destructive",
   rejected: "destructive",
+  system_failed: "destructive",
 };
 
 const STATUS_LABEL: Record<ReviewStatus, string> = {
@@ -26,6 +27,7 @@ const STATUS_LABEL: Record<ReviewStatus, string> = {
   corrected: "Corrected",
   withdrawn: "Withdrawn",
   rejected: "Rejected",
+  system_failed: "System failed",
 };
 
 export function ReviewStatusBadge({ status }: { status: ReviewStatus }) {

@@ -41,26 +41,80 @@ mkdir -p "$STATE_DIR"
 log()  { printf '[dev-webhook] %s\n' "$*" >&2; }
 die()  { log "ERROR: $*"; exit 1; }
 
+env_files() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  printf '%s\n' "$ENV_FILE"
+  local includes
+  includes=$(grep -E '^GROKRXIV_ENV_FILES=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  local env_path
+  IFS=',' read -r -a split_env_files <<< "$includes"
+  for env_path in "${split_env_files[@]}"; do
+    env_path="${env_path#"${env_path%%[![:space:]]*}"}"
+    env_path="${env_path%"${env_path##*[![:space:]]}"}"
+    [[ -n "$env_path" ]] || continue
+    [[ "$env_path" = /* ]] || env_path="$ROOT/$env_path"
+    [[ -f "$env_path" ]] && printf '%s\n' "$env_path"
+  done
+}
+
+env_lookup() {
+  local key="$1"
+  local file
+  while IFS= read -r file; do
+    grep -E "^${key}=" "$file" | head -1 | cut -d= -f2- && return 0
+  done < <(env_files)
+  return 0
+}
+
+env_file_for_key() {
+  local key="$1"
+  local file
+  while IFS= read -r file; do
+    if grep -qE "^${key}=" "$file"; then
+      printf '%s\n' "$file"
+      return 0
+    fi
+  done < <(env_files)
+  if [[ -f "$ROOT/.env_publish" ]]; then
+    printf '%s\n' "$ROOT/.env_publish"
+  else
+    printf '%s\n' "$ENV_FILE"
+  fi
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local file
+  file="$(env_file_for_key "$key")"
+  if grep -qE "^${key}=" "$file"; then
+    # macOS sed needs '' for -i.
+    sed -i '' -E "s|^${key}=.*|${key}=${value}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
 ensure_secret() {
   [[ -f "$ENV_FILE" ]] || die ".env missing at $ENV_FILE"
   local cur
-  cur=$(grep -E '^GITHUB_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  cur=$(env_lookup GITHUB_WEBHOOK_SECRET)
   if [[ -z "$cur" || "$cur" == "local-dev-secret" || ${#cur} -lt 32 ]]; then
     local fresh
     fresh=$(openssl rand -hex 32)
-    if grep -qE '^GITHUB_WEBHOOK_SECRET=' "$ENV_FILE"; then
-      # macOS sed needs '' for -i
-      sed -i '' -E "s|^GITHUB_WEBHOOK_SECRET=.*|GITHUB_WEBHOOK_SECRET=$fresh|" "$ENV_FILE"
-    else
-      printf 'GITHUB_WEBHOOK_SECRET=%s\n' "$fresh" >> "$ENV_FILE"
-    fi
+    set_env_value GITHUB_WEBHOOK_SECRET "$fresh"
     log "rotated GITHUB_WEBHOOK_SECRET (was empty/weak/short)"
   fi
 }
 
 webhook_secret() {
-  grep -E '^GITHUB_WEBHOOK_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2-
+  env_lookup GITHUB_WEBHOOK_SECRET
 }
+
+configured_reviews_repo="$(env_lookup GROKRXIV_REVIEWS_REPO)"
+if [[ -z "${GROKRXIV_REVIEWS_REPO:-}" && -n "$configured_reviews_repo" ]]; then
+  REPO="$configured_reviews_repo"
+fi
 
 ensure_orchestrator() {
   if curl -fsS --max-time 3 "$ORCH_HEALTHZ" >/dev/null 2>&1; then
@@ -84,7 +138,7 @@ restart_orchestrator_if_env_changed() {
   # loaded into the running container, restart so the new env takes effect.
   local env_secret env_token runtime_secret runtime_token
   env_secret=$(webhook_secret)
-  env_token=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  env_token=$(env_lookup GITHUB_TOKEN)
   runtime_secret=$(docker inspect grokrxiv-orchestrator \
     --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | awk -F= '/^GITHUB_WEBHOOK_SECRET=/{print substr($0, index($0, "=")+1)}' \

@@ -1,9 +1,48 @@
 # `grokrxiv` env-var reference — applied
 
 Env vars consumed by the orchestrator binary (`grokrxiv` / `grokrxiv-orchestrator`)
-and the Next.js web tier. Layered config order is: CLI flags > ENV > TOML
-profile > built-in defaults. The CLI's `--profile <name>` and `--config <path>`
-flags pick the TOML file/profile that ENV then overrides.
+and the Next.js web tier. Layered config order is: CLI flags > process ENV /
+root `.env` / included `.env_*` files > TOML profile > built-in defaults. The
+CLI's `--profile <name>` and `--config <path>` flags pick the TOML file/profile
+that ENV then overrides.
+
+## Env Files
+
+The root `.env` is now a selector. It should normally contain only
+`GROKRXIV_ENV_FILES`, for example:
+
+```sh
+GROKRXIV_ENV_FILES=.env_core,.env_ingest,.env_extract,.env_review,.env_publish,.env_web,.env_billing,.env_dev
+```
+
+The Rust CLI/orchestrator loads `.env` first, then loads the files named in
+`GROKRXIV_ENV_FILES` relative to the root `.env` directory. Existing process
+vars and root `.env` values win over included files.
+
+Docker Compose does not follow `GROKRXIV_ENV_FILES` during `${...}`
+interpolation. Before `docker compose up`, export the split env files into the
+shell:
+
+```sh
+set -a
+source .env
+for file in ${GROKRXIV_ENV_FILES//,/ }; do source "$file"; done
+set +a
+```
+
+| File | Purpose |
+|------|---------|
+| `.env_core` | Supabase/Postgres, orchestrator bind URLs, service/admin tokens, public base URLs |
+| `.env_ingest` | arXiv/Crossref endpoints, data repo paths, storage, ingest scheduler and cache controls |
+| `.env_extract` | Pandoc, LaTeXML, extraction mode, and extraction-agent toggles |
+| `.env_review` | LLM provider keys, runners, role models, timeouts, review/verifier controls |
+| `.env_publish` | GitHub publisher, webhook/revalidate secrets, publish-path E2E controls |
+| `.env_web` | Next.js public env, web Supabase URLs, admin seed, SMTP |
+| `.env_billing` | Stripe billing keys and billing enablement |
+| `.env_dev` | Docker platform/build toggles, diagnostics, supervisor sizing, local safety switches |
+
+Templates are committed as `.env_<purpose>.example`. Real `.env_<purpose>`
+files are gitignored.
 
 ## Service
 
@@ -33,8 +72,6 @@ flags pick the TOML file/profile that ENV then overrides.
 | `OLLAMA_HOST`                  | `--ollama-host`             | Ollama direct base URL |
 | `GROKRXIV_MAX_COST_USD`        | `--max-cost-usd`            | Hard ceiling per review |
 | `GROKRXIV_FREE_REVIEW_LIMIT`   | _none_                      | Lifetime free full-review cap per logged-in user; default `3` |
-| `GROKRXIV_DAILY_FULL_REVIEW_LIMIT` | _none_                  | Optional global daily full-review throttle |
-| `GROKRXIV_MONTHLY_FULL_REVIEW_LIMIT` | _none_                | Optional global monthly full-review throttle |
 | `GROKRXIV_NO_CACHE`            | `--no-cache`                | `1`/`true` to enable |
 | `GROKRXIV_OFFLINE`             | `--offline`                 | `1`/`true` to enable |
 | `GROKRXIV_ALLOW_PROVIDER_API`  | _internal_                  | Set by `grokrxiv`: `1` only when `--runner api`, `--extractor api`, or a per-role API override is selected |
@@ -62,7 +99,7 @@ flags pick the TOML file/profile that ENV then overrides.
 | `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
 | `GROKRXIV_LATEXML_BIN`         | `latexml`                   | Optional LaTeXML binary checked only when `GROKRXIV_TEX_ENABLE_LATEXML=1` |
 | `GROKRXIV_LATEXMLPOST_BIN`     | `latexmlpost`               | Optional LaTeXML postprocessor checked only when `GROKRXIV_TEX_ENABLE_LATEXML=1` |
-| `GROKRXIV_FORCE_AGENT_EXTRACTION` | _none_                    | Run extraction LLM tool loops instead of the deterministic local extractor |
+| `GROKRXIV_EXTRACTION_MODE`     | `pandoc_enabled`            | Extraction execution mode: `pandoc_enabled` runs Pandoc/PDF/Rust tool extraction; `agent_enabled` runs extraction LLM tool loops with local tool fallbacks |
 
 ## Provider keys — API runner
 

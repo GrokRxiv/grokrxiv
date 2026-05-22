@@ -28,16 +28,7 @@
           "id": { "type": "string" },
           "weakness_index": { "type": "integer", "minimum": 0 },
           "source_role": {
-            "type": ["string", "null"],
-            "enum": [
-              "summary",
-              "technical_correctness",
-              "novelty",
-              "reproducibility",
-              "citation",
-              "meta_reviewer",
-              null
-            ]
+            "type": ["string", "null"]
           },
           "target_kind": {
             "type": "string",

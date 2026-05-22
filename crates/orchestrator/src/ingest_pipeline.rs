@@ -3,14 +3,15 @@
 //! Wires Stages 1–8 of the 8-stage extraction pipeline into a single
 //! [`run_ingest_pipeline`] entry point:
 //!
-//! 1. **Stage 1 (deterministic)** — arXiv metadata + PDF + tar.gz acquisition.
-//! 2. **Stage 2 (deterministic)** — TeX → Pandoc markdown, with optional
+//! 1. **Stage 1 (ingest source)** — arXiv metadata + PDF + tar.gz acquisition.
+//! 2. **Stage 2 (tool)** — TeX → Pandoc markdown or PDF → text, with optional
 //!    LaTeXML semantic AST enrichment.
 //! 3. **Stage 3 (agent)** — `VlmExtractorAgent`, only when no TeX source exists.
-//! 4. **Stages 4–7 (agents in parallel)** — macros, equations, theorems,
-//!    citations. Failures degrade gracefully via [`run_agent_safe`] — a single
-//!    agent crash never tanks the whole run.
-//! 5. **Stage 8 (deterministic)** — `PaperArtifacts::persist` writes Tier 1
+//! 4. **Stages 4–7 (tools by default, agents when enabled)** — macros,
+//!    equations, theorems, citations. The default `pandoc_enabled` mode uses
+//!    Rust/Pandoc-derived scanners; `agent_enabled` runs LLM tool loops and
+//!    falls back to the local scanners when a stage returns no useful output.
+//! 5. **Stage 8 (artifact)** — `PaperArtifacts::persist` writes Tier 1
 //!    (Git) + Tier 2 (Supabase), then `db::persist_paper_extraction` updates
 //!    Tier 3 (Postgres pointers + status).
 //!
@@ -21,13 +22,10 @@
 //! Graceful-degradation contract:
 //! - Stage 2 failure on a PDF-only paper is expected; Stage 3 (VLM) takes
 //!   over.
-//! - Stages 4–7 each wrap their `Agent::run` call in [`run_agent_safe`].
-//!   `Ok(_)` populates the matching `ArtifactBundle` field; `Err(_)` logs at
-//!   `warn` level, records a `degraded` entry in `extraction_report.json`,
-//!   and leaves the bundle field at its default (`None` for the optional
-//!   `serde_json::Value` fields). Downstream stages see the missing artifact
-//!   and either skip it (equations / theorems / references arrays empty) or
-//!   fall back (normalized_tex falls back to raw_tex).
+//! - In `pandoc_enabled` mode, Stages 4–7 are Rust function/tool calls. In
+//!   `agent_enabled` mode, each LLM extraction agent is wrapped in
+//!   [`run_agent_safe`]; failures record `degraded` in `extraction_report.json`
+//!   and the local scanners backstop equations/theorems/citations.
 //! - Stage 8 failure is fatal: we flip `extraction_status = 'failed'` so the
 //!   next run picks it back up.
 
@@ -36,7 +34,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -61,6 +59,247 @@ use crate::db;
 use crate::runtime_config::{parse_extractor, ExtractorKind};
 use crate::state::AppState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtractionMode {
+    PandocEnabled,
+    AgentEnabled,
+}
+
+impl ExtractionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PandocEnabled => "pandoc_enabled",
+            Self::AgentEnabled => "agent_enabled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutorKind {
+    IngestSource,
+    Tool,
+    Agent,
+    Artifact,
+}
+
+impl ExecutorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::IngestSource => "ingest_source",
+            Self::Tool => "tool",
+            Self::Agent => "agent",
+            Self::Artifact => "artifact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NodeProvenance {
+    node: String,
+    executor: ExecutorKind,
+    tool: Option<String>,
+    agent: Option<String>,
+    mode: ExtractionMode,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+}
+
+impl NodeProvenance {
+    fn ingest_source(
+        node: impl Into<String>,
+        tool: impl Into<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self::new(
+            node,
+            ExecutorKind::IngestSource,
+            Some(tool.into()),
+            None,
+            inputs,
+            outputs,
+            mode,
+        )
+    }
+
+    fn rust_tool(
+        node: impl Into<String>,
+        tool: impl Into<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self::new(
+            node,
+            ExecutorKind::Tool,
+            Some(tool.into()),
+            None,
+            inputs,
+            outputs,
+            mode,
+        )
+    }
+
+    fn cli_tool(
+        node: impl Into<String>,
+        tool: impl Into<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self::new(
+            node,
+            ExecutorKind::Tool,
+            Some(tool.into()),
+            None,
+            inputs,
+            outputs,
+            mode,
+        )
+    }
+
+    fn agent(
+        node: impl Into<String>,
+        agent: impl Into<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self::new(
+            node,
+            ExecutorKind::Agent,
+            None,
+            Some(agent.into()),
+            inputs,
+            outputs,
+            mode,
+        )
+    }
+
+    fn artifact(
+        node: impl Into<String>,
+        tool: impl Into<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self::new(
+            node,
+            ExecutorKind::Artifact,
+            Some(tool.into()),
+            None,
+            inputs,
+            outputs,
+            mode,
+        )
+    }
+
+    fn new(
+        node: impl Into<String>,
+        executor: ExecutorKind,
+        tool: Option<String>,
+        agent: Option<String>,
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        outputs: impl IntoIterator<Item = impl Into<String>>,
+        mode: ExtractionMode,
+    ) -> Self {
+        Self {
+            node: node.into(),
+            executor,
+            tool,
+            agent,
+            mode,
+            inputs: inputs.into_iter().map(Into::into).collect(),
+            outputs: outputs.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "node": self.node,
+            "executor": self.executor.as_str(),
+            "tool": self.tool,
+            "agent": self.agent,
+            "mode": self.mode.as_str(),
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceBodyProducer {
+    PandocTex,
+    PdfExtract,
+    VlmAgent,
+}
+
+impl SourceBodyProducer {
+    fn provenance(self, mode: ExtractionMode) -> NodeProvenance {
+        match self {
+            Self::PandocTex => NodeProvenance::cli_tool(
+                "source_to_body",
+                "pandoc_tex_to_markdown",
+                ["source.tar.gz"],
+                ["body.md"],
+                mode,
+            ),
+            Self::PdfExtract => NodeProvenance::rust_tool(
+                "source_to_body",
+                "pdf_extract_text",
+                ["original.pdf"],
+                ["body.md"],
+                mode,
+            ),
+            Self::VlmAgent => NodeProvenance::agent(
+                "vlm",
+                "vlm_extractor",
+                ["original.pdf"],
+                ["body.md", "sections.json"],
+                ExtractionMode::AgentEnabled,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactProvenance {
+    artifact: String,
+    producer_node: String,
+    executor: ExecutorKind,
+    tool: Option<String>,
+    agent: Option<String>,
+    mode: ExtractionMode,
+    inputs: Vec<String>,
+}
+
+impl ArtifactProvenance {
+    fn from_node(artifact: impl Into<String>, node: &NodeProvenance) -> Self {
+        Self {
+            artifact: artifact.into(),
+            producer_node: node.node.clone(),
+            executor: node.executor,
+            tool: node.tool.clone(),
+            agent: node.agent.clone(),
+            mode: node.mode,
+            inputs: node.inputs.clone(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "artifact": self.artifact,
+            "producer_node": self.producer_node,
+            "executor": self.executor.as_str(),
+            "tool": self.tool,
+            "agent": self.agent,
+            "mode": self.mode.as_str(),
+            "inputs": self.inputs,
+        })
+    }
+}
+
 /// Per-stage outcome captured from one extraction-agent run. The pipeline
 /// preserves every field so the StageReport in `extraction_report.json`
 /// has actionable provenance (model, runner, cost, latency, tool-call
@@ -75,6 +314,7 @@ struct StageOutcome {
     iters: u32,
     model: String,
     runner: String,
+    provenance: NodeProvenance,
 }
 
 /// Per-paper-level options for [`run_ingest_pipeline`]. Built from the CLI's
@@ -208,18 +448,49 @@ async fn run_inner(
     opts: &IngestOptions,
 ) -> Result<IngestResult> {
     let started_at = Utc::now();
+    let extraction_mode = extraction_mode_from_env()?;
     let workdir = tempfile::tempdir().context("creating extraction workdir")?;
     let extract = staged.extract.clone();
     let mut bundle = build_initial_bundle(&staged, &extract);
     let mut stage_reports: Vec<StageReport> = Vec::new();
-    stage_reports.push(StageReport::ok("acquisition", None, None, Vec::new()));
+    stage_reports.push(
+        StageReport::ok("acquisition", None, None, Vec::new()).with_provenance(
+            NodeProvenance::ingest_source(
+                "acquire_source",
+                "arxiv_metadata_source_pdf_fetch",
+                ["arxiv_id"],
+                ["metadata", "original.pdf", "source.tar.gz"],
+                extraction_mode,
+            ),
+        ),
+    );
+
+    let mut source_body_producer = match extract.source_format.as_deref() {
+        Some("tex") => SourceBodyProducer::PandocTex,
+        Some("pdf") => SourceBodyProducer::PdfExtract,
+        _ => SourceBodyProducer::PdfExtract,
+    };
+    stage_reports.push(
+        StageReport::ok("source_to_body", None, None, Vec::new())
+            .with_provenance(source_body_producer.provenance(extraction_mode)),
+    );
 
     // Stage 2 reflection: Pandoc markdown is the default TeX path. LaTeXML is
     // optional enrichment for a semantic AST, so absence is only degraded when
     // the operator explicitly enabled LaTeXML.
     let semantic_ast = staged.semantic_ast;
     if semantic_ast.is_some() {
-        stage_reports.push(StageReport::ok("tex_to_ast", None, None, Vec::new()));
+        stage_reports.push(
+            StageReport::ok("tex_to_ast", None, None, Vec::new()).with_provenance(
+                NodeProvenance::cli_tool(
+                    "tex_to_ast",
+                    "latexml_semantic_ast",
+                    ["source.tar.gz"],
+                    ["semantic_ast.json"],
+                    extraction_mode,
+                ),
+            ),
+        );
     } else if staged.source_tarball.is_some() && latexml_semantic_ast_enabled() {
         stage_reports.push(StageReport {
             name: "tex_to_ast".into(),
@@ -231,6 +502,13 @@ async fn run_inner(
             warnings: vec!["LaTeXML produced no semantic_ast".into()],
             iters: None,
             tool_call_summary: None,
+            provenance: Some(NodeProvenance::cli_tool(
+                "tex_to_ast",
+                "latexml_semantic_ast",
+                ["source.tar.gz"],
+                ["semantic_ast.json"],
+                extraction_mode,
+            )),
         });
     } else if staged.source_tarball.is_some() {
         stage_reports.push(StageReport::skipped(
@@ -302,6 +580,7 @@ async fn run_inner(
         .await;
         if let Some(ref out) = outcome {
             apply_vlm(&mut bundle, &out.output);
+            source_body_producer = SourceBodyProducer::VlmAgent;
         }
         push_tool_calls(&mut tool_call_log_entries, "vlm", outcome.as_ref());
         record_agent_outcome(
@@ -323,65 +602,66 @@ async fn run_inner(
     // minutes walking every citation key when deterministic citation contexts
     // already provide the reviewers' needed evidence.
     let semantic_ast_ref = semantic_ast.as_ref();
-    let (macros_res, mut equations_res, mut theorems_res, mut citations_res) =
-        if force_agent_extraction() {
-            tokio::join!(
-                run_agent_when(
-                    !opts.should_skip("macros"),
-                    state,
-                    workdir.path(),
-                    &extract,
-                    semantic_ast_ref,
-                    paper_id,
-                    arxiv_id,
-                    "macros",
-                    MacroExpanderAgent::new(),
-                ),
-                run_agent_when(
-                    !opts.should_skip("equations"),
-                    state,
-                    workdir.path(),
-                    &extract,
-                    semantic_ast_ref,
-                    paper_id,
-                    arxiv_id,
-                    "equations",
-                    EquationCanonicalizerAgent::new(),
-                ),
-                run_agent_when(
-                    !opts.should_skip("theorems"),
-                    state,
-                    workdir.path(),
-                    &extract,
-                    semantic_ast_ref,
-                    paper_id,
-                    arxiv_id,
-                    "theorems",
-                    TheoremGraphExtractorAgent::new(),
-                ),
-                run_agent_when(
-                    !opts.should_skip("citations"),
-                    state,
-                    workdir.path(),
-                    &extract,
-                    semantic_ast_ref,
-                    paper_id,
-                    arxiv_id,
-                    "citations",
-                    CitationContextualizerAgent::new(),
-                ),
-            )
-        } else {
-            crate::cli_status::emit(format!(
-                "extract {arxiv_id}: using deterministic local extraction; set GROKRXIV_FORCE_AGENT_EXTRACTION=1 to run LLM tool loops"
+    let (macros_res, mut equations_res, mut theorems_res, mut citations_res) = if extraction_mode
+        == ExtractionMode::AgentEnabled
+    {
+        tokio::join!(
+            run_agent_when(
+                !opts.should_skip("macros"),
+                state,
+                workdir.path(),
+                &extract,
+                semantic_ast_ref,
+                paper_id,
+                arxiv_id,
+                "macros",
+                MacroExpanderAgent::new(),
+            ),
+            run_agent_when(
+                !opts.should_skip("equations"),
+                state,
+                workdir.path(),
+                &extract,
+                semantic_ast_ref,
+                paper_id,
+                arxiv_id,
+                "equations",
+                EquationCanonicalizerAgent::new(),
+            ),
+            run_agent_when(
+                !opts.should_skip("theorems"),
+                state,
+                workdir.path(),
+                &extract,
+                semantic_ast_ref,
+                paper_id,
+                arxiv_id,
+                "theorems",
+                TheoremGraphExtractorAgent::new(),
+            ),
+            run_agent_when(
+                !opts.should_skip("citations"),
+                state,
+                workdir.path(),
+                &extract,
+                semantic_ast_ref,
+                paper_id,
+                arxiv_id,
+                "citations",
+                CitationContextualizerAgent::new(),
+            ),
+        )
+    } else {
+        crate::cli_status::emit(format!(
+                "extract {arxiv_id}: using pandoc_enabled local extraction; set GROKRXIV_EXTRACTION_MODE=agent_enabled to run LLM tool loops"
             ));
-            (
-                deterministic_macros_outcome(raw_tex_concat.as_deref()),
-                deterministic_equations_or_empty(arxiv_id, semantic_ast_ref, &body_md_str),
-                deterministic_theorems_or_empty(arxiv_id, &body_md_str),
-                deterministic_citations_outcome(arxiv_id, &body_md_str, &extract),
-            )
-        };
+        (
+            deterministic_macros_outcome(raw_tex_concat.as_deref()),
+            deterministic_equations_or_empty(arxiv_id, semantic_ast_ref, &body_md_str),
+            deterministic_theorems_or_empty(arxiv_id, &body_md_str),
+            deterministic_citations_outcome(arxiv_id, &body_md_str, &extract),
+        )
+    };
 
     if should_use_deterministic_fallback("equations", equations_res.as_ref(), opts, &semantic_ctx) {
         equations_res = deterministic_equations_outcome(arxiv_id, semantic_ast_ref, &body_md_str);
@@ -439,6 +719,14 @@ async fn run_inner(
         &semantic_ctx,
     );
 
+    let artifact_provenance = build_artifact_provenance(
+        source_body_producer,
+        extraction_mode,
+        equations_res.as_ref(),
+        theorems_res.as_ref(),
+        citations_res.as_ref(),
+    );
+
     apply_equations(&mut bundle, arxiv_id, equations_res);
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
     apply_citations(&mut bundle, arxiv_id, citations_res);
@@ -458,10 +746,12 @@ async fn run_inner(
     let completed_at = Utc::now();
     let report = json!({
         "arxiv_id": arxiv_id,
+        "mode": extraction_mode.as_str(),
         "started_at": started_at.to_rfc3339(),
         "completed_at": completed_at.to_rfc3339(),
         "total_cost_usd": null,
         "stages": stage_reports.iter().map(StageReport::to_value).collect::<Vec<_>>(),
+        "artifact_provenance": artifact_provenance.iter().map(ArtifactProvenance::to_value).collect::<Vec<_>>(),
     });
     bundle.extraction_report = Some(report);
 
@@ -551,6 +841,16 @@ fn build_initial_bundle(staged: &DeterministicIngest, extract: &PaperExtract) ->
     b.references = Some(references);
     b.original_pdf = staged.pdf_bytes.as_ref().map(|x| x.to_vec());
     b.source_tarball = staged.source_tarball.as_ref().map(|x| x.to_vec());
+    if let Some(tarball) = staged.source_tarball.as_ref() {
+        match build_source_manifest_json(arxiv_id, tarball) {
+            Ok(manifest) => b.source_manifest = Some(manifest),
+            Err(e) => warn!(error = %e, "source manifest extraction failed"),
+        }
+        match extract_source_figures(tarball) {
+            Ok(figures) => b.figures = figures,
+            Err(e) => warn!(error = %e, "source figure extraction failed"),
+        }
+    }
     // Initial empty placeholders so equations.json + theorem_graph.json
     // always validate against their respective schemas even when Stages 5/6
     // are skipped or fail.
@@ -635,28 +935,168 @@ fn build_initial_references_json(arxiv_id: &str, extract: &PaperExtract) -> Valu
         .enumerate()
         .map(|(i, c)| {
             // references.schema requires `key`. Synthesise one when not parsed.
-            let key = format!("ref{i}");
+            let key = citation_key(c).unwrap_or_else(|| format!("ref{i}"));
             json!({
                 "key": key,
+                "raw": c.raw,
                 "title": c.title,
                 "authors": Vec::<String>::new(),
                 "venue": Value::Null,
                 "year": Value::Null,
                 "doi": c.doi,
                 "arxiv_id": c.arxiv_id,
+                "cited": false,
                 "contexts": Vec::<Value>::new(),
+                "validation": Value::Null,
             })
         })
         .collect();
-    json!({ "arxiv_id": arxiv_id, "citations": citations })
+    json!({
+        "arxiv_id": arxiv_id,
+        "citations": citations,
+        "unmatched_citation_keys": Vec::<String>::new(),
+        "uncited_bibliography_keys": Vec::<String>::new(),
+    })
 }
 
 fn unpack_tarball(workdir: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Cursor;
-    let mut decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
-    let mut archive = tar::Archive::new(&mut decoder);
-    archive.unpack(workdir).context("unpack tar.gz")?;
+    for entry in read_source_archive_entries(bytes).context("read source archive entries")? {
+        let target = workdir.join(&entry.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create source archive directory {parent:?}"))?;
+        }
+        std::fs::write(&target, &entry.bytes)
+            .with_context(|| format!("write source archive entry {target:?}"))?;
+    }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SourceArchiveEntry {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+fn build_source_manifest_json(arxiv_id: &str, bytes: &[u8]) -> Result<Value> {
+    let mut entries: Vec<Value> = read_source_archive_entries(bytes)?
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "path": entry.path,
+                "size": entry.bytes.len() as u64,
+                "sha256": sha256_hex(&entry.bytes),
+                "kind": source_entry_kind(&entry.path),
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        a.get("path")
+            .and_then(Value::as_str)
+            .cmp(&b.get("path").and_then(Value::as_str))
+    });
+    Ok(json!({
+        "arxiv_id": arxiv_id,
+        "tarball_sha256": sha256_hex(bytes),
+        "entries": entries,
+    }))
+}
+
+fn extract_source_figures(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut figures: Vec<(String, Vec<u8>)> = read_source_archive_entries(bytes)?
+        .into_iter()
+        .filter(|entry| is_figure_path(&entry.path))
+        .map(|entry| (entry.path, entry.bytes))
+        .collect();
+    figures.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(figures)
+}
+
+fn read_source_archive_entries(bytes: &[u8]) -> Result<Vec<SourceArchiveEntry>> {
+    read_source_archive_entries_targz(bytes).or_else(|_| read_source_archive_entries_tar(bytes))
+}
+
+fn read_source_archive_entries_targz(bytes: &[u8]) -> Result<Vec<SourceArchiveEntry>> {
+    use std::io::Cursor;
+    let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
+    read_tar_entries(decoder)
+}
+
+fn read_source_archive_entries_tar(bytes: &[u8]) -> Result<Vec<SourceArchiveEntry>> {
+    use std::io::Cursor;
+    read_tar_entries(Cursor::new(bytes))
+}
+
+fn read_tar_entries<R: std::io::Read>(reader: R) -> Result<Vec<SourceArchiveEntry>> {
+    let mut archive = tar::Archive::new(reader);
+    let mut out = Vec::new();
+    for entry in archive.entries().context("read source archive entries")? {
+        let mut entry = entry.context("read source archive entry")?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().context("read source archive entry path")?;
+        let Some(path) = safe_archive_path(&path) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)
+            .context("read source archive entry bytes")?;
+        out.push(SourceArchiveEntry { path, bytes });
+    }
+    Ok(out)
+}
+
+fn safe_archive_path(path: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(part.to_string_lossy().to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let rel = parts.join("/");
+    (!rel.is_empty()).then_some(rel)
+}
+
+fn source_entry_kind(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".tex") {
+        "tex"
+    } else if lower.ends_with(".bib") {
+        "bib"
+    } else if lower.ends_with(".bbl") {
+        "bbl"
+    } else if lower.ends_with(".sty") {
+        "sty"
+    } else if lower.ends_with(".cls") {
+        "cls"
+    } else if is_figure_path(path) {
+        "figure"
+    } else if lower.ends_with(".pdf") {
+        "pdf"
+    } else {
+        "other"
+    }
+}
+
+fn is_figure_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    matches!(
+        Path::new(&lower).extension().and_then(|ext| ext.to_str()),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "eps")
+    ) || (lower.ends_with(".pdf")
+        && lower
+            .split('/')
+            .any(|segment| segment == "fig" || segment == "figs" || segment == "figures"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Read every `*.tex` file in the workdir and return their concatenation.
@@ -666,21 +1106,32 @@ fn unpack_tarball(workdir: &Path, bytes: &[u8]) -> Result<()> {
 /// `expansions_applied: []`, we flag the stage as degraded.
 fn read_workdir_tex_concat(workdir: &Path) -> Option<String> {
     let mut out = String::new();
-    let entries = std::fs::read_dir(workdir).ok()?;
-    for entry in entries.flatten() {
+    read_tex_recursive(workdir, &mut out).ok()?;
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn read_tex_recursive(dir: &Path, out: &mut String) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("tex") {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            read_tex_recursive(&path, out)?;
+        } else if file_type.is_file() && path.extension().and_then(|s| s.to_str()) == Some("tex") {
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 out.push_str(&contents);
                 out.push('\n');
             }
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    Ok(())
 }
 
 /// Write the rendered `body.md` into the extraction workdir so Stages 4-7's
@@ -745,11 +1196,25 @@ fn resolve_extractor_from_routing(
     routing.and_then(|r| r.runner).unwrap_or_default()
 }
 
-fn force_agent_extraction() -> bool {
-    matches!(
-        std::env::var("GROKRXIV_FORCE_AGENT_EXTRACTION").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    )
+fn extraction_mode_from_env() -> Result<ExtractionMode> {
+    if std::env::var("GROKRXIV_FORCE_AGENT_EXTRACTION").is_ok() {
+        return Err(anyhow!(
+            "GROKRXIV_FORCE_AGENT_EXTRACTION is no longer supported; use \
+             GROKRXIV_EXTRACTION_MODE=agent_enabled or pandoc_enabled"
+        ));
+    }
+
+    match std::env::var("GROKRXIV_EXTRACTION_MODE") {
+        Ok(value) => match value.as_str() {
+            "pandoc_enabled" => Ok(ExtractionMode::PandocEnabled),
+            "agent_enabled" => Ok(ExtractionMode::AgentEnabled),
+            other => Err(anyhow!(
+                "invalid GROKRXIV_EXTRACTION_MODE={other:?}; expected pandoc_enabled or agent_enabled"
+            )),
+        },
+        Err(std::env::VarError::NotPresent) => Ok(ExtractionMode::PandocEnabled),
+        Err(e) => Err(anyhow!("read GROKRXIV_EXTRACTION_MODE: {e}")),
+    }
 }
 
 fn env_truthy(name: &str) -> bool {
@@ -981,6 +1446,28 @@ fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpe
     spec
 }
 
+fn extraction_agent_inputs(stage_name: &str) -> Vec<&'static str> {
+    match stage_name {
+        "vlm" => vec!["original.pdf"],
+        "macros" => vec!["source.tar.gz", "body.md"],
+        "equations" => vec!["body.md", "semantic_ast.json"],
+        "theorems" => vec!["body.md", "semantic_ast.json"],
+        "citations" => vec!["body.md", "references.json"],
+        _ => vec!["body.md"],
+    }
+}
+
+fn extraction_agent_outputs(stage_name: &str) -> Vec<&'static str> {
+    match stage_name {
+        "vlm" => vec!["body.md", "sections.json", "vlm_raw.json"],
+        "macros" => vec!["extraction_report.json"],
+        "equations" => vec!["equations.json"],
+        "theorems" => vec!["theorem_graph.json"],
+        "citations" => vec!["references.json"],
+        _ => vec!["extraction_report.json"],
+    }
+}
+
 /// Run an extraction agent end-to-end, swallowing any error so a single
 /// stage's failure can't tank the whole pipeline. Logs at `warn` on error and
 /// returns `None`; logs `output` size on success.
@@ -1042,6 +1529,13 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
                 iters: run.iters,
                 model,
                 runner: runner_name,
+                provenance: NodeProvenance::agent(
+                    stage_name,
+                    agent.name(),
+                    extraction_agent_inputs(stage_name),
+                    extraction_agent_outputs(stage_name),
+                    ExtractionMode::AgentEnabled,
+                ),
             })
         }
         Err(e) => {
@@ -1277,19 +1771,40 @@ fn apply_citations(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Stag
                         .collect();
                     Some(json!({
                         "key": key,
+                        "raw": c.get("raw").cloned().unwrap_or(Value::Null),
                         "title": c.get("title").cloned().unwrap_or(Value::Null),
                         "authors": c.get("authors").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
                         "venue": c.get("venue").cloned().unwrap_or(Value::Null),
                         "year": c.get("year").cloned().unwrap_or(Value::Null),
                         "doi": c.get("doi").or_else(|| c.get("resolved_doi")).cloned().unwrap_or(Value::Null),
                         "arxiv_id": c.get("arxiv_id").or_else(|| c.get("resolved_arxiv_id")).cloned().unwrap_or(Value::Null),
+                        "cited": c.get("cited").cloned().unwrap_or_else(|| Value::Bool(!contexts.is_empty())),
                         "contexts": contexts,
+                        "validation": c.get("validation").cloned().unwrap_or(Value::Null),
                     }))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    bundle.references = Some(json!({ "arxiv_id": arxiv_id, "citations": citations }));
+    bundle.references = Some(json!({
+        "arxiv_id": arxiv_id,
+        "citations": citations,
+        "unmatched_citation_keys": value_string_array(&value, "unmatched_citation_keys"),
+        "uncited_bibliography_keys": value_string_array(&value, "uncited_bibliography_keys"),
+    }));
+}
+
+fn value_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
@@ -1315,8 +1830,15 @@ fn deterministic_macros_outcome(raw_tex: Option<&str>) -> Option<StageOutcome> {
         cost_usd: 0.0,
         latency_ms: started.elapsed().as_millis() as i64,
         iters: 0,
-        model: "deterministic-macro-scan".into(),
-        runner: "local".into(),
+        model: "pandoc-macro-scan".into(),
+        runner: "rust_fn".into(),
+        provenance: NodeProvenance::rust_tool(
+            "macro_scan",
+            "scan_macro_definitions",
+            ["source.tar.gz"],
+            ["extraction_report.json"],
+            ExtractionMode::PandocEnabled,
+        ),
     })
 }
 
@@ -1391,8 +1913,15 @@ fn deterministic_equations_outcome(
         cost_usd: 0.0,
         latency_ms: started.elapsed().as_millis() as i64,
         iters: 0,
-        model: "deterministic-equation-scan".into(),
-        runner: "local".into(),
+        model: "pandoc-equation-scan".into(),
+        runner: "rust_fn".into(),
+        provenance: NodeProvenance::rust_tool(
+            "derive_equations",
+            "scan_equations",
+            ["body.md", "semantic_ast.json"],
+            ["equations.json"],
+            ExtractionMode::PandocEnabled,
+        ),
     })
 }
 
@@ -1430,8 +1959,15 @@ fn deterministic_theorems_outcome(_arxiv_id: &str, body_md: &str) -> Option<Stag
         cost_usd: 0.0,
         latency_ms: started.elapsed().as_millis() as i64,
         iters: 0,
-        model: "deterministic-theorem-scan".into(),
-        runner: "local".into(),
+        model: "pandoc-theorem-scan".into(),
+        runner: "rust_fn".into(),
+        provenance: NodeProvenance::rust_tool(
+            "derive_theorems",
+            "scan_theorems",
+            ["body.md"],
+            ["theorem_graph.json"],
+            ExtractionMode::PandocEnabled,
+        ),
     })
 }
 
@@ -1464,22 +2000,30 @@ fn deterministic_citations_outcome(
     body_md: &str,
     extract: &PaperExtract,
 ) -> Option<StageOutcome> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     let started = std::time::Instant::now();
     let sites = crate::agents::extraction::citations::tools::extract_citation_sites(body_md);
-    if sites.is_empty() {
+    let has_sites = !sites.is_empty();
+    let bibliography_by_key: BTreeMap<String, &grokrxiv_schemas::Citation> = extract
+        .bibliography
+        .iter()
+        .filter_map(|c| citation_key(c).map(|key| (key, c)))
+        .collect();
+    if !has_sites && bibliography_by_key.is_empty() {
         return Some(deterministic_empty_outcome(
             "citations",
             json!({
                 "citations": [],
+                "unmatched_citation_keys": [],
+                "uncited_bibliography_keys": [],
                 "reason": "no_citation_sites_detected_by_local_scan",
             }),
         ));
     }
 
     let mut by_key: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for site in sites {
+    for site in &sites {
         let Some(key) = site.get("key").and_then(Value::as_str) else {
             continue;
         };
@@ -1500,22 +2044,42 @@ fn deterministic_citations_outcome(
         }));
     }
 
-    let bibliography_by_key: BTreeMap<String, &grokrxiv_schemas::Citation> = extract
-        .bibliography
-        .iter()
-        .filter_map(|c| citation_key(c).map(|key| (key, c)))
+    let unmatched_citation_keys: Vec<String> = by_key
+        .keys()
+        .filter(|key| !bibliography_by_key.contains_key(*key))
+        .cloned()
         .collect();
-    let citations: Vec<Value> = by_key
+    let uncited_bibliography_keys: Vec<String> = bibliography_by_key
+        .keys()
+        .filter(|key| !by_key.contains_key(*key))
+        .cloned()
+        .collect();
+
+    let keys: BTreeSet<String> = bibliography_by_key
+        .keys()
+        .chain(by_key.keys())
+        .cloned()
+        .collect();
+    let citations: Vec<Value> = keys
         .into_iter()
-        .map(|(key, contexts)| {
+        .map(|key| {
             let bib = bibliography_by_key.get(&key).copied();
+            let contexts = by_key.remove(&key).unwrap_or_default();
+            let cited = !contexts.is_empty();
             json!({
                 "key": key,
-                "raw": bib.map(|c| c.raw.as_str()).unwrap_or(""),
+                "raw": bib.map(|c| Value::from(c.raw.as_str())).unwrap_or(Value::Null),
                 "title": bib.and_then(|c| c.title.as_deref()).map(Value::from).unwrap_or(Value::Null),
+                "authors": [],
+                "venue": Value::Null,
+                "year": Value::Null,
+                "doi": bib.and_then(|c| c.doi.as_deref()).map(Value::from).unwrap_or(Value::Null),
+                "arxiv_id": bib.and_then(|c| c.arxiv_id.as_deref()).map(Value::from).unwrap_or(Value::Null),
                 "resolved_doi": bib.and_then(|c| c.doi.as_deref()).map(Value::from).unwrap_or(Value::Null),
                 "resolved_arxiv_id": bib.and_then(|c| c.arxiv_id.as_deref()).map(Value::from).unwrap_or(Value::Null),
+                "cited": cited,
                 "contexts": contexts,
+                "validation": Value::Null,
             })
         })
         .collect();
@@ -1524,19 +2088,35 @@ fn deterministic_citations_outcome(
     }
 
     Some(StageOutcome {
-        output: json!({ "citations": citations, "reason": Value::Null }),
+        output: json!({
+            "citations": citations,
+            "unmatched_citation_keys": unmatched_citation_keys,
+            "uncited_bibliography_keys": uncited_bibliography_keys,
+            "reason": if !has_sites {
+                Value::String("no_citation_sites_detected_by_local_scan".into())
+            } else {
+                Value::Null
+            },
+        }),
         tool_calls: Vec::new(),
         cost_usd: 0.0,
         latency_ms: started.elapsed().as_millis() as i64,
         iters: 0,
-        model: "deterministic-citation-scan".into(),
-        runner: "local".into(),
+        model: "pandoc-citation-scan".into(),
+        runner: "rust_fn".into(),
+        provenance: NodeProvenance::rust_tool(
+            "derive_references",
+            "scan_references",
+            ["body.md", "references.json"],
+            ["references.json"],
+            ExtractionMode::PandocEnabled,
+        ),
     })
 }
 
 fn citation_key(c: &grokrxiv_schemas::Citation) -> Option<String> {
     c.raw
-        .split_once(':')
+        .split_once(": ")
         .map(|(key, _)| key.trim().to_string())
         .filter(|key| !key.is_empty())
         .or_else(|| c.title.as_ref().map(|title| title.trim().to_string()))
@@ -1550,9 +2130,141 @@ fn deterministic_empty_outcome(stage: &str, output: Value) -> StageOutcome {
         cost_usd: 0.0,
         latency_ms: 0,
         iters: 0,
-        model: format!("deterministic-{stage}-scan"),
-        runner: "local".into(),
+        model: format!("pandoc-{stage}-scan"),
+        runner: "rust_fn".into(),
+        provenance: pandoc_empty_provenance(stage),
     }
+}
+
+fn pandoc_empty_provenance(stage: &str) -> NodeProvenance {
+    match stage {
+        "equations" => NodeProvenance::rust_tool(
+            "derive_equations",
+            "scan_equations",
+            ["body.md", "semantic_ast.json"],
+            ["equations.json"],
+            ExtractionMode::PandocEnabled,
+        ),
+        "theorems" => NodeProvenance::rust_tool(
+            "derive_theorems",
+            "scan_theorems",
+            ["body.md"],
+            ["theorem_graph.json"],
+            ExtractionMode::PandocEnabled,
+        ),
+        "citations" => NodeProvenance::rust_tool(
+            "derive_references",
+            "scan_references",
+            ["body.md", "references.json"],
+            ["references.json"],
+            ExtractionMode::PandocEnabled,
+        ),
+        _ => NodeProvenance::rust_tool(
+            format!("{stage}_scan"),
+            format!("scan_{stage}"),
+            ["body.md"],
+            ["extraction_report.json"],
+            ExtractionMode::PandocEnabled,
+        ),
+    }
+}
+
+fn build_artifact_provenance(
+    source_body_producer: SourceBodyProducer,
+    mode: ExtractionMode,
+    equations: Option<&StageOutcome>,
+    theorems: Option<&StageOutcome>,
+    citations: Option<&StageOutcome>,
+) -> Vec<ArtifactProvenance> {
+    let body_node = source_body_producer.provenance(mode);
+    let metadata_node = NodeProvenance::rust_tool(
+        "derive_metadata",
+        "build_metadata_json",
+        ["arxiv_metadata", "paper_extract"],
+        ["metadata.json"],
+        mode,
+    );
+    let sections_node = if source_body_producer == SourceBodyProducer::VlmAgent {
+        body_node.clone()
+    } else {
+        NodeProvenance::rust_tool(
+            "derive_sections",
+            "build_sections_json",
+            ["body.md", "paper_extract"],
+            ["sections.json"],
+            mode,
+        )
+    };
+    let equations_node = equations
+        .map(|outcome| outcome.provenance.clone())
+        .unwrap_or_else(|| {
+            NodeProvenance::rust_tool(
+                "derive_equations",
+                "scan_equations",
+                ["body.md", "semantic_ast.json"],
+                ["equations.json"],
+                ExtractionMode::PandocEnabled,
+            )
+        });
+    let references_node = citations
+        .map(|outcome| outcome.provenance.clone())
+        .unwrap_or_else(|| {
+            NodeProvenance::rust_tool(
+                "derive_references",
+                "build_initial_references_json",
+                ["paper_extract.bibliography"],
+                ["references.json"],
+                mode,
+            )
+        });
+    let theorem_node = theorems
+        .map(|outcome| outcome.provenance.clone())
+        .unwrap_or_else(|| {
+            NodeProvenance::rust_tool(
+                "derive_theorems",
+                "scan_theorems",
+                ["body.md"],
+                ["theorem_graph.json"],
+                ExtractionMode::PandocEnabled,
+            )
+        });
+    let extraction_report_node = NodeProvenance::artifact(
+        "materialize_extraction_report",
+        "build_extraction_report",
+        [
+            "stage_reports",
+            "artifact_provenance",
+            "tool_call_log.jsonl",
+        ],
+        ["extraction_report.json"],
+        mode,
+    );
+    let review_input_node = NodeProvenance::artifact(
+        "materialize_review_input",
+        "build_review_input",
+        [
+            "metadata.json",
+            "body.md",
+            "sections.json",
+            "equations.json",
+            "references.json",
+            "theorem_graph.json",
+            "extraction_report.json",
+        ],
+        ["review_input.json"],
+        mode,
+    );
+
+    vec![
+        ArtifactProvenance::from_node("body.md", &body_node),
+        ArtifactProvenance::from_node("metadata.json", &metadata_node),
+        ArtifactProvenance::from_node("sections.json", &sections_node),
+        ArtifactProvenance::from_node("equations.json", &equations_node),
+        ArtifactProvenance::from_node("references.json", &references_node),
+        ArtifactProvenance::from_node("theorem_graph.json", &theorem_node),
+        ArtifactProvenance::from_node("extraction_report.json", &extraction_report_node),
+        ArtifactProvenance::from_node("review_input.json", &review_input_node),
+    ]
 }
 
 fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body: &str) {
@@ -1601,6 +2313,7 @@ struct StageReport {
     warnings: Vec<String>,
     iters: Option<u32>,
     tool_call_summary: Option<Value>,
+    provenance: Option<NodeProvenance>,
 }
 
 impl StageReport {
@@ -1620,6 +2333,7 @@ impl StageReport {
             warnings,
             iters: None,
             tool_call_summary: None,
+            provenance: None,
         }
     }
     fn degraded(name: &str, warning: &str) -> Self {
@@ -1633,6 +2347,7 @@ impl StageReport {
             warnings: vec![warning.into()],
             iters: None,
             tool_call_summary: None,
+            provenance: None,
         }
     }
     fn skipped(name: &str, reason: &str) -> Self {
@@ -1646,7 +2361,12 @@ impl StageReport {
             warnings: vec![reason.into()],
             iters: None,
             tool_call_summary: None,
+            provenance: None,
         }
+    }
+    fn with_provenance(mut self, provenance: NodeProvenance) -> Self {
+        self.provenance = Some(provenance);
+        self
     }
     fn to_value(&self) -> Value {
         json!({
@@ -1659,6 +2379,13 @@ impl StageReport {
             "warnings": self.warnings,
             "iters": self.iters,
             "tool_call_summary": self.tool_call_summary.clone().unwrap_or(Value::Null),
+            "provenance": self.provenance.as_ref().map(NodeProvenance::to_value).unwrap_or(Value::Null),
+            "executor": self.provenance.as_ref().map(|p| p.executor.as_str()),
+            "tool": self.provenance.as_ref().and_then(|p| p.tool.as_deref()),
+            "agent": self.provenance.as_ref().and_then(|p| p.agent.as_deref()),
+            "mode": self.provenance.as_ref().map(|p| p.mode.as_str()),
+            "inputs": self.provenance.as_ref().map(|p| p.inputs.clone()).unwrap_or_default(),
+            "outputs": self.provenance.as_ref().map(|p| p.outputs.clone()).unwrap_or_default(),
         })
     }
 }
@@ -1688,6 +2415,7 @@ fn record_agent_outcome(
             report.runner = Some(outcome.runner.clone());
             report.iters = Some(outcome.iters);
             report.tool_call_summary = Some(summary);
+            report.provenance = Some(outcome.provenance.clone());
             if let Some(warning) = semantic {
                 report.status = "degraded".into();
                 report.warnings.push(warning);
@@ -2233,6 +2961,13 @@ mod a4_tests {
             iters: 1,
             model: "test-model".into(),
             runner: "api".into(),
+            provenance: NodeProvenance::agent(
+                "citations",
+                "citation_contextualizer",
+                ["body.md", "references.json"],
+                ["references.json"],
+                ExtractionMode::AgentEnabled,
+            ),
         };
         let mut reports: Vec<StageReport> = Vec::new();
         let opts = IngestOptions::default();
@@ -2254,13 +2989,93 @@ mod a4_tests {
     }
 
     #[test]
+    fn extraction_mode_defaults_to_pandoc_enabled_and_rejects_legacy_force_flag() {
+        let prev_mode = std::env::var("GROKRXIV_EXTRACTION_MODE").ok();
+        let prev_force = std::env::var("GROKRXIV_FORCE_AGENT_EXTRACTION").ok();
+        std::env::remove_var("GROKRXIV_EXTRACTION_MODE");
+        std::env::remove_var("GROKRXIV_FORCE_AGENT_EXTRACTION");
+
+        assert_eq!(
+            extraction_mode_from_env().expect("default extraction mode"),
+            ExtractionMode::PandocEnabled
+        );
+
+        std::env::set_var("GROKRXIV_EXTRACTION_MODE", "agent_enabled");
+        assert_eq!(
+            extraction_mode_from_env().expect("agent extraction mode"),
+            ExtractionMode::AgentEnabled
+        );
+
+        std::env::set_var("GROKRXIV_FORCE_AGENT_EXTRACTION", "1");
+        let err = extraction_mode_from_env().expect_err("legacy flag must fail fast");
+        assert!(err
+            .to_string()
+            .contains("GROKRXIV_EXTRACTION_MODE=agent_enabled"));
+
+        match prev_mode {
+            Some(v) => std::env::set_var("GROKRXIV_EXTRACTION_MODE", v),
+            None => std::env::remove_var("GROKRXIV_EXTRACTION_MODE"),
+        }
+        match prev_force {
+            Some(v) => std::env::set_var("GROKRXIV_FORCE_AGENT_EXTRACTION", v),
+            None => std::env::remove_var("GROKRXIV_FORCE_AGENT_EXTRACTION"),
+        }
+    }
+
+    #[test]
+    fn artifact_provenance_names_the_function_or_tool_that_created_each_output() {
+        let provenance = build_artifact_provenance(
+            SourceBodyProducer::PandocTex,
+            ExtractionMode::PandocEnabled,
+            Some(&StageOutcome {
+                output: json!({ "equations": [] }),
+                tool_calls: Vec::new(),
+                cost_usd: 0.0,
+                latency_ms: 0,
+                iters: 0,
+                model: "pandoc-equation-scan".into(),
+                runner: "rust_fn".into(),
+                provenance: NodeProvenance::rust_tool(
+                    "derive_equations",
+                    "scan_equations",
+                    ["body.md", "semantic_ast.json"],
+                    ["equations.json"],
+                    ExtractionMode::PandocEnabled,
+                ),
+            }),
+            None,
+            None,
+        );
+
+        let body = provenance
+            .iter()
+            .find(|entry| entry.artifact == "body.md")
+            .expect("body.md provenance");
+        assert_eq!(body.executor, ExecutorKind::Tool);
+        assert_eq!(body.tool.as_deref(), Some("pandoc_tex_to_markdown"));
+
+        let metadata = provenance
+            .iter()
+            .find(|entry| entry.artifact == "metadata.json")
+            .expect("metadata provenance");
+        assert_eq!(metadata.tool.as_deref(), Some("build_metadata_json"));
+
+        let equations = provenance
+            .iter()
+            .find(|entry| entry.artifact == "equations.json")
+            .expect("equations provenance");
+        assert_eq!(equations.tool.as_deref(), Some("scan_equations"));
+        assert_eq!(equations.mode, ExtractionMode::PandocEnabled);
+    }
+
+    #[test]
     fn deterministic_equation_fallback_extracts_pandoc_math() {
         let body = "## Spectral setup\n\n\
             Inline $a+b$ and display $$\\begin{equation}\nE=mc^2\n\\end{equation}$$.\n\n\
             \\[\\int_0^1 f(x)\\,dx\\]\n";
         let outcome = deterministic_equations_outcome("2605.00403", None, body)
             .expect("fallback should produce equations");
-        assert_eq!(outcome.model, "deterministic-equation-scan");
+        assert_eq!(outcome.model, "pandoc-equation-scan");
         let equations = outcome.output["equations"].as_array().unwrap();
         assert_eq!(equations.len(), 3, "equations={equations:?}");
         assert_eq!(equations[0]["canonical_tex"], "a+b");
@@ -2276,7 +3091,7 @@ mod a4_tests {
             ##### Proof sketch.\n\nApply Fubini and the resolution of identity.\n";
         let outcome = deterministic_theorems_outcome("2605.00403", body)
             .expect("fallback should produce theorem nodes");
-        assert_eq!(outcome.model, "deterministic-theorem-scan");
+        assert_eq!(outcome.model, "pandoc-theorem-scan");
         let nodes = outcome.output["nodes"].as_array().unwrap();
         assert!(
             nodes.len() >= 3,
@@ -2291,10 +3106,24 @@ mod a4_tests {
     fn deterministic_citation_fallback_groups_contexts() {
         let body = "## Intro\n\nA grouped citation [@Folland; @Spectral1] motivates this.\n\n\
             ## Results\n\nWe compare against [@Folland].\n";
-        let extract = extract_with(vec!["Intro", "Results"], 2);
+        let mut extract = extract_with(vec!["Intro", "Results"], 0);
+        extract.bibliography = vec![
+            Citation {
+                raw: "Folland: Folland reference".into(),
+                doi: None,
+                arxiv_id: None,
+                title: Some("Folland reference".into()),
+            },
+            Citation {
+                raw: "Spectral1: Spectral reference".into(),
+                doi: None,
+                arxiv_id: None,
+                title: Some("Spectral reference".into()),
+            },
+        ];
         let outcome = deterministic_citations_outcome("2605.00403", body, &extract)
             .expect("fallback should produce citations");
-        assert_eq!(outcome.model, "deterministic-citation-scan");
+        assert_eq!(outcome.model, "pandoc-citation-scan");
         let citations = outcome.output["citations"].as_array().unwrap();
         assert_eq!(citations.len(), 2, "citations={citations:?}");
         let folland = citations
@@ -2302,5 +3131,100 @@ mod a4_tests {
             .find(|c| c["key"] == "Folland")
             .expect("Folland citation");
         assert_eq!(folland["contexts"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn deterministic_citation_fallback_preserves_uncited_bibliography_entries() {
+        let body = "## Intro\n\nWe build on [@Barra:2012aa].\n";
+        let mut extract = extract_with(vec!["Intro"], 0);
+        extract.bibliography = vec![
+            Citation {
+                raw: "Barra:2012aa: Cited Paper".into(),
+                doi: Some("10.1000/cited".into()),
+                arxiv_id: None,
+                title: Some("Cited Paper".into()),
+            },
+            Citation {
+                raw: "uncited_key: Uncited Paper".into(),
+                doi: Some("10.1000/uncited".into()),
+                arxiv_id: None,
+                title: Some("Uncited Paper".into()),
+            },
+        ];
+        let outcome = deterministic_citations_outcome("2605.00403", body, &extract)
+            .expect("fallback should produce citations");
+        let citations = outcome.output["citations"].as_array().unwrap();
+        assert_eq!(citations.len(), 2, "citations={citations:?}");
+        let cited = citations
+            .iter()
+            .find(|c| c["key"] == "Barra:2012aa")
+            .expect("cited entry");
+        assert_eq!(cited["cited"], true);
+        assert_eq!(cited["contexts"].as_array().unwrap().len(), 1);
+        let uncited = citations
+            .iter()
+            .find(|c| c["key"] == "uncited_key")
+            .expect("uncited entry");
+        assert_eq!(uncited["cited"], false);
+        assert!(uncited["contexts"].as_array().unwrap().is_empty());
+        assert_eq!(
+            outcome.output["uncited_bibliography_keys"],
+            json!(["uncited_key"])
+        );
+    }
+
+    #[test]
+    fn source_manifest_indexes_archive_and_extracts_figures() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut tar_bytes = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut tar_bytes, Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            append_tar_entry(&mut builder, "paper.tex", br"\documentclass{article}");
+            append_tar_entry(&mut builder, "refs.bib", b"@article{x,title={X}}\n");
+            append_tar_entry(&mut builder, "figs/fig_1.png", b"\x89PNG\r\n\x1a\n");
+            builder.finish().unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let manifest =
+            build_source_manifest_json("2605.19178", &tar_bytes).expect("source manifest");
+        let paths: Vec<&str> = manifest["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .collect();
+        assert!(paths.contains(&"paper.tex"), "paths={paths:?}");
+        assert!(paths.contains(&"refs.bib"), "paths={paths:?}");
+        assert!(paths.contains(&"figs/fig_1.png"), "paths={paths:?}");
+        let fig = manifest["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == "figs/fig_1.png")
+            .expect("figure entry");
+        assert_eq!(fig["kind"], "figure");
+
+        let figures = extract_source_figures(&tar_bytes).expect("figures");
+        assert_eq!(figures.len(), 1);
+        assert_eq!(figures[0].0, "figs/fig_1.png");
+        assert_eq!(figures[0].1, b"\x89PNG\r\n\x1a\n");
+    }
+
+    fn append_tar_entry(
+        builder: &mut tar::Builder<impl std::io::Write>,
+        path: &str,
+        contents: &[u8],
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, contents)
+            .expect("append tar entry");
     }
 }

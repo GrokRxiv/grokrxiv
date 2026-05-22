@@ -220,65 +220,20 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <main class="prose">
 <h1 id="grokrxiv-http-api-reference--applied"><a class="anchor" aria-label="anchor" href="#grokrxiv-http-api-reference--applied">#</a><code>grokrxiv</code> HTTP API reference — applied</h1>
 <p>GrokRxiv's public HTTP API lives behind the Next.js web tier at <code>/api/v1/*</code>.
-The web tier forwards write requests to the orchestrator's internal HTTP
-API at <code>/internal/v1/*</code> after enforcing bearer authentication.</p>
-<pre><code>client → POST /api/v1/&#x3C;action>          (Bearer GROKRXIV_SERVICE_TOKEN)
-       ↓
-       → POST &#x3C;ORCHESTRATOR_INTERNAL_URL>/internal/v1/&#x3C;action>
-       ↓
-       → orchestrator runtime
-</code></pre>
+The public contract is read-only. Review creation, moderation, publishing, and
+rerendering remain CLI/operator workflows.</p>
 <h2 id="authentication"><a class="anchor" aria-label="anchor" href="#authentication">#</a>Authentication</h2>
-<p>Every <code>/api/v1/*</code> write endpoint requires:</p>
-<pre><code>Authorization: Bearer ${GROKRXIV_SERVICE_TOKEN}
-</code></pre>
-<p>The token is configured server-side via <code>GROKRXIV_SERVICE_TOKEN</code>. When the
-env var is unset the endpoint returns <code>503 service_unconfigured</code>. When the
-token is set but the request bearer doesn't match it returns <code>401 unauthorized</code>.</p>
 <p>Read endpoints (<code>GET /api/v1/reviews</code>, etc.) are unauthenticated and talk to
-Supabase directly.</p>
+Supabase directly. They only return rows whose review is public visibility and
+in a public status.</p>
 <h2 id="endpoints"><a class="anchor" aria-label="anchor" href="#endpoints">#</a>Endpoints</h2>
-<h3 id="post-apiv1review"><a class="anchor" aria-label="anchor" href="#post-apiv1review">#</a><code>POST /api/v1/review</code></h3>
-<p>Enqueue an end-to-end review run.</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -X</span><span style="color:#9ECBFF"> POST</span><span style="color:#9ECBFF"> https://grokrxiv.org/api/v1/review</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">     -H</span><span style="color:#9ECBFF"> "Authorization: Bearer </span><span style="color:#E1E4E8">$GROKRXIV_SERVICE_TOKEN</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">     -H</span><span style="color:#9ECBFF"> "content-type: application/json"</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">     -d</span><span style="color:#9ECBFF"> '{"source": "2605.12484"}'</span></span></code></pre></figure>
-<p>Body:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span></span>
-<span data-line=""><span style="color:#79B8FF">  "source"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"2605.12484"</span><span style="color:#E1E4E8">,                 </span><span style="color:#6A737D">// arxiv id | URL | path | "-" | "@file"</span></span>
-<span data-line=""><span style="color:#79B8FF">  "type"</span><span style="color:#E1E4E8">:   </span><span style="color:#9ECBFF">"arxiv"</span><span style="color:#E1E4E8">,                       </span><span style="color:#6A737D">// optional; "arxiv" | "pdf" | "tex" | "mixed"</span></span>
-<span data-line=""><span style="color:#79B8FF">  "mode"</span><span style="color:#E1E4E8">:   </span><span style="color:#9ECBFF">"review_only"</span><span style="color:#E1E4E8">,                 </span><span style="color:#6A737D">// optional</span></span>
-<span data-line=""><span style="color:#79B8FF">  "runner"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"api"</span><span style="color:#6A737D">                          // optional default-runner override</span></span>
-<span data-line=""><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<p>Response (501): <code>{"error": "...", "status": "not_implemented", "source": "..."}</code>
-until the endpoint is backed by real supervisor dispatch. Use <code>grokrxiv review</code>
-for the synchronous path.</p>
-<h3 id="post-apiv1reviewsidapprove"><a class="anchor" aria-label="anchor" href="#post-apiv1reviewsidapprove">#</a><code>POST /api/v1/reviews/:id/approve</code></h3>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -X</span><span style="color:#9ECBFF"> POST</span><span style="color:#9ECBFF"> https://grokrxiv.org/api/v1/reviews/</span><span style="color:#E1E4E8">$REVIEW_ID</span><span style="color:#9ECBFF">/approve</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">     -H</span><span style="color:#9ECBFF"> "Authorization: Bearer </span><span style="color:#E1E4E8">$GROKRXIV_SERVICE_TOKEN</span><span style="color:#9ECBFF">"</span></span></code></pre></figure>
-<h3 id="post-apiv1reviewsidreject"><a class="anchor" aria-label="anchor" href="#post-apiv1reviewsidreject">#</a><code>POST /api/v1/reviews/:id/reject</code></h3>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span><span style="color:#79B8FF">"reason"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"Insufficient experimental validation."</span><span style="color:#E1E4E8">}</span></span></code></pre></figure>
-<h3 id="post-apiv1reviewsidrender"><a class="anchor" aria-label="anchor" href="#post-apiv1reviewsidrender">#</a><code>POST /api/v1/reviews/:id/render</code></h3>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span><span style="color:#79B8FF">"format"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"html"</span><span style="color:#E1E4E8">}   </span><span style="color:#6A737D">// html | md | tex | pdf | zip</span></span></code></pre></figure>
-<h3 id="post-apiv1reviewsidapply-revisions"><a class="anchor" aria-label="anchor" href="#post-apiv1reviewsidapply-revisions">#</a><code>POST /api/v1/reviews/:id/apply-revisions</code></h3>
-<p>Body forwarded verbatim — schema TBD by Track F.</p>
-<h3 id="post-apiv1reviewsidverify"><a class="anchor" aria-label="anchor" href="#post-apiv1reviewsidverify">#</a><code>POST /api/v1/reviews/:id/verify</code></h3>
-<p>Re-run the verifier ladder against a persisted review. No body.</p>
-<h3 id="get-apiv1doctor"><a class="anchor" aria-label="anchor" href="#get-apiv1doctor">#</a><code>GET /api/v1/doctor</code></h3>
-<p>Proxies the orchestrator's preflight summary.</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -H</span><span style="color:#9ECBFF"> "Authorization: Bearer </span><span style="color:#E1E4E8">$GROKRXIV_SERVICE_TOKEN</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#9ECBFF">     https://grokrxiv.org/api/v1/doctor</span></span></code></pre></figure>
-<h3 id="get-apiv1search"><a class="anchor" aria-label="anchor" href="#get-apiv1search">#</a><code>GET /api/v1/search</code></h3>
-<p>Reserved for the cross-corpus search endpoint. Currently returns
-<code>501 not_implemented</code> (Track I follow-up).</p>
-<h2 id="read-endpoints-unauthenticated"><a class="anchor" aria-label="anchor" href="#read-endpoints-unauthenticated">#</a>Read endpoints (unauthenticated)</h2>
 <ul>
 <li><code>GET /api/v1/reviews?status=published&#x26;page=1&#x26;limit=20&#x26;field=cs.AI</code></li>
 <li><code>GET /api/v1/reviews/:id</code>  (also accepts an arXiv id)</li>
 <li><code>GET /api/v1/papers/:arxiv</code></li>
 </ul>
-<p>These were not modified by Track I.</p>
+<p><code>/api/v1/reviews</code> accepts <code>status=pr_open|published|corrected|rejected</code>; the
+default is <code>published</code>.</p>
 <h2 id="error-shapes"><a class="anchor" aria-label="anchor" href="#error-shapes">#</a>Error shapes</h2>
 <table>
 <thead>
@@ -291,43 +246,36 @@ for the synchronous path.</p>
 <tbody>
 <tr>
 <td>400</td>
-<td><code>{"error":"bad_body","detail":{...}}</code></td>
-<td>zod validation fail</td>
+<td><code>{"error":"bad_query","detail":{...}}</code></td>
+<td>query validation failure</td>
 </tr>
 <tr>
-<td>401</td>
-<td><code>{"error":"unauthorized"}</code></td>
-<td>bearer mismatch</td>
+<td>404</td>
+<td><code>{"error":"not_found"}</code></td>
+<td>no matching public row</td>
 </tr>
 <tr>
-<td>501</td>
-<td><code>{"error":"not_implemented","detail":"..."}</code></td>
-<td>search route</td>
-</tr>
-<tr>
-<td>502</td>
-<td><code>{"error":"orchestrator_unreachable","detail":"..."}</code></td>
-<td>orchestrator down</td>
+<td>500</td>
+<td><code>{"error":"supabase_query_failed","detail":"..."}</code></td>
+<td>Supabase query failure</td>
 </tr>
 <tr>
 <td>503</td>
-<td><code>{"error":"service_unconfigured","detail":"GROKRXIV_SERVICE_TOKEN is unset"}</code></td>
-<td>env not set</td>
+<td><code>{"error":"not_configured"}</code></td>
+<td>web tier is missing Supabase config</td>
 </tr>
 </tbody>
 </table>
 <h2 id="operator-notes"><a class="anchor" aria-label="anchor" href="#operator-notes">#</a>Operator notes</h2>
 <ul>
-<li>The internal <code>/internal/v1/*</code> routes have no auth. They live on the
-orchestrator's private network. Don't expose them publicly.</li>
-<li>Set <code>GROKRXIV_SERVICE_TOKEN</code> on <strong>both</strong> the web and orchestrator deployments
-if you want callers to talk via the proxy.</li>
-<li>For local dev: <code>export GROKRXIV_SERVICE_TOKEN=dev-token</code> in <code>.env.local</code>
-before <code>just dev</code>.</li>
+<li>Use first-party CLI commands such as <code>grokrxiv review</code>, <code>grokrxiv approve</code>,
+and <code>grokrxiv batch run</code> for write workflows.</li>
+<li>The orchestrator's <code>/internal/v1/*</code> routes are private-network plumbing. Do
+not expose them publicly.</li>
 </ul>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-api-reference-applied.md &middot; generated 2026-05-20T07:47:39.044Z &middot; grokrxiv</p>
+<p>grokrxiv-api-reference-applied.md &middot; generated 2026-05-21T04:08:16.455Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

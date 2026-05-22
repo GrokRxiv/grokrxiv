@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DAG Abstraction Gap Analysis</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="dag-abstraction-gap-analysis"><a class="anchor" aria-label="anchor" href="#dag-abstraction-gap-analysis">#</a>DAG Abstraction Gap Analysis</h1>
+<p>Scope: comprehensive audit of the DAG-Type Agent Abstraction landing on branch
+<code>feature/extract-tool-agent-orchestration</code> against two plans:</p>
+<ul>
+<li><code>~/.claude/plans/piped-bubbling-brook.md</code> — Part A (27 remediation items)
+plus Part B (B1–B10 foundational blockers + R1/R2/R3 refactors).</li>
+<li>The Merged DAG-Type Agent Abstraction Plan (review-time inline plan).</li>
+</ul>
+<p>Reference docs that frame remaining work:</p>
+<ul>
+<li><code>docs/ingest-extraction-gap-analysis.md</code></li>
+<li><code>docs/grokrxiv-env-reference-applied.md</code></li>
+</ul>
+<p>All findings are anchored to file:line in the current branch state.</p>
+<h2 id="executive-summary"><a class="anchor" aria-label="anchor" href="#executive-summary">#</a>Executive summary</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Verdict</th>
+<th>Headline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DAG abstraction</td>
+<td>Partial</td>
+<td>Manifests on disk + loaded; runtime is still imperative; many node kinds have no executor.</td>
+</tr>
+<tr>
+<td>Tool/agent abstraction</td>
+<td>Blocker on add-role-without-Rust</td>
+<td>Runtime maps still <code>HashMap&#x3C;AgentRole, _></code>; <code>execution_mode</code>, <code>prompt_template</code>, schema/verifier YAML fields unparsed.</td>
+</tr>
+<tr>
+<td>Ingest + extraction</td>
+<td>Mostly good with declarative gaps</td>
+<td><code>paper-extract.yaml</code> loaded but descriptive; arXiv hardcoded; agent-enabled mode untested.</td>
+</tr>
+<tr>
+<td>Review path (Tiers 1–4)</td>
+<td>8 pass / 5 partial / 14 fail</td>
+<td>Tier 1 hazards 1, 6, 7 still live.</td>
+</tr>
+<tr>
+<td>Publish/web/github/output</td>
+<td>Mostly pass</td>
+<td>Reconcile loop, idempotency, webhook ACK, generic-role web rendering all landed; 2 env vars doc-only; revision-apply loop is sketch.</td>
+</tr>
+</tbody>
+</table>
+<p>The branch has executed Part A's safety items well (idempotent publish,
+fail-loud <code>GITHUB_TOKEN</code>, async webhook, CLI-binary check at boot,
+runner-on-cache) and meaningfully advanced the declarative surface
+(<code>DagManifest</code>, paper-extract enrichment, web generic-role types). It has not
+executed the runtime side of the Merged DAG plan (R1/R3 in Part B language):
+roles are still gated on the <code>AgentRole</code> enum at the only place that matters,
+the supervisor.</p>
+<h2 id="1-dag-abstraction"><a class="anchor" aria-label="anchor" href="#1-dag-abstraction">#</a>1. DAG abstraction</h2>
+<h3 id="present"><a class="anchor" aria-label="anchor" href="#present">#</a>Present</h3>
+<ul>
+<li><code>crates/dag-runtime/src/lib.rs</code> (343 LoC) — <code>DagTypeId</code>, <code>RoleId</code>,
+<code>AgentKind</code> enum, manifest validation (duplicate IDs, missing role refs,
+missing tool refs, missing nodes, cycles, <code>KindNotAccepted</code>), topological
+layering, <code>compatible_dag_ids</code>.</li>
+<li><code>DagRunReport</code> / <code>DagNodeReport</code> / <code>DagNodeStatus</code> (lib.rs:281–317) added.</li>
+<li>All four manifests on disk; <code>paper-extract.yaml</code> has been enriched into a
+real tool DAG (tools registry, <code>ingest_source</code> / <code>tool</code> / <code>artifact</code> /
+<code>dag_call</code> / <code>agent</code> node kinds, declarative inputs/outputs).</li>
+<li><code>paper-extract.yaml</code> <em>is</em> loaded at runtime in
+<code>crates/orchestrator/src/ingest_pipeline.rs:~2620</code>.</li>
+<li><code>paper-review.yaml</code> is loaded at <code>crates/orchestrator/src/state.rs:444</code>
+and <code>crates/orchestrator/src/supervisor/review_flow.rs:303-304</code>.</li>
+</ul>
+<h3 id="gaps"><a class="anchor" aria-label="anchor" href="#gaps">#</a>Gaps</h3>
+<ul>
+<li><code>DagNode.kind: String</code> — no taxonomy enforcement. Manifest validators
+accept any string. Adding <code>kind: drone_strike</code> would parse fine.</li>
+<li><code>feeds_meta</code> does not exist. Zero matches across the codebase. Meta-reviewer
+input is still constructed from the hardcoded five-role list at
+<code>crates/orchestrator/src/supervisor/review_flow.rs:315-323</code> (the
+<code>match role_id { "summary" => Summary, ... }</code> block). The merged plan's
+commitment — "Review meta input is built from DAG nodes marked
+<code>feeds_meta=true</code>, not from a hardcoded five-role list" — is unfulfilled.</li>
+<li>Gate policy is a Rust constant. <code>dags/paper-review.yaml:62-63</code> declares
+<code>id: specialist_quorum, kind: gate</code> with no parameters. The quorum minimum
+comes from <code>MIN_SPECIALIST_QUORUM</code> (<code>crates/orchestrator/src/supervisor.rs:77</code>)
+aliased to <code>DEFAULT_MIN_SPECIALIST_QUORUM = 3</code>
+(<code>crates/orchestrator/src/review_dag.rs:5</code>). Used at
+<code>crates/orchestrator/src/supervisor/review_flow.rs:341</code>.</li>
+<li>Orphan node kinds (declared, no executor):
+<ul>
+<li><code>prepare_inputs</code> — no executor branch.</li>
+<li><code>ingest_source acquire_source</code> — bypassed; ingest is imperative.</li>
+<li><code>artifact materialize_review_input</code> — no executor; persistence is direct
+<code>PaperArtifacts::persist</code>.</li>
+<li><code>dag_call dag_type: paper-review</code> — no executor; chaining is imperative
+in <code>crates/orchestrator/src/supervisor.rs</code>.</li>
+<li><code>tool</code> — each id resolved by hardcoded string match in
+<code>crates/orchestrator/src/ingest_pipeline.rs</code>, not via registry.</li>
+</ul>
+</li>
+<li><code>DagRunReport</code> is unused. Defined but never emitted anywhere. Observability
+promise hanging.</li>
+<li>Manifest validation gap. <code>DagManifest::from_path</code> does not invoke the
+file-existence check on <code>input_schema</code> / <code>output_schema</code> /
+<code>prompt_template</code>. That cross-check lives only in
+<code>crates/orchestrator/src/cli.rs::validate_declared_agent_configs</code> (called
+by <code>grokrxiv dag validate</code>), not at orchestrator startup. The merged plan
+required "Validation rejects … missing prompt/schema files" at load time.</li>
+<li><code>crates/orchestrator/src/review_dag.rs</code> (341 LoC) is still alive.
+<code>crates/orchestrator/src/lib.rs:22</code> declares the module;
+<code>crates/orchestrator/src/supervisor.rs:77</code> and
+<code>crates/orchestrator/src/db.rs:211</code> re-export its
+<code>DEFAULT_MIN_SPECIALIST_QUORUM</code> constant. Dead-codishly held alive by the
+gate constant.</li>
+</ul>
+<h2 id="2-tool--agent-abstraction"><a class="anchor" aria-label="anchor" href="#2-tool--agent-abstraction">#</a>2. Tool + agent abstraction</h2>
+<h3 id="present-1"><a class="anchor" aria-label="anchor" href="#present-1">#</a>Present</h3>
+<ul>
+<li><code>AgentRunner</code> trait with 4 backends (<code>api</code> / <code>cli</code> / <code>cloud</code> /
+<code>local_inference</code>) — correct per plan, no spurious <code>ToolLoop</code> variant
+added.</li>
+<li><code>complete_with_tools</code> implemented on
+<code>crates/orchestrator/src/agents/runners/api.rs:206</code> and
+<code>crates/orchestrator/src/agents/runners/cli.rs:308</code>; tool-loop dispatch at
+<code>crates/orchestrator/src/agents/extraction/loop.rs:64</code> and
+<code>crates/orchestrator/src/agents/runners/api.rs:564</code> goes through the trait.</li>
+<li><code>crates/orchestrator/src/agents/types.rs:289-310</code> —
+<code>AgentRun::from_cache(..., runner: AgentRunnerKind)</code> now carries the real
+runner (Tier 2 item 8).</li>
+<li><code>apps/web/lib/types.ts:59</code> — <code>AgentRole = KnownAgentRole | string</code> (generic
+strings on the web side, with fallback labels).</li>
+</ul>
+<h3 id="blockers"><a class="anchor" aria-label="anchor" href="#blockers">#</a>Blockers</h3>
+<ul>
+<li>
+<p>Zero-migration role addition still fails closed.
+<code>crates/orchestrator/src/supervisor/review_flow.rs:325-328</code> still bails:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">anyhow</span><span style="color:#F97583">::</span><span style="color:#B392F0">bail!</span><span style="color:#E1E4E8">(</span></span>
+<span data-line=""><span style="color:#9ECBFF">    "DAG role `{other}` is configured as executable, but the legacy</span></span>
+<span data-line=""><span style="color:#9ECBFF">     runner adapter still requires a built-in AgentRole; add a runner/</span></span>
+<span data-line=""><span style="color:#9ECBFF">     schema adapter for this role before enabling it"</span></span>
+<span data-line=""><span style="color:#E1E4E8">);</span></span></code></pre></figure>
+<p>This is the load-bearing failure mode against the merged plan's named
+acceptance criterion.</p>
+</li>
+<li>
+<p>Runtime maps still enum-keyed.
+<code>crates/orchestrator/src/state.rs:26</code> —
+<code>HashMap&#x3C;AgentRole, Arc&#x3C;ConfiguredAgent>></code>,
+<code>state.rs:31</code> — <code>HashMap&#x3C;AgentRole, AgentSchema></code>,
+<code>state.rs:34</code> — <code>HashMap&#x3C;AgentRole, VerifierLadder></code>. The plan softened to
+"keep compatibility constants only where useful for tests or display, but
+runtime dispatch must not require enum widening" — these three maps are
+runtime dispatch.</p>
+</li>
+<li>
+<p><code>AgentRouting</code> parses 5 of ~12 required fields.
+<code>crates/orchestrator/src/state.rs:240-250</code> reads <code>provider, model, runner, max_retries, timeout_secs</code>. Ignored, despite being present in every YAML:
+<code>kind, prompt_template, input_schema, output_schema, verifiers, escalation</code>. Missing entirely: <code>execution_mode, tools, max_iters, max_cost_usd</code>.</p>
+</li>
+<li>
+<p>Schemas still embedded via <code>include_str!</code>. Eight <code>include_str!</code> calls in
+<code>crates/orchestrator/src/state.rs:518-560</code>
+(<code>build_agent_schemas_and_verifiers</code>) keyed by <code>AgentRole::{Summary, TechnicalCorrectness, ...}</code>. The per-role YAML's
+<code>input_schema:</code> / <code>output_schema:</code> paths are dead config.</p>
+</li>
+<li>
+<p>Verifier ladder hardcoded. <code>crates/verifier/src/lib.rs:74-75</code>:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="rust" data-theme="github-dark"><code data-language="rust" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#F97583">pub</span><span style="color:#F97583"> fn</span><span style="color:#B392F0"> standard_for_role</span><span style="color:#E1E4E8">(role</span><span style="color:#F97583">:</span><span style="color:#B392F0"> AgentRole</span><span style="color:#E1E4E8">, schema</span><span style="color:#F97583">:</span><span style="color:#B392F0"> Option</span><span style="color:#E1E4E8">&#x3C;</span><span style="color:#B392F0">Value</span><span style="color:#E1E4E8">>) </span><span style="color:#F97583">-></span><span style="color:#79B8FF"> Self</span><span style="color:#E1E4E8"> {</span></span>
+<span data-line=""><span style="color:#79B8FF">    Self</span><span style="color:#F97583">::</span><span style="color:#B392F0">with_citation</span><span style="color:#E1E4E8">(schema, </span><span style="color:#B392F0">matches!</span><span style="color:#E1E4E8">(role, </span><span style="color:#B392F0">AgentRole</span><span style="color:#F97583">::</span><span style="color:#B392F0">Citation</span><span style="color:#E1E4E8">))</span></span></code></pre></figure>
+<p>No code path reads the YAML's <code>verifiers: [...]</code> list.</p>
+</li>
+<li>
+<p>Prompt rendering still match-role.
+<code>crates/orchestrator/src/supervisor/prompts.rs:3, 22, 98, 316, 329, 337, 343</code> — seven match blocks. <code>prompt_template:</code> paths in agent YAML are
+unread.</p>
+</li>
+<li>
+<p><code>execution_mode</code> missing everywhere. Zero matches in codebase. The plan's
+central trick ("route one-shot vs tool-loop via existing trait methods
+using <code>execution_mode</code>") has not landed.</p>
+</li>
+<li>
+<p><code>source_role: Option&#x3C;AgentRole></code> still enum.
+<code>crates/schemas/src/lib.rs:290</code>. Plan required nullable string. (Web TS
+side at <code>apps/web/lib/types.ts</code> is <code>string | null</code>, so serialization works
+on the wire but Rust callers cannot construct a <code>source_role</code> for a custom
+role.)</p>
+</li>
+<li>
+<p><code>--model-for</code> / <code>--runner-for</code> accept bare-role only.
+<code>crates/orchestrator/src/runtime_config.rs:544-552</code>'s <code>parse_role_model</code>
+calls <code>parse_role(role_s)</code> which is <code>AgentRole::from_str</code>. No support for
+<code>&#x3C;dag-id>.&#x3C;role-id>=&#x3C;value></code> form.</p>
+</li>
+<li>
+<p><code>grokrxiv dag scaffold-agent</code> missing.
+<code>crates/orchestrator/src/cli.rs::DagCommand</code> (lines 462–505) has only
+<code>Validate / AddAgent / RemoveAgent</code>. The plan named <code>scaffold-agent --intent &#x3C;text></code> as the LLM-facing authoring affordance.</p>
+</li>
+<li>
+<p>Cloud + LocalInference runners are still speculative. ~1100 LoC in
+<code>crates/orchestrator/src/agents/runners/{cloud,local_inference}.rs</code> with
+no <code>complete_with_tools</code> impl and no default-path invocation (Part A item
+20).</p>
+</li>
+</ul>
+<h2 id="3-ingest--extraction"><a class="anchor" aria-label="anchor" href="#3-ingest--extraction">#</a>3. Ingest + extraction</h2>
+<h3 id="closed-gaps-per-docsingest-extraction-gap-analysismd"><a class="anchor" aria-label="anchor" href="#closed-gaps-per-docsingest-extraction-gap-analysismd">#</a>Closed gaps (per <code>docs/ingest-extraction-gap-analysis.md</code>)</h3>
+<ul>
+<li><code>source_manifest.json</code> records all entries with sha256 + <code>kind</code>
+(string-typed; <code>crates/orchestrator/src/ingest_pipeline.rs:1960-1983, 2603-2628</code>). Figures detected and routed.</li>
+<li><code>body.md</code> preserves Pandoc citation markers; <code>references.json</code> carries
+citation contexts and unmatched-key tracking.</li>
+<li>BibTeX keys with DOI/colon punctuation now resolve (e.g., <code>Barra:2012aa</code>).</li>
+<li><code>extraction_report.json</code> validates against data-repo schema.</li>
+<li><code>paper-extract.yaml</code> exposes the tool DAG declaratively.</li>
+<li>Citation extraction rewritten as a tool-loop agent
+(<code>crates/orchestrator/src/agents/extraction/citations/mod.rs:1-203</code>,
+<code>run_tool_loop</code> at line 119, <code>max_iters=80</code>, <code>max_cost_usd=$0.05</code>).</li>
+</ul>
+<h3 id="remaining-gaps"><a class="anchor" aria-label="anchor" href="#remaining-gaps">#</a>Remaining gaps</h3>
+<ul>
+<li><code>validation: null</code> in default <code>pandoc_enabled</code> path.
+<code>crates/orchestrator/src/ingest_pipeline.rs:2081</code> emits <code>Value::Null</code>.
+Schema declares <code>validation</code> as an object with status enum; only
+<code>agent_enabled</code> (<code>ingest_pipeline.rs:966-970</code>) populates it. The
+agent-enabled path is not exercised by any smoke or CI test.</li>
+<li>LaTeXML is opt-in with silent fallback. <code>crates/ingest/src/tex.rs:~150</code>
+(<code>latexml_enabled()</code>). When disabled, code falls back to Pandoc Markdown
+with no warn-banner in <code>extraction_report.json</code> flagging that the semantic
+AST is absent.</li>
+<li>Figure binaries inventoried but not materialized in dry-run.
+<code>crates/orchestrator/src/ingest_pipeline.rs:1995-2003</code> collects figures;
+persistence only fires when Tier-2 storage is enabled
+(<code>GROKRXIV_DRY_RUN_STORAGE!=1</code>). This is documented and intentional but it
+means a development copy of <code>papers/&#x3C;arxiv_id>/figures/</code> will be empty.</li>
+<li>Theorem extraction is a markdown/AST scanner with LLM-agent fallback.
+<code>crates/orchestrator/src/agents/extraction/theorems/mod.rs:77-87</code> is a
+tool-using agent (deterministic-fallback at
+<code>crates/orchestrator/src/ingest_pipeline.rs:~2200</code>). Both scan post-Pandoc
+markdown — if Pandoc fails to convert <code>\begin{theorem}</code> blocks (custom
+theorem environments), they are invisible.</li>
+<li><code>paper-extract.yaml</code> is descriptive, not authoritative. Manifest is loaded
+at <code>crates/orchestrator/src/ingest_pipeline.rs:~2620</code> but the orchestrator
+does NOT walk it. Stages 4-7 (<code>ingest_pipeline.rs:966-1050</code>) call
+<code>run_agent_when()</code> / <code>run_agent_safe()</code> in hardcoded order. <code>dag_call</code>,
+<code>ingest_source</code>, <code>artifact</code>, <code>tool</code> node kinds have no executor branches.</li>
+<li>arXiv coupling. <code>crates/orchestrator/src/ingest_pipeline.rs:942</code> always
+calls <code>grokrxiv_ingest::pipeline::ingest_staged(arxiv_id)</code>.
+<code>crates/ingest/src/source.rs</code> defines <code>SourceKind::{Arxiv, LocalFile, GitRepo}</code> but only <code>Arxiv</code> flows through the orchestrator's main pipeline.
+Part B B4 still open.</li>
+<li>Extraction agents wired directly, not via manifest. The agent YAML
+<code>config:</code> paths in <code>paper-extract.yaml</code> are documentation; agents are
+constructed by hand in Rust.</li>
+</ul>
+<h2 id="4-review-path--tier-14-status"><a class="anchor" aria-label="anchor" href="#4-review-path--tier-14-status">#</a>4. Review path — Tier 1–4 status</h2>
+<h3 id="tier-1-production-hazards--pass-3-fail-3-partial-1"><a class="anchor" aria-label="anchor" href="#tier-1-production-hazards--pass-3-fail-3-partial-1">#</a>Tier 1 (production hazards) — PASS 3, FAIL 3, PARTIAL 1</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Item</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>RenderAgent::role()</code> placeholder</td>
+<td>FAIL</td>
+<td><code>crates/orchestrator/src/agents/review_agents.rs:46-74</code>; no <code>AgentRole::Render</code> variant; collision risk persists.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>/internal/v1/*</code> stubs</td>
+<td>PARTIAL</td>
+<td><code>crates/orchestrator/src/routes/internal.rs:185-208</code> — approve/reject/render/apply-revisions/verify return 501 (fail-closed); <code>/internal/v1/review</code> IS wired to supervisor.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>run_publish</code> silent SIMULATED</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor/publish.rs:299-300</code> bails: "GITHUB_TOKEN not set; required to open review PR".</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>publish_after_approval</code> idempotency</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor.rs:173-196</code> — <code>publish_inflight: Arc&#x3C;Mutex&#x3C;HashSet&#x3C;Uuid>>></code>.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>build_agent_registry</code> permissive fallback</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/state.rs:320-336</code> — <code>validate_role_configs()</code> bails on missing/malformed YAML.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Reconcile loop for <code>PrOpen → Published</code></td>
+<td>PASS (verify spawn)</td>
+<td><code>crates/orchestrator/src/supervisor/publish.rs:8-52</code> — <code>spawn_publish_reconcile()</code> ticks every 300s, calls <code>list_pr_open_reviews_with_urls</code>, reconciles via <code>is_pr_merged</code>. Spawn site call should be double-checked.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>CLI bypasses retry/job-tracking</td>
+<td>FAIL</td>
+<td><code>crates/orchestrator/src/supervisor.rs:223-227</code> — <code>run_review_for_paper_blocking()</code> calls <code>review_flow::run_one_paper_full()</code> directly, not via <code>run_item()</code>. Skips <code>mark_running/done/failed</code> and <code>MAX_RETRIES</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tier-2-observabilityscale--pass-4-fail-4-partial-1"><a class="anchor" aria-label="anchor" href="#tier-2-observabilityscale--pass-4-fail-4-partial-1">#</a>Tier 2 (observability/scale) — PASS 4, FAIL 4, PARTIAL 1</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Item</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8</td>
+<td><code>AgentRun::from_cache</code> runner</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/agents/types.rs:289-310</code> carries <code>runner: AgentRunnerKind</code>.</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>mark_*</code> swallowed errors</td>
+<td>PARTIAL</td>
+<td><code>crates/orchestrator/src/supervisor/jobs.rs:44-46</code> propagates with <code>?</code>. CLI path (item 7) doesn't call these at all.</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Webhook inline DB work</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/routes/webhook.rs:139-173</code> — record→spawn→ACK pattern.</td>
+</tr>
+<tr>
+<td>11</td>
+<td>mpsc capacity 128</td>
+<td>PARTIAL</td>
+<td><code>crates/orchestrator/src/supervisor.rs:90-92</code> — <code>GROKRXIV_SUPERVISOR_QUEUE_CAPACITY</code> env-configurable, default 4096. No per-source semaphore.</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Backfill blocks startup</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/scheduler.rs:187-203</code> — backfill in sibling <code>tokio::spawn()</code>.</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Scheduler <code>fetch_listing</code> retry</td>
+<td>FAIL</td>
+<td><code>crates/orchestrator/src/scheduler.rs:258-275</code> retries within a single tick, no persistent last-completed-date in DB.</td>
+</tr>
+<tr>
+<td>14</td>
+<td>PR marker correlation</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/routes/webhook.rs:117-130</code> — marker now read from PR metadata first, body as fallback.</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Supervisor-level timeout</td>
+<td>FAIL</td>
+<td><code>spec.timeout_secs</code> enforced inside runners only; no tokio <code>timeout()</code> wrapping <code>agent.run()</code> at <code>crates/orchestrator/src/supervisor/jobs.rs</code>. PR <code>72ae2b5</code> kills CLI subprocess groups on timeout but does not address API/cloud/local-inference.</td>
+</tr>
+<tr>
+<td>16</td>
+<td>CLI binary check at boot</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/state.rs:338-362</code> — <code>validate_required_cli_runners()</code> runs in <code>AppState::from_config</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tier-3-dead-code--parallel-registries--fail-3-partial-2-not-audited-3"><a class="anchor" aria-label="anchor" href="#tier-3-dead-code--parallel-registries--fail-3-partial-2-not-audited-3">#</a>Tier 3 (dead code / parallel registries) — FAIL 3, PARTIAL 2, NOT AUDITED 3</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Item</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>17</td>
+<td><code>ReviewAgent</code> trait ceremony</td>
+<td>PARTIAL</td>
+<td>PR <code>e53e064</code> thinned <code>review_agents.rs</code>, but full collapse to <code>(spec, runner)</code> not done; <code>crates/orchestrator/src/agents/traits.rs:24-55</code> keeps <code>AgentRunner</code>.</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Dead config (<code>tool_policy</code>, <code>.mode</code>, <code>.sandbox</code>)</td>
+<td>PARTIAL</td>
+<td><code>crates/orchestrator/src/agents/types.rs:191-210</code> — only <code>sandbox: SandboxPolicy</code> survives; <code>tool_policy</code> / <code>mode</code> gone. <code>sandbox</code> still inert.</td>
+</tr>
+<tr>
+<td>19</td>
+<td>Parallel role registries</td>
+<td>PARTIAL</td>
+<td><code>crates/orchestrator/src/state.rs:26-34</code> — single <code>AgentRegistry</code> now; <code>role_routing</code> legacy removed. But schema/verifier maps duplicate the keying.</td>
+</tr>
+<tr>
+<td>20</td>
+<td>Cloud + LocalInference speculative</td>
+<td>FAIL</td>
+<td>Both files still ~600 LoC each, no default-path invocation.</td>
+</tr>
+<tr>
+<td>21</td>
+<td><code>max_tokens_for_model</code> substring switch</td>
+<td>Not audited (llm-adapter scope)</td>
+<td>Should be addressed when R1 lands.</td>
+</tr>
+<tr>
+<td>22</td>
+<td>ApiRunner repeats same prompt on retry</td>
+<td>Not audited</td>
+<td>Worth a follow-up.</td>
+</tr>
+<tr>
+<td>23</td>
+<td>API-allowed guard duplicated</td>
+<td>Not audited</td>
+<td>Likely still duplicated per Part A.</td>
+</tr>
+<tr>
+<td>24</td>
+<td><code>AgentSpec</code> cloned with 50KB schema</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/agents/types.rs:205</code> — <code>schema: AgentSchema = Arc&#x3C;Value></code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tier-4--partial-1-fail-1-pass-1"><a class="anchor" aria-label="anchor" href="#tier-4--partial-1-fail-1-pass-1">#</a>Tier 4 — PARTIAL 1, FAIL 1, PASS 1</h3>
+<ul>
+<li>25: shutdown signal exists, no graceful JoinSet drain — PARTIAL.</li>
+<li>26: stateless mode still enqueues blindly — FAIL.</li>
+<li>27: resolved runner persisted via <code>insert_review_agent</code> /
+<code>crates/orchestrator/src/supervisor/review_flow.rs:774-791</code> — PASS.</li>
+</ul>
+<h2 id="5-publish--web--github--output"><a class="anchor" aria-label="anchor" href="#5-publish--web--github--output">#</a>5. Publish / web / github / output</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Verdict</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Publish idempotency</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor.rs:173-196</code> HashSet dedupe.</td>
+</tr>
+<tr>
+<td>Publish fail-loud</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor/publish.rs:299-300</code> bails on missing token.</td>
+</tr>
+<tr>
+<td>Reconcile loop</td>
+<td>PASS (verify spawn)</td>
+<td><code>crates/orchestrator/src/supervisor/publish.rs:8-52</code>.</td>
+</tr>
+<tr>
+<td>GitHub webhook correlation</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/routes/webhook.rs:117-130</code> — PR metadata first, body fallback. Tier 2 #14 addressed.</td>
+</tr>
+<tr>
+<td>Webhook ACK pattern</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/routes/webhook.rs:28-174</code> — verify→record→spawn→ACK.</td>
+</tr>
+<tr>
+<td>Output formats</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor/rendering.rs:35-163</code> — HTML/MD/TeX/ZIP + per-agent JSON.</td>
+</tr>
+<tr>
+<td>HTML quality harness</td>
+<td>PASS</td>
+<td><code>crates/orchestrator/src/supervisor/rendering.rs:146-150</code> — <code>html_review::review_and_fix_html</code>.</td>
+</tr>
+<tr>
+<td>Web generic roles</td>
+<td>PASS</td>
+<td><code>apps/web/lib/types.ts:59</code> — <code>AgentRole = KnownAgentRole | string</code>; <code>apps/web/components/agent-accordion.tsx:72-73</code> fallback to raw string.</td>
+</tr>
+<tr>
+<td>Public API <code>/api/v1/reviews/[id]</code></td>
+<td>PASS</td>
+<td>Selects <code>dag_type, node_id, agent_type</code> from <code>review_agents</code>.</td>
+</tr>
+<tr>
+<td><code>/legal</code> disclaimer isolated</td>
+<td>PASS</td>
+<td>No disclaimer in render artifacts.</td>
+</tr>
+<tr>
+<td>Stripe billing</td>
+<td>PASS</td>
+<td><code>apps/web/app/api/billing/webhook/route.ts:17-32</code> verifies signature; checkout/portal/webhook all wired.</td>
+</tr>
+<tr>
+<td>Account workflows</td>
+<td>PASS</td>
+<td><code>apps/web/app/api/admin/users/[userId]/{role,quota,billing}</code> + <code>apps/web/app/api/account/reviews</code> routes wired.</td>
+</tr>
+<tr>
+<td>Revision-apply loop</td>
+<td>PARTIAL</td>
+<td>Schema + DB table + UI + <code>apply_revisions()</code> exist; no CLI/API path that drives the patch→re-ingest→re-review loop end-to-end.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="env-var-coverage-against-docsgrokrxiv-env-reference-appliedmd"><a class="anchor" aria-label="anchor" href="#env-var-coverage-against-docsgrokrxiv-env-reference-appliedmd">#</a>Env-var coverage (against <code>docs/grokrxiv-env-reference-applied.md</code>)</h3>
+<ul>
+<li>Documented and consumed: <code>GROKRXIV_PREVIEW_PROVIDER</code>,
+<code>GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES</code>,
+<code>GROKRXIV_DOCKER_INSTALL_PANDOC</code>, <code>GROKRXIV_PUBLIC_REVIEWS_REPO</code>,
+<code>GROKRXIV_PRIVATE_REVIEWS_REPO</code>, <code>GROKRXIV_EXTRACTION_MODE</code>,
+<code>GROKRXIV_SUPERVISOR_QUEUE_CAPACITY</code>.</li>
+<li>Documented but not yet confirmed via grep (verify before relying on or
+removing):
+<ul>
+<li><code>GROKRXIV_TEX_ENABLE_LATEXML</code> / <code>GROKRXIV_TEX_DISABLE_LATEXML</code> —
+<code>latexml_enabled()</code> lives in <code>crates/ingest/src/tex.rs</code> and likely reads
+both; confirm.</li>
+<li><code>GROKRXIV_FREE_REVIEW_LIMIT</code> — documented as default <code>3</code> but no
+consumer found in the audit. Either consumed via a wrapper helper or
+doc-only.</li>
+</ul>
+</li>
+</ul>
+<h2 id="6-cross-cutting-blockers"><a class="anchor" aria-label="anchor" href="#6-cross-cutting-blockers">#</a>6. Cross-cutting blockers</h2>
+<p>Three failures repeat across every audit area. Fixing any one of them
+unblocks several others.</p>
+<ol>
+<li>
+<p>The <code>AgentRole</code>-gated review path.
+<code>crates/orchestrator/src/supervisor/review_flow.rs:325-329</code> bails on
+unknown roles. This single guard makes the merged plan's
+zero-migration-role-addition promise impossible and blocks Part B R1 from
+landing incrementally. Every other gap downstream of this (B1, B2, R1)
+clears once this guard is replaced with a string-keyed dispatch.</p>
+</li>
+<li>
+<p>Per-role YAML fields read at boot.
+<code>crates/orchestrator/src/state.rs:240-250</code> <code>AgentRouting</code> only reads 5
+fields. Wiring <code>kind, prompt_template, input_schema, output_schema, verifiers, execution_mode</code> into this struct (and then through
+<code>build_agent_registry</code>, <code>build_agent_schemas_and_verifiers</code>,
+<code>standard_for_role</code>) collapses all the hardcoded <code>include_str!</code> +
+<code>match role { ... }</code> sites simultaneously. About one week of focused
+work.</p>
+</li>
+<li>
+<p>Manifest descriptiveness vs authority. Every loaded manifest gets
+translated back into imperative orchestration:</p>
+<ul>
+<li><code>paper-review.yaml</code> → <code>match role_id { "summary" => Summary, ... }</code>
+(<code>crates/orchestrator/src/supervisor/review_flow.rs:314</code>).</li>
+<li><code>paper-extract.yaml</code> → hardcoded stage calls in
+<code>crates/orchestrator/src/ingest_pipeline.rs:966-1050</code>.</li>
+<li>Node kinds <code>dag_call</code>, <code>ingest_source</code>, <code>artifact</code>, <code>tool</code>,
+<code>prepare_inputs</code> declared but no executor branches.</li>
+<li><code>DagRunReport</code> defined but never emitted.</li>
+<li>Gate policy hardcoded (<code>DEFAULT_MIN_SPECIALIST_QUORUM</code>).</li>
+<li><code>feeds_meta</code> absent.</li>
+</ul>
+<p>This is Part B R3 (real DAG composition). Part A item 19 ("two parallel
+role registries") is the surface symptom; the deeper one is two parallel
+orchestration models (declarative manifest + imperative supervisor).</p>
+</li>
+</ol>
+<h2 id="7-concrete-remediation-order-10-leaves-root-to-leaf"><a class="anchor" aria-label="anchor" href="#7-concrete-remediation-order-10-leaves-root-to-leaf">#</a>7. Concrete remediation order (10 leaves, root-to-leaf)</h2>
+<p>The branch is well-set-up for the small-diff team workflow described in
+<code>piped-bubbling-brook.md</code> Step 2. Suggested leaves:</p>
+<ol>
+<li><code>runtime/string-keyed-registry</code> — convert <code>AgentRegistry</code>,
+<code>AgentSchemaMap</code>, <code>VerifierMap</code> to <code>HashMap&#x3C;RoleId, _></code>; expose
+<code>AgentRole::from_str</code> thin layer for legacy display sites. Delete the
+bail at <code>crates/orchestrator/src/supervisor/review_flow.rs:325-329</code>.
+Unblocks B1, B2.</li>
+<li><code>runtime/expand-agent-routing</code> — extend <code>AgentRouting</code> to deserialize
+<code>kind, execution_mode, prompt_template, input_schema, output_schema, verifiers, tools, max_iters, max_cost_usd</code>. Wire schema and verifier
+construction off the parsed fields, not <code>include_str!</code>. Drop
+<code>standard_for_role(AgentRole)</code> in favor of
+<code>VerifierLadder::from_names(&#x26;[String])</code>. Unblocks B4, H2.</li>
+<li><code>runtime/prompt-template-loader</code> — collapse
+<code>crates/orchestrator/src/supervisor/prompts.rs:3, 22, 98, 316, 329, 337, 343</code> into one <code>render(role.prompt_template, ctx)</code> call. Move per-role
+prompt text to <code>prompts/&#x3C;dag-id>/&#x3C;role-id>.md</code>. Unblocks B3, Part A
+item 17 in full.</li>
+<li><code>runtime/feeds-meta-and-gate</code> — add <code>feeds_meta: bool</code> and
+<code>gate: { min_usable, sources: [...] }</code> to <code>DagNode</code>. Replace
+<code>MIN_SPECIALIST_QUORUM</code> constant with manifest read. Delete
+<code>crates/orchestrator/src/review_dag.rs</code> once the constant is gone.
+Unblocks H1, M4.</li>
+<li><code>runtime/dag-executor</code> — implement executor branches for the orphan node
+kinds (<code>prepare_inputs</code>, <code>ingest_source</code>, <code>artifact</code>, <code>dag_call</code>, <code>tool</code>).
+Have <code>crates/orchestrator/src/ingest_pipeline.rs</code> walk
+<code>dags/paper-extract.yaml</code> instead of calling stages by name. Emit
+<code>DagRunReport</code>. Closes R3.</li>
+<li><code>cli/scaffold-agent</code> — add <code>grokrxiv dag scaffold-agent --intent &#x3C;text></code>
+(the LLM-facing authoring tool). Extend <code>--model-for</code> / <code>--runner-for</code>
+to accept <code>&#x3C;dag>.&#x3C;role>=value</code>.</li>
+<li><code>tier1/cli-retry-tracking</code> — Part A item 7: route
+<code>run_review_for_paper_blocking</code> through <code>run_item</code>. Part A item 26
+fall-out: refuse stateless mode (or persist to JSONL).</li>
+<li><code>tier1/render-role</code> — Part A item 1: either add <code>AgentRole::Render</code> or
+(preferred, per R1) drop <code>RenderAgent</code> off the trait and treat it as a
+string role.</li>
+<li><code>tier2/supervisor-timeout-and-scheduler-state</code> — Part A items 13
+(persistent last-completed-date) and 15 (tokio <code>timeout()</code> at
+supervisor).</li>
+<li><code>extract/agent-enabled-smoke</code> — add a smoke test for
+<code>GROKRXIV_EXTRACTION_MODE=agent_enabled</code> so <code>validation:</code> is exercised.
+Pair with a fail-loud branch when LaTeXML is needed but disabled.</li>
+</ol>
+<p>Leaves 1–4 are the critical path: they collectively deliver the merged
+plan's acceptance test (add a <code>type_theory_validator</code> role without a DB
+migration, run a review, observe it works). Leaves 5+ are the
+foundational-harness work from Part B.</p>
+<h2 id="8-whats-in-good-shape"><a class="anchor" aria-label="anchor" href="#8-whats-in-good-shape">#</a>8. What's in good shape</h2>
+<p>Do not undo:</p>
+<ul>
+<li>Web side already generic. <code>apps/web/lib/types.ts:59</code> + accordion fallback
+labels mean the UI is ready for arbitrary roles the moment the Rust side
+opens up.</li>
+<li>DB columns and queries already DAG-aware. <code>dag_type</code>, <code>node_id</code>,
+<code>node_kind</code>, <code>agent_type</code> all thread through
+<code>crates/orchestrator/src/db.rs</code>. The migration is sloppy (duplicate
+ALTERs from the prior review) but the data path is right.</li>
+<li>Publish/webhook hygiene is solid. Idempotency, fail-loud, ACK-then-process,
+marker-on-metadata — Tier 1 items 3+4 and Tier 2 item 14 all delivered.</li>
+<li><code>dags/paper-extract.yaml</code> is the right shape. Tools registry, declarative
+inputs/outputs, <code>dag_call</code> chain. Once an executor walks it (leaf 5),
+extraction stops being a 3230-LoC imperative blob.</li>
+<li>Citations as a tool-loop agent.
+<code>crates/orchestrator/src/agents/extraction/citations/mod.rs</code> is a strong
+proof point for <code>execution_mode: tool_loop</code> once that field exists.</li>
+</ul>
+<h2 id="9-plan-level-reconciliation"><a class="anchor" aria-label="anchor" href="#9-plan-level-reconciliation">#</a>9. Plan-level reconciliation</h2>
+<p>One inconsistency surfaced during the audit and is worth resolving before
+relying on this report:</p>
+<ul>
+<li>Publish reconcile loop: <code>crates/orchestrator/src/supervisor/publish.rs:8-52</code>
+defines <code>spawn_publish_reconcile()</code>. Whether the function is called from
+<code>Supervisor::spawn</code> should be verified directly with
+<code>rg "spawn_publish_reconcile" crates/</code>. If there is exactly one hit (the
+definition), it is a no-op and Tier 1 item 6 remains a hazard. If there
+is a call site too, item 6 is delivered.</li>
+</ul>
+</main>
+<footer class="doc-footer">
+<p>dag-abstraction-gap-analysis.md &middot; generated 2026-05-22T03:23:35.293Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

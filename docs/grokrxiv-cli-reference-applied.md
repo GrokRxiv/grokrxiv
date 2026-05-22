@@ -1,8 +1,9 @@
 # `grokrxiv` CLI reference
 
 The `grokrxiv` binary is the operator surface for local review, batch review,
-moderation, publication, and diagnostics. The repo `.env` is loaded by the
-binary at startup, so local smoke checks should use the same CLI commands that
+moderation, publication, and diagnostics. The repo root `.env` is loaded by the
+binary at startup; if it sets `GROKRXIV_ENV_FILES`, those `.env_<purpose>` files
+are loaded too. Local smoke checks should use the same CLI commands that
 operators run.
 
 ## Global flags

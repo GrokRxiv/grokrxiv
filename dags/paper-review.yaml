@@ -32,18 +32,23 @@ nodes:
   - id: summary
     kind: agent
     role: summary
+    feeds_meta: true
   - id: technical_correctness
     kind: agent
     role: technical_correctness
+    feeds_meta: true
   - id: novelty
     kind: agent
     role: novelty
+    feeds_meta: true
   - id: reproducibility
     kind: agent
     role: reproducibility
+    feeds_meta: true
   - id: citation
     kind: agent
     role: citation
+    feeds_meta: true
   - id: verify_summary
     kind: verify
     role: summary
@@ -61,6 +66,14 @@ nodes:
     role: citation
   - id: specialist_quorum
     kind: gate
+    gate:
+      min_usable: 3
+      sources:
+        - verify_summary
+        - verify_technical_correctness
+        - verify_novelty
+        - verify_reproducibility
+        - verify_citation
   - id: meta_reviewer
     kind: synthesizer
     role: meta_reviewer

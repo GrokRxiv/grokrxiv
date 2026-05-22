@@ -737,14 +737,15 @@ fn parse_bibitems(src: &str) -> Vec<Citation> {
 }
 
 fn parse_bibfile(src: &str) -> Vec<Citation> {
-    let re = Regex::new(r"(?s)@\w+\s*\{\s*([^,\s]+)\s*,(.*?)\n\s*\}\s*\n").unwrap();
     let mut out = Vec::new();
-    for c in re.captures_iter(src) {
-        let key = c.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-        let body = c.get(2).map(|m| m.as_str()).unwrap_or("");
-        let raw_clean = sanitize_inline(body);
-        let (doi, arxiv_id) = sniff_identifiers(&raw_clean);
-        let title = extract_bib_field(body, "title");
+    for (key, body) in bib_entries(src) {
+        let raw_clean = sanitize_bib_value(&body);
+        let (sniffed_doi, sniffed_arxiv_id) = sniff_identifiers(&raw_clean);
+        let doi = extract_bib_field(&body, "doi").or(sniffed_doi);
+        let arxiv_id = extract_bib_field(&body, "eprint")
+            .filter(|value| looks_like_arxiv_id(value))
+            .or(sniffed_arxiv_id);
+        let title = extract_bib_field(&body, "title");
         out.push(Citation {
             raw: if raw_clean.is_empty() {
                 key.clone()
@@ -757,6 +758,72 @@ fn parse_bibfile(src: &str) -> Vec<Citation> {
         });
     }
     out
+}
+
+fn bib_entries(src: &str) -> Vec<(String, String)> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'@' {
+            i += 1;
+            continue;
+        }
+        let Some(open_idx) = find_bib_entry_open(src, i + 1) else {
+            break;
+        };
+        let opener = bytes[open_idx];
+        let closer = if opener == b'(' { b')' } else { b'}' };
+
+        let mut depth = 1usize;
+        let mut comma_idx = None;
+        let mut end_idx = None;
+        let mut k = open_idx + 1;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'{' if opener == b'{' => depth += 1,
+                b'}' if closer == b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end_idx = Some(k);
+                        break;
+                    }
+                }
+                b'(' if opener == b'(' => depth += 1,
+                b')' if closer == b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end_idx = Some(k);
+                        break;
+                    }
+                }
+                b',' if depth == 1 && comma_idx.is_none() => comma_idx = Some(k),
+                _ => {}
+            }
+            k += 1;
+        }
+
+        let Some(end_idx) = end_idx else {
+            break;
+        };
+        if let Some(comma_idx) = comma_idx {
+            let key = src[open_idx + 1..comma_idx].trim().to_string();
+            let body = src[comma_idx + 1..end_idx].trim().to_string();
+            if !key.is_empty() {
+                out.push((key, body));
+            }
+        }
+        i = end_idx + 1;
+    }
+    out
+}
+
+fn find_bib_entry_open(src: &str, start: usize) -> Option<usize> {
+    src.as_bytes()
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(idx, byte)| matches!(byte, b'{' | b'(').then_some(idx))
 }
 
 fn parse_bblfile(src: &str) -> Vec<Citation> {
@@ -864,7 +931,7 @@ fn dedupe_citations(citations: Vec<Citation>) -> Vec<Citation> {
     for citation in citations {
         let key = citation
             .raw
-            .split_once(':')
+            .split_once(": ")
             .map(|(key, _)| key.trim().to_string())
             .unwrap_or_else(|| citation.raw.clone());
         if seen.insert(key) {
@@ -875,10 +942,71 @@ fn dedupe_citations(citations: Vec<Citation>) -> Vec<Citation> {
 }
 
 fn extract_bib_field(body: &str, field: &str) -> Option<String> {
-    let pattern = format!(r#"(?i){field}\s*=\s*[{{"]([^}}"]+)[}}"]"#);
-    let re = Regex::new(&pattern).ok()?;
-    re.captures(body)
-        .and_then(|c| c.get(1).map(|m| sanitize_inline(m.as_str())))
+    bib_field_value(body, field).map(|value| sanitize_bib_value(&value))
+}
+
+fn bib_field_value(raw: &str, name: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+    let needle = name.to_lowercase();
+    let mut search_from = 0usize;
+    while let Some(rel) = lower[search_from..].find(&needle) {
+        let start = search_from + rel;
+        let pre_ok = start == 0
+            || matches!(
+                lower.as_bytes()[start - 1],
+                b',' | b'{' | b'(' | b' ' | b'\n' | b'\t' | b'\r'
+            );
+        let after = &raw[start + needle.len()..];
+        let trimmed = after.trim_start();
+        if pre_ok && trimmed.starts_with('=') {
+            let after_eq = trimmed[1..].trim_start();
+            return Some(read_bib_value(after_eq));
+        }
+        search_from = start + needle.len();
+    }
+    None
+}
+
+fn read_bib_value(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return String::new();
+    }
+    if bytes[0] == b'{' {
+        let mut depth = 1usize;
+        let mut k = 1usize;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return s[1..k].trim().to_string();
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        return s[1..].trim().to_string();
+    }
+    if bytes[0] == b'"' {
+        if let Some(end) = s[1..].find('"') {
+            return s[1..1 + end].trim().to_string();
+        }
+    }
+    let end = s.find([',', '\n', '}']).unwrap_or(s.len());
+    s[..end].trim().to_string()
+}
+
+fn sanitize_bib_value(value: &str) -> String {
+    let cleaned = sanitize_inline(value);
+    let ungrouped: String = cleaned
+        .chars()
+        .filter(|ch| !matches!(ch, '{' | '}'))
+        .collect();
+    let multispace = Regex::new(r"\s+").unwrap();
+    multispace.replace_all(ungrouped.trim(), " ").to_string()
 }
 
 fn sniff_identifiers(text: &str) -> (Option<String>, Option<String>) {
@@ -1324,6 +1452,62 @@ See~\cite{foo}.
         assert_eq!(cites.len(), 1);
         assert_eq!(cites[0].title.as_deref(), Some("A Paper"));
         assert_eq!(cites[0].doi.as_deref(), Some("10.1000/xyz"));
+    }
+
+    #[test]
+    fn bibfile_handles_nested_braces_and_doi_keys_without_cross_contamination() {
+        let bib = r#"
+@inproceedings{10.5555/3104322.3104425,
+  booktitle = {Proceedings of the 27th International Conference on International Conference on Machine Learning},
+  title = {Rectified Linear Units Improve {Restricted Boltzmann Machines}},
+  year = {2010}
+}
+
+@article{10.1162/neco_a_01420,
+  doi = {10.1162/neco_a_01420},
+  eprint = {https://direct.mit.edu/neco/article-pdf/33/10/2646/1963307/neco_a_01420.pdf},
+  title = {{Restricted Boltzmann Machines as Models of Interacting Variables}},
+  year = {2021}
+}
+
+@article{Barra:2012aa,
+  doi = {10.1016/j.neunet.2012.06.003},
+  title = {On the equivalence of Hopfield networks and Boltzmann Machines.},
+  year = {2012}
+}
+"#;
+        let cites = parse_bibfile(bib);
+        assert_eq!(cites.len(), 3, "cites={cites:?}");
+
+        let first = cites
+            .iter()
+            .find(|c| c.raw.starts_with("10.5555/3104322.3104425:"))
+            .expect("first DOI-key entry");
+        assert_eq!(
+            first.title.as_deref(),
+            Some("Rectified Linear Units Improve Restricted Boltzmann Machines")
+        );
+        assert_eq!(first.doi, None);
+        assert_eq!(first.arxiv_id, None);
+
+        let second = cites
+            .iter()
+            .find(|c| c.raw.starts_with("10.1162/neco_a_01420:"))
+            .expect("second DOI-key entry");
+        assert_eq!(
+            second.title.as_deref(),
+            Some("Restricted Boltzmann Machines as Models of Interacting Variables")
+        );
+        assert_eq!(second.doi.as_deref(), Some("10.1162/neco_a_01420"));
+
+        let colon_key = cites
+            .iter()
+            .find(|c| c.raw.starts_with("Barra:2012aa:"))
+            .expect("colon-key entry");
+        assert_eq!(
+            colon_key.doi.as_deref(),
+            Some("10.1016/j.neunet.2012.06.003")
+        );
     }
 
     #[test]

@@ -6,7 +6,9 @@
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use grokrxiv_dag_runtime::{AgentKind, DagEdge, DagManifest, DagNode, DagRole, OneOrMany, RoleId};
+use grokrxiv_dag_runtime::{
+    AgentKind, DagEdge, DagManifest, DagNode, DagNodeKind, DagRole, OneOrMany, RoleId,
+};
 use grokrxiv_schemas::AgentRole;
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
@@ -1037,8 +1039,15 @@ fn add_agent_to_dag(
     });
     manifest.nodes.push(DagNode {
         id: role_id.to_string(),
-        kind: default_node_kind_for_agent_kind(&kind).to_string(),
+        kind: default_node_kind_for_agent_kind(&kind),
         role: Some(RoleId::new(role_id)),
+        tool: None,
+        dag_type: None,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        required: false,
+        feeds_meta: false,
+        gate: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -1103,15 +1112,15 @@ fn parse_agent_kind_arg(raw: &str) -> anyhow::Result<AgentKind> {
         .with_context(|| format!("unknown agent kind `{raw}`"))
 }
 
-fn default_node_kind_for_agent_kind(kind: &AgentKind) -> &'static str {
+fn default_node_kind_for_agent_kind(kind: &AgentKind) -> DagNodeKind {
     match kind {
-        AgentKind::Synthesizer => "synthesizer",
-        AgentKind::Renderer => "render_artifacts",
-        AgentKind::Verifier => "verify",
+        AgentKind::Synthesizer => DagNodeKind::Synthesizer,
+        AgentKind::Renderer => DagNodeKind::RenderArtifacts,
+        AgentKind::Verifier => DagNodeKind::Verify,
         AgentKind::Extractor
         | AgentKind::Critic
         | AgentKind::TypeTheoryValidator
-        | AgentKind::CodeGenerator => "agent",
+        | AgentKind::CodeGenerator => DagNodeKind::Agent,
     }
 }
 
@@ -5162,7 +5171,7 @@ async fn feedback_loop_smoke(
     max_wait_secs: u64,
     json: bool,
 ) -> anyhow::Result<()> {
-    let _ = dotenvy::dotenv();
+    crate::config::load_env()?;
     if std::env::var("GROKRXIV_E2E_ALLOW_GITHUB_PUSH").as_deref() != Ok("1") {
         anyhow::bail!(
             "feedback-loop-smoke refuses to push unless GROKRXIV_E2E_ALLOW_GITHUB_PUSH=1"

@@ -159,8 +159,7 @@ fn surrounding_sentence(body: &str, off: usize) -> String {
     if off > 0 {
         let mut k = off.saturating_sub(1);
         loop {
-            let b = bytes[k];
-            if b == b'.' || b == b'?' || b == b'!' || b == b'\n' {
+            if is_sentence_boundary(bytes, k) {
                 start = k + 1;
                 break;
             }
@@ -174,15 +173,41 @@ fn surrounding_sentence(body: &str, off: usize) -> String {
     // Walk forward to the next sentence boundary.
     let mut end = bytes.len();
     let mut k = off;
+    let mut bracket_depth = 0usize;
     while k < bytes.len() {
         let b = bytes[k];
-        if b == b'.' || b == b'?' || b == b'!' || b == b'\n' {
+        if b == b'[' {
+            bracket_depth += 1;
+            k += 1;
+            continue;
+        }
+        if b == b']' {
+            bracket_depth = bracket_depth.saturating_sub(1);
+            k += 1;
+            continue;
+        }
+        if bracket_depth == 0 && is_sentence_boundary(bytes, k) {
             end = (k + 1).min(bytes.len());
             break;
         }
         k += 1;
     }
     body[start..end].trim().to_string()
+}
+
+fn is_sentence_boundary(bytes: &[u8], idx: usize) -> bool {
+    match bytes[idx] {
+        b'.' => !is_decimal_point(bytes, idx),
+        b'?' | b'!' | b'\n' => true,
+        _ => false,
+    }
+}
+
+fn is_decimal_point(bytes: &[u8], idx: usize) -> bool {
+    idx > 0
+        && idx + 1 < bytes.len()
+        && bytes[idx - 1].is_ascii_digit()
+        && bytes[idx + 1].is_ascii_digit()
 }
 
 // =====================================================================
@@ -632,6 +657,18 @@ mod tests {
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0]["section"], "Intro");
         assert_eq!(sites[1]["section"], "Methods");
+    }
+
+    #[test]
+    fn list_citation_sites_keeps_doi_shaped_keys_inside_sentence() {
+        let body = "## Intro\n\nEq. 2.5 of [@10.1162/neco_a_01420] is the baseline. More text.\n";
+        let sites = extract_citation_sites(body);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0]["key"], "10.1162/neco_a_01420");
+        assert_eq!(
+            sites[0]["sentence"],
+            "2.5 of [@10.1162/neco_a_01420] is the baseline."
+        );
     }
 
     #[tokio::test]

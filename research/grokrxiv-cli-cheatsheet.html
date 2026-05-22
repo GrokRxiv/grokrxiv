@@ -219,157 +219,65 @@ img { max-width: 100%; height: auto; border-radius: 4px; }
 <body>
 <main class="prose">
 <h1 id="grokrxiv-cli-cheatsheet"><a class="anchor" aria-label="anchor" href="#grokrxiv-cli-cheatsheet">#</a><code>grokrxiv</code> CLI cheatsheet</h1>
-<p>Quick reference for running the agentic peer-review pipeline from the command line.</p>
-<h2 id="one-time-setup"><a class="anchor" aria-label="anchor" href="#one-time-setup">#</a>One-time setup</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Install the binary (from the repo root)</span></span>
-<span data-line=""><span style="color:#B392F0">just</span><span style="color:#9ECBFF"> install</span></span>
-<span data-line=""><span style="color:#6A737D"># or</span></span>
-<span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> install</span><span style="color:#79B8FF"> --path</span><span style="color:#9ECBFF"> crates/orchestrator</span><span style="color:#79B8FF"> --features</span><span style="color:#9ECBFF"> full</span><span style="color:#79B8FF"> --bin</span><span style="color:#9ECBFF"> grokrxiv</span><span style="color:#79B8FF"> --locked</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Verify</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#79B8FF"> --version</span><span style="color:#6A737D">            # grokrxiv 0.1.0</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#6A737D">                     # prints help; does not start the server</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> serve</span><span style="color:#6A737D">               # start HTTP API + supervisor + scheduler</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">               # preflight per-runner reachability check</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#6A737D">        # machine-readable</span></span></code></pre></figure>
-<h2 id="required-environment"><a class="anchor" aria-label="anchor" href="#required-environment">#</a>Required environment</h2>
-<p>These come from <code>.env</code> at the repo root. The CLI sources them automatically when run from the repo, but for ad-hoc shells:</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">cd</span><span style="color:#9ECBFF"> /Users/mlong/Documents/Development/grokrxiv</span></span>
-<span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span><span style="color:#E1E4E8">; </span><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span><span style="color:#E1E4E8">; </span><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> DATABASE_URL</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"postgresql://postgres:postgres@127.0.0.1:54322/postgres"</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GITHUB_TOKEN</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"$(</span><span style="color:#B392F0">gh</span><span style="color:#9ECBFF"> auth token)"</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_OWNER</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"GrokRxiv"</span></span>
-<span data-line=""><span style="color:#F97583">export</span><span style="color:#E1E4E8"> GROKRXIV_REVIEWS_REPO</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"grokrxiv-reviews"</span></span></code></pre></figure>
-<p>The CLI must be run from a directory that can find <code>agents/*.yaml</code> (currently the repo root). Future polish will resolve them by absolute path.</p>
-<h2 id="two-runner-test-patterns"><a class="anchor" aria-label="anchor" href="#two-runner-test-patterns">#</a>Two-runner test patterns</h2>
-<h3 id="a-default-cli-path"><a class="anchor" aria-label="anchor" href="#a-default-cli-path">#</a>A. Default CLI path</h3>
-<p>Each role uses the provider/model from its <code>agents/*.yaml</code>:</p>
-<ul>
-<li>summary → claude-haiku</li>
-<li>technical_correctness → claude-opus</li>
-<li>novelty → gemini-3-flash-preview</li>
-<li>reproducibility → gpt-5.5</li>
-<li>citation → gemini-3-flash-preview</li>
-<li>meta_reviewer → claude-sonnet-4-6</li>
-</ul>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Single paper, default review runner + default extractor = cli</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Batch from a source manifest (one arXiv id or URL per line)</span></span>
-<span data-line=""><span style="color:#79B8FF">printf</span><span style="color:#9ECBFF"> '%s\n'</span><span style="color:#79B8FF"> 2605.00228</span><span style="color:#79B8FF"> 2605.00316</span><span style="color:#79B8FF"> 2605.00478</span><span style="color:#F97583"> ></span><span style="color:#9ECBFF"> /tmp/grokrxiv-sources.txt</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#9ECBFF"> @/tmp/grokrxiv-sources.txt</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
-<p>Cost: review and extraction use the local CLI auth path by default. In
-<code>--runner cli --extractor cli</code> runs, GrokRxiv strips provider API key env vars
-from the child <code>claude</code> / <code>codex</code> / <code>gemini</code> processes so the CLIs use their
-logged-in subscription/auth state. Pass <code>--runner api --extractor api</code> only
-when you intend to spend against provider API credits.</p>
-<h3 id="b-explicit-runner-selection"><a class="anchor" aria-label="anchor" href="#b-explicit-runner-selection">#</a>B. Explicit runner selection</h3>
-<p>Spawns <code>claude -p</code>, <code>codex exec</code>, or <code>gemini -p</code> based on each role's YAML <code>provider:</code> field. Auth comes from <code>~/.claude.json</code>, <code>~/.codex/auth.json</code>, <code>~/.gemini/oauth_creds.json</code> (+ <code>~/.config/gcloud/application_default_credentials.json</code>) on the host.</p>
-<blockquote>
-<p><strong>B4 (FP-RPT3b) cost note:</strong> marginal cost is per-provider, not uniformly <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.</mn><mi>C</mi><mi>l</mi><mi>a</mi><mi>u</mi><mi>d</mi><mi>e</mi><mi>M</mi><mi>a</mi><mi>x</mi><mo>+</mo><mi>P</mi><mi>r</mi><mi>o</mi><mo>=</mo></mrow><annotation encoding="application/x-tex">0. Claude Max + Pro = </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7778em;vertical-align:-0.0833em;"></span><span class="mord">0.</span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal">u</span><span class="mord mathnormal">d</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mord mathnormal">a</span><span class="mord mathnormal">x</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span></span></span></span>0 against the subscription cap; codex on ChatGPT Plus uses the Plus tier's bundled allowance; gemini routes through your configured local CLI auth. <code>CliRunner</code> logs <code>event=cli_auth_path</code> once per provider per run so you can verify. See <code>feedback_cli_path_is_cost_control.md</code> in this operator's memory for the full audit.</p>
-</blockquote>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Explicit CLI (same as default; every role goes through the local CLI of its provider)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># API path, explicit because it spends provider API credits</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.00001</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
-<h3 id="c-forcing-per-role-overrides"><a class="anchor" aria-label="anchor" href="#c-forcing-per-role-overrides">#</a>C. Forcing per-role overrides</h3>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># Run everything via API but route the expensive technical_correctness</span></span>
-<span data-line=""><span style="color:#6A737D"># through your Claude Code subscription instead</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> technical_correctness=cli</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --json</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># Run cheap roles on local OSS (requires Ollama running)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> summary=local_inference</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --runner-for</span><span style="color:#9ECBFF"> citation=local_inference</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#79B8FF">  --json</span></span></code></pre></figure>
-<h2 id="approve--real-github-pr"><a class="anchor" aria-label="anchor" href="#approve--real-github-pr">#</a>Approve → real GitHub PR</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># After review completes, approve to open a real PR on GrokRxiv/grokrxiv-reviews</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
-<span data-line=""><span style="color:#6A737D"># Returns: {"pr_url":"https://github.com/GrokRxiv/grokrxiv-reviews/pull/N", ...}</span></span>
-<span data-line=""> </span>
-<span data-line=""><span style="color:#6A737D"># After human review, publish by merging the open PR.</span></span>
-<span data-line=""><span style="color:#6A737D"># You can do this in GitHub, or explicitly from the CLI:</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> publish</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
-<h2 id="web-visibility"><a class="anchor" aria-label="anchor" href="#web-visibility">#</a>Web visibility</h2>
-<p>Public reviews are visible on the web when <code>visibility='public'</code> and
-<code>status IN ('pr_open','published','corrected','rejected')</code>. <code>grokrxiv approve</code>
-opens the PR and transitions the review to <code>pr_open</code>; the merge webhook later
-flips it to <code>published</code>.</p>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">curl</span><span style="color:#79B8FF"> -sf</span><span style="color:#79B8FF"> -o</span><span style="color:#9ECBFF"> /dev/null</span><span style="color:#79B8FF"> -w</span><span style="color:#9ECBFF"> "%{http_code}\n"</span><span style="color:#79B8FF"> \</span></span>
-<span data-line=""><span style="color:#9ECBFF">  http://localhost:3000/reviews/</span><span style="color:#F97583">&#x3C;</span><span style="color:#9ECBFF">REVIEW_UUI</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span></code></pre></figure>
-<h2 id="useful-flags"><a class="anchor" aria-label="anchor" href="#useful-flags">#</a>Useful flags</h2>
-<table>
-<thead>
-<tr>
-<th>Flag</th>
-<th>Effect</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--json</code></td>
-<td>Machine-readable output</td>
-</tr>
-<tr>
-<td><code>--dry-run</code></td>
-<td>Print resolved plan; no LLM calls</td>
-</tr>
-<tr>
-<td><code>--no-cache</code></td>
-<td>Skip <code>review_cache</code> hits this run</td>
-</tr>
-<tr>
-<td><code>--profile &#x3C;name></code></td>
-<td>Load profile from <code>~/.grokrxiv/config.toml</code></td>
-</tr>
-<tr>
-<td><code>--max-cost-usd 0.50</code></td>
-<td>Per-paper ceiling; fails fast on overrun</td>
-</tr>
-<tr>
-<td><code>--model-for ROLE=MODEL</code></td>
-<td>Swap model for one role this run</td>
-</tr>
-<tr>
-<td><code>--mode review_and_revise</code></td>
-<td>Emit revision patches (Phase 6 mode)</td>
-</tr>
-<tr>
-<td><code>--revision-target {paper_latex,grokrxiv_review_output}</code></td>
-<td>Where revisions land</td>
-</tr>
-</tbody>
-</table>
-<h2 id="doctor--preflight"><a class="anchor" aria-label="anchor" href="#doctor--preflight">#</a>Doctor — preflight</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#6A737D">          # human-readable</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#6A737D">   # CI-friendly</span></span></code></pre></figure>
-<p>Outputs reachability per runner:</p>
-<ul>
-<li><code>api</code> — anthropic / openai / gemini key validation</li>
-<li><code>cli</code> — <code>claude</code> / <code>codex</code> / <code>gemini</code> binaries on PATH + auth</li>
-<li><code>cloud</code> — VERCEL_OPEN_AGENTS_URL / E2B_API_KEY</li>
-<li><code>local_inference</code> — OLLAMA_HOST / GROKRXIV_LITELLM_URL</li>
-</ul>
-<h2 id="known-limitations-rpt2-ship"><a class="anchor" aria-label="anchor" href="#known-limitations-rpt2-ship">#</a>Known limitations (RPT2 ship)</h2>
-<ul>
-<li><strong>Gemini CLI JSON output</strong> — GrokRxiv invokes Gemini with <code>-o json</code> and unwraps the <code>.response</code> payload before schema validation. Keep Gemini on the CLI path unless you explicitly choose API billing.</li>
-<li><strong>Codex <code>exec --json</code> streams JSONL events</strong> — RPT2 G fix extracts the final <code>agent_message.text</code>. Should "just work" now.</li>
-<li><strong>Claude CLI skill</strong> — invoked via <code>/grokrxiv-review</code> prepended to the prompt (not a <code>--skill</code> flag; that flag doesn't exist).</li>
-<li><strong>CLI default timeout</strong> — 360s/role. Bump via <code>GROKRXIV_CLI_TIMEOUT_SECS</code> if a role legitimately needs longer.</li>
-<li><strong>Large bibliographies</strong> — citation review is LLM-backed by default. If a paper legitimately needs a different model, use <code>GROKRXIV_CITATION_MODEL=...</code> or <code>--model-for citation=...</code>.</li>
-</ul>
-<h2 id="real-e2e-to-verify"><a class="anchor" aria-label="anchor" href="#real-e2e-to-verify">#</a>Real E2E to verify</h2>
-<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.api_runners.anthropic.status == "ok"'</span></span>
-<span data-line=""><span style="color:#E1E4E8">out</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">$(</span><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.12484</span><span style="color:#79B8FF"> --json</span><span style="color:#E1E4E8">)</span></span>
-<span data-line=""><span style="color:#79B8FF">echo</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$out</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.review_id and .status == "awaiting_moderation" and (.agents | length) == 6'</span></span>
-<span data-line=""><span style="color:#E1E4E8">rid</span><span style="color:#F97583">=</span><span style="color:#E1E4E8">$(</span><span style="color:#79B8FF">echo</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$out</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -r</span><span style="color:#9ECBFF"> .review_id</span><span style="color:#E1E4E8">)</span></span>
-<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$rid</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> --json</span><span style="color:#F97583"> |</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -e</span><span style="color:#9ECBFF"> '.pr_url | test("^https://github.com/")'</span></span></code></pre></figure>
+<h2 id="setup"><a class="anchor" aria-label="anchor" href="#setup">#</a>Setup</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">cp</span><span style="color:#9ECBFF"> .env.example</span><span style="color:#9ECBFF"> .env</span></span>
+<span data-line=""><span style="color:#F97583">for</span><span style="color:#E1E4E8"> name </span><span style="color:#F97583">in</span><span style="color:#9ECBFF"> core</span><span style="color:#9ECBFF"> ingest</span><span style="color:#9ECBFF"> extract</span><span style="color:#9ECBFF"> review</span><span style="color:#9ECBFF"> publish</span><span style="color:#9ECBFF"> web</span><span style="color:#9ECBFF"> billing</span><span style="color:#9ECBFF"> dev</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">do</span></span>
+<span data-line=""><span style="color:#B392F0">  cp</span><span style="color:#9ECBFF"> ".env_${</span><span style="color:#E1E4E8">name</span><span style="color:#9ECBFF">}.example"</span><span style="color:#9ECBFF"> ".env_${</span><span style="color:#E1E4E8">name</span><span style="color:#9ECBFF">}"</span></span>
+<span data-line=""><span style="color:#F97583">done</span></span>
+<span data-line=""><span style="color:#B392F0">supabase</span><span style="color:#9ECBFF"> start</span></span>
+<span data-line=""><span style="color:#B392F0">cargo</span><span style="color:#9ECBFF"> build</span><span style="color:#79B8FF"> --workspace</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span></span></code></pre></figure>
+<p>The binary loads root <code>.env</code> from the repo root and then each file named by
+<code>GROKRXIV_ENV_FILES</code>. For shell scripts that run the release binary directly,
+source the root file plus its includes:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#79B8FF">set</span><span style="color:#79B8FF"> -a</span></span>
+<span data-line=""><span style="color:#79B8FF">source</span><span style="color:#9ECBFF"> .env</span></span>
+<span data-line=""><span style="color:#F97583">for</span><span style="color:#E1E4E8"> file </span><span style="color:#F97583">in</span><span style="color:#E1E4E8"> ${GROKRXIV_ENV_FILES</span><span style="color:#F97583">//</span><span style="color:#E1E4E8">,</span><span style="color:#F97583">/</span><span style="color:#E1E4E8"> }; </span><span style="color:#F97583">do</span><span style="color:#79B8FF"> source</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$file</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">done</span></span>
+<span data-line=""><span style="color:#79B8FF">set</span><span style="color:#9ECBFF"> +a</span></span>
+<span data-line=""><span style="color:#E1E4E8">PATH</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">$PWD</span><span style="color:#9ECBFF">/target/release:</span><span style="color:#E1E4E8">$PATH</span><span style="color:#9ECBFF">"</span></span></code></pre></figure>
+<h2 id="one-paper"><a class="anchor" aria-label="anchor" href="#one-paper">#</a>One Paper</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --no-cache</span><span style="color:#79B8FF"> --json</span><span style="color:#79B8FF"> 2605.17307</span></span></code></pre></figure>
+<p>Local and git sources:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> tex</span><span style="color:#9ECBFF"> ./paper.tex</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> pdf</span><span style="color:#9ECBFF"> ./paper.pdf</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --type</span><span style="color:#9ECBFF"> git</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">repo-ur</span><span style="color:#E1E4E8">l</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --rev</span><span style="color:#9ECBFF"> main</span><span style="color:#79B8FF"> --paper-path</span><span style="color:#9ECBFF"> paper.tex</span></span></code></pre></figure>
+<p>Already extracted:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> extract</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review-extracted</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review-extracted</span><span style="color:#79B8FF"> --force</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<h2 id="batch-field-sweep"><a class="anchor" aria-label="anchor" href="#batch-field-sweep">#</a>Batch Field Sweep</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> create</span><span style="color:#79B8FF"> --category</span><span style="color:#9ECBFF"> math</span><span style="color:#79B8FF"> --month</span><span style="color:#9ECBFF"> 2026-05</span><span style="color:#79B8FF"> --daily-limit</span><span style="color:#79B8FF"> 30</span><span style="color:#79B8FF"> --auto-pr</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> run</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">BATCH_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> status</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">BATCH_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> batch</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<p>Run <code>batch run</code> daily from the scheduler of your choice. Batch items keep their
+own state, review id, PR URL, attempts, and error fields.</p>
+<h2 id="review-ops"><a class="anchor" aria-label="anchor" href="#review-ops">#</a>Review Ops</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> list</span><span style="color:#9ECBFF"> reviews</span><span style="color:#79B8FF"> --review-status</span><span style="color:#9ECBFF"> awaiting_moderation</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> show</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> open</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> request-revisions</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --notes</span><span style="color:#9ECBFF"> "Needs correction."</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> approve</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> close</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --reason</span><span style="color:#9ECBFF"> "Superseded."</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> reject</span><span style="color:#F97583"> &#x3C;</span><span style="color:#9ECBFF">REVIEW_I</span><span style="color:#E1E4E8">D</span><span style="color:#F97583">></span><span style="color:#79B8FF"> --reason</span><span style="color:#9ECBFF"> "Out of scope."</span></span></code></pre></figure>
+<h2 id="jobs"><a class="anchor" aria-label="anchor" href="#jobs">#</a>Jobs</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> jobs</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --kind</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> --state</span><span style="color:#9ECBFF"> running</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> jobs</span><span style="color:#9ECBFF"> list</span><span style="color:#79B8FF"> --state</span><span style="color:#9ECBFF"> failed</span></span></code></pre></figure>
+<h2 id="runner-overrides"><a class="anchor" aria-label="anchor" href="#runner-overrides">#</a>Runner Overrides</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> cli</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --runner</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --extractor</span><span style="color:#9ECBFF"> api</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --runner-for</span><span style="color:#9ECBFF"> technical_correctness=cli</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#79B8FF"> --model-for</span><span style="color:#9ECBFF"> reproducibility=gpt-5.5</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
+<p>CLI mode uses the local provider CLIs and their logged-in auth state. API mode
+uses provider API credentials and should be selected explicitly.</p>
+<h2 id="smoke"><a class="anchor" aria-label="anchor" href="#smoke">#</a>Smoke</h2>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="sh" data-theme="github-dark"><code data-language="sh" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> doctor</span><span style="color:#79B8FF"> --json</span></span>
+<span data-line=""><span style="color:#E1E4E8">out</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"$(</span><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> review </span><span style="color:#79B8FF">--runner</span><span style="color:#9ECBFF"> cli </span><span style="color:#79B8FF">--extractor</span><span style="color:#9ECBFF"> cli </span><span style="color:#79B8FF">--no-cache</span><span style="color:#79B8FF"> --json</span><span style="color:#79B8FF"> 2605.17307</span><span style="color:#9ECBFF">)"</span></span>
+<span data-line=""><span style="color:#E1E4E8">rid</span><span style="color:#F97583">=</span><span style="color:#9ECBFF">"$(</span><span style="color:#79B8FF">printf</span><span style="color:#9ECBFF"> '%s\n' "</span><span style="color:#E1E4E8">$out</span><span style="color:#9ECBFF">" </span><span style="color:#F97583">|</span><span style="color:#B392F0"> jq</span><span style="color:#79B8FF"> -r</span><span style="color:#9ECBFF"> .review_id)"</span></span>
+<span data-line=""><span style="color:#B392F0">grokrxiv</span><span style="color:#9ECBFF"> show</span><span style="color:#9ECBFF"> "</span><span style="color:#E1E4E8">$rid</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF"> --json</span></span></code></pre></figure>
 </main>
 <footer class="doc-footer">
-<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-19T00:03:20.763Z &middot; grokrxiv</p>
+<p>grokrxiv-cli-cheatsheet.md &middot; generated 2026-05-22T01:31:40.154Z &middot; grokrxiv</p>
 </footer>
 </body>
 </html>

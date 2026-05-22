@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createClient } from "@supabase/supabase-js";
 
-loadEnv(resolve(process.cwd(), "../../.env"));
+const rootEnv = resolve(process.cwd(), "../../.env");
+loadEnv(rootEnv);
+loadIncludedEnv(resolve(process.cwd(), "../.."));
 loadEnv(resolve(process.cwd(), ".env.local"));
 
 const email = (process.env.GROKRXIV_SUPER_ADMIN_EMAIL ?? "").trim().toLowerCase();
@@ -118,5 +120,18 @@ function loadEnv(path) {
     const [, key, rawValue] = match;
     if (process.env[key] !== undefined) continue;
     process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
+  }
+}
+
+function loadIncludedEnv(rootDir) {
+  const envFiles = process.env.GROKRXIV_ENV_FILES ?? "";
+  for (const entry of envFiles.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const path = trimmed.startsWith("/") ? trimmed : resolve(rootDir, trimmed);
+    if (!existsSync(path)) {
+      throw new Error(`GROKRXIV_ENV_FILES references missing file ${path}`);
+    }
+    loadEnv(path);
   }
 }

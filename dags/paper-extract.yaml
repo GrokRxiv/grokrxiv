@@ -3,6 +3,25 @@ version: 1
 accepts:
   - extractor
 concurrency: 1
+tools:
+  - id: source_to_body
+    executor: rust
+    timeout_secs: 120
+  - id: derive_metadata
+    executor: rust
+    timeout_secs: 30
+  - id: derive_sections
+    executor: rust
+    timeout_secs: 30
+  - id: derive_equations
+    executor: rust
+    timeout_secs: 120
+  - id: derive_references
+    executor: rust
+    timeout_secs: 120
+  - id: derive_theorems
+    executor: rust
+    timeout_secs: 120
 roles:
   - id: vlm_extractor
     kind: extractor
@@ -20,8 +39,45 @@ roles:
     kind: extractor
     config: agents/extraction/citations.yaml
 nodes:
-  - id: prepare_source
-    kind: prepare_inputs
+  - id: acquire_source
+    kind: ingest_source
+  - id: source_to_body
+    kind: tool
+    tool: source_to_body
+    inputs: [source.tar.gz, original.pdf]
+    outputs: [body.md, semantic_ast.json]
+    required: true
+  - id: derive_metadata
+    kind: tool
+    tool: derive_metadata
+    inputs: [source_to_body]
+    outputs: [metadata.json]
+    required: true
+  - id: derive_sections
+    kind: tool
+    tool: derive_sections
+    inputs: [body.md]
+    outputs: [sections.json]
+    required: true
+  - id: derive_equations
+    kind: tool
+    tool: derive_equations
+    inputs: [body.md, semantic_ast.json]
+    outputs: [equations.json]
+    required: true
+  - id: derive_references
+    kind: tool
+    tool: derive_references
+    inputs: [body.md, refs.bib]
+    outputs: [references.json]
+    required: true
+  - id: derive_theorems
+    kind: tool
+    tool: derive_theorems
+    inputs: [body.md, semantic_ast.json]
+    outputs: [theorem_graph.json]
+  - id: materialize_review_input
+    kind: artifact
   - id: vlm_extractor
     kind: agent
     role: vlm_extractor
@@ -37,10 +93,29 @@ nodes:
   - id: citation_contextualizer
     kind: agent
     role: citation_contextualizer
+  - id: paper_review
+    kind: dag_call
+    dag_type: paper-review
 edges:
-  - from: prepare_source
+  - from: acquire_source
+    to: source_to_body
+  - from: source_to_body
+    to:
+      - derive_metadata
+      - derive_sections
+      - derive_equations
+      - derive_references
+      - derive_theorems
+  - from:
+      - derive_metadata
+      - derive_sections
+      - derive_equations
+      - derive_references
+      - derive_theorems
+    to: materialize_review_input
+  - from: acquire_source
     to: vlm_extractor
-  - from: prepare_source
+  - from: source_to_body
     to: macro_expander
   - from: macro_expander
     to: equation_canonicalizer
@@ -48,3 +123,8 @@ edges:
     to: theorem_graph_extractor
   - from: theorem_graph_extractor
     to: citation_contextualizer
+  - from:
+      - vlm_extractor
+      - citation_contextualizer
+      - materialize_review_input
+    to: paper_review
