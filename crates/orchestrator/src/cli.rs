@@ -472,6 +472,12 @@ pub enum DagCommand {
         #[arg(long = "dag-type")]
         dag_type: Option<String>,
     },
+    /// Run one registered DAG app through the generic executor.
+    Run {
+        /// DAG type id to run, e.g. `c-to-rust`.
+        #[arg(long = "dag-type")]
+        dag_type: String,
+    },
     /// Add an agent role/node to one DAG manifest.
     AddAgent {
         /// DAG type id to edit, e.g. `paper-review`.
@@ -1025,6 +1031,7 @@ fn emit_pipeline_header(command: &str, subject: &str) {
 async fn dag_command(command: DagCommand, json: bool) -> anyhow::Result<()> {
     match command {
         DagCommand::Validate { dag_type } => validate_dag_manifests(dag_type.as_deref(), json),
+        DagCommand::Run { dag_type } => run_dag_app_command(&dag_type, json).await,
         DagCommand::AddAgent {
             dag_type,
             role_id,
@@ -1101,6 +1108,26 @@ async fn agent_command(command: AgentCommand, json: bool) -> anyhow::Result<()> 
     match command {
         AgentCommand::Place { path } => place_agent(&path, json),
     }
+}
+
+async fn run_dag_app_command(dag_type: &str, json: bool) -> anyhow::Result<()> {
+    let report =
+        crate::dag_apps::run_registered_dag_app(dag_type, grokrxiv_dag_executor::DagIo::default())
+            .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let status = serde_json::to_string(&report.status)?
+            .trim_matches('"')
+            .to_string();
+        println!(
+            "ok {} status={} nodes={}",
+            report.dag_type,
+            status,
+            report.nodes.len()
+        );
+    }
+    Ok(())
 }
 
 fn validate_dag_manifests(dag_type: Option<&str>, json: bool) -> anyhow::Result<()> {
@@ -6782,6 +6809,26 @@ mod tests {
             Command::Dag {
                 command: DagCommand::Validate { dag_type },
             } => assert_eq!(dag_type.as_deref(), Some("paper-review")),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_dag_run_command() {
+        let parsed = Cli::try_parse_from([
+            "grokrxiv",
+            "--json",
+            "dag",
+            "run",
+            "--dag-type",
+            "c-to-rust",
+        ])
+        .unwrap();
+
+        match parsed.command {
+            Command::Dag {
+                command: DagCommand::Run { dag_type },
+            } => assert_eq!(dag_type, "c-to-rust"),
             other => panic!("unexpected command: {other:?}"),
         }
     }

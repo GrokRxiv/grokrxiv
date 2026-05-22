@@ -9,9 +9,12 @@ GrokRxiv is a distributed DAG-app runner. Rust orchestrates typed DAGs whose nod
 ## Architecture map
 
 - `apps/web/` — Next.js 16 frontend (App Router, Tailwind 4, shadcn/Radix). Production UI.
-- `crates/orchestrator/` — Rust supervisor that runs DAG manifests and owns side effects.
+- `crates/dag-runtime/` — DAG manifest parsing and validation.
+- `crates/dag-executor/` — generic manifest-driven DAG executor. It must stay free of paper/review/arXiv dependencies.
+- `crates/dag-app-*` — concrete DAG apps that adapt manifests to domain tools, agents, verifiers, renderers, and publishers.
+- `crates/orchestrator/` — HTTP/CLI/scheduler glue, DB/job ownership, and DAG app registry.
 - `crates/llm-adapter/` — Multi-provider LLM client (claude / openai / gemini / vllm).
-- `crates/{ingest,render,publisher,schemas,verifier}/` — pipeline stages.
+- `crates/{ingest,render,publisher,schemas,verifier}/` — domain tool/provider crates used by DAG apps.
 - `dags/*.yaml` — DAG-type manifests: tools, roles, nodes, edges, and `dag_call` composition.
 - `agents/<dag-type>/*.yaml` — per-role config: provider, model, runner, prompt template, schemas, verifier names, prompt context, overlays, postprocessors, max_retries.
 - `schemas/*.schema.json` — typed output contracts (the single source of truth).
@@ -38,6 +41,10 @@ Follow `AGENTS.md` for the standard way to add Rust tools/functions, CLI tools,
 agents, and whole DAG types. Do not add new orchestration by hardcoding a
 special case into the supervisor when a manifest node, registered Rust handler,
 or `dag_call` can express it.
+
+Use `grokrxiv dag run --dag-type <dag> --json` for executor-path smoke tests.
+The c-to-rust DAG app is the required non-paper proof path for generic DAG
+changes.
 
 LLM readability is a product requirement: prefer explicit names and small
 contract files over implicit conventions or catch-all modules. Reusable

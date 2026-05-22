@@ -69,6 +69,16 @@ const RUST_TOOL_HANDLERS: &[RustToolDescriptor] = &[
         module: "citation_validation",
         description: "Validate cited/uncited/unmatched citation graph consistency.",
     },
+    RustToolDescriptor {
+        handler: "publisher::upload_review_bundle",
+        module: "publisher",
+        description: "Upload rendered review artifacts and metadata for publication.",
+    },
+    RustToolDescriptor {
+        handler: "publisher::open_review_pr",
+        module: "publisher",
+        description: "Open or update the publication pull request for an approved review.",
+    },
 ];
 
 #[derive(Debug, Clone)]

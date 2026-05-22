@@ -1,0 +1,9 @@
+id: paper-ingest
+version: 1
+accepts: []
+concurrency: 1
+nodes:
+  - id: acquire_source
+    kind: ingest_source
+    outputs: [source.tar.gz, original.pdf, source_manifest.json]
+    required: true

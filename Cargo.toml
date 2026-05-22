@@ -2,6 +2,14 @@
 resolver = "2"
 members = [
     "crates/dag-runtime",
+    "crates/dag-executor",
+    "crates/dag-app-citation-validation",
+    "crates/dag-app-paper-ingest",
+    "crates/dag-app-paper-extract",
+    "crates/dag-app-paper-review",
+    "crates/dag-app-paper-revise",
+    "crates/dag-app-paper-publish",
+    "crates/dag-app-c-to-rust",
     "crates/orchestrator",
     "crates/llm-adapter",
     "crates/ingest",

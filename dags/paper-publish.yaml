@@ -1,0 +1,36 @@
+id: paper-publish
+version: 1
+accepts: []
+concurrency: 1
+tools:
+  - id: upload_review_bundle
+    executor: rust
+    handler: publisher::upload_review_bundle
+    timeout_secs: 120
+  - id: open_review_pr
+    executor: rust
+    handler: publisher::open_review_pr
+    timeout_secs: 120
+nodes:
+  - id: prepare_publish
+    kind: prepare_inputs
+    inputs: [review_id, render_artifacts]
+    outputs: [publish_input.json]
+    required: true
+  - id: upload_review_bundle
+    kind: tool
+    tool: upload_review_bundle
+    inputs: [publish_input.json, render_artifacts]
+    outputs: [published_artifacts.json]
+    required: true
+  - id: open_review_pr
+    kind: tool
+    tool: open_review_pr
+    inputs: [publish_input.json, published_artifacts.json]
+    outputs: [publish_report.json]
+    required: true
+edges:
+  - from: prepare_publish
+    to: upload_review_bundle
+  - from: upload_review_bundle
+    to: open_review_pr

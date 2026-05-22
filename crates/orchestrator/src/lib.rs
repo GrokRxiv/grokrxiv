@@ -12,6 +12,7 @@ pub(crate) mod batch;
 pub mod cli;
 pub mod cli_status;
 pub mod config;
+pub mod dag_apps;
 pub(crate) mod dag_tools;
 pub mod db;
 pub mod doctor;
