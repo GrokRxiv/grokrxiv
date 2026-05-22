@@ -14,7 +14,7 @@
 //!
 //! This module is intentionally separate from the legacy
 //! `crates/orchestrator/src/agents/{traits,runners}` code, which still
-//! drives the 6-agent review DAG used by `grokrxiv ingest`. The two paths
+//! drives the 6-agent review DAG used by `grokrxiv app run research ingest`. The two paths
 //! coexist while the MVP stabilises.
 
 use std::path::PathBuf;

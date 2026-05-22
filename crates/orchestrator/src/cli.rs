@@ -143,7 +143,7 @@ pub struct Cli {
     pub dry_run_storage: bool,
 }
 
-/// Hint for `grokrxiv review <source>` when the source can't be inferred.
+/// Hint for `grokrxiv app run research review <source>` when the source can't be inferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum SourceType {
@@ -162,6 +162,13 @@ pub enum SourceType {
 /// Top-level CLI subcommand variants.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Run product apps through the generic DAG runtime.
+    App {
+        /// App operation to run.
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+
     // ---------- service ----------
     /// Run the HTTP API + tokio supervisor + scheduler.
     Serve,
@@ -193,273 +200,44 @@ pub enum Command {
     #[command(hide = true)]
     Categories,
 
-    // ---------- ingestion ----------
-    /// Synchronously ingest + review one or more papers.
-    #[command(hide = true)]
-    Ingest {
-        /// arXiv IDs (e.g. `2605.12484`).
-        #[arg(required = true)]
-        arxiv_ids: Vec<String>,
-        /// Phase 5: after the review reaches `awaiting_moderation`, open the
-        /// human-review PR. Clean gates use the publication PR body; warn/fail
-        /// gates use the revision-needed PR body.
-        #[arg(long)]
-        auto_moderate: bool,
-    },
-    /// Fetch + extract one or more papers, validate reviewer input, then stop before review.
-    Extract {
-        /// arXiv IDs (e.g. `2605.12484`).
-        #[arg(required = true)]
-        arxiv_ids: Vec<String>,
-    },
-    /// Bulk OAI-PMH backfill across an arXiv date range.
-    #[command(hide = true)]
-    IngestRange {
-        /// Start of the date range (inclusive).
-        #[arg(long)]
-        from: chrono::NaiveDate,
-        /// End of the date range (inclusive).
-        #[arg(long)]
-        to: chrono::NaiveDate,
-        /// Comma-separated category set (defaults to DEFAULT_ACTIVE_CATEGORIES).
-        #[arg(long)]
-        categories: Option<String>,
-        /// Skip the auto-review enqueue (metadata-only backfill).
-        #[arg(long)]
-        no_review: bool,
-    },
-    /// One-shot equivalent of the daily scheduler tick.
-    #[command(hide = true)]
-    IngestDaily,
-
-    /// Create and run scheduled arXiv review batches.
-    Batch {
-        /// Batch operation to run.
-        #[command(subcommand)]
-        command: BatchCommand,
-    },
-
-    // ---------- review lifecycle ----------
-    /// List reviews or papers.
-    List {
-        /// Whether to list reviews or papers.
-        #[command(subcommand)]
-        what: ListKind,
-    },
-    /// Pretty-print a review (meta + agents + verifier statuses).
-    Show {
-        /// UUID of the review to print.
-        review_id: Uuid,
-        /// Emit JSON instead of human-readable text.
-        #[arg(long)]
-        json: bool,
-    },
-    /// The canonical end-to-end entry point. Runs the review and opens the
-    /// GitHub PR used for human review.
-    ///
-    /// `source` can be:
-    /// - an arXiv id (e.g. `2605.12484`),
-    /// - an arXiv URL (`https://arxiv.org/abs/...` / `/pdf/...`),
-    /// - a local `.tex` or `.pdf` manuscript,
-    /// - a git repository containing a `.tex` or `.pdf` manuscript,
-    /// - `@<path>` to read a newline-delimited file of review sources.
-    ///
-    /// arXiv, local `.tex`/`.pdf`, and git repository sources can run through
-    /// the production review path when built with ingest support.
-    Review {
-        /// Source: arXiv id | URL | path | `-` | `@file`.
-        source: String,
-        /// Force the source kind when it can't be inferred (e.g. stdin).
-        #[arg(long, value_enum)]
-        r#type: Option<SourceType>,
-        /// Git revision to review when `--type git` or a git source is inferred.
-        #[arg(long)]
-        rev: Option<String>,
-        /// Relative PDF/TeX manuscript path inside a git repository.
-        #[arg(long, value_name = "PATH")]
-        paper_path: Option<PathBuf>,
-        /// Optional title override for local file or git sources.
-        #[arg(long)]
-        title: Option<String>,
-        /// Optional field/category override for local file or git sources.
-        #[arg(long)]
-        field: Option<String>,
-        /// Scan a git repository/folder for every reviewable TeX/PDF
-        /// manuscript and run one review per discovered paper.
-        #[arg(long)]
-        corpus: bool,
-        /// Relative root inside the git repository to scan when `--corpus`.
-        #[arg(long, value_name = "PATH")]
-        scan_root: Option<PathBuf>,
-        /// Maximum number of corpus manuscripts to review after de-duplication.
-        #[arg(long)]
-        limit: Option<usize>,
-        /// Include glob for corpus scan. Repeatable; supports simple `*.tex`
-        /// and `prefix/**` forms.
-        #[arg(long)]
-        include: Vec<String>,
-        /// Exclude glob for corpus scan. Repeatable; supports simple `*.tex`
-        /// and `prefix/**` forms.
-        #[arg(long)]
-        exclude: Vec<String>,
-    },
-    /// Re-run the review DAG against an already-ingested paper.
-    #[command(hide = true)]
-    ReReview {
-        /// UUID of the paper to re-review.
-        paper_id: Uuid,
-    },
-    /// Run the review DAG for a paper that was already extracted.
-    ReviewExtracted {
-        /// Supersede any active review for this paper.
-        #[arg(long)]
-        force: bool,
-        /// arXiv id, arXiv URL, or paper UUID from `grokrxiv list extracted`.
-        source: String,
-    },
-    /// Re-run the verifier ladder against a review.
-    #[command(hide = true)]
-    Verify {
-        /// UUID of the review to re-verify.
-        review_id: Uuid,
-    },
-    /// Re-emit one or all artifacts for a persisted review.
-    #[command(hide = true)]
-    Render {
-        /// UUID of the review to render.
-        review_id: Uuid,
-        /// Output artifact format.
-        #[arg(long, value_enum, default_value = "html")]
-        format: RenderFormat,
-        /// Optional destination path; defaults to `artifacts/<review_id>/`.
-        #[arg(long)]
-        out: Option<std::path::PathBuf>,
-    },
-    /// Refresh derived review metadata without rerunning agents.
-    #[command(name = "refresh-review", hide = true)]
-    RefreshReview {
-        /// UUID of the review to refresh.
-        review_id: Uuid,
-    },
-
-    // ---------- moderation (admin) ----------
-    /// Merge the reviewed publication PR and publish/revalidate the web output.
-    Approve {
-        /// UUID of the review whose already-open PR should be merged and published.
-        review_id: Uuid,
-        /// Bypass the latest automated publication gate and merge anyway.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Open a revision-needed PR for a failed automated review gate.
-    #[command(alias = "needs-revision")]
-    RequestRevisions {
-        /// UUID of the review that needs author revisions.
-        review_id: Uuid,
-        /// Optional moderator note to include in the PR body.
-        #[arg(long)]
-        notes: Option<String>,
-    },
-    /// Destructive live smoke for the GitHub correction feedback loop.
-    #[command(hide = true)]
-    FeedbackLoopSmoke {
-        /// Prior review id whose revision PR should receive a smoke commit.
-        review_id: Uuid,
-        /// Maximum time to wait for the webhook-driven re-review.
-        #[arg(long, default_value_t = 3600)]
-        max_wait_secs: u64,
-    },
-    /// Deprecated alias for `approve`.
-    #[command(hide = true, alias = "merge")]
-    Publish {
-        /// UUID of the review whose PR should be merged.
-        review_id: Uuid,
-        /// Bypass the latest automated gate and merge anyway.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Re-run the post-render html_quality harness on an already-rendered
-    /// review. Reads `artifacts/<review_id>/review.html`, runs codex (gpt-5.5)
-    /// to fix formatting issues, writes the corrected HTML back, and persists
-    /// `formatting_fixes.json` sidecar.
-    #[command(hide = true)]
-    HtmlReview {
-        /// UUID of the review whose review.html should be audited + fixed.
-        /// Required unless `--all` is set.
-        review_id: Option<Uuid>,
-        /// Run the harness on every review with status in {pr_open, published,
-        /// corrected}. Skips reviews whose artifact directory is missing.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Close a review: hide it from web and close the linked GitHub PR.
-    #[command(visible_alias = "remove-review")]
-    Close {
-        /// UUID of the review to close.
-        review_id: Uuid,
-        /// Human-readable reason recorded on the withdrawal row.
-        #[arg(long)]
-        reason: String,
-        /// Leave the linked GitHub PR untouched.
-        #[arg(long)]
-        keep_github_pr: bool,
-    },
-    /// Mark a review rejected and publish the rejection rationale.
-    Reject {
-        /// UUID of the review to reject.
-        review_id: Uuid,
-        /// Human-readable reason recorded on the moderation row.
-        #[arg(long)]
-        reason: String,
-    },
-    /// Request changes from the moderator queue.
-    RequestChanges {
-        /// UUID of the review awaiting changes.
-        review_id: Uuid,
-        /// Moderator notes recorded on the moderation row.
-        #[arg(long)]
-        notes: String,
-    },
-    /// Withdraw a published review (status → withdrawn; revalidates).
-    #[command(hide = true)]
-    Withdraw {
-        /// UUID of the review to withdraw.
-        review_id: Uuid,
-        /// Reason recorded on the corrections row.
-        #[arg(long)]
-        reason: String,
-    },
-    /// Append a correction; status → corrected.
-    #[command(hide = true)]
-    Correct {
-        /// UUID of the review being corrected.
-        review_id: Uuid,
-        /// Path to a Markdown file containing the correction rationale.
-        #[arg(long, value_name = "PATH")]
-        rationale_md: std::path::PathBuf,
-    },
-
-    // ---------- conveniences ----------
-    /// Print (and on macOS, `open`) the canonical /reviews/<id> URL.
-    Open {
-        /// UUID of the review to open in the browser.
-        review_id: Uuid,
-    },
     /// Inspect queued, running, completed, and failed jobs.
     Jobs {
         /// Jobs operation to run.
         #[command(subcommand)]
         command: JobsCommand,
     },
-    /// Deprecated alias for `jobs list`.
-    #[command(hide = true)]
-    TailJobs {
-        /// Optional `kind` filter (e.g. `ingest`, `review`).
+}
+
+/// Subcommands for product app runtime operations.
+#[derive(Debug, Subcommand)]
+pub enum AppCommand {
+    /// List registered product apps.
+    List,
+    /// Show one app's available actions.
+    Show {
+        /// App id, e.g. `research` or `c-to-rust`.
+        app: String,
+    },
+    /// Run one app action.
+    Run {
+        /// App id, e.g. `research` or `c-to-rust`.
+        app: String,
+        /// App action id, e.g. `review`, `extract`, or `translate`.
+        action: String,
+        /// Action-specific arguments passed to the app action adapter.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// List app run records from the runtime database.
+    Runs {
+        /// Optional app id filter.
         #[arg(long)]
-        kind: Option<String>,
-        /// Optional `state` filter (e.g. `running`, `failed`).
-        #[arg(long)]
-        state: Option<String>,
+        app: Option<String>,
+    },
+    /// Show one app run record.
+    Status {
+        /// App run UUID.
+        run_id: Uuid,
     },
 }
 
@@ -669,7 +447,7 @@ pub enum JobsCommand {
     },
 }
 
-/// Selector for `grokrxiv list`.
+/// Selector for `grokrxiv app run research list`.
 #[derive(Debug, Subcommand)]
 pub enum ListKind {
     /// List reviews.
@@ -846,37 +624,48 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let command = cli.command;
     let is_review_command = matches!(
-        command,
-        Command::Review { .. }
-            | Command::Ingest { .. }
-            | Command::ReReview { .. }
-            | Command::ReviewExtracted { .. }
-            | Command::IngestRange { .. }
-            | Command::IngestDaily
-            | Command::Batch {
-                command: BatchCommand::Run { .. },
-            }
+        &command,
+        Command::App {
+            command:
+                AppCommand::Run {
+                    app,
+                    action,
+                    ..
+                },
+        } if app == "research"
+            && matches!(
+                action.as_str(),
+                "extract" | "review" | "review-extracted" | "approve" | "request-revisions"
+            )
     );
 
     if dry_run {
-        if let Command::Approve { review_id, .. } | Command::Publish { review_id, .. } = &command {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&serde_json::json!({
-                        "dry_run": true,
-                        "command": "approve",
-                        "review_id": review_id,
-                    }))?
-                );
-            } else {
-                println!("dry_run=true command=approve review_id={review_id}");
+        if let Command::App {
+            command: AppCommand::Run { app, action, args },
+        } = &command
+        {
+            if app == "research" && action == "approve" {
+                let review_id = parse_uuid_arg(args.first(), "review_id")?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "dry_run": true,
+                            "app": "research",
+                            "action": "approve",
+                            "review_id": review_id,
+                        }))?
+                    );
+                } else {
+                    println!("dry_run=true app=research action=approve review_id={review_id}");
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
 
     let result = match command {
+        Command::App { command } => app_command(command, json, dry_run).await,
         Command::Serve => super::serve::run().await,
         Command::Doctor => {
             let code = doctor_mod::doctor(&profile, json).await?;
@@ -892,97 +681,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => print_config(show_secrets || cmd_show, runtime_cfg.as_ref(), json),
         Command::Migrate => migrate().await,
         Command::Categories => print_categories(),
-        Command::Ingest {
-            arxiv_ids,
-            auto_moderate,
-        } => ingest_many(&arxiv_ids, auto_moderate, json).await,
-        Command::Extract { arxiv_ids } => extract_many(&arxiv_ids, json).await,
-        Command::IngestRange {
-            from,
-            to,
-            categories,
-            no_review,
-        } => ingest_range(from, to, categories, no_review).await,
-        Command::IngestDaily => ingest_daily().await,
-        Command::Batch { command } => batch_command(command, dry_run, json).await,
-        Command::List { what } => list(what).await,
-        Command::Show { review_id, json } => show(review_id, json).await,
-        Command::Review {
-            source,
-            r#type,
-            rev,
-            paper_path,
-            title,
-            field,
-            corpus,
-            scan_root,
-            limit,
-            include,
-            exclude,
-        } => {
-            review_source(
-                &source,
-                r#type,
-                ReviewSourceOptions {
-                    rev,
-                    paper_path,
-                    title,
-                    field,
-                    corpus,
-                    scan_root,
-                    limit,
-                    include,
-                    exclude,
-                },
-                json,
-                dry_run,
-            )
-            .await
-        }
-        Command::ReReview { paper_id } => review_paper(paper_id).await,
-        Command::ReviewExtracted { source, force } => review_extracted(&source, force, json).await,
-        Command::Verify { review_id } => verify(review_id).await,
-        Command::Render {
-            review_id,
-            format,
-            out,
-        } => render(review_id, format, out).await,
-        Command::RefreshReview { review_id } => refresh_review(review_id, json).await,
-        Command::Approve { review_id, force } => approve(review_id, force, json).await,
-        Command::RequestRevisions { review_id, notes } => {
-            request_revisions(review_id, notes.as_deref(), json).await
-        }
-        Command::FeedbackLoopSmoke {
-            review_id,
-            max_wait_secs,
-        } => feedback_loop_smoke(review_id, max_wait_secs, json).await,
-        Command::Publish { review_id, force } => approve(review_id, force, json).await,
-        Command::HtmlReview { review_id, all } => html_review_cmd(review_id, all, json).await,
-        Command::Close {
-            review_id,
-            reason,
-            keep_github_pr,
-        } => close_review(review_id, &reason, keep_github_pr, json).await,
-        Command::Reject { review_id, reason } => reject(review_id, &reason).await,
-        Command::RequestChanges { review_id, notes } => request_changes(review_id, &notes).await,
-        Command::Withdraw { review_id, reason } => withdraw(review_id, &reason).await,
-        Command::Correct {
-            review_id,
-            rationale_md,
-        } => correct(review_id, &rationale_md).await,
-        Command::Open { review_id } => open_review(review_id),
         Command::Jobs { command } => jobs_command(command, json).await,
-        Command::TailJobs { kind, state } => {
-            jobs_command(
-                JobsCommand::List {
-                    kind,
-                    state,
-                    limit: 20,
-                },
-                json,
-            )
-            .await
-        }
     };
 
     if let Some(dir) = debug_prompt_dir.as_ref() {
@@ -1027,6 +726,918 @@ fn emit_pipeline_header(command: &str, subject: &str) {
 // (serve, ingest one paper, approve) we wire through; the rest emit a clear
 // "not yet implemented in stub build" message that points at the right task.
 // ---------------------------------------------------------------------------
+
+async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::Result<()> {
+    match command {
+        AppCommand::List => app_list(json),
+        AppCommand::Show { app } => app_show(&app, json),
+        AppCommand::Run { app, action, args } => {
+            app_run_command(&app, &action, args, json, dry_run).await
+        }
+        AppCommand::Runs { app } => app_runs(app.as_deref(), json).await,
+        AppCommand::Status { run_id } => app_status(run_id, json).await,
+    }
+}
+
+fn app_list(json: bool) -> anyhow::Result<()> {
+    let apps = crate::dag_apps::registered_apps();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "apps": apps.iter().map(|app| serde_json::json!({
+                    "id": app.id,
+                    "label": app.label,
+                    "actions": app.actions.iter().map(|action| serde_json::json!({
+                        "id": action.id,
+                        "dag_type": action.dag_type,
+                        "description": action.description,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>()
+            }))?
+        );
+    } else {
+        for app in apps {
+            println!("{} — {}", app.id, app.label);
+            for action in app.actions {
+                println!("  {} -> {}", action.id, action.dag_type);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn app_show(app_id: &str, json: bool) -> anyhow::Result<()> {
+    let app = crate::dag_apps::registered_app(app_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown app `{app_id}`"))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": app.id,
+                "label": app.label,
+                "actions": app.actions.iter().map(|action| serde_json::json!({
+                    "id": action.id,
+                    "dag_type": action.dag_type,
+                    "description": action.description,
+                })).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("{} — {}", app.id, app.label);
+        for action in app.actions {
+            println!(
+                "{}\n  dag_type={}\n  {}",
+                action.id, action.dag_type, action.description
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn app_run_command(
+    app: &str,
+    action: &str,
+    args: Vec<String>,
+    json: bool,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let descriptor = crate::dag_apps::registered_app_action(app, action)
+        .ok_or_else(|| anyhow::anyhow!("unknown app action `{app} {action}`"))?;
+
+    match (app, action) {
+        ("research", "extract") => {
+            ensure_args_not_empty(&args, "research extract requires at least one source")?;
+            extract_many(&args, json).await
+        }
+        ("research", "ingest") => {
+            let request = parse_ingest_args(args)?;
+            ingest_many(&request.arxiv_ids, request.auto_moderate, json).await
+        }
+        ("research", "ingest-range") => {
+            let request = parse_ingest_range_args(args)?;
+            ingest_range(
+                request.from,
+                request.to,
+                request.categories,
+                request.no_review,
+            )
+            .await
+        }
+        ("research", "ingest-daily") => {
+            ensure_args_empty(&args, "research ingest-daily takes no arguments")?;
+            ingest_daily().await
+        }
+        ("research", "review") => {
+            let request = parse_research_review_args(args)?;
+            review_source(
+                &request.source,
+                request.source_type,
+                ReviewSourceOptions {
+                    rev: request.rev,
+                    paper_path: request.paper_path,
+                    title: request.title,
+                    field: request.field,
+                    corpus: request.corpus,
+                    scan_root: request.scan_root,
+                    limit: request.limit,
+                    include: request.include,
+                    exclude: request.exclude,
+                },
+                json,
+                dry_run,
+            )
+            .await
+        }
+        ("research", "review-extracted") => {
+            let request = parse_review_extracted_args(args)?;
+            review_extracted(&request.source, request.force, json).await
+        }
+        ("research", "re-review") => {
+            let paper_id = parse_uuid_arg(args.first(), "paper_id")?;
+            review_paper(paper_id).await
+        }
+        ("research", "verify") => {
+            let review_id = parse_uuid_arg(args.first(), "review_id")?;
+            verify(review_id).await
+        }
+        ("research", "render") => {
+            let request = parse_render_args(args)?;
+            render(request.review_id, request.format, request.out).await
+        }
+        ("research", "refresh-review") => {
+            let review_id = parse_uuid_arg(args.first(), "review_id")?;
+            refresh_review(review_id, json).await
+        }
+        ("research", "show") => {
+            let review_id = parse_uuid_arg(args.first(), "review_id")?;
+            show(review_id, json).await
+        }
+        ("research", "list") => {
+            let request = parse_research_list_args(args, json)?;
+            list(request).await
+        }
+        ("research", "open") => {
+            let review_id = parse_uuid_arg(args.first(), "review_id")?;
+            open_review(review_id)
+        }
+        ("research", "approve") => {
+            let request = parse_review_id_action_args(args, "approve", "force")?;
+            approve(request.review_id, request.force, json).await
+        }
+        ("research", "request-revisions") => {
+            let request = parse_review_id_notes_args(args, "request-revisions", false)?;
+            request_revisions(request.review_id, request.notes.as_deref(), json).await
+        }
+        ("research", "request-changes") => {
+            let request = parse_review_id_notes_args(args, "request-changes", true)?;
+            request_changes(request.review_id, request.notes.as_deref().unwrap_or("")).await
+        }
+        ("research", "reject") => {
+            let request = parse_review_id_reason_args(args, "reject")?;
+            reject(request.review_id, &request.reason).await
+        }
+        ("research", "close") => {
+            let request = parse_close_args(args)?;
+            close_review(
+                request.review_id,
+                &request.reason,
+                request.keep_github_pr,
+                json,
+            )
+            .await
+        }
+        ("research", "withdraw") => {
+            let request = parse_review_id_reason_args(args, "withdraw")?;
+            withdraw(request.review_id, &request.reason).await
+        }
+        ("research", "correct") => {
+            let request = parse_correct_args(args)?;
+            correct(request.review_id, &request.rationale_md).await
+        }
+        ("research", "html-review") => {
+            let request = parse_html_review_args(args)?;
+            html_review_cmd(request.review_id, request.all, json).await
+        }
+        ("research", "feedback-loop-smoke") => {
+            let request = parse_feedback_loop_smoke_args(args)?;
+            feedback_loop_smoke(request.review_id, request.max_wait_secs, json).await
+        }
+        ("research", "batch-create") => {
+            let command = parse_batch_create_args(args)?;
+            batch_command(command, dry_run, json).await
+        }
+        ("research", "batch-run") => {
+            let command = parse_batch_run_args(args)?;
+            batch_command(command, dry_run, json).await
+        }
+        ("research", "batch-status") => {
+            let batch_id = parse_uuid_arg(args.first(), "batch_id")?;
+            batch_command(BatchCommand::Status { batch_id }, dry_run, json).await
+        }
+        ("research", "batch-list") => {
+            let limit = parse_optional_limit(args, 20)?;
+            batch_command(BatchCommand::List { limit }, dry_run, json).await
+        }
+        ("c-to-rust", "translate") => {
+            let mut input = grokrxiv_dag_executor::DagIo::default();
+            input.values.insert("app".into(), serde_json::json!(app));
+            input
+                .values
+                .insert("action".into(), serde_json::json!(action));
+            input.values.insert("args".into(), serde_json::json!(args));
+            let report =
+                crate::dag_apps::run_registered_dag_app(descriptor.dag_type, input).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "app={} action={} dag_type={} status={:?} nodes={}",
+                    app,
+                    action,
+                    descriptor.dag_type,
+                    report.status,
+                    report.nodes.len()
+                );
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!("app action `{app} {action}` is registered but has no adapter"),
+    }
+}
+
+async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state_obj = super::AppState::from_config(config).await?;
+    let pool = state_obj
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("app runs: DATABASE_URL not configured"))?;
+    let rows = sqlx::query(
+        "select id::text, app_id, action_id, state, created_at, started_at, finished_at \
+         from app_runs \
+         where ($1::text is null or app_id = $1) \
+         order by created_at desc \
+         limit 50",
+    )
+    .bind(app)
+    .fetch_all(pool)
+    .await
+    .context("list app runs")?;
+
+    if json {
+        let runs = rows
+            .iter()
+            .map(|row: &sqlx::postgres::PgRow| {
+                use sqlx::Row as _;
+                serde_json::json!({
+                    "id": row.get::<String, _>(0),
+                    "app_id": row.get::<String, _>(1),
+                    "action_id": row.get::<String, _>(2),
+                    "state": row.get::<String, _>(3),
+                    "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(4),
+                    "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(5),
+                    "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(6),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "runs": runs }))?
+        );
+    } else if rows.is_empty() {
+        println!("No app runs found.");
+    } else {
+        for row in rows {
+            use sqlx::Row as _;
+            println!(
+                "{} {}:{} {}",
+                row.get::<String, _>(0),
+                row.get::<String, _>(1),
+                row.get::<String, _>(2),
+                row.get::<String, _>(3)
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state_obj = super::AppState::from_config(config).await?;
+    let pool = state_obj
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("app status: DATABASE_URL not configured"))?;
+    let row = sqlx::query(
+        "select id::text, app_id, action_id, state, input, output, error_code, error_message, \
+                created_at, started_at, finished_at \
+         from app_runs \
+         where id = $1",
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await
+    .context("load app run status")?
+    .ok_or_else(|| anyhow::anyhow!("app run not found: {run_id}"))?;
+
+    use sqlx::Row as _;
+    let payload = serde_json::json!({
+        "id": row.get::<String, _>(0),
+        "app_id": row.get::<String, _>(1),
+        "action_id": row.get::<String, _>(2),
+        "state": row.get::<String, _>(3),
+        "input": row.get::<serde_json::Value, _>(4),
+        "output": row.get::<serde_json::Value, _>(5),
+        "error_code": row.get::<Option<String>, _>(6),
+        "error_message": row.get::<Option<String>, _>(7),
+        "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(8),
+        "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(9),
+        "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(10),
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!(
+            "{} {}:{} {}",
+            payload["id"].as_str().unwrap_or_default(),
+            payload["app_id"].as_str().unwrap_or_default(),
+            payload["action_id"].as_str().unwrap_or_default(),
+            payload["state"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+struct ResearchReviewArgs {
+    source: String,
+    source_type: Option<SourceType>,
+    rev: Option<String>,
+    paper_path: Option<PathBuf>,
+    title: Option<String>,
+    field: Option<String>,
+    corpus: bool,
+    scan_root: Option<PathBuf>,
+    limit: Option<usize>,
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+struct IngestArgs {
+    arxiv_ids: Vec<String>,
+    auto_moderate: bool,
+}
+
+struct IngestRangeArgs {
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+    categories: Option<String>,
+    no_review: bool,
+}
+
+struct ReviewExtractedArgs {
+    source: String,
+    force: bool,
+}
+
+struct ReviewIdActionArgs {
+    review_id: Uuid,
+    force: bool,
+}
+
+struct ReviewIdNotesArgs {
+    review_id: Uuid,
+    notes: Option<String>,
+}
+
+struct ReviewIdReasonArgs {
+    review_id: Uuid,
+    reason: String,
+}
+
+struct RenderArgs {
+    review_id: Uuid,
+    format: RenderFormat,
+    out: Option<PathBuf>,
+}
+
+struct CloseArgs {
+    review_id: Uuid,
+    reason: String,
+    keep_github_pr: bool,
+}
+
+struct CorrectArgs {
+    review_id: Uuid,
+    rationale_md: PathBuf,
+}
+
+struct HtmlReviewArgs {
+    review_id: Option<Uuid>,
+    all: bool,
+}
+
+struct FeedbackLoopSmokeArgs {
+    review_id: Uuid,
+    max_wait_secs: u64,
+}
+
+fn parse_research_review_args(args: Vec<String>) -> anyhow::Result<ResearchReviewArgs> {
+    let mut iter = args.into_iter();
+    let source = iter
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("research review requires a source"))?;
+    let mut parsed = ResearchReviewArgs {
+        source,
+        source_type: None,
+        rev: None,
+        paper_path: None,
+        title: None,
+        field: None,
+        corpus: false,
+        scan_root: None,
+        limit: None,
+        include: Vec::new(),
+        exclude: Vec::new(),
+    };
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--type" => {
+                let value = next_arg(&mut iter, "--type")?;
+                parsed.source_type = Some(parse_source_type(&value)?);
+            }
+            "--rev" => parsed.rev = Some(next_arg(&mut iter, "--rev")?),
+            "--paper-path" => {
+                parsed.paper_path = Some(PathBuf::from(next_arg(&mut iter, "--paper-path")?))
+            }
+            "--title" => parsed.title = Some(next_arg(&mut iter, "--title")?),
+            "--field" => parsed.field = Some(next_arg(&mut iter, "--field")?),
+            "--corpus" => parsed.corpus = true,
+            "--scan-root" => {
+                parsed.scan_root = Some(PathBuf::from(next_arg(&mut iter, "--scan-root")?))
+            }
+            "--limit" => {
+                let value = next_arg(&mut iter, "--limit")?;
+                parsed.limit = Some(
+                    value
+                        .parse()
+                        .context("--limit must be a positive integer")?,
+                );
+            }
+            "--include" => parsed.include.push(next_arg(&mut iter, "--include")?),
+            "--exclude" => parsed.exclude.push(next_arg(&mut iter, "--exclude")?),
+            other => anyhow::bail!("unknown research review argument `{other}`"),
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_ingest_args(args: Vec<String>) -> anyhow::Result<IngestArgs> {
+    let mut arxiv_ids = Vec::new();
+    let mut auto_moderate = false;
+    for arg in args {
+        if arg == "--auto-moderate" {
+            auto_moderate = true;
+        } else {
+            arxiv_ids.push(arg);
+        }
+    }
+    if arxiv_ids.is_empty() {
+        anyhow::bail!("research ingest requires at least one arXiv id");
+    }
+    Ok(IngestArgs {
+        arxiv_ids,
+        auto_moderate,
+    })
+}
+
+fn parse_ingest_range_args(args: Vec<String>) -> anyhow::Result<IngestRangeArgs> {
+    let mut iter = args.into_iter();
+    let mut from = None;
+    let mut to = None;
+    let mut categories = None;
+    let mut no_review = false;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--from" => {
+                from = Some(
+                    next_arg(&mut iter, "--from")?
+                        .parse()
+                        .context("--from must be YYYY-MM-DD")?,
+                )
+            }
+            "--to" => {
+                to = Some(
+                    next_arg(&mut iter, "--to")?
+                        .parse()
+                        .context("--to must be YYYY-MM-DD")?,
+                )
+            }
+            "--categories" => categories = Some(next_arg(&mut iter, "--categories")?),
+            "--no-review" => no_review = true,
+            other => anyhow::bail!("unexpected ingest-range argument `{other}`"),
+        }
+    }
+    Ok(IngestRangeArgs {
+        from: from.ok_or_else(|| anyhow::anyhow!("ingest-range requires --from"))?,
+        to: to.ok_or_else(|| anyhow::anyhow!("ingest-range requires --to"))?,
+        categories,
+        no_review,
+    })
+}
+
+fn parse_research_list_args(args: Vec<String>, json: bool) -> anyhow::Result<ListKind> {
+    let mut iter = args.into_iter();
+    let what = iter.next().ok_or_else(|| {
+        anyhow::anyhow!("research list requires `reviews`, `papers`, or `extracted`")
+    })?;
+    match what.as_str() {
+        "reviews" => {
+            let mut review_status = None;
+            let mut field = None;
+            let mut limit = 20;
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--review-status" | "--state" => {
+                        review_status = Some(next_arg(&mut iter, "--review-status")?)
+                    }
+                    "--field" => field = Some(next_arg(&mut iter, "--field")?),
+                    "--limit" => {
+                        limit = next_arg(&mut iter, "--limit")?
+                            .parse()
+                            .context("--limit must be a positive integer")?;
+                    }
+                    other => anyhow::bail!("unexpected research list reviews argument `{other}`"),
+                }
+            }
+            Ok(ListKind::Reviews {
+                review_status,
+                field,
+                limit,
+                json,
+            })
+        }
+        "papers" => {
+            let mut field = None;
+            let mut has_review = false;
+            let mut extracted = false;
+            let mut limit = 20;
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--field" => field = Some(next_arg(&mut iter, "--field")?),
+                    "--has-review" => has_review = true,
+                    "--extracted" => extracted = true,
+                    "--limit" => {
+                        limit = next_arg(&mut iter, "--limit")?
+                            .parse()
+                            .context("--limit must be a positive integer")?;
+                    }
+                    other => anyhow::bail!("unexpected research list papers argument `{other}`"),
+                }
+            }
+            Ok(ListKind::Papers {
+                field,
+                has_review,
+                extracted,
+                limit,
+                json,
+            })
+        }
+        "extracted" => {
+            let mut field = None;
+            let mut limit = 20;
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--field" => field = Some(next_arg(&mut iter, "--field")?),
+                    "--limit" => {
+                        limit = next_arg(&mut iter, "--limit")?
+                            .parse()
+                            .context("--limit must be a positive integer")?;
+                    }
+                    other => anyhow::bail!("unexpected research list extracted argument `{other}`"),
+                }
+            }
+            Ok(ListKind::Extracted { field, limit, json })
+        }
+        other => anyhow::bail!("unknown research list target `{other}`"),
+    }
+}
+
+fn parse_review_extracted_args(args: Vec<String>) -> anyhow::Result<ReviewExtractedArgs> {
+    let mut force = false;
+    let mut source = None;
+    for arg in args {
+        if arg == "--force" {
+            force = true;
+        } else if source.is_none() {
+            source = Some(arg);
+        } else {
+            anyhow::bail!("unexpected review-extracted argument `{arg}`");
+        }
+    }
+    Ok(ReviewExtractedArgs {
+        source: source.ok_or_else(|| anyhow::anyhow!("review-extracted requires a source"))?,
+        force,
+    })
+}
+
+fn parse_review_id_action_args(
+    args: Vec<String>,
+    action: &str,
+    force_flag: &str,
+) -> anyhow::Result<ReviewIdActionArgs> {
+    let mut force = false;
+    let mut review_id = None;
+    for arg in args {
+        if arg == format!("--{force_flag}") {
+            force = true;
+        } else if review_id.is_none() {
+            review_id = Some(parse_uuid_arg(Some(&arg), "review_id")?);
+        } else {
+            anyhow::bail!("unexpected {action} argument `{arg}`");
+        }
+    }
+    Ok(ReviewIdActionArgs {
+        review_id: review_id.ok_or_else(|| anyhow::anyhow!("{action} requires review_id"))?,
+        force,
+    })
+}
+
+fn parse_review_id_notes_args(
+    args: Vec<String>,
+    action: &str,
+    notes_required: bool,
+) -> anyhow::Result<ReviewIdNotesArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut notes = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--notes" => notes = Some(next_arg(&mut iter, "--notes")?),
+            other => anyhow::bail!("unexpected {action} argument `{other}`"),
+        }
+    }
+    if notes_required && notes.as_deref().unwrap_or("").trim().is_empty() {
+        anyhow::bail!("{action} requires --notes");
+    }
+    Ok(ReviewIdNotesArgs { review_id, notes })
+}
+
+fn parse_review_id_reason_args(
+    args: Vec<String>,
+    action: &str,
+) -> anyhow::Result<ReviewIdReasonArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut reason = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--reason" => reason = Some(next_arg(&mut iter, "--reason")?),
+            other => anyhow::bail!("unexpected {action} argument `{other}`"),
+        }
+    }
+    Ok(ReviewIdReasonArgs {
+        review_id,
+        reason: reason.ok_or_else(|| anyhow::anyhow!("{action} requires --reason"))?,
+    })
+}
+
+fn parse_render_args(args: Vec<String>) -> anyhow::Result<RenderArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut format = RenderFormat::Html;
+    let mut out = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--format" => format = parse_render_format(&next_arg(&mut iter, "--format")?)?,
+            "--out" => out = Some(PathBuf::from(next_arg(&mut iter, "--out")?)),
+            other => anyhow::bail!("unexpected render argument `{other}`"),
+        }
+    }
+    Ok(RenderArgs {
+        review_id,
+        format,
+        out,
+    })
+}
+
+fn parse_close_args(args: Vec<String>) -> anyhow::Result<CloseArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut reason = None;
+    let mut keep_github_pr = false;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--reason" => reason = Some(next_arg(&mut iter, "--reason")?),
+            "--keep-github-pr" => keep_github_pr = true,
+            other => anyhow::bail!("unexpected close argument `{other}`"),
+        }
+    }
+    Ok(CloseArgs {
+        review_id,
+        reason: reason.ok_or_else(|| anyhow::anyhow!("close requires --reason"))?,
+        keep_github_pr,
+    })
+}
+
+fn parse_correct_args(args: Vec<String>) -> anyhow::Result<CorrectArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut rationale_md = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--rationale-md" => {
+                rationale_md = Some(PathBuf::from(next_arg(&mut iter, "--rationale-md")?))
+            }
+            other => anyhow::bail!("unexpected correct argument `{other}`"),
+        }
+    }
+    Ok(CorrectArgs {
+        review_id,
+        rationale_md: rationale_md
+            .ok_or_else(|| anyhow::anyhow!("correct requires --rationale-md"))?,
+    })
+}
+
+fn parse_html_review_args(args: Vec<String>) -> anyhow::Result<HtmlReviewArgs> {
+    let mut review_id = None;
+    let mut all = false;
+    for arg in args {
+        if arg == "--all" {
+            all = true;
+        } else if review_id.is_none() {
+            review_id = Some(arg.parse().context("invalid review_id")?);
+        } else {
+            anyhow::bail!("unexpected html-review argument `{arg}`");
+        }
+    }
+    if !all && review_id.is_none() {
+        anyhow::bail!("html-review requires review_id or --all");
+    }
+    Ok(HtmlReviewArgs { review_id, all })
+}
+
+fn parse_feedback_loop_smoke_args(args: Vec<String>) -> anyhow::Result<FeedbackLoopSmokeArgs> {
+    let mut iter = args.into_iter();
+    let review_id = parse_uuid_arg(iter.next().as_ref(), "review_id")?;
+    let mut max_wait_secs = 3600;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--max-wait-secs" => {
+                max_wait_secs = next_arg(&mut iter, "--max-wait-secs")?
+                    .parse()
+                    .context("--max-wait-secs must be a positive integer")?;
+            }
+            other => anyhow::bail!("unexpected feedback-loop-smoke argument `{other}`"),
+        }
+    }
+    Ok(FeedbackLoopSmokeArgs {
+        review_id,
+        max_wait_secs,
+    })
+}
+
+fn parse_batch_create_args(args: Vec<String>) -> anyhow::Result<BatchCommand> {
+    let mut iter = args.into_iter();
+    let mut category = None;
+    let mut month = None;
+    let mut daily_limit = 30;
+    let mut max_items = None;
+    let mut auto_pr = false;
+    let mut start_date = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--category" => category = Some(next_arg(&mut iter, "--category")?),
+            "--month" => month = Some(next_arg(&mut iter, "--month")?),
+            "--daily-limit" => {
+                daily_limit = next_arg(&mut iter, "--daily-limit")?
+                    .parse()
+                    .context("--daily-limit must be a positive integer")?
+            }
+            "--max-items" => {
+                max_items = Some(
+                    next_arg(&mut iter, "--max-items")?
+                        .parse()
+                        .context("--max-items must be a positive integer")?,
+                )
+            }
+            "--auto-pr" => auto_pr = true,
+            "--start-date" => {
+                start_date = Some(
+                    next_arg(&mut iter, "--start-date")?
+                        .parse()
+                        .context("--start-date must be YYYY-MM-DD")?,
+                )
+            }
+            other => anyhow::bail!("unexpected batch-create argument `{other}`"),
+        }
+    }
+    Ok(BatchCommand::Create {
+        category: category.ok_or_else(|| anyhow::anyhow!("batch-create requires --category"))?,
+        month: month.ok_or_else(|| anyhow::anyhow!("batch-create requires --month"))?,
+        daily_limit,
+        max_items,
+        auto_pr,
+        start_date,
+    })
+}
+
+fn parse_batch_run_args(args: Vec<String>) -> anyhow::Result<BatchCommand> {
+    let mut iter = args.into_iter();
+    let batch_id = parse_uuid_arg(iter.next().as_ref(), "batch_id")?;
+    let mut today = None;
+    let mut limit = None;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--today" => {
+                today = Some(
+                    next_arg(&mut iter, "--today")?
+                        .parse()
+                        .context("--today must be YYYY-MM-DD")?,
+                )
+            }
+            "--limit" => {
+                limit = Some(
+                    next_arg(&mut iter, "--limit")?
+                        .parse()
+                        .context("--limit must be a positive integer")?,
+                )
+            }
+            other => anyhow::bail!("unexpected batch-run argument `{other}`"),
+        }
+    }
+    Ok(BatchCommand::Run {
+        batch_id,
+        today,
+        limit,
+    })
+}
+
+fn parse_optional_limit(args: Vec<String>, default: u32) -> anyhow::Result<u32> {
+    let mut iter = args.into_iter();
+    let mut limit = default;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--limit" => {
+                limit = next_arg(&mut iter, "--limit")?
+                    .parse()
+                    .context("--limit must be a positive integer")?
+            }
+            other => anyhow::bail!("unexpected list argument `{other}`"),
+        }
+    }
+    Ok(limit)
+}
+
+fn parse_uuid_arg(value: Option<&String>, name: &str) -> anyhow::Result<Uuid> {
+    value
+        .ok_or_else(|| anyhow::anyhow!("missing {name}"))?
+        .parse()
+        .with_context(|| format!("invalid {name}"))
+}
+
+fn ensure_args_not_empty(args: &[String], message: &str) -> anyhow::Result<()> {
+    if args.is_empty() {
+        anyhow::bail!("{message}");
+    }
+    Ok(())
+}
+
+fn ensure_args_empty(args: &[String], message: &str) -> anyhow::Result<()> {
+    if !args.is_empty() {
+        anyhow::bail!("{message}");
+    }
+    Ok(())
+}
+
+fn next_arg(iter: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
+    iter.next()
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
+}
+
+fn parse_source_type(value: &str) -> anyhow::Result<SourceType> {
+    match value {
+        "arxiv" => Ok(SourceType::Arxiv),
+        "pdf" => Ok(SourceType::Pdf),
+        "tex" => Ok(SourceType::Tex),
+        "git" => Ok(SourceType::Git),
+        "mixed" => Ok(SourceType::Mixed),
+        _ => anyhow::bail!("invalid source type `{value}`"),
+    }
+}
+
+fn parse_render_format(value: &str) -> anyhow::Result<RenderFormat> {
+    match value {
+        "html" => Ok(RenderFormat::Html),
+        "md" => Ok(RenderFormat::Md),
+        "tex" => Ok(RenderFormat::Tex),
+        "pdf" => Ok(RenderFormat::Pdf),
+        "zip" => Ok(RenderFormat::Zip),
+        _ => anyhow::bail!("invalid render format `{value}`"),
+    }
+}
 
 async fn dag_command(command: DagCommand, json: bool) -> anyhow::Result<()> {
     match command {
@@ -3112,8 +3723,8 @@ fn existing_review_json(
         "review_id": review_id,
         "review_status": review_status,
         "pr_url": pr_url,
-        "show_command": format!("grokrxiv show {review_id}"),
-        "force_command": format!("grokrxiv review-extracted --force {arxiv_id}"),
+        "show_command": format!("grokrxiv app run research show {review_id}"),
+        "force_command": format!("grokrxiv app run research review-extracted --force {arxiv_id}"),
     })
 }
 
@@ -3130,9 +3741,11 @@ fn existing_review_text(
     if let Some(pr_url) = pr_url {
         out.push_str(&format!("pr_url={pr_url}\n"));
     }
-    out.push_str(&format!("show_command=grokrxiv show {review_id}\n"));
     out.push_str(&format!(
-        "force_command=grokrxiv review-extracted --force {arxiv_id}\n"
+        "show_command=grokrxiv app run research show {review_id}\n"
+    ));
+    out.push_str(&format!(
+        "force_command=grokrxiv app run research review-extracted --force {arxiv_id}\n"
     ));
     out
 }
@@ -3188,19 +3801,19 @@ async fn resolve_extracted_paper(
 
     let Some((paper_id, arxiv_id, title, status, git_path)) = row else {
         anyhow::bail!(
-            "review-extracted: no paper row for `{source}`; run `grokrxiv extract {source}` first"
+            "review-extracted: no paper row for `{source}`; run `grokrxiv app run research extract {source}` first"
         );
     };
     if status.as_deref() != Some("ready") || git_path.is_none() {
         anyhow::bail!(
-            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `grokrxiv extract {arxiv_id}` first",
+            "review-extracted: paper {arxiv_id} is not extracted yet (status={}); run `grokrxiv app run research extract {arxiv_id}` first",
             status.as_deref().unwrap_or("pending")
         );
     }
     Ok((paper_id, arxiv_id, title))
 }
 
-/// Source resolution for `grokrxiv review <source>`.
+/// Source resolution for `grokrxiv app run research review <source>`.
 #[derive(Debug, Clone)]
 enum ResolvedSource {
     /// arXiv id (already normalised).
@@ -3395,7 +4008,7 @@ async fn resolve_source(
     anyhow::bail!("could not resolve source `{source}` (not an arXiv id/URL, local .tex/.pdf file, or git repository)")
 }
 
-/// Canonical end-to-end entry point — `grokrxiv review <source>`.
+/// Canonical end-to-end entry point — `grokrxiv app run research review <source>`.
 async fn review_source(
     source: &str,
     type_hint: Option<SourceType>,
@@ -4856,7 +5469,8 @@ async fn open_publication_pr_impl(
         }
         anyhow::bail!(
             "review {review_id} is not cleanly publishable: {} \
-             Use `grokrxiv request-revisions {review_id}`, `grokrxiv reject {review_id} --reason …`, \
+             Use `grokrxiv app run research request-revisions {review_id}`, \
+             `grokrxiv app run research reject {review_id} --reason …`, \
              or re-run approve with `--force` to override.",
             publication_gate.reason
         );
@@ -4899,7 +5513,7 @@ async fn open_publication_pr_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `grokrxiv ingest <arxiv_id>` to regenerate."
+             re-run `grokrxiv app run research ingest <arxiv_id>` to regenerate."
         );
     }
 
@@ -4917,14 +5531,14 @@ async fn open_publication_pr_impl(
     let raw_pr_title = format!("Review: {} ({})", title, source_ref);
     let raw_pr_body = if visibility == "private" {
         format!(
-            "Opened by `grokrxiv review ...`.\n\n\
+            "Opened by `grokrxiv app run research review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Private review:** dashboard-only unless archived in the private reviews repo.\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview."
         )
     } else {
         format!(
-            "Opened by `grokrxiv review ...`.\n\n\
+            "Opened by `grokrxiv app run research review ...`.\n\n\
              **Automated gate:** Pass.\n\n\
              **Public page:** {public_url}/reviews/{review_id}\n\n\
              See linked artifacts in this PR; the rendered review.html is the human-readable preview.",
@@ -5102,7 +5716,7 @@ async fn request_revisions_impl(
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under artifacts/{review_id} — \
-             re-run `grokrxiv review ...` to regenerate."
+             re-run `grokrxiv app run research review ...` to regenerate."
         );
     }
 
@@ -5132,7 +5746,7 @@ async fn request_revisions_impl(
     };
     let raw_pr_title = format!("Needs revision: {} ({})", title, source_ref);
     let raw_pr_body = format!(
-        "Opened by `grokrxiv request-revisions {review_id}`.\n\n\
+        "Opened by `grokrxiv app run research request-revisions {review_id}`.\n\n\
          **Automated gate:** Needs revision (`{recommendation}`).\n\n\
          **Public review details:** {public_url}/reviews/{review_id}\n\n\
          This review is not approved for publication yet. {correction_instruction} Each push triggers GrokRxiv automated re-review through the `pull_request.synchronize` webhook. GrokRxiv updates the stable gate comment with pass/fail status and concrete correction notes until automation accepts the fixes.{note_block}{citation_block}\n\n\
@@ -5946,7 +6560,7 @@ async fn request_revisions_impl(
 }
 
 /// Local copy of supervisor::close_superseded_pr_if_any. Lives here so the
-/// `grokrxiv approve` CLI command (which doesn't go through the supervisor
+/// `grokrxiv app run research approve` command (which doesn't go through the supervisor
 /// background worker) also closes the prior PR on supersede.
 #[cfg(feature = "grokrxiv-publisher")]
 async fn close_superseded_pr_if_any_cli(
@@ -6078,7 +6692,9 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
             .await
             .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
     let pr_url = pr_url.ok_or_else(|| {
-        anyhow::anyhow!("review {review_id} has no github_pr_url; run `grokrxiv review ...` first")
+        anyhow::anyhow!(
+            "review {review_id} has no github_pr_url; run `grokrxiv app run research review ...` first"
+        )
     })?;
 
     let meta_review: Option<serde_json::Value> =
@@ -6100,7 +6716,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     if publication_gate.verdict != crate::review_gate::GateVerdict::Pass && !force {
         anyhow::bail!(
             "approve refused: latest automated gate for review {review_id} is not pass: {} \
-             Push fixes to the PR and wait for re-review, or run `grokrxiv approve {review_id} --force`.",
+             Push fixes to the PR and wait for re-review, or run `grokrxiv app run research approve {review_id} --force`.",
             publication_gate.reason
         );
     }
@@ -6115,7 +6731,7 @@ async fn publish_cmd(review_id: Uuid, force: bool, json: bool) -> anyhow::Result
     let (owner, repo, pr_number) = parse_github_pr_url(&pr_url).ok_or_else(|| {
         anyhow::anyhow!(
             "github_pr_url is not a real PR ({pr_url}); was this a simulated approve? \
-             Re-run `grokrxiv review ...` with GITHUB_TOKEN set."
+             Re-run `grokrxiv app run research review ...` with GITHUB_TOKEN set."
         )
     })?;
 
@@ -6371,7 +6987,7 @@ async fn close_review_github_pr(
     )
 }
 
-/// `grokrxiv reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
+/// `grokrxiv app run research reject <REVIEW_ID> --reason TEXT`. Phase 4: rejection is a
 /// public terminal state. Writes `moderation_queue` like before but ALSO:
 ///   - inserts a `rejections` row with the reason as `rationale_md`,
 ///   - flips `reviews.status` to `rejected`,
@@ -6452,7 +7068,7 @@ async fn auto_moderate_review(
     Ok(())
 }
 
-/// `grokrxiv request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
+/// `grokrxiv app run research request-changes <REVIEW_ID> --notes TEXT`. Phase 3: record the
 /// moderator's notes in `moderation_queue.notes`, then trigger a fresh
 /// review of the same paper. The agents see the notes via
 /// `db::fetch_latest_changes_request_notes` on the next pass.
@@ -6593,33 +7209,16 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("Usage: grokrxiv"));
         assert!(text.contains("Commands:"));
-        assert!(text.contains("review"));
+        assert!(text.contains("app"));
         assert!(text.contains("serve"));
     }
 
     #[test]
-    fn default_help_shows_operator_surface_only() {
+    fn default_help_shows_app_runtime_surface_only() {
         let mut cmd = Cli::command();
         let help = cmd.render_long_help().to_string();
 
-        for visible in [
-            "serve",
-            "doctor",
-            "config",
-            "review",
-            "extract",
-            "review-extracted",
-            "batch",
-            "list",
-            "show",
-            "approve",
-            "request-revisions",
-            "close",
-            "reject",
-            "request-changes",
-            "open",
-            "jobs",
-        ] {
+        for visible in ["app", "serve", "doctor", "config", "dag", "agent", "jobs"] {
             assert!(
                 help.contains(visible),
                 "expected `{visible}` in help:\n{help}"
@@ -6627,8 +7226,20 @@ mod tests {
         }
 
         for hidden in [
+            "review",
+            "extract",
+            "review-extracted",
+            "approve",
+            "request-revisions",
+            "request-changes",
+            "reject",
             "publish",
             "merge",
+            "batch",
+            "list",
+            "show",
+            "close",
+            "open",
             "tail-jobs",
             "html-review",
             "feedback-loop-smoke",
@@ -6644,33 +7255,56 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_publish_and_hidden_merge_alias() {
+    fn legacy_research_lifecycle_commands_are_not_root_commands() {
         let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
 
-        let publish = Cli::try_parse_from(["grokrxiv", "publish", &review_id.to_string()])
-            .expect("publish should parse");
-        match publish.command {
-            Command::Publish {
-                review_id: parsed,
-                force,
-            } => {
-                assert_eq!(parsed, review_id);
-                assert!(!force);
-            }
-            other => panic!("expected publish command, got {other:?}"),
-        }
-
-        let merge = Cli::try_parse_from(["grokrxiv", "merge", &review_id.to_string(), "--force"])
-            .expect("hidden merge alias should parse");
-        match merge.command {
-            Command::Publish {
-                review_id: parsed,
-                force,
-            } => {
-                assert_eq!(parsed, review_id);
-                assert!(force);
-            }
-            other => panic!("expected publish command from hidden alias, got {other:?}"),
+        for args in [
+            vec!["grokrxiv", "extract", "2605.00561"],
+            vec!["grokrxiv", "ingest", "2605.00561"],
+            vec!["grokrxiv", "ingest-daily"],
+            vec![
+                "grokrxiv",
+                "ingest-range",
+                "--from",
+                "2026-05-01",
+                "--to",
+                "2026-05-02",
+            ],
+            vec!["grokrxiv", "review", "2605.00561"],
+            vec!["grokrxiv", "review-extracted", "2605.00561"],
+            vec!["grokrxiv", "approve", &review_id.to_string()],
+            vec!["grokrxiv", "request-revisions", &review_id.to_string()],
+            vec![
+                "grokrxiv",
+                "request-changes",
+                &review_id.to_string(),
+                "--notes",
+                "fix citation evidence",
+            ],
+            vec![
+                "grokrxiv",
+                "reject",
+                &review_id.to_string(),
+                "--reason",
+                "duplicate",
+            ],
+            vec!["grokrxiv", "publish", &review_id.to_string()],
+            vec!["grokrxiv", "merge", &review_id.to_string()],
+            vec!["grokrxiv", "show", &review_id.to_string()],
+            vec!["grokrxiv", "open", &review_id.to_string()],
+            vec!["grokrxiv", "list", "reviews"],
+            vec!["grokrxiv", "batch", "list"],
+            vec!["grokrxiv", "tail-jobs"],
+            vec![
+                "grokrxiv",
+                "close",
+                &review_id.to_string(),
+                "--reason",
+                "superseded",
+            ],
+        ] {
+            let parsed = Cli::try_parse_from(args.clone());
+            assert!(parsed.is_err(), "legacy root command parsed: {args:?}");
         }
     }
 
@@ -6723,14 +7357,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_dry_run_returns_before_db_or_github() {
+    async fn app_approve_dry_run_returns_before_db_or_github() {
         let review_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
-        let cli = Cli::try_parse_from(["grokrxiv", "--dry-run", "publish", &review_id.to_string()])
-            .expect("publish --dry-run should parse");
+        let cli = Cli::try_parse_from([
+            "grokrxiv",
+            "--dry-run",
+            "app",
+            "run",
+            "research",
+            "approve",
+            &review_id.to_string(),
+        ])
+        .expect("app approve --dry-run should parse");
 
         run(cli)
             .await
-            .expect("publish --dry-run should not require DB or GitHub");
+            .expect("app approve --dry-run should not require DB or GitHub");
     }
 
     #[test]
@@ -6774,12 +7416,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_extract_command() {
+    fn cli_parses_app_run_research_extract_command() {
         let parsed = Cli::try_parse_from([
             "grokrxiv",
             "--extractor",
             "cli",
             "--status",
+            "app",
+            "run",
+            "research",
             "extract",
             "2605.00561",
         ])
@@ -6788,8 +7433,41 @@ mod tests {
         assert_eq!(parsed.extractor, Some(ExtractorKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::Extract { arxiv_ids } => assert_eq!(arxiv_ids, vec!["2605.00561"]),
-            other => panic!("expected extract command, got {other:?}"),
+            Command::App {
+                command: AppCommand::Run { app, action, args },
+            } => {
+                assert_eq!(app, "research");
+                assert_eq!(action, "extract");
+                assert_eq!(args, vec!["2605.00561"]);
+            }
+            other => panic!("expected app run research extract, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_app_run_c_to_rust_action() {
+        let parsed = Cli::try_parse_from([
+            "grokrxiv",
+            "--json",
+            "app",
+            "run",
+            "c-to-rust",
+            "translate",
+            "--input",
+            "src/main.c",
+        ])
+        .unwrap();
+
+        assert!(parsed.json);
+        match parsed.command {
+            Command::App {
+                command: AppCommand::Run { app, action, args },
+            } => {
+                assert_eq!(app, "c-to-rust");
+                assert_eq!(action, "translate");
+                assert_eq!(args, vec!["--input", "src/main.c"]);
+            }
+            other => panic!("expected app run c-to-rust translate, got {other:?}"),
         }
     }
 
@@ -7040,8 +7718,10 @@ mod tests {
         let batch = Cli::try_parse_from([
             "grokrxiv",
             "--json",
-            "batch",
-            "create",
+            "app",
+            "run",
+            "research",
+            "batch-create",
             "--category",
             "math",
             "--month",
@@ -7055,22 +7735,25 @@ mod tests {
         .expect("batch create should parse");
         assert!(batch.json);
         match batch.command {
-            Command::Batch {
-                command:
-                    BatchCommand::Create {
-                        category,
-                        month,
-                        daily_limit,
-                        max_items,
-                        auto_pr,
-                        ..
-                    },
+            Command::App {
+                command: AppCommand::Run { app, action, args },
             } => {
-                assert_eq!(category, "math");
-                assert_eq!(month, "2026-05");
-                assert_eq!(daily_limit, 30);
-                assert_eq!(max_items, Some(15));
-                assert!(auto_pr);
+                assert_eq!(app, "research");
+                assert_eq!(action, "batch-create");
+                assert_eq!(
+                    args,
+                    vec![
+                        "--category",
+                        "math",
+                        "--month",
+                        "2026-05",
+                        "--daily-limit",
+                        "30",
+                        "--max-items",
+                        "15",
+                        "--auto-pr",
+                    ]
+                );
             }
             other => panic!("expected batch create, got {other:?}"),
         }
@@ -7078,24 +7761,25 @@ mod tests {
         let batch_id = Uuid::parse_str("03c0843f-80f8-46b4-8d7a-ad7292c449f8").unwrap();
         let run = Cli::try_parse_from([
             "grokrxiv",
-            "batch",
+            "app",
             "run",
+            "research",
+            "batch-run",
             &batch_id.to_string(),
             "--limit",
             "5",
         ])
         .expect("batch run should parse");
         match run.command {
-            Command::Batch {
-                command:
-                    BatchCommand::Run {
-                        batch_id: parsed,
-                        limit,
-                        ..
-                    },
+            Command::App {
+                command: AppCommand::Run { app, action, args },
             } => {
-                assert_eq!(parsed, batch_id);
-                assert_eq!(limit, Some(5));
+                assert_eq!(app, "research");
+                assert_eq!(action, "batch-run");
+                assert_eq!(
+                    args,
+                    vec![batch_id.to_string(), "--limit".into(), "5".into()]
+                );
             }
             other => panic!("expected batch run, got {other:?}"),
         }
@@ -7117,12 +7801,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_review_extracted_command() {
+    fn cli_parses_app_run_research_review_extracted_command() {
         let parsed = Cli::try_parse_from([
             "grokrxiv",
             "--runner",
             "cli",
             "--status",
+            "app",
+            "run",
+            "research",
             "review-extracted",
             "2605.00561",
         ])
@@ -7131,19 +7818,33 @@ mod tests {
         assert_eq!(parsed.runner, Some(AgentRunnerKind::Cli));
         assert!(parsed.status);
         match parsed.command {
-            Command::ReviewExtracted { source, force } => {
-                assert_eq!(source, "2605.00561");
-                assert!(!force);
+            Command::App {
+                command: AppCommand::Run { app, action, args },
+            } => {
+                assert_eq!(app, "research");
+                assert_eq!(action, "review-extracted");
+                assert_eq!(args, vec!["2605.00561"]);
             }
             other => panic!("expected review-extracted command, got {other:?}"),
         }
 
-        let forced =
-            Cli::try_parse_from(["grokrxiv", "review-extracted", "--force", "2605.00561"]).unwrap();
+        let forced = Cli::try_parse_from([
+            "grokrxiv",
+            "app",
+            "run",
+            "research",
+            "review-extracted",
+            "--force",
+            "2605.00561",
+        ])
+        .unwrap();
         match forced.command {
-            Command::ReviewExtracted { source, force } => {
-                assert_eq!(source, "2605.00561");
-                assert!(force);
+            Command::App {
+                command: AppCommand::Run { app, action, args },
+            } => {
+                assert_eq!(app, "research");
+                assert_eq!(action, "review-extracted");
+                assert_eq!(args, vec!["--force", "2605.00561"]);
             }
             other => panic!("expected forced review-extracted command, got {other:?}"),
         }
@@ -7159,8 +7860,12 @@ mod tests {
         assert!(text.contains("already_reviewed=true"));
         assert!(text.contains("review_status=pr_open"));
         assert!(text.contains("pr_url=https://github.com/GrokRxiv/grokrxiv-reviews/pull/19"));
-        assert!(text.contains("show_command=grokrxiv show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"));
-        assert!(text.contains("force_command=grokrxiv review-extracted --force 2605.00561"));
+        assert!(text.contains(
+            "show_command=grokrxiv app run research show 03c0843f-80f8-46b4-8d7a-ad7292c449f8"
+        ));
+        assert!(text.contains(
+            "force_command=grokrxiv app run research review-extracted --force 2605.00561"
+        ));
 
         let json = existing_review_json(paper_id, "2605.00561", review_id, "pr_open", Some(pr_url));
         assert_eq!(json["status"], "already_reviewed");
@@ -7169,67 +7874,55 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_list_extracted_and_review_status_filter() {
-        let listed =
-            Cli::try_parse_from(["grokrxiv", "list", "extracted", "--limit", "50"]).unwrap();
+    fn cli_parses_app_run_research_list_args() {
+        let listed = Cli::try_parse_from([
+            "grokrxiv",
+            "app",
+            "run",
+            "research",
+            "list",
+            "extracted",
+            "--limit",
+            "50",
+        ])
+        .unwrap();
         match listed.command {
-            Command::List {
-                what: ListKind::Extracted { limit, .. },
-            } => assert_eq!(limit, 50),
-            other => panic!("expected list extracted command, got {other:?}"),
+            Command::App {
+                command: AppCommand::Run { app, action, args },
+            } => {
+                assert_eq!(app, "research");
+                assert_eq!(action, "list");
+                assert_eq!(args, vec!["extracted", "--limit", "50"]);
+            }
+            other => panic!("expected app run research list extracted, got {other:?}"),
         }
 
         let reviews = Cli::try_parse_from([
             "grokrxiv",
+            "--json",
+            "app",
+            "run",
+            "research",
             "list",
             "reviews",
             "--review-status",
             "awaiting_moderation",
-            "--json",
         ])
         .unwrap();
+        assert!(reviews.json);
         match reviews.command {
-            Command::List {
-                what:
-                    ListKind::Reviews {
-                        review_status,
-                        json,
-                        ..
-                    },
+            Command::App {
+                command: AppCommand::Run { app, action, args },
             } => {
-                assert_eq!(review_status.as_deref(), Some("awaiting_moderation"));
-                assert!(json);
+                assert_eq!(app, "research");
+                assert_eq!(action, "list");
+                assert_eq!(
+                    args,
+                    vec!["reviews", "--review-status", "awaiting_moderation"]
+                );
             }
-            other => panic!("expected list reviews command, got {other:?}"),
+            other => panic!("expected app run research list reviews, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn cli_parses_hidden_feedback_loop_smoke() {
-        let review_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
-        let cli = Cli::try_parse_from([
-            "grokrxiv",
-            "feedback-loop-smoke",
-            &review_id.to_string(),
-            "--max-wait-secs",
-            "3600",
-        ])
-        .expect("hidden smoke command parses");
-        match cli.command {
-            Command::FeedbackLoopSmoke {
-                review_id: parsed,
-                max_wait_secs,
-            } => {
-                assert_eq!(parsed, review_id);
-                assert_eq!(max_wait_secs, 3600);
-            }
-            other => panic!("expected FeedbackLoopSmoke, got {other:?}"),
-        }
-
-        let mut help = Vec::new();
-        Cli::command().write_long_help(&mut help).unwrap();
-        let help = String::from_utf8(help).unwrap();
-        assert!(!help.contains("feedback-loop-smoke"));
     }
 
     #[test]
@@ -7299,13 +7992,16 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
     }
 
     #[test]
-    fn cli_parses_git_corpus_review_options() {
+    fn cli_parses_app_run_git_corpus_review_options() {
         let cli = Cli::try_parse_from([
             "grokrxiv",
             "--runner",
             "cli",
             "--extractor",
             "cli",
+            "app",
+            "run",
+            "research",
             "review",
             "https://github.com/MagnetonIO/emergent_spacetime",
             "--type",
@@ -7325,26 +8021,32 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
         .expect("git corpus review command should parse");
 
         match cli.command {
-            Command::Review {
-                r#type,
-                corpus,
-                scan_root,
-                limit,
-                include,
-                exclude,
-                ..
+            Command::App {
+                command: AppCommand::Run { app, action, args },
             } => {
-                assert_eq!(r#type, Some(SourceType::Git));
-                assert!(corpus);
+                assert_eq!(app, "research");
+                assert_eq!(action, "review");
                 assert_eq!(
-                    scan_root,
-                    Some(PathBuf::from("papers/information-theory/src"))
+                    args,
+                    vec![
+                        "https://github.com/MagnetonIO/emergent_spacetime",
+                        "--type",
+                        "git",
+                        "--rev",
+                        "main",
+                        "--corpus",
+                        "--scan-root",
+                        "papers/information-theory/src",
+                        "--limit",
+                        "1",
+                        "--include",
+                        "*.tex",
+                        "--exclude",
+                        "target/**",
+                    ]
                 );
-                assert_eq!(limit, Some(1));
-                assert_eq!(include, vec!["*.tex"]);
-                assert_eq!(exclude, vec!["target/**"]);
             }
-            other => panic!("expected Review command, got {other:?}"),
+            other => panic!("expected app run research review, got {other:?}"),
         }
     }
 
@@ -7411,36 +8113,6 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             .failures
             .iter()
             .any(|msg| msg.contains("citation contexts")));
-    }
-
-    #[test]
-    fn approve_help_is_merge_and_publish() {
-        let mut cmd = Cli::command();
-        let approve = cmd
-            .find_subcommand_mut("approve")
-            .expect("approve subcommand exists");
-        let mut help = Vec::new();
-        approve.write_long_help(&mut help).unwrap();
-        let help = String::from_utf8(help).unwrap();
-
-        assert!(help.contains("Merge the reviewed publication PR"));
-        assert!(help.contains("publish"));
-        assert!(!help.contains("does not merge or publish"));
-    }
-
-    #[test]
-    fn close_help_describes_web_and_github_effects() {
-        let mut cmd = Cli::command();
-        let close = cmd
-            .find_subcommand_mut("close")
-            .expect("close subcommand exists");
-        let mut help = Vec::new();
-        close.write_long_help(&mut help).unwrap();
-        let help = String::from_utf8(help).unwrap();
-
-        assert!(help.contains("hide it from web"));
-        assert!(help.contains("close the linked GitHub PR"));
-        assert!(help.contains("--keep-github-pr"));
     }
 
     #[test]

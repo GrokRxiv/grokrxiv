@@ -10,6 +10,7 @@ done
 supabase start
 cargo build --workspace
 grokrxiv doctor
+grokrxiv app list
 ```
 
 The binary loads root `.env` from the repo root and then each file named by
@@ -27,32 +28,32 @@ PATH="$PWD/target/release:$PATH"
 ## One Paper
 
 ```sh
-grokrxiv review --runner cli --extractor cli --no-cache --json 2605.17307
+grokrxiv --runner cli --extractor cli --no-cache --json app run research review 2605.17307
 ```
 
 Local and git sources:
 
 ```sh
-grokrxiv review --runner cli --extractor cli --type tex ./paper.tex
-grokrxiv review --runner cli --extractor cli --type pdf ./paper.pdf
-grokrxiv review --runner cli --extractor cli --type git <repo-url> --rev main --paper-path paper.tex
+grokrxiv --runner cli --extractor cli app run research review ./paper.tex --type tex
+grokrxiv --runner cli --extractor cli app run research review ./paper.pdf --type pdf
+grokrxiv --runner cli --extractor cli app run research review <repo-url> --type git --rev main --paper-path paper.tex
 ```
 
 Already extracted:
 
 ```sh
-grokrxiv extract 2605.17307 --json
-grokrxiv review-extracted 2605.17307 --json
-grokrxiv review-extracted --force 2605.17307 --json
+grokrxiv --json app run research extract 2605.17307
+grokrxiv --json app run research review-extracted 2605.17307
+grokrxiv --json app run research review-extracted --force 2605.17307
 ```
 
 ## Batch Field Sweep
 
 ```sh
-grokrxiv batch create --category math --month 2026-05 --daily-limit 30 --auto-pr --json
-grokrxiv batch run <BATCH_ID> --json
-grokrxiv batch status <BATCH_ID> --json
-grokrxiv batch list --json
+grokrxiv --json app run research batch-create --category math --month 2026-05 --daily-limit 30 --auto-pr
+grokrxiv --json app run research batch-run <BATCH_ID>
+grokrxiv --json app run research batch-status <BATCH_ID>
+grokrxiv --json app run research batch-list
 ```
 
 Run `batch run` daily from the scheduler of your choice. Batch items keep their
@@ -61,13 +62,12 @@ own state, review id, PR URL, attempts, and error fields.
 ## Review Ops
 
 ```sh
-grokrxiv list reviews --review-status awaiting_moderation --json
-grokrxiv show <REVIEW_ID> --json
-grokrxiv open <REVIEW_ID>
-grokrxiv request-revisions <REVIEW_ID> --notes "Needs correction."
-grokrxiv approve <REVIEW_ID>
-grokrxiv close <REVIEW_ID> --reason "Superseded."
-grokrxiv reject <REVIEW_ID> --reason "Out of scope."
+grokrxiv --json app run research show <REVIEW_ID>
+grokrxiv app run research open <REVIEW_ID>
+grokrxiv app run research request-revisions <REVIEW_ID> --notes "Needs correction."
+grokrxiv app run research approve <REVIEW_ID>
+grokrxiv app run research close <REVIEW_ID> --reason "Superseded."
+grokrxiv app run research reject <REVIEW_ID> --reason "Out of scope."
 ```
 
 ## Jobs
@@ -80,10 +80,10 @@ grokrxiv jobs list --state failed
 ## Runner Overrides
 
 ```sh
-grokrxiv review 2605.17307 --runner cli --extractor cli --json
-grokrxiv review 2605.17307 --runner api --extractor api --json
-grokrxiv review 2605.17307 --runner-for technical_correctness=cli --json
-grokrxiv review 2605.17307 --model-for reproducibility=gpt-5.5 --json
+grokrxiv --runner cli --extractor cli --json app run research review 2605.17307
+grokrxiv --runner api --extractor api --json app run research review 2605.17307
+grokrxiv --runner-for technical_correctness=cli --json app run research review 2605.17307
+grokrxiv --model-for reproducibility=gpt-5.5 --json app run research review 2605.17307
 ```
 
 CLI mode uses the local provider CLIs and their logged-in auth state. API mode
@@ -93,7 +93,7 @@ uses provider API credentials and should be selected explicitly.
 
 ```sh
 grokrxiv doctor --json
-out="$(grokrxiv review --runner cli --extractor cli --no-cache --json 2605.17307)"
+out="$(grokrxiv --runner cli --extractor cli --no-cache --json app run research review 2605.17307)"
 rid="$(printf '%s\n' "$out" | jq -r .review_id)"
-grokrxiv show "$rid" --json
+grokrxiv --json app run research show "$rid"
 ```

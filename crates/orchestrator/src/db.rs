@@ -486,7 +486,7 @@ pub async fn mark_submission_failed(
 }
 
 /// Phase 3: fetch the latest moderator `--notes` recorded via
-/// `grokrxiv request-changes` for any prior review of this paper. The
+/// `grokrxiv app run research request-changes` for any prior review of this paper. The
 /// supervisor surfaces these notes to specialist + meta prompts on the next
 /// review pass so the agents react to operator feedback. Returns `None` when
 /// the paper has no `changes_requested` history.

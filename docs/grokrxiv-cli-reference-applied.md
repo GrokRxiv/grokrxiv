@@ -29,6 +29,8 @@ grokrxiv doctor
 grokrxiv doctor --json
 grokrxiv config
 grokrxiv config --show-secrets
+grokrxiv app list
+grokrxiv app show research
 ```
 
 `serve` runs the HTTP API, supervisor, publish reconcile loop, and scheduler.
@@ -38,22 +40,22 @@ reachability.
 ## Review commands
 
 ```sh
-grokrxiv review --runner cli --extractor cli --no-cache --json 2605.17307
-grokrxiv review --runner cli --extractor cli --type tex ./paper.tex
-grokrxiv review --runner cli --extractor cli --type pdf ./paper.pdf
-grokrxiv review --runner cli --extractor cli --type git <repo-url> --rev main --paper-path paper.tex
+grokrxiv --runner cli --extractor cli --no-cache --json app run research review 2605.17307
+grokrxiv --runner cli --extractor cli app run research review ./paper.tex --type tex
+grokrxiv --runner cli --extractor cli app run research review ./paper.pdf --type pdf
+grokrxiv --runner cli --extractor cli app run research review <repo-url> --type git --rev main --paper-path paper.tex
 ```
 
-`review` accepts arXiv IDs, arXiv URLs, local `.tex` and `.pdf` files, git
-repositories, `@manifest` files, and stdin. For git corpus review, add
+`app run research review` accepts arXiv IDs, arXiv URLs, local `.tex` and
+`.pdf` files, git repositories, `@manifest` files, and stdin. For git corpus review, add
 `--corpus`, `--scan-root`, `--include`, `--exclude`, and `--limit`.
 
 Extraction-only and already-extracted paths:
 
 ```sh
-grokrxiv extract 2605.17307 --json
-grokrxiv review-extracted 2605.17307 --json
-grokrxiv review-extracted --force 2605.17307 --json
+grokrxiv --json app run research extract 2605.17307
+grokrxiv --json app run research review-extracted 2605.17307
+grokrxiv --json app run research review-extracted --force 2605.17307
 ```
 
 ## Batch reviews
@@ -65,36 +67,33 @@ records every paper through `queued`, `running`, `reviewed`, `pr_open`,
 `failed`, or `skipped`.
 
 ```sh
-grokrxiv batch create --category math --month 2026-05 --daily-limit 30 --auto-pr --json
-grokrxiv batch create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr --json
-grokrxiv batch run <BATCH_ID> --json
-grokrxiv batch status <BATCH_ID> --json
-grokrxiv batch list --json
+grokrxiv --json app run research batch-create --category math --month 2026-05 --daily-limit 30 --auto-pr
+grokrxiv --json app run research batch-create --category math --month 2026-05 --daily-limit 4 --max-items 15 --auto-pr
+grokrxiv --json app run research batch-run <BATCH_ID>
+grokrxiv --json app run research batch-status <BATCH_ID>
+grokrxiv --json app run research batch-list
 ```
 
 Use `--max-items` for bounded smoke runs before scheduling a whole month. Use
-`batch run` from cron, launchd, GitHub Actions, or another scheduler for a daily
+`app run research batch-run` from cron, launchd, GitHub Actions, or another scheduler for a daily
 review quota. With `--auto-pr`, each successfully reviewed item opens the same
-GitHub review PR that `grokrxiv review` opens.
+GitHub review PR that `grokrxiv app run research review` opens.
 
 ## Review lifecycle
 
 ```sh
-grokrxiv list reviews --review-status awaiting_moderation --json
-grokrxiv list papers --has-review --json
-grokrxiv list extracted --json
-grokrxiv show <REVIEW_ID> --json
-grokrxiv open <REVIEW_ID>
+grokrxiv --json app run research show <REVIEW_ID>
+grokrxiv app run research open <REVIEW_ID>
 ```
 
 Moderation:
 
 ```sh
-grokrxiv request-revisions <REVIEW_ID> --notes "Needs a corrected proof."
-grokrxiv approve <REVIEW_ID>
-grokrxiv reject <REVIEW_ID> --reason "Out of scope for publication."
-grokrxiv request-changes <REVIEW_ID> --notes "Regenerate after source fix."
-grokrxiv close <REVIEW_ID> --reason "Superseded by a corrected review."
+grokrxiv app run research request-revisions <REVIEW_ID> --notes "Needs a corrected proof."
+grokrxiv app run research approve <REVIEW_ID>
+grokrxiv app run research reject <REVIEW_ID> --reason "Out of scope for publication."
+grokrxiv app run research request-changes <REVIEW_ID> --notes "Regenerate after source fix."
+grokrxiv app run research close <REVIEW_ID> --reason "Superseded by a corrected review."
 ```
 
 `close` hides the review from the web and closes the linked GitHub PR unless
@@ -115,5 +114,5 @@ The hidden `tail-jobs` alias maps to `jobs list` for compatibility.
 cargo test -p grokrxiv-orchestrator --lib cli::tests
 cargo check -p grokrxiv-orchestrator --all-targets
 set -a && source .env && set +a
-PATH="$PWD/target/release:$PATH" grokrxiv review --runner cli --extractor cli --no-cache --json 2605.17307
+PATH="$PWD/target/release:$PATH" grokrxiv --runner cli --extractor cli --no-cache --json app run research review 2605.17307
 ```

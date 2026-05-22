@@ -25,6 +25,11 @@ Registered DAG apps:
 - `citation-validation`
 - `c-to-rust`
 
+Registered product apps:
+
+- `research`, with app actions under `grokrxiv app run research ...`.
+- `c-to-rust`, with `grokrxiv app run c-to-rust translate ...`.
+
 `paper-extract` now starts with a `dag_call` to `paper-ingest`. `c-to-rust`
 runs through the same generic executor path and is the non-paper proof that the
 executor is not paper-review-shaped.
@@ -38,6 +43,27 @@ The research flow is the proving-ground DAG app chain:
 The live review pipeline must migrate to the executor path. Review-specific
 code may remain only as app adapter behavior while it is being moved behind
 node handlers. It must not be treated as the permanent executor shape.
+
+The public operator surface is `grokrxiv app ...`. Do not add new root research
+lifecycle commands. Add or change research behavior by adding app actions and
+mapping those actions to DAG types.
+
+## Database Boundary
+
+Each DAG does not get its own runtime table family. Runtime state is shared:
+
+- `app_runs`
+- `dag_runs`
+- `dag_run_nodes`
+- `dag_artifacts`
+- `dag_events`
+- `worker_nodes`
+- `worker_leases`
+- `agent_output_cache`
+
+App-specific tables are projections only. The research app has
+`research_sources`, `research_reviews`, and `research_moderation_queue`; those
+tables support product queries and moderation UI, not generic scheduling.
 
 ## Adding Capabilities
 

@@ -30,7 +30,8 @@ default is `published`.
 
 ## Operator notes
 
-- Use first-party CLI commands such as `grokrxiv review`, `grokrxiv approve`,
-  and `grokrxiv batch run` for write workflows.
+- Use first-party CLI commands such as `grokrxiv app run research review`,
+  `grokrxiv app run research approve`, and
+  `grokrxiv app run research batch-run` for write workflows.
 - The orchestrator's `/internal/v1/*` routes are private-network plumbing. Do
   not expose them publicly.

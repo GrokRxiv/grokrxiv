@@ -2,7 +2,7 @@
 # M1 smoke — collapsed to grokrxiv CLI calls per RPT2 Track I.
 #
 # Replaces the older psql-driven multi-step assertion script. The single
-# `grokrxiv review ... --json` invocation runs the full ingest+DAG+verify
+# `grokrxiv app run research review ... --json` invocation runs the full ingest+DAG+verify
 # loop; the JSON envelope carries the same evidence the SQL assertions
 # previously asserted on (six agents, all pass, status awaiting_moderation).
 #
@@ -60,7 +60,7 @@ else
 fi
 
 # Ingest + review.
-out="$("${GROKRXIV_CMD[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --status --no-cache --json review "$ARXIV_ID")"
+out="$("${GROKRXIV_CMD[@]}" --runner "${RUNNER}" --extractor "${EXTRACTOR}" --status --no-cache --json app run research review "$ARXIV_ID")"
 
 echo "$out" | jq -e '
     .review_id
@@ -77,7 +77,7 @@ if [[ "${SKIP_APPROVE:-0}" == "1" ]]; then
 fi
 
 # Approve + assert PR URL.
-appr="$("${GROKRXIV_CMD[@]}" approve "$rid" --json)"
+appr="$("${GROKRXIV_CMD[@]}" --json app run research approve "$rid")"
 echo "$appr" | jq -e '.pr_url | test("^https://github.com/")' >/dev/null \
   || { echo "$appr" | jq .; echo "fatal: approve did not return a github.com PR URL" >&2; exit 1; }
 

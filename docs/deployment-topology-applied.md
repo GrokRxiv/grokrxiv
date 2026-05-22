@@ -113,7 +113,7 @@ just up-local
 # 3. Run the orchestrator on the host (it talks to LiteLLM, not Ollama).
 just orch
 #   or, against a specific paper:
-grokrxiv review --paper-id 2605.12484
+grokrxiv app run research review 2605.12484
 
 # 4. Tear down when done.
 just down

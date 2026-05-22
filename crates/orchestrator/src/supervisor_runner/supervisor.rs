@@ -13,8 +13,8 @@
 //! 8. Writes `manifest.json` capturing the job + result.
 //!
 //! Construction is intentionally cheap (no DB, no network) so callers can
-//! drive the supervisor from unit tests, from the new `grokrxiv review`
-//! subcommand, or from a future queue worker.
+//! drive the supervisor from unit tests, from `grokrxiv app run research review`,
+//! or from a future queue worker.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -176,7 +176,7 @@ impl Supervisor {
         if !path.exists() {
             anyhow::bail!(
                 "supervisor: review_input.json not found at {}. \
-                 Run `grokrxiv ingest <arxiv_id>` first, or scaffold grokrxiv-data/.",
+                 Run `grokrxiv app run research ingest <arxiv_id>` first, or scaffold grokrxiv-data/.",
                 path.display()
             );
         }

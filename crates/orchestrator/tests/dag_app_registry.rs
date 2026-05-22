@@ -2,6 +2,48 @@ use grokrxiv_dag_executor::DagIo;
 use grokrxiv_dag_runtime::{DagManifest, DagNodeStatus};
 
 #[test]
+fn app_registry_groups_dag_types_behind_product_apps() {
+    let ids = grokrxiv_orchestrator::dag_apps::registered_app_ids();
+    assert_eq!(ids, vec!["c-to-rust", "research"]);
+
+    let research = grokrxiv_orchestrator::dag_apps::registered_app("research")
+        .expect("research app descriptor");
+    let research_actions = research
+        .actions
+        .iter()
+        .map(|action| action.id)
+        .collect::<Vec<_>>();
+    for action in [
+        "extract",
+        "review",
+        "review-extracted",
+        "show",
+        "list",
+        "open",
+        "approve",
+        "request-revisions",
+        "request-changes",
+        "reject",
+    ] {
+        assert!(
+            research_actions.contains(&action),
+            "research app must expose `{action}`"
+        );
+    }
+
+    let c_to_rust = grokrxiv_orchestrator::dag_apps::registered_app("c-to-rust")
+        .expect("c-to-rust app descriptor");
+    assert_eq!(
+        c_to_rust
+            .actions
+            .iter()
+            .map(|action| action.dag_type)
+            .collect::<Vec<_>>(),
+        vec!["c-to-rust"]
+    );
+}
+
+#[test]
 fn registry_contains_research_chain_and_c_to_rust_apps() {
     let ids = grokrxiv_orchestrator::dag_apps::registered_dag_app_ids();
 

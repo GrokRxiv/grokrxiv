@@ -8,12 +8,12 @@ merge → webhook → published leg.
 
 ## What it proves
 
-1. `grokrxiv --runner cli --extractor cli --status --no-cache --json ingest <arxiv_id>`
+1. `grokrxiv --runner cli --extractor cli --status --no-cache --json app run research review <arxiv_id>`
    produces a real review row at `awaiting_moderation` with six
    `review_agents` rows, real input/output JSON artifacts, and per-role
    verifier evidence persisted. Set `GROKRXIV_RUNNER=api`
    `GROKRXIV_EXTRACTOR=api` only when you intend to spend provider API credits.
-2. `grokrxiv approve <review_id>` opens a real pull request against your test
+2. `grokrxiv app run research approve <review_id>` opens a real pull request against your test
    reviews repo with the rendered HTML/MD/LaTeX/zip artifacts at the canonical
    `reviews/YYYY/MM/<field>/<arxiv_id>/` repo path.
 3. The script stops with the review at `status=pr_open` and `published_at IS NULL`.

@@ -27,6 +27,180 @@ pub struct DagAppDescriptor {
     pub crate_name: &'static str,
 }
 
+/// Static metadata for one product app command surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisteredAppDescriptor {
+    /// Product app id used by `grokrxiv app run <app> <action>`.
+    pub id: &'static str,
+    /// Human-readable label.
+    pub label: &'static str,
+    /// Actions exposed by this app.
+    pub actions: &'static [AppActionDescriptor],
+}
+
+/// Static metadata for one app action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppActionDescriptor {
+    /// Action id used by `grokrxiv app run <app> <action>`.
+    pub id: &'static str,
+    /// DAG type that supplies this action's runtime topology.
+    pub dag_type: &'static str,
+    /// Short operator-facing description.
+    pub description: &'static str,
+}
+
+const RESEARCH_ACTIONS: &[AppActionDescriptor] = &[
+    AppActionDescriptor {
+        id: "extract",
+        dag_type: "paper-extract",
+        description: "Extract source artifacts for one or more research papers.",
+    },
+    AppActionDescriptor {
+        id: "ingest",
+        dag_type: "paper-ingest",
+        description: "Ingest one or more arXiv papers and optionally moderate.",
+    },
+    AppActionDescriptor {
+        id: "ingest-range",
+        dag_type: "paper-ingest",
+        description: "Backfill arXiv metadata across a date range.",
+    },
+    AppActionDescriptor {
+        id: "ingest-daily",
+        dag_type: "paper-ingest",
+        description: "Run the daily research ingest scheduler tick once.",
+    },
+    AppActionDescriptor {
+        id: "review",
+        dag_type: "paper-review",
+        description: "Run the research review DAG for a paper source.",
+    },
+    AppActionDescriptor {
+        id: "review-extracted",
+        dag_type: "paper-review",
+        description: "Run the review DAG for an already extracted paper.",
+    },
+    AppActionDescriptor {
+        id: "re-review",
+        dag_type: "paper-review",
+        description: "Re-run the review DAG against an already ingested paper.",
+    },
+    AppActionDescriptor {
+        id: "verify",
+        dag_type: "paper-review",
+        description: "Re-run verifier nodes for one persisted research review.",
+    },
+    AppActionDescriptor {
+        id: "render",
+        dag_type: "paper-publish",
+        description: "Re-render deterministic review artifacts.",
+    },
+    AppActionDescriptor {
+        id: "refresh-review",
+        dag_type: "paper-review",
+        description: "Refresh derived review metadata without rerunning agents.",
+    },
+    AppActionDescriptor {
+        id: "show",
+        dag_type: "paper-review",
+        description: "Show one persisted research review.",
+    },
+    AppActionDescriptor {
+        id: "list",
+        dag_type: "paper-review",
+        description: "List persisted research sources or reviews.",
+    },
+    AppActionDescriptor {
+        id: "open",
+        dag_type: "paper-review",
+        description: "Open the canonical URL for one persisted research review.",
+    },
+    AppActionDescriptor {
+        id: "approve",
+        dag_type: "paper-publish",
+        description: "Approve and publish a completed research review.",
+    },
+    AppActionDescriptor {
+        id: "request-revisions",
+        dag_type: "paper-revise",
+        description: "Request author revisions for a failed research review.",
+    },
+    AppActionDescriptor {
+        id: "request-changes",
+        dag_type: "paper-revise",
+        description: "Request moderator changes for a queued research review.",
+    },
+    AppActionDescriptor {
+        id: "reject",
+        dag_type: "paper-review",
+        description: "Reject a research review from the moderation flow.",
+    },
+    AppActionDescriptor {
+        id: "close",
+        dag_type: "paper-publish",
+        description: "Hide a review from web output and optionally close its PR.",
+    },
+    AppActionDescriptor {
+        id: "withdraw",
+        dag_type: "paper-publish",
+        description: "Withdraw a published research review.",
+    },
+    AppActionDescriptor {
+        id: "correct",
+        dag_type: "paper-revise",
+        description: "Append a correction to a published research review.",
+    },
+    AppActionDescriptor {
+        id: "html-review",
+        dag_type: "paper-publish",
+        description: "Run the HTML quality repair harness for rendered output.",
+    },
+    AppActionDescriptor {
+        id: "feedback-loop-smoke",
+        dag_type: "paper-revise",
+        description: "Run the destructive GitHub correction feedback-loop smoke.",
+    },
+    AppActionDescriptor {
+        id: "batch-create",
+        dag_type: "paper-review",
+        description: "Create a scheduled research review batch.",
+    },
+    AppActionDescriptor {
+        id: "batch-run",
+        dag_type: "paper-review",
+        description: "Run queued items from a scheduled research review batch.",
+    },
+    AppActionDescriptor {
+        id: "batch-status",
+        dag_type: "paper-review",
+        description: "Show scheduled research review batch status.",
+    },
+    AppActionDescriptor {
+        id: "batch-list",
+        dag_type: "paper-review",
+        description: "List scheduled research review batches.",
+    },
+];
+
+const C_TO_RUST_ACTIONS: &[AppActionDescriptor] = &[AppActionDescriptor {
+    id: "translate",
+    dag_type: "c-to-rust",
+    description: "Run the c-to-rust DAG app.",
+}];
+
+const REGISTERED_APPS: &[RegisteredAppDescriptor] = &[
+    RegisteredAppDescriptor {
+        id: "c-to-rust",
+        label: "C to Rust",
+        actions: C_TO_RUST_ACTIONS,
+    },
+    RegisteredAppDescriptor {
+        id: "research",
+        label: "Research review",
+        actions: RESEARCH_ACTIONS,
+    },
+];
+
 const REGISTERED_DAG_APPS: &[DagAppDescriptor] = &[
     DagAppDescriptor {
         dag_type: "c-to-rust",
@@ -64,6 +238,30 @@ const REGISTERED_DAG_APPS: &[DagAppDescriptor] = &[
         crate_name: "grokrxiv-dag-app-paper-revise",
     },
 ];
+
+/// Return all registered product app descriptors.
+pub fn registered_apps() -> &'static [RegisteredAppDescriptor] {
+    REGISTERED_APPS
+}
+
+/// Return all registered product app ids in deterministic order.
+pub fn registered_app_ids() -> Vec<&'static str> {
+    REGISTERED_APPS.iter().map(|app| app.id).collect()
+}
+
+/// Find one registered product app descriptor.
+pub fn registered_app(app_id: &str) -> Option<RegisteredAppDescriptor> {
+    REGISTERED_APPS.iter().copied().find(|app| app.id == app_id)
+}
+
+/// Find one registered product app action.
+pub fn registered_app_action(app_id: &str, action_id: &str) -> Option<AppActionDescriptor> {
+    registered_app(app_id)?
+        .actions
+        .iter()
+        .copied()
+        .find(|action| action.id == action_id)
+}
 
 /// Return all registered DAG app descriptors.
 pub fn registered_dag_apps() -> &'static [DagAppDescriptor] {

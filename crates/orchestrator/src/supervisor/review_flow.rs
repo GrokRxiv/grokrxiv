@@ -1143,7 +1143,7 @@ pub(super) async fn run_review_dag_inner_with_context(
     // to `system_failed` above and must not remain actionable in admin review.
     let _ = crate::db::insert_moderation_pending(pool, review_id).await;
     crate::cli_status::emit_stage(6, 6, "Moderation", StatusMark::Ok, "awaiting moderation");
-    crate::cli_status::emit(format!("next: grokrxiv show {review_id}"));
+    crate::cli_status::emit(format!("next: grokrxiv app run research show {review_id}"));
     Ok(review_id)
 }
 

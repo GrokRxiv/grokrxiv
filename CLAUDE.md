@@ -46,6 +46,11 @@ Use `grokrxiv dag run --dag-type <dag> --json` for executor-path smoke tests.
 The c-to-rust DAG app is the required non-paper proof path for generic DAG
 changes.
 
+The operator CLI is app-scoped. Use `grokrxiv app run research review ...`,
+`grokrxiv app run research approve ...`, and
+`grokrxiv app run c-to-rust translate ...`; do not add new research lifecycle
+commands at the root.
+
 LLM readability is a product requirement: prefer explicit names and small
 contract files over implicit conventions or catch-all modules. Reusable
 behavior belongs in named hooks such as `prompt_context`, `system_overlays`,
@@ -62,14 +67,15 @@ Must pass 8/8. Exercises all 3 providers end-to-end with `verifier_status=pass` 
 
 ## DB
 
-- `papers` — arXiv papers ingested
-- `paper_assets` — PRIVATE; service-role only (PDF/LaTeX paths)
-- `reviews` — one row per review run; `meta_review` JSONB; status enum
-- `review_agents` — provenance per specialist run; tokens, latency, verifier_status, output
-- `review_inputs` (FP6) — deduped paper extract / specialist outputs; FK from `review_agents`
-- `review_cache` (FP6) — per `(paper_id, role, content_hash)`; TTL 30d
-- `moderation_queue` — operator gate for publication/revision decisions
-- `jobs` — orchestrator task state
+- `app_runs` — product app action run records.
+- `dag_runs` — manifest execution records under an app run.
+- `dag_run_nodes` — node attempts, state, runner/model/tool/role identity, and output JSON.
+- `dag_artifacts` — named artifact references produced by app/DAG/node runs.
+- `dag_events` — runtime event stream.
+- `worker_nodes` / `worker_leases` — distributed runner presence and work leases.
+- `agent_output_cache` — generic app/DAG/node/role cache.
+- `research_sources`, `research_reviews`, `research_moderation_queue` — research app projection tables for product queries and moderation UI.
+- Existing `papers`, `reviews`, `review_agents`, `review_inputs`, `review_cache`, `moderation_queue`, and `jobs` tables are migration-era research data/projections, not the generic DAG runtime contract.
 - `uploads` — anonymous landing-page samples
 
 ## Provider keys

@@ -56,6 +56,43 @@ Manifest rules:
   GrokRxiv service nodes. DAG apps must not depend on a paper-review-specific
   supervisor branch.
 
+## Product App CLI
+
+The operator CLI is app-scoped:
+
+```bash
+grokrxiv app list
+grokrxiv app show research
+grokrxiv app run research extract 2605.17307
+grokrxiv app run research review 2605.17307 --type arxiv
+grokrxiv app run research approve <REVIEW_ID>
+grokrxiv app run c-to-rust translate --input src/main.c
+```
+
+Do not add new root commands such as `grokrxiv review` or `grokrxiv approve`.
+Add an app action in `crates/orchestrator/src/dag_apps.rs`, route it through
+the generic app runner/adapter, and keep the action mapped to a DAG type. Root
+commands are reserved for platform operations such as `app`, `serve`, `doctor`,
+`config`, `dag`, `agent`, and `jobs`.
+
+## Runtime Database Shape
+
+Every DAG does **not** get its own scheduler table set. Runtime state is shared:
+
+- `app_runs` tracks product app actions.
+- `dag_runs` tracks manifest executions under an app run.
+- `dag_run_nodes` tracks node attempts and statuses.
+- `dag_artifacts` stores named artifact references.
+- `dag_events` stores runtime events.
+- `worker_nodes` and `worker_leases` support distributed runners.
+- `agent_output_cache` is keyed by app, DAG type, node, role, runner, model,
+  and input hash.
+
+DAG apps may have projection/business tables when the product needs queryable
+domain state. The research app uses `research_sources`, `research_reviews`, and
+`research_moderation_queue` projections, but those tables are not the generic
+executor contract.
+
 ## LLM-Readable Contracts
 
 This is an LLM-built product. Manifests, schemas, prompts, agent configs, and
@@ -91,9 +128,11 @@ Rules:
 2. Add `crates/dag-app-<dag-type>/` implementing `grokrxiv_dag_executor::DagApp`.
 3. Add the crate to the workspace.
 4. Register the app in `crates/orchestrator/src/dag_apps.rs`.
-5. Add a smoke test that runs the manifest through
+5. Register the product app/action surface in `crates/orchestrator/src/dag_apps.rs`
+   if it should be callable through `grokrxiv app run`.
+6. Add a smoke test that runs the manifest through
    `grokrxiv_dag_executor::DagExecutor`.
-6. Run `grokrxiv dag run --dag-type <dag-type> --json`.
+7. Run `grokrxiv dag run --dag-type <dag-type> --json`.
 
 ## Adding A CLI Tool
 
