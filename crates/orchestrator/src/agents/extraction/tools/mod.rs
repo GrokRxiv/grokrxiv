@@ -7,6 +7,7 @@
 pub mod arxiv_lookup;
 pub mod crossref_lookup;
 pub mod list_files;
+pub mod openalex_lookup;
 pub mod query_ast;
 pub mod read_file;
 pub mod submit;

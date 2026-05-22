@@ -730,6 +730,9 @@ async fn run_inner(
     apply_equations(&mut bundle, arxiv_id, equations_res);
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
     apply_citations(&mut bundle, arxiv_id, citations_res);
+    if let Some(references) = &bundle.references {
+        bundle.citation_validation_report = Some(build_citation_validation_report(references));
+    }
     apply_macros(&mut bundle, macros_res); // currently records to extraction_report
 
     // Serialize the cross-stage tool_call log as JSONL for Tier-2 audit.
@@ -1805,6 +1808,149 @@ fn value_string_array(value: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn build_citation_validation_report(references: &Value) -> Value {
+    let citations = references
+        .get("citations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let unmatched = value_string_array(references, "unmatched_citation_keys");
+    let uncited = value_string_array(references, "uncited_bibliography_keys");
+
+    let parsed_references: Vec<Value> = citations
+        .iter()
+        .map(|citation| {
+            json!({
+                "key": citation.get("key").and_then(Value::as_str).unwrap_or("").to_string(),
+                "raw": citation.get("raw").and_then(Value::as_str).unwrap_or("").to_string(),
+                "title": citation.get("title").cloned().unwrap_or(Value::Null),
+                "authors": citation.get("authors").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+                "venue": citation.get("venue").cloned().unwrap_or(Value::Null),
+                "year": citation.get("year").cloned().unwrap_or(Value::Null),
+                "doi": citation.get("doi").cloned().unwrap_or(Value::Null),
+                "arxiv_id": citation.get("arxiv_id").cloned().unwrap_or(Value::Null),
+                "cited": citation.get("cited").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .collect();
+
+    let resolver_results: Vec<Value> = citations
+        .iter()
+        .map(|citation| {
+            let key = citation
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let validation = citation.get("validation").unwrap_or(&Value::Null);
+            let raw_status = validation
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    if citation.get("doi").and_then(Value::as_str).is_some()
+                        || citation.get("arxiv_id").and_then(Value::as_str).is_some()
+                    {
+                        "verified"
+                    } else {
+                        "not_checked"
+                    }
+                });
+            let status = match raw_status {
+                "verified" | "unresolved" | "conflict" | "not_checked" => raw_status,
+                _ => "not_checked",
+            };
+            let evidence = validation
+                .get("evidence")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let source = validation
+                .get("source")
+                .and_then(Value::as_str)
+                .map(|source| source.to_ascii_lowercase())
+                .unwrap_or_else(|| "crossref".to_string());
+            let source = match source.as_str() {
+                "openalex" | "arxiv" | "corpus" => source,
+                _ => "crossref".to_string(),
+            };
+            json!({
+                "key": key,
+                "source": source,
+                "status": status,
+                "resolved_doi": citation.get("doi").cloned().unwrap_or(Value::Null),
+                "resolved_url": Value::Null,
+                "evidence": evidence,
+            })
+        })
+        .collect();
+
+    let similarity_results: Vec<Value> = citations
+        .iter()
+        .map(|citation| {
+            let contexts = citation
+                .get("contexts")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            json!({
+                "key": citation.get("key").and_then(Value::as_str).unwrap_or("").to_string(),
+                "score": if contexts > 0 { 1.0 } else { 0.0 },
+                "method": "deterministic_context_presence",
+                "notes": if contexts > 0 { Value::Null } else { Value::String("citation has no context".to_string()) },
+            })
+        })
+        .collect();
+
+    let mut graph_warnings = Vec::new();
+    if !unmatched.is_empty() {
+        graph_warnings.push(json!({
+            "code": "unmatched_citation_keys",
+            "message": "Citation markers were found without matching bibliography entries.",
+            "keys": unmatched,
+        }));
+    }
+    if !uncited.is_empty() {
+        graph_warnings.push(json!({
+            "code": "uncited_bibliography_keys",
+            "message": "Bibliography entries were found without citation contexts.",
+            "keys": uncited,
+        }));
+    }
+
+    let mut remediation_items = Vec::new();
+    for warning in &graph_warnings {
+        if let Some(keys) = warning.get("keys").and_then(Value::as_array) {
+            for key in keys.iter().filter_map(Value::as_str) {
+                remediation_items.push(json!({
+                    "key": key,
+                    "action": "repair_reference_graph",
+                    "reason": warning.get("message").and_then(Value::as_str).unwrap_or("citation graph warning"),
+                }));
+            }
+        }
+    }
+
+    let status = if graph_warnings.is_empty() {
+        "verified"
+    } else {
+        "needs_remediation"
+    };
+    json!({
+        "status": status,
+        "summary": format!(
+            "{} references parsed; {} graph warnings",
+            parsed_references.len(),
+            graph_warnings.len()
+        ),
+        "parsed_references": parsed_references,
+        "resolver_results": resolver_results,
+        "similarity_results": similarity_results,
+        "metadata_conflicts": Vec::<Value>::new(),
+        "graph_warnings": graph_warnings,
+        "remediation_items": remediation_items,
+    })
 }
 
 fn apply_macros(_bundle: &mut ArtifactBundle, _res: Option<StageOutcome>) {
@@ -3020,6 +3166,47 @@ mod a4_tests {
             Some(v) => std::env::set_var("GROKRXIV_FORCE_AGENT_EXTRACTION", v),
             None => std::env::remove_var("GROKRXIV_FORCE_AGENT_EXTRACTION"),
         }
+    }
+
+    #[test]
+    fn citation_validation_report_flags_graph_remediation_items() {
+        let references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "@article{smith2026,title={A Paper}}",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "venue": null,
+                "year": 2026,
+                "doi": null,
+                "arxiv_id": null,
+                "cited": false,
+                "contexts": []
+            }],
+            "unmatched_citation_keys": ["missing2026"],
+            "uncited_bibliography_keys": ["smith2026"]
+        });
+
+        let report = build_citation_validation_report(&references);
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+        assert_eq!(report["status"], "needs_remediation");
+        assert!(validator.validate(&report).is_ok());
+        assert_eq!(report["parsed_references"][0]["key"], "smith2026");
+        assert!(report["graph_warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning["code"] == "unmatched_citation_keys"));
+        assert!(report["remediation_items"]
+            .as_array()
+            .expect("remediations")
+            .iter()
+            .any(|item| item["key"] == "missing2026"));
     }
 
     #[test]

@@ -150,6 +150,7 @@ impl ToolRegistry {
         r.register(Arc::new(tools::read_file::ReadFileTool));
         r.register(Arc::new(tools::query_ast::QueryAstTool));
         r.register(Arc::new(tools::crossref_lookup::CrossrefLookupTool));
+        r.register(Arc::new(tools::openalex_lookup::OpenAlexLookupTool));
         r.register(Arc::new(tools::arxiv_lookup::ArxivLookupTool));
         r.register(Arc::new(tools::submit::SubmitTool));
         r

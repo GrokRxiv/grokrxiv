@@ -1198,16 +1198,18 @@ pub(super) async fn run_review_dag_inner_with_context(
     .await;
 
     if let Err(e) = dag_result {
+        let failure_message = format!("{e:#}");
         tracing::error!(
             %review_id,
-            err = %format!("{e:#}"),
+            err = %failure_message,
             "review DAG bailed; transitioning review row to system_failed"
         );
-        let _ = crate::db::set_review_status(
+        let _ = crate::db::set_review_system_failed(
             pool,
             review_id,
-            grokrxiv_schemas::ReviewStatus::SystemFailed,
-            None,
+            "review_dag_failed",
+            &failure_message,
+            true,
         )
         .await;
         crate::cli_status::emit_stage(

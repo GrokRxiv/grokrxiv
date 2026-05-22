@@ -93,6 +93,11 @@ nodes:
   - id: citation_contextualizer
     kind: agent
     role: citation_contextualizer
+  - id: citation_validation
+    kind: dag_call
+    dag_type: citation-validation
+    inputs: [references.json]
+    outputs: [citation_validation_report.json, citation_validation_adjudication.json]
   - id: paper_review
     kind: dag_call
     dag_type: paper-review
@@ -113,6 +118,8 @@ edges:
       - derive_references
       - derive_theorems
     to: materialize_review_input
+  - from: derive_references
+    to: citation_validation
   - from: acquire_source
     to: vlm_extractor
   - from: source_to_body
@@ -126,5 +133,6 @@ edges:
   - from:
       - vlm_extractor
       - citation_contextualizer
+      - citation_validation
       - materialize_review_input
     to: paper_review

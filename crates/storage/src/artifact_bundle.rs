@@ -20,6 +20,8 @@ pub struct ArtifactBundle {
     pub sections: Option<serde_json::Value>,
     pub equations: Option<serde_json::Value>,
     pub references: Option<serde_json::Value>,
+    pub citation_validation_report: Option<serde_json::Value>,
+    pub citation_validation_adjudication: Option<serde_json::Value>,
     pub theorem_graph: Option<serde_json::Value>,
     pub extraction_report: Option<serde_json::Value>,
     pub semantic_ast: Option<Vec<u8>>,
