@@ -160,7 +160,7 @@ impl AppState {
         let providers = ProviderRegistry::from_env();
         let arxiv = Arc::new(ArxivGate::new(std::time::Duration::from_secs(3)));
 
-        let role_yaml = load_role_configs();
+        let role_yaml = load_role_configs()?;
         validate_role_configs(&role_yaml)?;
         validate_required_cli_runners(&role_yaml)?;
         let agent_configs = Arc::new(
@@ -198,7 +198,7 @@ impl AppState {
         let agents = {
             #[cfg(feature = "grokrxiv-verifier")]
             {
-                Arc::new(build_agent_registry(&role_yaml, &agent_schemas))
+                Arc::new(build_agent_registry(&role_yaml, &agent_schemas)?)
             }
             #[cfg(not(feature = "grokrxiv-verifier"))]
             {
@@ -238,9 +238,9 @@ const PAPER_REVIEW_DAG_ID: &str = "paper-review";
 
 /// Read each configured review role YAML once for the configured-agent
 /// registry. `paper-review.yaml` is the source of truth.
-fn load_role_configs() -> RoleYamlMap {
+fn load_role_configs() -> anyhow::Result<RoleYamlMap> {
     let mut out: RoleYamlMap = HashMap::new();
-    for config_ref in review_role_config_refs() {
+    for config_ref in review_role_config_refs()? {
         let cfg = match config::read_agent_config(&config_ref.path) {
             Ok(config) => Some(config),
             Err(e) => {
@@ -255,11 +255,11 @@ fn load_role_configs() -> RoleYamlMap {
         };
         out.insert(config_ref.role_id, cfg);
     }
-    out
+    Ok(out)
 }
 
 fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
-    let config_refs = review_role_config_refs();
+    let config_refs = review_role_config_refs()?;
     let missing: Vec<String> = config_refs
         .iter()
         .filter_map(|config_ref| match role_yaml.get(&config_ref.role_id) {
@@ -327,9 +327,12 @@ fn required_cli_bins(role_yaml: &RoleYamlMap) -> anyhow::Result<BTreeSet<String>
 /// truth. Runtime flags/env select the actual runner, so
 /// CLI paths do not depend on provider APIs.
 #[cfg(feature = "grokrxiv-verifier")]
-fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) -> AgentRegistry {
+fn build_agent_registry(
+    role_yaml: &RoleYamlMap,
+    schemas: &Arc<AgentSchemaMap>,
+) -> anyhow::Result<AgentRegistry> {
     let mut out: AgentRegistry = HashMap::new();
-    for config_ref in review_role_config_refs() {
+    for config_ref in review_role_config_refs()? {
         let role = config_ref.role_id;
         let Some(cfg) = role_yaml.get(&role).and_then(|c| c.as_ref()) else {
             continue;
@@ -350,13 +353,16 @@ fn build_agent_registry(role_yaml: &RoleYamlMap, schemas: &Arc<AgentSchemaMap>) 
         };
         out.insert(role, Arc::new(build_agent(spec)));
     }
-    out
+    Ok(out)
 }
 
-fn review_role_config_refs() -> Vec<config::AgentConfigRef> {
-    config::dag_agent_config_refs(PAPER_REVIEW_DAG_ID).unwrap_or_else(|err| {
-        panic!("could not load `{PAPER_REVIEW_DAG_ID}` DAG agent configs: {err:#}")
-    })
+fn review_role_config_refs() -> anyhow::Result<Vec<config::AgentConfigRef>> {
+    role_config_refs(PAPER_REVIEW_DAG_ID)
+}
+
+fn role_config_refs(dag_id: &str) -> anyhow::Result<Vec<config::AgentConfigRef>> {
+    config::dag_agent_config_refs(dag_id)
+        .map_err(|err| anyhow::anyhow!("could not load `{dag_id}` DAG agent configs: {err:#}"))
 }
 
 #[cfg(feature = "grokrxiv-verifier")]
@@ -518,7 +524,7 @@ mod tests {
         let mut schemas = AgentSchemaMap::new();
         let schema = Arc::new(serde_json::json!({ "type": "object" }));
         schemas.insert("summary".to_string(), schema.clone());
-        let registry = build_agent_registry(&role_yaml, &Arc::new(schemas));
+        let registry = build_agent_registry(&role_yaml, &Arc::new(schemas)).unwrap();
         let agent = registry.get("summary").expect("summary agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
@@ -581,6 +587,24 @@ mod tests {
 
         validate_required_cli_runners_with_path(&role_yaml, &std::ffi::OsString::new())
             .expect("API roles should not require local CLI binaries");
+    }
+
+    #[test]
+    fn missing_review_dag_config_returns_error_instead_of_panicking() {
+        let result = std::panic::catch_unwind(|| role_config_refs("missing-review-dag"));
+
+        assert!(
+            result.is_ok(),
+            "missing review DAG config should be reported as an error, not a panic"
+        );
+        let err = result
+            .expect("catch_unwind result checked")
+            .expect_err("missing review DAG config should return an error");
+        assert!(
+            err.to_string()
+                .contains("could not load `missing-review-dag`"),
+            "error should identify the missing DAG config, got: {err:#}"
+        );
     }
 
     #[tokio::test]

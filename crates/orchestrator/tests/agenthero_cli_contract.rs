@@ -8,6 +8,14 @@ use tower::ServiceExt;
 
 use agenthero_orchestrator::cli::{AppCommand, Cli, Command};
 
+fn agh(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_agh"))
+        .current_dir(workspace_root())
+        .args(args)
+        .output()
+        .expect("run agh test binary")
+}
+
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -172,6 +180,83 @@ fn app_run_with_no_action_is_action_catalog_request() {
         },
         other => panic!("expected App command, got {other:?}"),
     }
+}
+
+#[test]
+fn app_run_app_help_renders_manifest_catalog_without_adapter_or_runner_options() {
+    let output = agh(&["app", "run", "grokrxiv", "--help"]);
+    assert!(
+        output.status.success(),
+        "app help should exit successfully: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("GrokRxiv"),
+        "help should identify the app, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("review") && stdout.contains("validate citations"),
+        "help should list manifest-declared actions, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("source") && stdout.contains("URL_OR_PATH"),
+        "help should expose action options from app.yaml, got:\n{stdout}"
+    );
+    for stale in ["--runner", "cloud", "local_inference", "status=Ok"] {
+        assert!(
+            !stdout.contains(stale),
+            "app help must not show stale generic/adapter output `{stale}`:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn app_run_action_help_renders_manifest_action_usage_without_executing() {
+    let output = agh(&["app", "run", "grokrxiv", "review", "--help"]);
+    assert!(
+        output.status.success(),
+        "action help should exit successfully: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Usage: agh app run grokrxiv review"),
+        "action help should include concrete usage, got:\n{stdout}"
+    );
+    for expected in ["URL_OR_PATH", "--type", "--include", "--exclude"] {
+        assert!(
+            stdout.contains(expected),
+            "review help should include `{expected}`, got:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("status=Ok") && !stdout.contains("could not resolve source"),
+        "help must not execute the GrokRxiv adapter, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn app_run_nested_action_help_resolves_manifest_command_path() {
+    let output = agh(&["app", "run", "grokrxiv", "validate", "citations", "--help"]);
+    assert!(
+        output.status.success(),
+        "nested action help should exit successfully: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Usage: agh app run grokrxiv validate citations"),
+        "nested action help should include concrete usage, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Validate paper citations"),
+        "nested action help should use app.yaml description, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("status=Ok"),
+        "nested help must not execute the citation DAG, got:\n{stdout}"
+    );
 }
 
 #[test]

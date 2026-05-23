@@ -333,14 +333,7 @@ fn load_review_dag_runtime_config() -> anyhow::Result<ReviewDagRuntimeConfig> {
 
 #[cfg(feature = "grokrxiv-ingest")]
 fn review_dag_manifest_path() -> PathBuf {
-    if let Some(dags_dir) = std::env::var_os("AGENTHERO_DAGS_DIR").map(PathBuf::from) {
-        return dags_dir.join("paper-review.yaml");
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("dags")
-        .join("paper-review.yaml")
+    crate::agents::config::dag_manifest_path("paper-review")
 }
 
 #[cfg(all(test, feature = "grokrxiv-ingest"))]

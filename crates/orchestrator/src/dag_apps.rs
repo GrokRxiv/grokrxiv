@@ -573,28 +573,45 @@ async fn run_adapter_process(
         .unwrap_or(DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES);
     let workdir = adapter_workdir();
 
-    let mut child = match spawn_adapter(command, args, &workdir).await {
-        Ok(child) => child,
-        Err(err)
-            if err
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == ErrorKind::NotFound)
-                && fallback_command.is_some()
-                && adapter_fallback_allowed() =>
-        {
-            let fallback = fallback_command.as_deref().expect("checked fallback");
-            spawn_adapter(fallback, fallback_args, &workdir).await.map_err(|fallback_err| {
+    let prefer_fallback = cfg!(debug_assertions)
+        && fallback_command.is_some()
+        && std::env::var_os("AGENTHERO_ADAPTER_BIN_DIR").is_none()
+        && adapter_fallback_allowed();
+
+    let mut child = if prefer_fallback {
+        let fallback = fallback_command.as_deref().expect("checked fallback");
+        spawn_adapter(fallback, fallback_args, &workdir)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "spawn app `{}` fallback adapter `{fallback}`: {err}",
+                    manifest.slug
+                )
+            })?
+    } else {
+        match spawn_adapter(command, args, &workdir).await {
+            Ok(child) => child,
+            Err(err)
+                if err
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == ErrorKind::NotFound)
+                    && fallback_command.is_some()
+                    && adapter_fallback_allowed() =>
+            {
+                let fallback = fallback_command.as_deref().expect("checked fallback");
+                spawn_adapter(fallback, fallback_args, &workdir).await.map_err(|fallback_err| {
                 anyhow::anyhow!(
                     "spawn app `{}` adapter `{command}` failed and fallback `{fallback}` failed: {fallback_err}",
                     manifest.slug
                 )
             })?
-        }
-        Err(err) => {
-            return Err(anyhow::anyhow!(
-                "spawn app `{}` adapter `{command}`: {err}",
-                manifest.slug
-            ));
+            }
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "spawn app `{}` adapter `{command}`: {err}",
+                    manifest.slug
+                ));
+            }
         }
     };
 

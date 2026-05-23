@@ -12,6 +12,15 @@ pub async fn run_process() -> ExitCode {
         return ExitCode::from(1);
     }
 
+    match crate::cli::try_print_app_run_help_from_args(std::env::args().skip(1).collect()) {
+        Ok(true) => return ExitCode::SUCCESS,
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return ExitCode::from(1);
+        }
+    }
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) if err.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {

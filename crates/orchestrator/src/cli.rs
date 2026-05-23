@@ -326,6 +326,54 @@ async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::
     }
 }
 
+/// Render app-owned help before Clap handles `--help` generically.
+pub fn try_print_app_run_help_from_args(args: Vec<String>) -> anyhow::Result<bool> {
+    let Some(app_run_index) = args
+        .windows(2)
+        .position(|window| window[0] == "app" && window[1] == "run")
+    else {
+        return Ok(false);
+    };
+    let Some(app) = args.get(app_run_index + 2) else {
+        return Ok(false);
+    };
+    let trailing = &args[(app_run_index + 3)..];
+    let Some(help_index) = trailing.iter().position(|arg| is_help_token(arg)) else {
+        return Ok(false);
+    };
+
+    let json = args.iter().any(|arg| arg == "--json");
+    let manifest = crate::dag_apps::load_app_manifest_by_slug(app)?;
+    let action_args = trailing[..help_index]
+        .iter()
+        .filter(|arg| !is_agenthero_control_flag(arg))
+        .cloned()
+        .collect::<Vec<_>>();
+    if action_args.is_empty() {
+        return app_show_manifest(&manifest, json).map(|_| true);
+    }
+
+    let resolved = crate::dag_apps::resolve_app_action_args_in_manifest(&manifest, &action_args)?;
+    let action = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == resolved.id)
+        .ok_or_else(|| anyhow::anyhow!("unknown app action `{} {}`", manifest.slug, resolved.id))?;
+    print_app_action_help(&manifest, action, json)?;
+    Ok(true)
+}
+
+fn is_help_token(arg: &str) -> bool {
+    matches!(arg, "--help" | "-h" | "help")
+}
+
+fn is_agenthero_control_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--json" | "--status" | "--no-status" | "--debug-logs" | "--dry-run" | "--show-secrets"
+    )
+}
+
 fn app_list(json: bool) -> anyhow::Result<()> {
     let apps = crate::dag_apps::load_app_manifests()?;
     if json {
@@ -423,6 +471,116 @@ fn app_catalog_json(app: &crate::dag_apps::AppManifest) -> serde_json::Value {
             "options": action.options,
         })).collect::<Vec<_>>(),
     })
+}
+
+fn print_app_action_help(
+    app: &crate::dag_apps::AppManifest,
+    action: &crate::dag_apps::AppManifestAction,
+    json: bool,
+) -> anyhow::Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "app": app.slug,
+                "label": app.label,
+                "action": {
+                    "id": action.id,
+                    "command": action.command,
+                    "dag_type": action.dag_type,
+                    "description": action.description,
+                    "options": action.options,
+                }
+            }))?
+        );
+        return Ok(());
+    }
+
+    let command = action.command.join(" ");
+    println!("{} {}", app.label, command);
+    if !action.description.is_empty() {
+        println!("{}", action.description);
+    }
+    println!();
+    println!("Usage: {}", app_action_usage(app, action));
+
+    let positionals = action
+        .options
+        .iter()
+        .filter(|option| option.kind == "positional")
+        .collect::<Vec<_>>();
+    if !positionals.is_empty() {
+        println!();
+        println!("Arguments:");
+        for option in positionals {
+            println!("  {}", format_option_help(option));
+        }
+    }
+
+    let flags = action
+        .options
+        .iter()
+        .filter(|option| option.kind != "positional")
+        .collect::<Vec<_>>();
+    if !flags.is_empty() {
+        println!();
+        println!("Options:");
+        for option in flags {
+            println!("  {}", format_option_help(option));
+        }
+    }
+    Ok(())
+}
+
+fn app_action_usage(
+    app: &crate::dag_apps::AppManifest,
+    action: &crate::dag_apps::AppManifestAction,
+) -> String {
+    let mut usage = format!("agh app run {} {}", app.slug, action.command.join(" "));
+    for option in action
+        .options
+        .iter()
+        .filter(|option| option.kind == "positional")
+    {
+        let value = option.value_name.as_deref().unwrap_or(option.name.as_str());
+        let token = if option.required {
+            format!("<{value}>")
+        } else {
+            format!("[<{value}>]")
+        };
+        usage.push(' ');
+        usage.push_str(&token);
+        if option.multiple {
+            usage.push_str("...");
+        }
+    }
+    if action
+        .options
+        .iter()
+        .any(|option| option.kind != "positional")
+    {
+        usage.push_str(" [OPTIONS]");
+    }
+    usage
+}
+
+fn format_option_help(option: &crate::dag_apps::AppActionOption) -> String {
+    let value = option
+        .value_name
+        .as_deref()
+        .map(|name| format!(" <{name}>"))
+        .unwrap_or_default();
+    let required = if option.required { " required" } else { "" };
+    let repeatable = if option.multiple { " repeatable" } else { "" };
+    let suffix = if option.description.is_empty() {
+        String::new()
+    } else {
+        format!(" - {}", option.description)
+    };
+    format!(
+        "{}{}{}{}{}",
+        option.name, value, required, repeatable, suffix
+    )
 }
 
 async fn app_run_command(

@@ -451,10 +451,15 @@ pub fn apps_root() -> PathBuf {
         return if path.is_absolute() {
             path
         } else {
-            workspace_root().join(path)
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
         };
     }
-    workspace_root().join("agenthero").join("apps")
+    discover_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join("agenthero")
+        .join("apps")
 }
 
 /// Root directory for one installed DAGOps app.
@@ -463,9 +468,27 @@ pub fn app_root(app: &str) -> PathBuf {
 }
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(5)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    discover_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn discover_workspace_root() -> Option<PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            starts.push(parent.to_path_buf());
+        }
+    }
+    starts.into_iter().find_map(|start| {
+        start.ancestors().find_map(|candidate| {
+            candidate
+                .join("agenthero")
+                .join("apps")
+                .is_dir()
+                .then(|| candidate.to_path_buf())
+        })
+    })
 }
