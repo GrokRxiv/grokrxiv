@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent harness + orchestration: foundation remediation plan</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="agent-harness--orchestration-foundation-remediation-plan"><a class="anchor" aria-label="anchor" href="#agent-harness--orchestration-foundation-remediation-plan">#</a>Agent harness + orchestration: foundation remediation plan</h1>
+<p><strong>Date:</strong> 2026-05-20
+<strong>Scope:</strong> Deep review of the agent review harness and orchestration layer following the 2026-05-20 Part-A remediation merge, plus a framework / foundational-harness gap analysis for research-paper reviews at scale.
+<strong>Status:</strong> Tier 1 remediation branch — behavior-preserving supervisor decomposition first; foundation refactors deferred.</p>
+<hr>
+<h2 id="where-the-codebase-actually-stands"><a class="anchor" aria-label="anchor" href="#where-the-codebase-actually-stands">#</a>Where the codebase actually stands</h2>
+<p>Today's <code>952c4e5</code> (Merge fp-remediation-root) plus the post-merge fixes (<code>ec339df</code> budget supervisor timeout for corrective retries, <code>72ae2b5</code> kill cli subprocess groups on timeout) landed roughly 24 of the 27 Part A items. The CLI smoke (<code>tests/manual/smoke-root-72ae2b5.json</code>) confirms the harness runs end-to-end against arXiv <code>2605.17307</code>: 6/6 agents <code>verifier_status: pass</code>, a real PR (#31) opened, status <code>pr_open</code>. The system works.</p>
+<p>It's also one merge away from being a real framework.</p>
+<hr>
+<h2 id="what-todays-remediation-actually-accomplished"><a class="anchor" aria-label="anchor" href="#what-todays-remediation-actually-accomplished">#</a>What today's remediation actually accomplished</h2>
+<p><strong>Strong wins:</strong></p>
+<ol>
+<li>
+<p><strong><code>ReviewAgent</code> trait collapsed to <code>ConfiguredAgent</code> struct.</strong> <code>traits.rs</code> is 55 lines (down from 76). The 6 per-role macro-generated structs are gone. <code>build_agent</code> is a 2-line factory. This is the cleanest single piece of the new harness.</p>
+</li>
+<li>
+<p><strong>Schema as <code>Arc&#x3C;serde_json::Value></code> via <code>AgentSchema</code> type alias.</strong> No more 50KB clones per call. <code>AgentSpec</code> is now cheap to pass around.</p>
+</li>
+<li>
+<p><strong>Cache + persistence honour the resolved runner.</strong> Migration <code>20260520000001_agent_runner_persistence.sql</code> adds <code>runner text not null default 'api' check (runner in ('api','cli','cloud','local_inference'))</code> on both <code>review_agents</code> and <code>review_cache</code>. <code>AgentRun::from_cache</code> now takes <code>runner: AgentRunnerKind</code> and threads it through. Cost attribution is honest.</p>
+</li>
+<li>
+<p><strong><code>role_routing</code> deleted.</strong> The dead parallel registry is gone. <code>state.agents</code> is the sole source of truth. ~80 lines of dead-code removed.</p>
+</li>
+<li>
+<p><strong>Corrective retry actually mutates the system prompt.</strong> <code>corrective_system_prompt(&#x26;system, &#x26;first_err)</code> differentiates <code>OutputFailureKind::SchemaValidation</code> from prose-wrap. Two tests pin the behaviour (<code>corrective_retry_changes_system_prompt_for_prose_wrapped_json</code>, <code>…_for_schema_failure</code>). The "model wrote prose, retry sends same prompt, model writes prose again" loop is broken.</p>
+</li>
+<li>
+<p><strong>Supervisor-level timeout wraps every <code>agent.run</code>.</strong> <code>run_agent_with_supervisor_timeout</code> now lives with the review flow and hard-caps each call at <code>spec.timeout_secs + 30</code>. Wedged runners stop hoarding semaphore slots.</p>
+</li>
+<li>
+<p><strong>CLI subprocess <code>kill_on_drop(true)</code></strong> plus process-group kill on timeout (<code>72ae2b5</code>). A wedged claude/codex/gemini subprocess actually dies instead of leaking.</p>
+</li>
+<li>
+<p><strong>Publish-after-approval idempotency via <code>publish_inflight: Mutex&#x3C;HashSet&#x3C;Uuid>></code>.</strong> Second click logs <code>"publish job already in flight"</code> and returns <code>Ok(())</code> without enqueueing. Cleanup on enqueue failure.</p>
+</li>
+<li>
+<p><strong>PR-open reconcile loop</strong> spawns from <code>serve.rs:60</code>, polls every 300s, walks <code>list_pr_open_reviews_with_urls</code>, queries GitHub via octocrab, calls the existing <code>finalize_published_review</code>. Reconcile stats logged per pass.</p>
+</li>
+<li>
+<p><strong>Graceful shutdown.</strong> <code>serve.rs</code> installs SIGTERM/Ctrl-C handlers, drives <code>axum::serve(...).with_graceful_shutdown(...)</code>, and calls <code>supervisor.shutdown()</code> which trips a <code>watch::Sender&#x3C;bool></code>. Inflight work drains.</p>
+</li>
+<li>
+<p><strong>Stateless mode disables ingest.</strong> <code>should_spawn_scheduler(db.is_some(), GROKRXIV_DISABLE_SCHEDULER)</code> — no DB = no scheduler = no orphan work.</p>
+</li>
+<li>
+<p><strong>Webhook ACK + async pattern.</strong> <code>ack_and_spawn_pull_request_synchronize</code> and the merge path both: dedupe via <code>record_github_delivery</code>, record the event, return 200, do the work in <code>tokio::spawn</code>. The 10s GitHub timeout is no longer a duplicate-delivery vector.</p>
+</li>
+<li>
+<p><strong>PR label/title marker extraction</strong> with body fallback. <code>extract_review_id_from_pull_request</code> checks the hard-to-lose metadata first.</p>
+</li>
+<li>
+<p><strong>Doctor preflight at boot.</strong> <code>validate_required_cli_runners</code> runs in <code>AppState::from_config</code>, refuses to start when a configured CLI is missing.</p>
+</li>
+<li>
+<p><strong>Bounded worker pool.</strong> <code>DEFAULT_SUPERVISOR_WORKER_LIMIT</code> + <code>DEFAULT_SUPERVISOR_QUEUE_CAPACITY</code> knobs. The old "spawn-per-item, unbounded" pattern is gone.</p>
+</li>
+</ol>
+<h2 id="what-got-sidestepped-or-introduced"><a class="anchor" aria-label="anchor" href="#what-got-sidestepped-or-introduced">#</a>What got sidestepped or introduced</h2>
+<ol>
+<li>
+<p><strong>Item 1 (<code>AgentRole::Render</code> variant) was sidestepped, not fixed.</strong> RenderAgent was moved outside the configured-review-agent registry — it's a separate <code>RenderAgent</code> struct in <code>review_agents.rs</code> with its own <code>run()</code> method. <code>RenderAgent::spec().role</code> still returns <code>AgentRole::MetaReviewer</code>. The test <code>test_render_agent_keeps_spec_without_review_role_identity</code> literally pins this. <strong>Today's collision risk is real if any new observability code keys by <code>spec.role</code></strong>: a render run would silently land in the MetaReviewer bucket. The architectural smell remained; only the immediate collision symptom was avoided.</p>
+</li>
+<li>
+<p><strong>Item 20 (delete Cloud + LocalInference runners) didn't happen.</strong> <code>cloud.rs</code> is still 613 lines, <code>local_inference.rs</code> 493 lines, both still in <code>AgentRunnerKind</code> enum, both still registered in the runner registry at boot — none invoked by the default CLI smoke. ~1,100 LoC of speculative code lives on.</p>
+</li>
+<li>
+<p><strong>Item 18 partial — <code>AgentMode</code> and <code>RevisionTarget</code> were <em>relocated</em>, not deleted.</strong> They moved off <code>AgentSpec</code> (good) but stayed in <code>runtime_config.rs</code> as <code>default_mode</code> and <code>revision_target</code> fields, still exposed as hidden CLI flags. <code>AgentMode::ReviewAndRevise</code> still has no caller in the live pipeline. Either wire it or remove the runtime config field — it's now an indirection over an unused enum.</p>
+</li>
+<li>
+<p><strong>Item 13 partial — scheduler in-process retry only.</strong> Per <code>docs/webhook-scheduler-hardening-applied.md</code>: "This pass did not add a persistent scheduler checkpoint table. The retry cursor is process-local; a durable database checkpoint can be added in a later schema pass." A process restart still loses the cursor.</p>
+</li>
+<li>
+<p><strong>A new "revision_needed PR" code path is undocumented in schemas.</strong> The smoke result shows <code>"pr_kind": "revision_needed"</code> and <code>"gate_verdict": "fail"</code> with a real PR opened (<code>#31</code>). That means when the meta-reviewer recommends <code>major_revision</code>, the system now opens a request-for-revision PR instead of withholding publication. This is reasonable behaviour but it's a new state machine path that diverged from the original "gate fail → withdrawn" rule. I couldn't find a documented contract for <code>pr_kind</code> in <code>review_bundle_metadata.schema.json</code> or elsewhere. Worth pinning in a schema.</p>
+</li>
+<li>
+<p><strong>The CLI smoke gate checks <code>verifier_status</code> per agent, not <code>gate_verdict</code>.</strong> Today's smoke passes the gate ("6/6 pass") even though <code>gate_verdict: "fail"</code>. That's correct as a regression test — it's "the harness ran" not "the review's verdict was accept" — but operators reading the file might mistake <code>gate_verdict: fail</code> for a regression. Worth a one-line comment in the JSON or rename <code>gate_verdict</code> to <code>meta_recommendation_gate</code>.</p>
+</li>
+<li>
+<p><strong><code>supervisor.rs</code> had become the immediate maintainability blocker.</strong> The file mixed queue dispatch, review orchestration, prompt construction, verifier handling, fact merges, rendering, and publishing. The Tier 1 remediation is a behavior-preserving decomposition into private <code>supervisor/</code> modules, not a new DAG runtime.</p>
+</li>
+</ol>
+<hr>
+<h1 id="can-this-become-a-foundational-harness-for-research-paper-reviews-at-scale"><a class="anchor" aria-label="anchor" href="#can-this-become-a-foundational-harness-for-research-paper-reviews-at-scale">#</a>Can this become a foundational harness for research-paper reviews at scale?</h1>
+<h2 id="bones-of-a-framework-that-the-remediation-strengthened"><a class="anchor" aria-label="anchor" href="#bones-of-a-framework-that-the-remediation-strengthened">#</a>Bones of a framework that the remediation strengthened</h2>
+<p>These are now demonstrably framework-shaped:</p>
+<ul>
+<li><strong><code>AgentRunner</code> trait + 4 backends.</strong> Genuine pluggability. CliRunner, ApiRunner, CloudRunner, LocalInferenceRunner all conform to one signature. Adding a 5th (e.g. Bedrock, Together, your-own-gateway) is a single trait impl. The trait stayed cleanly minimal.</li>
+<li><strong><code>AgentSpec</code> / <code>AgentInput</code> / <code>AgentRun</code> lifecycle.</strong> Cheap to clone (post-<code>Arc&#x3C;Value></code>), schema-enforced, runner-agnostic. The contract is portable.</li>
+<li><strong>Verifier ladder with per-role composition.</strong> <code>VerifierLadder::standard_for_role(role, schema)</code>. New rungs are one trait impl. Citation/metadata/render/support/tone/json_schema already swappable.</li>
+<li><strong>Fact-merge pattern.</strong> <code>merge_*_into_output</code> per specialist. The killer architectural primitive: deterministic verifier owns ground truth, LLM owns judgment, merge before persistence. Generalizes to any domain that has "facts you can compute" plus "judgments you need a model for."</li>
+<li><strong>Cache by <code>(paper_id, role, content_hash)</code> with TTL.</strong> Schema is paper-specific but the indexing logic is generic.</li>
+<li><strong>Schema-validated output contract per role.</strong> Strong invariant; the model is told the schema, the verifier validates against the same schema, the cache keys against the schema-shaped output. Three layers, one source of truth.</li>
+<li><strong>Reconcile loop pattern.</strong> <code>spawn_publish_reconcile</code> is the right shape for any "background process drifted from authoritative external state" — easily generalized to a <code>ReconcileLoop</code> trait.</li>
+<li><strong>Bounded worker pool with operator knobs.</strong> <code>GROKRXIV_SUPERVISOR_WORKERS</code> / <code>GROKRXIV_SUPERVISOR_QUEUE_CAPACITY</code>. Scale knobs exist.</li>
+</ul>
+<h2 id="hard-couplings-still-blocking-the-framework-story"><a class="anchor" aria-label="anchor" href="#hard-couplings-still-blocking-the-framework-story">#</a>Hard couplings still blocking the framework story</h2>
+<p>Severity-tagged. <strong>B</strong> = blocker for non-arXiv domains. <strong>S</strong> = scaling concern at >100 reviews/day.</p>
+<h3 id="b1-agentrole-is-still-a-6-variant-enum-in-grokrxiv_schemas"><a class="anchor" aria-label="anchor" href="#b1-agentrole-is-still-a-6-variant-enum-in-grokrxiv_schemas">#</a><strong>B1. <code>AgentRole</code> is still a 6-variant enum in <code>grokrxiv_schemas</code>.</strong></h3>
+<p>Adding <code>triage</code>, <code>ethics</code>, <code>statistical_methodology</code>, <code>computational_chemistry</code> still requires touching the enum, the migration (CHECK constraint at <code>init.sql:70</code>), <code>role_slug</code>, <code>role_sort_key</code>, <code>ROLE_FILES</code>, <code>parse_role_slug</code>, plus per-role code paths in the supervisor modules. The remediation kept the enum. Roles are still code, not config.</p>
+<h3 id="b2-paperextract-is-the-only-artifact-the-harness-knows"><a class="anchor" aria-label="anchor" href="#b2-paperextract-is-the-only-artifact-the-harness-knows">#</a><strong>B2. <code>PaperExtract</code> is the only <code>Artifact</code> the harness knows.</strong></h3>
+<p>70+ call sites take <code>&#x26;PaperExtract</code>. <code>specialist_facts.rs</code> (821 lines, untouched today) is hard-typed against paper structure. <code>VerifierContext.paper: &#x26;PaperExtract</code>. <code>ExtractionContext.extract: &#x26;PaperExtract</code>. Switching to "review a code repo" or "review a dataset" requires a typed-trait abstraction or a wide refactor.</p>
+<h3 id="b3-review_dagrs-is-still-decorative"><a class="anchor" aria-label="anchor" href="#b3-review_dagrs-is-still-decorative">#</a><strong>B3. <code>review_dag.rs</code> is still decorative.</strong></h3>
+<p>340 lines, zero commits today. The executor still walks <code>specialist_roles</code> manually. <code>ReviewDag::canonical()</code> is built and validated at runtime, then ignored. The whole "different review topologies per project" story needs the executor to actually drive <code>ReviewDag</code>.</p>
+<h3 id="b4-build_specialist_prompt-is-hardcoded-paper-domain-scaffolding"><a class="anchor" aria-label="anchor" href="#b4-build_specialist_prompt-is-hardcoded-paper-domain-scaffolding">#</a><strong>B4. <code>build_specialist_prompt</code> is hardcoded paper-domain scaffolding.</strong></h3>
+<p>"Paper title / Abstract / Section headings / Paper body / Citation contexts / Bibliography / Verified availability facts / Verified prior-art candidates / Verified structural facts." Right for arXiv, wrong for anything else. A foundation needs <code>RoleSpec.render_prompt(&#x26;Artifact, &#x26;Facts) -> String</code> per role.</p>
+<h3 id="b5-is_code_amenable_field-body_budget_chars-proof-as-code-system-prompt-mutation"><a class="anchor" aria-label="anchor" href="#b5-is_code_amenable_field-body_budget_chars-proof-as-code-system-prompt-mutation">#</a><strong>B5. <code>is_code_amenable_field</code>, <code>body_budget_chars</code>, proof-as-code system-prompt mutation.</strong></h3>
+<p>These are now isolated in <code>supervisor/prompts.rs</code>, but they remain hardcoded to arXiv field prefixes. A bio/clinical/legal/RFP review pipeline would inherit these inappropriately until roles and prompt templates become runtime config.</p>
+<h3 id="b6-ingest-crate-is-arxiv_id--paperextract"><a class="anchor" aria-label="anchor" href="#b6-ingest-crate-is-arxiv_id--paperextract">#</a><strong>B6. ingest crate is <code>arxiv_id → PaperExtract</code>.</strong></h3>
+<p>No source-adapter trait. <code>crates/ingest/src/source.rs</code> already added local-PDF + git-repo paths (per yesterday's <code>2b85331</code> checkpoint merge), but they all converge on <code>PaperExtract</code>. A real adapter trait would let "ingest" be a registry.</p>
+<h3 id="b7-publisher-crate-is-openreviewpr--github"><a class="anchor" aria-label="anchor" href="#b7-publisher-crate-is-openreviewpr--github">#</a><strong>B7. publisher crate is <code>OpenReviewPr → GitHub</code>.</strong></h3>
+<p>No publish-adapter trait. OpenReview, journal submission systems, email handoff, REST webhook — all would require fork-and-rewrite today.</p>
+<h3 id="s1-cache-invalidation-is-implicit"><a class="anchor" aria-label="anchor" href="#s1-cache-invalidation-is-implicit">#</a><strong>S1. Cache invalidation is implicit.</strong></h3>
+<p>TTL-based 30-day expiry per <code>review_cache</code> plus <code>verifier_status='pass'</code> gate on read. No explicit invalidation when (a) a prompt template changes, (b) the schema changes, (c) the model upgrades. A schema-id or prompt-hash dimension on the cache key would prevent stale outputs after a deploy.</p>
+<h3 id="s2-no-per-paper-cost-ceiling"><a class="anchor" aria-label="anchor" href="#s2-no-per-paper-cost-ceiling">#</a><strong>S2. No per-paper cost ceiling.</strong></h3>
+<p>Each role's model is in <code>agents/*.yaml</code>. A pathological paper (long bibliography, large body, many tables) can run up against the per-role token caps repeatedly, costing <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>10</mn><mo>+</mo><mi>f</mi><mi>o</mi><mi>r</mi><mi>a</mi><mi>r</mi><mi>e</mi><mi>v</mi><mi>i</mi><mi>e</mi><mi>w</mi><mi>t</mi><mi>h</mi><mi>e</mi><mi>o</mi><mi>p</mi><mi>e</mi><mi>r</mi><mi>a</mi><mi>t</mi><mi>o</mi><mi>r</mi><mi>w</mi><mi>a</mi><mi>n</mi><mi>t</mi><mi>e</mi><mi>d</mi><mi>c</mi><mi>a</mi><mi>p</mi><mi>p</mi><mi>e</mi><mi>d</mi><mi>a</mi><mi>t</mi></mrow><annotation encoding="application/x-tex">10+ for a review the operator wanted capped at </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">10</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal" style="margin-right:0.0278em;">or</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="mord mathnormal">i</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">t</span><span class="mord mathnormal">h</span><span class="mord mathnormal">eo</span><span class="mord mathnormal">p</span><span class="mord mathnormal" style="margin-right:0.0278em;">er</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right:0.0278em;">or</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">an</span><span class="mord mathnormal">t</span><span class="mord mathnormal">e</span><span class="mord mathnormal">d</span><span class="mord mathnormal">c</span><span class="mord mathnormal">a</span><span class="mord mathnormal">pp</span><span class="mord mathnormal">e</span><span class="mord mathnormal">d</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span></span></span></span>0.50. <code>AgentSpec</code> has no budget field; supervisor has no aggregate cost tracker per review.</p>
+<h3 id="s3-no-escalation-policy"><a class="anchor" aria-label="anchor" href="#s3-no-escalation-policy">#</a><strong>S3. No escalation policy.</strong></h3>
+<p>"If 2 specialists disagree, escalate to a higher-tier model" is a natural pattern at scale. Today the recommendation is the deterministic output of one meta-reviewer call. A <code>tiebreaker</code> agent role + a "specialist disagreement detector" verifier rung would let the framework express ensembles.</p>
+<h3 id="s4-no-reviewer-profiles"><a class="anchor" aria-label="anchor" href="#s4-no-reviewer-profiles">#</a><strong>S4. No reviewer profiles.</strong></h3>
+<p>"Harsh statistical reviewer" vs "constructive theoretical reviewer" vs "skeptical methodology reviewer" — same role, different lens. A <code>Profile { role_id, prompt_overlay, model, temperature, verifier_weights }</code> would enable ensemble reviews and A/B experimentation. Today a role is one <code>AgentSpec</code>, period.</p>
+<h3 id="s5-no-document-version-model"><a class="anchor" aria-label="anchor" href="#s5-no-document-version-model">#</a><strong>S5. No document version model.</strong></h3>
+<p><code>papers</code> is keyed by <code>arxiv_id</code>, reviews FK on <code>paper_id</code>. When an author revises and re-submits, the existing review history is "superseded but lost." Foundation needs <code>documents</code> + <code>document_versions</code> + <code>reviews FK on (document_id, version)</code> with cross-version diffing.</p>
+<h3 id="s6-multi-tenant-isolation-is-implicit"><a class="anchor" aria-label="anchor" href="#s6-multi-tenant-isolation-is-implicit">#</a><strong>S6. Multi-tenant isolation is implicit.</strong></h3>
+<p>There's no <code>tenant_id</code> on any table I can see. The current model assumes one operator. A SaaS framework needs per-tenant quotas, RLS per tenant, per-tenant agent configs.</p>
+<h3 id="s7-no-reviewer-audit-trail-beyond-prompts"><a class="anchor" aria-label="anchor" href="#s7-no-reviewer-audit-trail-beyond-prompts">#</a><strong>S7. No reviewer audit trail beyond prompts.</strong></h3>
+<p><code>tools/manual/smoke-root-*.json</code> captures terminal state but not what the model saw or said per turn. For research-paper review at scale you want a per-review transcript bundle (input prompt + system prompt + raw model output + verifier diagnostics) so any disputed review can be audited. The pieces exist; they need a <code>audit_bundle.zip</code> per review.</p>
+<h3 id="s8-no-ab--shadow-review-infrastructure"><a class="anchor" aria-label="anchor" href="#s8-no-ab--shadow-review-infrastructure">#</a><strong>S8. No A/B / shadow review infrastructure.</strong></h3>
+<p>"Run the same paper through two model configurations and compare verdicts" — no first-class support. This is how you'd validate a new model release or prompt change.</p>
+<h3 id="s9-no-streaming-progress-to-the-moderator"><a class="anchor" aria-label="anchor" href="#s9-no-streaming-progress-to-the-moderator">#</a><strong>S9. No streaming progress to the moderator.</strong></h3>
+<p>6 specialists run in parallel; the operator sees nothing until all 6 finish + meta runs. For a 5-minute review that's fine; for a longer review (e.g. a long paper with deep fact verification) it's frustrating. Server-sent events per specialist completion would help.</p>
+<hr>
+<h2 id="tiered-remediation-path"><a class="anchor" aria-label="anchor" href="#tiered-remediation-path">#</a>Tiered remediation path</h2>
+<h3 id="tier-1-behavior-preserving-supervisor-decomposition"><a class="anchor" aria-label="anchor" href="#tier-1-behavior-preserving-supervisor-decomposition">#</a><strong>Tier 1. Behavior-preserving supervisor decomposition</strong></h3>
+<p>This is the immediate remediation. Keep the runtime behavior stable and split the old monolithic supervisor into focused private modules:</p>
+<ul>
+<li><code>supervisor/review_flow.rs</code> owns the current specialist -> verifier -> quorum -> meta-review -> render sequence.</li>
+<li><code>supervisor/prompts.rs</code>, <code>verification.rs</code>, and <code>merge_facts.rs</code> isolate prompt construction, verifier plumbing, and deterministic fact overlays.</li>
+<li><code>supervisor/rendering.rs</code>, <code>publish.rs</code>, and <code>jobs.rs</code> isolate artifact rendering, publish/reconcile helpers, and queue/worker dispatch.</li>
+<li><code>supervisor.rs</code> remains the public entrypoint for <code>Supervisor</code>, public wrappers, module declarations, and shared glue.</li>
+</ul>
+<p>Do not make YAML DAG topology executable in this tier. Do not add migrations. Do not change role schemas, cache semantics, verifier semantics, publish behavior, or CLI smoke expectations.</p>
+<h3 id="tier-2-role-and-prompt-registry"><a class="anchor" aria-label="anchor" href="#tier-2-role-and-prompt-registry">#</a><strong>Tier 2. Role and prompt registry</strong></h3>
+<p>After the supervisor split is stable, move role-specific prompt/schema/fact configuration out of code. Keep this as a separate branch because it affects <code>AgentRole</code>, schema lookup, DB role constraints, prompt rendering, and cache identity.</p>
+<p>Deferred work:</p>
+<ul>
+<li>Runtime string-keyed roles / <code>RoleSpec</code>.</li>
+<li>Prompt templates and fact-plugin configuration.</li>
+<li>Prompt-hash or schema-id cache invalidation.</li>
+<li>Per-role and per-review cost ceilings.</li>
+<li>Escalation and reviewer profile support.</li>
+</ul>
+<h3 id="tier-3-artifact-dag-and-publishing-foundation"><a class="anchor" aria-label="anchor" href="#tier-3-artifact-dag-and-publishing-foundation">#</a><strong>Tier 3. Artifact, DAG, and publishing foundation</strong></h3>
+<p>Only after Tier 2 has a stable role boundary should the framework move beyond <code>PaperExtract</code> and the hardcoded review flow.</p>
+<p>The detailed future implementation plan lives in
+<a href="yaml-dag-agent-runtime-major-revision-plan.md"><code>docs/yaml-dag-agent-runtime-major-revision-plan.md</code></a>.</p>
+<p>Deferred work:</p>
+<ul>
+<li><code>ReviewArtifact</code> or equivalent artifact abstraction.</li>
+<li>Source adapter registry for arXiv, local PDF/TeX, git repos, and future domains.</li>
+<li>Executable DAG/YAML runtime using <code>review_dag.rs</code> topology as the driver.</li>
+<li>Audit bundle generation.</li>
+<li>Tenant/RLS model.</li>
+<li>OpenReview or other publish adapters.</li>
+</ul>
+<h2 id="stretch-not-on-the-critical-path-but-valuable-at-scale"><a class="anchor" aria-label="anchor" href="#stretch-not-on-the-critical-path-but-valuable-at-scale">#</a>Stretch (not on the critical path but valuable at scale)</h2>
+<ul>
+<li><strong>S7 audit bundle</strong>: after every review, persist <code>audit/&#x3C;review_id>.zip</code> containing prompts, raw outputs, verifier diagnostics, fact-plugin results. Two days of work.</li>
+<li><strong>S6 multi-tenant</strong>: <code>tenant_id</code> column on every table + per-tenant RLS + per-tenant agent config dir. Two-three weeks of careful migration.</li>
+<li><strong>S1 cache invalidation by prompt-hash / schema-id</strong>: add columns to <code>review_cache</code>, invalidate on deploy. Two days.</li>
+<li><strong>S2 cost ceiling enforcement</strong>: per-<code>RoleSpec</code> budget field + per-review aggregator + early-abort on cap. Three days.</li>
+<li><strong>S9 streaming progress</strong>: SSE endpoint that emits <code>specialist.completed</code> events as agents finish. Two days.</li>
+</ul>
+<h2 id="whats-not-a-foundation-story-dont-chase"><a class="anchor" aria-label="anchor" href="#whats-not-a-foundation-story-dont-chase">#</a>What's NOT a foundation story (don't chase)</h2>
+<ul>
+<li>Re-doing the runner abstraction. It's already framework-shaped.</li>
+<li>Adding more runner backends speculatively. Cloud + LocalInference are still dormant — adding Bedrock or Together without a real user is more dead code.</li>
+<li>Switching the verifier ladder design. The current <code>(name, status, notes)</code> shape composes well and persists cleanly.</li>
+</ul>
+<hr>
+<h2 id="recommendations-on-sequencing"><a class="anchor" aria-label="anchor" href="#recommendations-on-sequencing">#</a>Recommendations on sequencing</h2>
+<ol>
+<li>
+<p><strong>Land Tier 1 first.</strong> The current blocker is maintainability, not missing YAML execution. A behavior-preserving supervisor split gets most of the benefit with much less risk.</p>
+</li>
+<li>
+<p><strong>Keep DAG/YAML as a later runtime change.</strong> <code>review_dag.rs</code> can remain the topology reference while <code>review_flow.rs</code> executes today's pipeline. Turning topology into an executor should happen only after the base is stable.</p>
+</li>
+<li>
+<p><strong>Do Tier 2 before broad artifact work.</strong> Runtime roles and prompt/fact configuration are the highest-leverage foundation boundary. They also reduce the risk of making a generic artifact abstraction around hardcoded role behavior.</p>
+</li>
+<li>
+<p><strong>Pick a second domain before Tier 3.</strong> Artifact and publish abstractions should be pulled by a real consumer, not invented speculatively.</p>
+</li>
+<li>
+<p><strong>Add audit and cost controls early in foundation work.</strong> They are useful even inside the current arXiv-only pipeline and constrain later framework interfaces.</p>
+</li>
+</ol>
+<hr>
+<h2 id="bottom-line"><a class="anchor" aria-label="anchor" href="#bottom-line">#</a>Bottom line</h2>
+<p>The remediation closed the bleeding. The harness is now production-shaped: bounded workers, graceful shutdown, idempotent publish, real reconcile loop, honest cost telemetry, structured corrective retries, supervisor-level timeouts, subprocess cleanup. That's most of what "at scale" needs from a single-domain operational perspective.</p>
+<p>What's left for "foundational research-paper review framework at scale" is a clean separation between <em>configuration</em> (roles, prompts, DAGs, schemas, profiles) and <em>executor</em> (the supervisor that walks a review topology over an artifact through configured runners). The runner is already close. Tier 1 keeps the working product stable while making the next boundaries visible. The artifact, role registry, executable DAG, audit, cost, tenant, and publish-adapter work should follow in separate branches.</p>
+<hr>
+<h2 id="verification-when-items-from-this-plan-land"><a class="anchor" aria-label="anchor" href="#verification-when-items-from-this-plan-land">#</a>Verification (when items from this plan land)</h2>
+<p>Every change goes through the cost-control regression gate:</p>
+<pre><code>grokrxiv review --runner cli --extractor cli --no-cache --json 2605.17307
+</code></pre>
+<p>All 6 agents must report <code>verifier_status: pass</code>. Exit 0. Capture JSON to <code>tests/manual/smoke-&#x3C;sha>.json</code> and commit alongside the change. <code>tests/m1-pipeline.sh</code> is deprecated and is NOT a gate.</p>
+<p>If the smoke regresses, stop and fix it in the same diff. Revert if the fix scope-creeps.</p>
+</main>
+<footer class="doc-footer">
+<p>agent-harness-foundation-remediation.md &middot; generated 2026-05-22T13:02:59.236Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

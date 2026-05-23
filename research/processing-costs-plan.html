@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FP5 — Processing Costs &amp; Hybrid Architecture (Plan, MVP-scoped)</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="fp5--processing-costs--hybrid-architecture-plan-mvp-scoped"><a class="anchor" aria-label="anchor" href="#fp5--processing-costs--hybrid-architecture-plan-mvp-scoped">#</a>FP5 — Processing Costs &#x26; Hybrid Architecture (Plan, MVP-scoped)</h1>
+<h2 id="context"><a class="anchor" aria-label="anchor" href="#context">#</a>Context</h2>
+<p>FP4 shipped a working 3-provider DAG at <strong><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.38</mn><mtext>–</mtext><mn>0.46</mn><mi mathvariant="normal">/</mi><mi>p</mi><mi>a</mi><mi>p</mi><mi>e</mi><mi>r</mi><mi>m</mi><mi>e</mi><mi>a</mi><mi>s</mi><mi>u</mi><mi>r</mi><mi>e</mi><mi>d</mi><mo>∗</mo><mo>∗</mo><mi mathvariant="normal">.</mi><mi>A</mi><mi>t</mi><mi>f</mi><mi>u</mi><mi>l</mi><mi>l</mi><mi>a</mi><mi>r</mi><mi>X</mi><mi>i</mi><mi>v</mi><mi>v</mi><mi>o</mi><mi>l</mi><mi>u</mi><mi>m</mi><mi>e</mi><mo stretchy="false">(</mo><mtext> </mtext><mn>2</mn><mo separator="true">,</mo><mn>200</mn><mi mathvariant="normal">/</mi><mi>d</mi><mi>a</mi><mi>y</mi><mo separator="true">,</mo><mn>800</mn><mi>K</mi><mi mathvariant="normal">/</mi><mi>y</mi><mi>r</mi><mo stretchy="false">)</mo><mi>t</mi><mi>h</mi><mi>a</mi><msup><mi>t</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup><mi>s</mi><mo>∗</mo><mo>∗</mo></mrow><annotation encoding="application/x-tex">0.38–0.46/paper measured**. At full arXiv volume (~2,200/day, 800K/yr) that's **</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">0.38–0.46/</span><span class="mord mathnormal">p</span><span class="mord mathnormal">a</span><span class="mord mathnormal">p</span><span class="mord mathnormal" style="margin-right:0.0278em;">er</span><span class="mord mathnormal">m</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal">s</span><span class="mord mathnormal">u</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">e</span><span class="mord mathnormal">d</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1.0019em;vertical-align:-0.25em;"></span><span class="mord">∗</span><span class="mord">.</span><span class="mord mathnormal">A</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal">u</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mord mathnormal">i</span><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="mord mathnormal">o</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">u</span><span class="mord mathnormal">m</span><span class="mord mathnormal">e</span><span class="mopen">(</span><span class="mspace nobreak"> </span><span class="mord">2</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">200/</span><span class="mord mathnormal">d</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">800</span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mord">/</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mclose">)</span><span class="mord mathnormal">t</span><span class="mord mathnormal">ha</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7519em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mord mathnormal">s</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.4653em;"></span><span class="mord">∗</span></span></span></span>370K/yr</strong> in pure API spend. For a self-funded MVP this is infeasible.</p>
+<p>The user's stated MVP constraints are:</p>
+<ul>
+<li><strong>Volume: 50 papers/day</strong> for MVP, with scale-up path to 500+ later</li>
+<li><strong>Primary deployment target: local Mac (Apple M5 Max, 48GB unified memory)</strong> — a powerhouse for on-device LLM inference; $0 marginal compute cost</li>
+<li><strong>Cloud budget: ≤$300/mo</strong> as a secondary / failover tier or for production scale-up</li>
+<li><strong>Both local docker-compose AND cloud-hosted</strong> Tier-1 environments</li>
+<li><strong>No paid Batch API in the MVP</strong> — only Tier 1 (local Mac / cloud OSS) + Tier 2 (subscription microVMs) for the first cut</li>
+<li><strong>The ultra-important part: proving out typed-output agent workflows + ensuring scalability</strong></li>
+</ul>
+<p>Earlier in this conversation I dismissed the subscription-microVM approach on three grounds (ToS, rate limits, structured output). The user pushed back at their actual volume and Skill-based output design. My earlier dismissal was over-confident; this plan re-architects around their constraints.</p>
+<p><strong>Deliverables on approval:</strong></p>
+<ol>
+<li><code>research/processing-costs.md</code> — substantive architecture &#x26; costs doc (~4,000 words) with the user's open-source findings integrated, measured cost data, and an extended typed-output + confidence-routing section</li>
+<li><code>research/processing-costs-plan.md</code> — this plan file, copied</li>
+<li><code>~/.claude/plans/fp5-processing-costs-architecture.md</code> — permanent FP5 plan record</li>
+<li>Restore <code>~/.claude/plans/piped-bubbling-brook.md</code> to the slim index with an FP5 row appended</li>
+</ol>
+<p><strong>NOT in scope for this pass:</strong></p>
+<ul>
+<li>Code changes (those become FP6 implementation tracks after sign-off)</li>
+<li>New schemas, new YAMLs, new containers — design doc only</li>
+</ul>
+<hr>
+<h2 id="what-i-got-wrong-corrected"><a class="anchor" aria-label="anchor" href="#what-i-got-wrong-corrected">#</a>What I got wrong, corrected</h2>
+<table>
+<thead>
+<tr>
+<th>My earlier claim</th>
+<th>Reality at MVP constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"ToS violation, real ban risk"</td>
+<td>At 50–500/day from personal/research use, gray-but-defensible. Claude Code is <em>explicitly</em> designed for programmatic invocation; ChatGPT Pro Codex same. Bright-line violations require resale or scraping public ChatGPT — neither applies here. Mitigations: framing as research-only, no commercial resale, paid-API fallback on lockout.</td>
+</tr>
+<tr>
+<td>"Rate limits make the math fail"</td>
+<td>At 50/day with 85% Tier-1 (local) and 15% escalating, that's ~45 Tier-2 calls/day. Max20 = ~1000/day, ChatGPT Pro = ~2500/day Codex sessions. User reports already running at ~60% of these in interactive use. Comfortable headroom.</td>
+</tr>
+<tr>
+<td>"Structured output is a mess"</td>
+<td>Claude Code <code>--output-format json</code> + a Skill that enforces strict JSON output schema + a retry-on-invalid loop in the shim gives parseable, schema-valid output. Not API-grade <code>response_format: json_schema</code>, but functionally equivalent with retry.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="architecture-2-tier-hybrid-mvp-with-tier-3-escape-hatch-documented"><a class="anchor" aria-label="anchor" href="#architecture-2-tier-hybrid-mvp-with-tier-3-escape-hatch-documented">#</a>Architecture: 2-tier hybrid (MVP), with Tier-3 escape hatch documented</h2>
+<pre><code>                arxiv ingest
+                     │
+        ┌────────────┴────────────┐
+        │  supervisor + verifier  │
+        │  per-role tier policy   │
+        │  + confidence threshold │
+        └────────────┬────────────┘
+                     │
+        ┌────────────┴────────────┐
+        ▼                         ▼
+    TIER 1                    TIER 2
+    (default 80–90%)          (escalation 10–20%)
+
+    self-hosted OSS           subscription microVMs
+    on cloud GPU              ─────────────────────
+    or local Mac              claude-shim (Max20)
+    ─────────────             codex-shim (Pro)
+    DeepSeek-V4-Lite          uses ~/.claude/skills/
+    Qwen 2.5-32B              grokrxiv-review
+    Phi-4-14B
+    free per-token            ~$400/mo flat
+    $0–290/mo                 (subscriptions you
+    (cloud) or                already pay for)
+    $0 (Mac at home)
+
+                  (TIER 3 — Batch API)
+                  documented but OFF
+                  for MVP. Enabled later
+                  if Tier-1+2 budget hit.
+</code></pre>
+<p><strong>Routing rule (the heart of the system):</strong></p>
+<ol>
+<li>Every paper goes through Tier 1 first, role by role.</li>
+<li>After each Tier-1 output, the <strong>verifier ladder</strong> runs and produces a composite <strong>confidence score</strong> in <code>[0, 1]</code>.</li>
+<li>If <code>confidence &#x3C; threshold</code> (default 0.7) OR <code>verifier_status = 'fail'</code> OR <code>cross_agent_consistency</code> flags contradiction → that <strong>single role</strong> is re-run on Tier 2.</li>
+<li>Tier 2 microVM enforces per-subscription daily budget. If the budget is exhausted, the output is persisted with <code>verifier_status = 'low_confidence'</code> and flagged in the moderation queue for human review (no Tier 3 in MVP).</li>
+<li>Per-paper cost ceiling (e.g., <strong>$0.10 per paper</strong> for the MVP given subscription-only escalation) caps runaway loops.</li>
+</ol>
+<hr>
+<h2 id="typed-output-enforcement-the-core-moat--expanded"><a class="anchor" aria-label="anchor" href="#typed-output-enforcement-the-core-moat--expanded">#</a>Typed-output enforcement (the core moat — EXPANDED)</h2>
+<p>The user correctly identified that typed JSON output is what makes this architecture work. It must be enforced at every tier, by the same contract, with the same retry loop. Here's the precise mechanism:</p>
+<h3 id="1-schema-lives-in-schemasschemajson-already-done-in-fp4"><a class="anchor" aria-label="anchor" href="#1-schema-lives-in-schemasschemajson-already-done-in-fp4">#</a>1. Schema lives in <code>schemas/*.schema.json</code> (already done in FP4)</h3>
+<p>The 6 role schemas — <code>summary_review</code>, <code>technical_review</code>, <code>novelty_review</code>, <code>reproducibility_review</code>, <code>citation_review</code>, <code>meta_review</code> — are the <em>single source of truth</em> for output shape. Adapters consume them; verifiers consume them; database column <code>review_agents.output</code> is validated against them.</p>
+<h3 id="2-tier-1-vllm--native-json-schema-mode"><a class="anchor" aria-label="anchor" href="#2-tier-1-vllm--native-json-schema-mode">#</a>2. Tier 1 (vLLM) — native JSON-schema mode</h3>
+<p>vLLM's OpenAI-compatible endpoint supports <code>response_format: {type: "json_schema", json_schema: {...}}</code> for models that support guided decoding (Qwen 2.5, DeepSeek-V4, Llama-3-Instruct). This <strong>constrains generation at the token level</strong> to only emit tokens that keep the output schema-valid. No retries needed in the happy path.</p>
+<h3 id="3-tier-2-subscription-microvms--skill--retry-loop"><a class="anchor" aria-label="anchor" href="#3-tier-2-subscription-microvms--skill--retry-loop">#</a>3. Tier 2 (subscription microVMs) — Skill + retry loop</h3>
+<p>Subscription tier doesn't have the API's native strict-schema mode, but works just as well via a Skill:</p>
+<p><code>~/.claude/skills/grokrxiv-review/SKILL.md</code>:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="markdown" data-theme="github-dark"><code data-language="markdown" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">---</span></span>
+<span data-line=""><span style="color:#85E89D">name</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">grokrxiv-review</span></span>
+<span data-line=""><span style="color:#85E89D">description</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">Specialist reviewer for grokrxiv. Emits JSON-only output strictly matching the role's schema.</span></span>
+<span data-line=""><span style="color:#E1E4E8">---</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#E1E4E8">You are a specialist reviewer for grokrxiv. The user provides:</span></span>
+<span data-line=""><span style="color:#FFAB70">-</span><span style="color:#E1E4E8"> a role tag: one of [summary, technical_correctness, novelty, reproducibility, citation, meta_reviewer]</span></span>
+<span data-line=""><span style="color:#FFAB70">-</span><span style="color:#E1E4E8"> a paper extract (or for meta_reviewer, the 5 specialist outputs)</span></span>
+<span data-line=""><span style="color:#FFAB70">-</span><span style="color:#E1E4E8"> the JSON schema for that role's output</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#E1E4E8">You MUST output a SINGLE JSON object that validates against the schema. NO prose, NO markdown fences, NO commentary, NO partial output. If you cannot, output {"error": "&#x3C;one-line reason>"}.</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#E1E4E8">For each role's schema and field semantics, see the inline reference below.</span></span>
+<span data-line=""><span style="color:#E1E4E8">[schemas inlined here, one per role, ~300 lines total]</span></span></code></pre></figure>
+<p>The shim invokes:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="bash" data-theme="github-dark"><code data-language="bash" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#B392F0">claude</span><span style="color:#79B8FF"> --skill</span><span style="color:#9ECBFF"> grokrxiv-review</span><span style="color:#79B8FF"> --output-format</span><span style="color:#9ECBFF"> json</span><span style="color:#79B8FF"> -p</span><span style="color:#9ECBFF"> "&#x3C;&#x3C;input.json"</span></span></code></pre></figure>
+<p>Returns Claude Code's wrapped result:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="json" data-theme="github-dark"><code data-language="json" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#E1E4E8">{</span><span style="color:#79B8FF">"type"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"result"</span><span style="color:#E1E4E8">, </span><span style="color:#79B8FF">"subtype"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"success"</span><span style="color:#E1E4E8">, </span><span style="color:#79B8FF">"result"</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">"{...the JSON...}"</span><span style="color:#E1E4E8">, </span><span style="color:#FDAEB7;font-style:italic">...</span><span style="color:#E1E4E8">}</span></span></code></pre></figure>
+<p>Shim then:</p>
+<ol>
+<li>Extract <code>.result</code></li>
+<li><code>serde_json::from_str(&#x26;result)?</code> — parse</li>
+<li><code>jsonschema::validate(&#x26;schema, &#x26;parsed)?</code> — validate</li>
+<li>On parse OR validate failure: retry up to <strong>2×</strong> with corrective prompt: <em>"your previous response was invalid JSON / failed schema validation with error X; here is the schema again, try again, output JSON only"</em></li>
+<li>After 2 retries, return <code>{ok: false, error: "schema_violation", raw: &#x3C;last_output>}</code> to orchestrator, which then either accepts low-confidence or escalates.</li>
+</ol>
+<p>Same pattern for <code>codex</code> CLI.</p>
+<h3 id="4-confidence-scoring-the-new-field-in-each-role-schema"><a class="anchor" aria-label="anchor" href="#4-confidence-scoring-the-new-field-in-each-role-schema">#</a>4. Confidence scoring (the new field in each role schema)</h3>
+<p>Add <code>"confidence": {"type": "number", "minimum": 0, "maximum": 1}</code> as a <strong>required field</strong> in every role schema (it already exists in 5 of 6 — just needs to be required and uniformly named). The agent self-reports its confidence as part of every output.</p>
+<p>Then the verifier ladder composes the <strong>final confidence</strong> as:</p>
+<pre><code>final_confidence =
+    w_self    * agent_self_reported_confidence
+  + w_schema  * (1.0 if schema-valid else 0.0)
+  + w_citations * citation_existence_rung_pass_rate
+  + w_tone    * (1.0 if tone OK else 0.5)
+  + w_xagent  * cross_agent_consistency_score   # only for meta_reviewer
+  + w_render  * (1.0 if HTML render clean else 0.7)
+
+with weights summing to 1.0; defaults:
+  summary:               (0.4, 0.4, 0.0, 0.1, 0.0, 0.1)
+  technical_correctness: (0.3, 0.3, 0.2, 0.1, 0.0, 0.1)
+  novelty:               (0.3, 0.3, 0.2, 0.1, 0.0, 0.1)
+  reproducibility:       (0.4, 0.3, 0.1, 0.1, 0.0, 0.1)
+  citation:              (0.2, 0.3, 0.4, 0.05, 0.0, 0.05)
+  meta_reviewer:         (0.3, 0.3, 0.05, 0.05, 0.2, 0.1)
+</code></pre>
+<p>The escalation threshold is a per-role config (default 0.7); citation might tolerate lower since it's mostly mechanical, meta_reviewer might want 0.8 since it gates publication.</p>
+<h3 id="5-why-this-is-the-moat"><a class="anchor" aria-label="anchor" href="#5-why-this-is-the-moat">#</a>5. Why this is the moat</h3>
+<p>Same Skill, same schema, same verifier ladder, same confidence scoring → runs on <strong>any backend</strong>: local Qwen, cloud DeepSeek, Claude Code container, Codex container, Anthropic Batch API. The orchestrator never sees a model name in its routing logic — it sees a typed contract.</p>
+<p>This means <strong>scaling from 50/day to 5000/day is purely a hardware swap</strong>:</p>
+<ul>
+<li>Tier 1: bigger GPU or more replicas of the same containers</li>
+<li>Tier 2: more subscription accounts (if and when needed) or add Tier 3 paid API</li>
+<li>Zero changes to orchestrator code, schemas, or routing logic</li>
+</ul>
+<p>That's what the user means by "proving out typed-output agent workflows and making sure it can scale." The proof is: the schemas are the API; the backends are interchangeable.</p>
+<hr>
+<h2 id="hardware-m5-max-primary--cloud-300mo-secondary"><a class="anchor" aria-label="anchor" href="#hardware-m5-max-primary--cloud-300mo-secondary">#</a>Hardware: M5 Max (primary) + cloud (≤$300/mo, secondary)</h2>
+<h3 id="option-a--local-m5-max-48gb-primary-deployment"><a class="anchor" aria-label="anchor" href="#option-a--local-m5-max-48gb-primary-deployment">#</a>Option A — Local M5 Max 48GB (primary deployment)</h3>
+<p><strong>Apple M5 Max with 48GB unified memory is a serious inference box</strong> — the M5 family ships a substantially upgraded Neural Engine + GPU vs M3/M4, and unified memory means model weights live in the same pool as the runtime. Realistic capacity:</p>
+<ul>
+<li>macOS + system overhead: ~8GB</li>
+<li>Ollama / llama.cpp / vLLM-mlx runtime: ~3GB</li>
+<li><strong>Available for model weights: ~37GB</strong></li>
+</ul>
+<p>Models that fit comfortably in 37GB:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Quantization</th>
+<th>Size</th>
+<th>Throughput on M5 Max (est.)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen-2.5-32B-Instruct</td>
+<td>Q4_K_M</td>
+<td>~20GB</td>
+<td>30–40 tok/s</td>
+</tr>
+<tr>
+<td>DeepSeek-Coder-V2-Lite (16B)</td>
+<td>Q4_K_M</td>
+<td>~10GB</td>
+<td>50–70 tok/s</td>
+</tr>
+<tr>
+<td>Llama-3.1-8B-Instruct</td>
+<td>Q4_K_M</td>
+<td>~5GB</td>
+<td>80–120 tok/s</td>
+</tr>
+<tr>
+<td>Qwen-2.5-Coder-7B</td>
+<td>Q4_K_M</td>
+<td>~4GB</td>
+<td>100+ tok/s</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Two simultaneous models loaded</strong> is realistic: Qwen-2.5-32B (20GB) + Llama-3-8B (5GB) = 25GB, leaves 12GB headroom for context. Third small model (citation = Qwen-2.5-Coder-7B at 4GB) can swap in on demand.</p>
+<p>For 50 papers/day with 6 roles each = ~300 calls/day at ~15s average per call (M5 is fast) = ~75 minutes of total compute / day. <strong>The Mac sits idle 95% of the time.</strong> Trivial workload for this hardware.</p>
+<p><strong>Why M5 Max is the right primary target:</strong></p>
+<ul>
+<li><strong>$0 marginal cost</strong> — already owned hardware</li>
+<li><strong>Privacy</strong> — paper extracts never leave the local machine</li>
+<li><strong>Latency</strong> — no network hop for Tier 1; ~10–20s per role end-to-end</li>
+<li><strong>Apple Silicon LLM ecosystem is mature</strong> — Ollama, llama.cpp, MLX, vLLM-mlx all production-ready in 2026</li>
+<li><strong>Future-proof</strong> — M5 family will get OS updates; can swap in M5/M6 generations as needed</li>
+</ul>
+<p><strong>Operational considerations:</strong></p>
+<ul>
+<li>Run as a launchd service (auto-start on boot, restart on crash)</li>
+<li>Cloudflare Tunnel or Tailscale for stable inbound URL without exposing residential IP</li>
+<li>Closed-laptop mode with external power; lid-clamshell works fine for headless</li>
+<li>Postgres can stay in Supabase cloud; only the LLM tier is local</li>
+</ul>
+<h3 id="option-b--cloud-gpu-on-300mo-budget-secondary--scale-up"><a class="anchor" aria-label="anchor" href="#option-b--cloud-gpu-on-300mo-budget-secondary--scale-up">#</a>Option B — Cloud GPU on ≤$300/mo budget (secondary / scale-up)</h3>
+<p>For days when the Mac is unavailable (travel, maintenance) OR when scaling beyond 50/day:</p>
+<table>
+<thead>
+<tr>
+<th>GPU</th>
+<th>VRAM</th>
+<th>$/hr</th>
+<th>$/mo (720h)</th>
+<th>Max model size (Q4)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RunPod RTX A6000</td>
+<td>48GB</td>
+<td>$0.39</td>
+<td>$281</td>
+<td>Qwen-32B-Q4, DeepSeek-Coder-33B-Q4</td>
+</tr>
+<tr>
+<td>RunPod A40</td>
+<td>48GB</td>
+<td>$0.40</td>
+<td>$288</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Modal serverless A10G</td>
+<td>24GB</td>
+<td>$1.10/hr active-only</td>
+<td>~$50–150 for 50 papers/day</td>
+<td>Qwen-14B-Q4</td>
+</tr>
+<tr>
+<td>Vast.ai 3090/4090</td>
+<td>24GB</td>
+<td>$0.20–0.30</td>
+<td>$144–216</td>
+<td>Qwen-14B, Phi-4-14B</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recommendation:</strong></p>
+<ul>
+<li><strong>Default: M5 Max at home, $0 marginal</strong></li>
+<li><strong>Failover: Modal serverless at ~$50–150/mo (you only pay when running)</strong> — invoked when Mac is offline; same vLLM/Ollama adapter, just different <code>OLLAMA_HOST</code> env var</li>
+<li><strong>Scale-up path: pin to RunPod A6000 ($281/mo) once volume passes 200/day</strong></li>
+</ul>
+<p>The orchestrator's vLLM/Ollama adapter (already exists from Track E) makes Mac/cloud interchangeable — switch by changing one env var (<code>OLLAMA_HOST</code> or <code>VLLM_BASE_URL</code>).</p>
+<hr>
+<h2 id="per-role-tier-1-model-selection-sized-for-m5-max-48gb-or-300mo-cloud"><a class="anchor" aria-label="anchor" href="#per-role-tier-1-model-selection-sized-for-m5-max-48gb-or-300mo-cloud">#</a>Per-role Tier-1 model selection (sized for M5 Max 48GB OR $300/mo cloud)</h2>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Tier-1 default</th>
+<th>Quantization</th>
+<th>Memory</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>summary</code></td>
+<td><strong>Llama-3.1-8B-Instruct</strong></td>
+<td>Q4_K_M</td>
+<td>5GB</td>
+<td>Plain TL;DR — small is plenty; 100+ tok/s on M5 Max</td>
+</tr>
+<tr>
+<td><code>technical_correctness</code></td>
+<td><strong>Qwen-2.5-32B-Instruct</strong></td>
+<td>Q4_K_M</td>
+<td>20GB</td>
+<td>Long-context structured reasoning; matches the user's research on Qwen's structured-output strength</td>
+</tr>
+<tr>
+<td><code>novelty</code></td>
+<td><strong>Qwen-2.5-32B-Instruct</strong></td>
+<td>Q4_K_M</td>
+<td>20GB</td>
+<td>Long-context related-work delta (same model as technical_correctness — load once, reuse)</td>
+</tr>
+<tr>
+<td><code>reproducibility</code></td>
+<td><strong>DeepSeek-Coder-V2-Lite-16B</strong></td>
+<td>Q4_K_M</td>
+<td>10GB</td>
+<td>Code/data assessment; user's research called out DeepSeek family explicitly</td>
+</tr>
+<tr>
+<td><code>citation</code></td>
+<td><strong>Qwen-2.5-Coder-7B</strong></td>
+<td>Q4_K_M</td>
+<td>4GB</td>
+<td>Structured JSON fan-out per reference; tiny is fine; can run alongside the 32B</td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code></td>
+<td><strong>Qwen-2.5-32B-Instruct</strong></td>
+<td>Q4_K_M</td>
+<td>20GB</td>
+<td>Synthesis with strict JSON (reuses already-loaded 32B)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Memory layout on M5 Max 48GB:</strong></p>
+<pre><code>macOS + system:                  ~8GB
+Ollama/vLLM-mlx runtime:         ~3GB
+Qwen-2.5-32B-Q4 (resident):     ~20GB   ← serves 3 roles
+Llama-3.1-8B-Q4 (resident):      ~5GB   ← serves summary
+DeepSeek-Coder-Lite-16B (swap):  ~10GB  ← swaps in for reproducibility role only
+Qwen-2.5-Coder-7B (swap):        ~4GB   ← swaps in for citation role only
+Context + KV cache:               ~3GB
+                                 ─────
+                                 ~46GB → fits 48GB with ~2GB safety margin
+</code></pre>
+<p>DeepSeek and Qwen-Coder are swappable because reproducibility + citation are sequential in the DAG flow (specialists run in parallel but those two can be scheduled to share the same memory slot). Easy to tune later.</p>
+<p><strong>Cloud variant (RunPod A6000 48GB):</strong> identical layout; A6000 has same 48GB VRAM as M5 Max's available pool. Drop-in.</p>
+<p><strong>If Mac is unavailable and only Modal serverless 24GB A10G is up:</strong> drop Qwen-32B → Qwen-14B-Q4, DeepSeek-Lite-16B → DeepSeek-Lite-6.7B-Coder. Quality drop is real but tolerable for MVP.</p>
+<h3 id="tier-2-escalation-targets"><a class="anchor" aria-label="anchor" href="#tier-2-escalation-targets">#</a>Tier-2 escalation targets</h3>
+<ul>
+<li><code>technical_correctness</code>, <code>meta_reviewer</code> → <strong><code>claude-shim</code></strong> (Claude Opus via Max20)</li>
+<li><code>novelty</code>, <code>reproducibility</code> → <strong><code>codex-shim</code></strong> (GPT-5.5 via ChatGPT Pro)</li>
+<li><code>citation</code>, <code>summary</code> → <strong>no escalation</strong> in MVP (Tier-1 quality sufficient; if it fails, flag for human moderation)</li>
+</ul>
+<hr>
+<h2 id="tier-2-subscription-microvms-same-as-before-no-changes"><a class="anchor" aria-label="anchor" href="#tier-2-subscription-microvms-same-as-before-no-changes">#</a>Tier 2: subscription microVMs (same as before, no changes)</h2>
+<p>Two containers, each with a logged-in subscription:</p>
+<figure data-rehype-pretty-code-figure=""><pre tabindex="0" data-language="yaml" data-theme="github-dark"><code data-language="yaml" data-theme="github-dark" style="display: grid;"><span data-line=""><span style="color:#6A737D"># infra/docker/subscription-tier.yml</span></span>
+<span data-line=""><span style="color:#85E89D">claude-shim</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#85E89D">  build</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">infra/docker/claude-shim/</span></span>
+<span data-line=""><span style="color:#85E89D">  volumes</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#E1E4E8">    - </span><span style="color:#9ECBFF">${HOME}/.claude:/home/app/.claude:ro</span></span>
+<span data-line=""><span style="color:#85E89D">  environment</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#85E89D">    SUBSCRIPTION_TIER</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">max20</span></span>
+<span data-line=""><span style="color:#85E89D">    DAILY_BUDGET_CALLS</span><span style="color:#E1E4E8">: </span><span style="color:#79B8FF">800</span></span>
+<span data-line=""><span style="color:#85E89D">    SKILL_NAME</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">grokrxiv-review</span></span>
+<span data-line=""><span style="color:#85E89D">  ports</span><span style="color:#E1E4E8">: [</span><span style="color:#9ECBFF">"9100:8080"</span><span style="color:#E1E4E8">]</span></span>
+<span data-line=""> </span>
+<span data-line=""><span style="color:#85E89D">codex-shim</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#85E89D">  build</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">infra/docker/codex-shim/</span></span>
+<span data-line=""><span style="color:#85E89D">  volumes</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#E1E4E8">    - </span><span style="color:#9ECBFF">${HOME}/.codex:/home/app/.codex:ro</span></span>
+<span data-line=""><span style="color:#85E89D">  environment</span><span style="color:#E1E4E8">:</span></span>
+<span data-line=""><span style="color:#85E89D">    SUBSCRIPTION_TIER</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">pro</span></span>
+<span data-line=""><span style="color:#85E89D">    DAILY_BUDGET_CALLS</span><span style="color:#E1E4E8">: </span><span style="color:#79B8FF">2000</span></span>
+<span data-line=""><span style="color:#85E89D">    SKILL_NAME</span><span style="color:#E1E4E8">: </span><span style="color:#9ECBFF">grokrxiv-review</span></span>
+<span data-line=""><span style="color:#85E89D">  ports</span><span style="color:#E1E4E8">: [</span><span style="color:#9ECBFF">"9101:8080"</span><span style="color:#E1E4E8">]</span></span></code></pre></figure>
+<p>Shim HTTP contract (both):</p>
+<pre><code>POST /complete
+Body: { "role": "...", "schema_name": "...", "input_artifact": {...} }
+Response: { "ok": true, "model": "...", "output": {schema-valid JSON},
+            "tokens_in": ..., "tokens_out": ..., "confidence": ...,
+            "budget_remaining": ... }
+</code></pre>
+<p>Implementation: ~150 lines Axum each. Calls <code>claude --skill grokrxiv-review --output-format json -p "$payload"</code> (or <code>codex</code>), parses, validates, retries up to 2×. Registers as <code>provider: claude-shim</code> / <code>provider: codex-shim</code> in <code>crates/llm-adapter/src/lib.rs::provider_by_name()</code>. Existing <code>role_routing</code> map becomes a <code>tiers:</code> array per role; supervisor walks tiers in order.</p>
+<hr>
+<h2 id="steady-state-cost-projection-at-50-papersday-mvp"><a class="anchor" aria-label="anchor" href="#steady-state-cost-projection-at-50-papersday-mvp">#</a>Steady-state cost projection at 50 papers/day MVP</h2>
+<h3 id="primary-m5-max-at-home"><a class="anchor" aria-label="anchor" href="#primary-m5-max-at-home">#</a>Primary: M5 Max at home</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M5 Max (already owned; electricity ~$10/mo at sustained partial load)</td>
+<td>$10</td>
+</tr>
+<tr>
+<td>Claude Max20 subscription (already paid)</td>
+<td>$200</td>
+</tr>
+<tr>
+<td>ChatGPT Pro subscription (already paid)</td>
+<td>$200</td>
+</tr>
+<tr>
+<td>Gemini API free tier (well under 1500 req/day limit)</td>
+<td>$0</td>
+</tr>
+<tr>
+<td>Cloudflare Tunnel for stable inbound (or Tailscale)</td>
+<td>$0</td>
+</tr>
+<tr>
+<td>Supabase free tier</td>
+<td>$0</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>410</mn><mi mathvariant="normal">/</mi><mi>m</mi><mi>o</mi><mo>=</mo></mrow><annotation encoding="application/x-tex">410/mo = </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">410/</span><span class="mord mathnormal">m</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span></span></span></span>4,920/yr</strong></td>
+</tr>
+<tr>
+<td><strong>Marginal vs. status quo (subscriptions already paid)</strong></td>
+<td><strong>~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>10</mn><mi mathvariant="normal">/</mi><mi>m</mi><mi>o</mi><mo>=</mo></mrow><annotation encoding="application/x-tex">10/mo = </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">10/</span><span class="mord mathnormal">m</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span></span></span></span>120/yr</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="secondary-modal-serverless-when-mac-is-offline"><a class="anchor" aria-label="anchor" href="#secondary-modal-serverless-when-mac-is-offline">#</a>Secondary: Modal serverless when Mac is offline</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly cost (est.)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Modal A10G serverless (~$1.10/hr × ~2hr/day for 50 papers)</td>
+<td>$66</td>
+</tr>
+<tr>
+<td>Subscriptions + Gemini + Supabase</td>
+<td>$400</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>~$466/mo</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="scale-up-runpod-a6000-pinned-200-papersday"><a class="anchor" aria-label="anchor" href="#scale-up-runpod-a6000-pinned-200-papersday">#</a>Scale-up: RunPod A6000 pinned (200+ papers/day)</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RunPod A6000 48GB ($0.39/hr × 720h)</td>
+<td>$281</td>
+</tr>
+<tr>
+<td>Subscriptions + everything else</td>
+<td>$400</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>681</mn><mi mathvariant="normal">/</mi><mi>m</mi><mi>o</mi><mo>=</mo></mrow><annotation encoding="application/x-tex">681/mo = </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">681/</span><span class="mord mathnormal">m</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span></span></span></span>8,170/yr</strong></td>
+</tr>
+</tbody>
+</table>
+<p>At 50/day = 18,250 papers/yr → effective <strong><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.022</mn><mi mathvariant="normal">/</mi><mi>p</mi><mi>a</mi><mi>p</mi><mi>e</mi><mi>r</mi><mo stretchy="false">(</mo><mi>M</mi><mi>a</mi><mi>c</mi><mo separator="true">,</mo><mi>m</mi><mi>a</mi><mi>r</mi><mi>g</mi><mi>i</mi><mi>n</mi><mi>a</mi><mi>l</mi><mo stretchy="false">)</mo><mo>∗</mo><mo>∗</mo><mi>o</mi><mi>r</mi><mo>∗</mo><mo>∗</mo></mrow><annotation encoding="application/x-tex">0.022/paper (Mac, marginal)** or **</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">0.022/</span><span class="mord mathnormal">p</span><span class="mord mathnormal">a</span><span class="mord mathnormal">p</span><span class="mord mathnormal" style="margin-right:0.0278em;">er</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mord mathnormal">a</span><span class="mord mathnormal">c</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">ma</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">ina</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.4653em;"></span><span class="mord">∗</span><span class="mord mathnormal" style="margin-right:0.0278em;">or</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.4653em;"></span><span class="mord">∗</span></span></span></span>0.45/paper (cloud)</strong>.</p>
+<p>The marginal cost of running grokrxiv on the M5 Max is <strong>basically electricity</strong> — the subscriptions are paid regardless.</p>
+<h3 id="scaling-math-proving-the-scale-up-story"><a class="anchor" aria-label="anchor" href="#scaling-math-proving-the-scale-up-story">#</a>Scaling math (proving the scale-up story)</h3>
+<table>
+<thead>
+<tr>
+<th>Volume</th>
+<th>Tier-1 compute</th>
+<th>Tier-2 escalations/day</th>
+<th>Subscription budget fit?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50/day MVP</td>
+<td>1× A6000 or Mac</td>
+<td>~45</td>
+<td>Yes (1.5–5% of budget)</td>
+</tr>
+<tr>
+<td>200/day</td>
+<td>1× A6000 or 2× Mac</td>
+<td>~180</td>
+<td>Yes (~10% of budget)</td>
+</tr>
+<tr>
+<td>500/day</td>
+<td>1× H100 or 4× A6000</td>
+<td>~450</td>
+<td>Yes (~25% of budget)</td>
+</tr>
+<tr>
+<td>1500/day</td>
+<td>2× H100</td>
+<td>~1350</td>
+<td>Tight; enable Tier 3 Batch</td>
+</tr>
+<tr>
+<td>5000/day</td>
+<td>4× H100 or dedicated cluster</td>
+<td>~4500</td>
+<td>Enable Tier 3 + 2nd subscription</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Nothing changes in code at any of these volumes</strong> — just hardware and a config-flip to add Tier 3 when needed.</p>
+<hr>
+<h2 id="grant-strategy-unchanged-from-earlier-included-in-research-doc"><a class="anchor" aria-label="anchor" href="#grant-strategy-unchanged-from-earlier-included-in-research-doc">#</a>Grant strategy (unchanged from earlier; included in research doc)</h2>
+<p>Week 1: Anthropic + OpenAI researcher credits (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>5</mn><mtext>–</mtext><mn>80</mn><mi>K</mi><mi>c</mi><mi>o</mi><mi>m</mi><mi>b</mi><mi>i</mi><mi>n</mi><mi>e</mi><mi>d</mi><mo separator="true">,</mo><mn>2</mn><mtext>–</mtext><mn>4</mn><mi>w</mi><mi>t</mi><mi>u</mi><mi>r</mi><mi>n</mi><mi>a</mi><mi>r</mi><mi>o</mi><mi>u</mi><mi>n</mi><mi>d</mi><mo stretchy="false">)</mo><mi>M</mi><mi>o</mi><mi>n</mi><mi>t</mi><mi>h</mi><mn>1</mn><mo>:</mo><mi>A</mi><mi>s</mi><mi>t</mi><mi>e</mi><mi>r</mi><mi>a</mi><mi>O</mi><mi>p</mi><mi>e</mi><mi>n</mi><mi>S</mi><mi>c</mi><mi>i</mi><mi>e</mi><mi>n</mi><mi>c</mi><mi>e</mi><mo separator="true">,</mo><mi>M</mi><mi>o</mi><mi>z</mi><mi>i</mi><mi>l</mi><mi>l</mi><mi>a</mi><mi>T</mi><mi>e</mi><mi>c</mi><mi>h</mi><mi>F</mi><mi>u</mi><mi>n</mi><mi>d</mi><mo stretchy="false">(</mo></mrow><annotation encoding="application/x-tex">5–80K combined, 2–4w turnaround)
+Month 1: Astera Open Science, Mozilla Tech Fund (</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">5–80</span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mord mathnormal">co</span><span class="mord mathnormal">mbin</span><span class="mord mathnormal">e</span><span class="mord mathnormal">d</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">2–4</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">t</span><span class="mord mathnormal">u</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">na</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">o</span><span class="mord mathnormal">u</span><span class="mord mathnormal">n</span><span class="mord mathnormal">d</span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mord mathnormal">o</span><span class="mord mathnormal">n</span><span class="mord mathnormal">t</span><span class="mord mathnormal">h</span><span class="mord">1</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">A</span><span class="mord mathnormal">s</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right:0.0278em;">er</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">O</span><span class="mord mathnormal">p</span><span class="mord mathnormal">e</span><span class="mord mathnormal">n</span><span class="mord mathnormal" style="margin-right:0.0576em;">S</span><span class="mord mathnormal">c</span><span class="mord mathnormal">i</span><span class="mord mathnormal">e</span><span class="mord mathnormal">n</span><span class="mord mathnormal">ce</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mord mathnormal" style="margin-right:0.044em;">oz</span><span class="mord mathnormal">i</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.1389em;">T</span><span class="mord mathnormal">ec</span><span class="mord mathnormal">h</span><span class="mord mathnormal" style="margin-right:0.1389em;">F</span><span class="mord mathnormal">u</span><span class="mord mathnormal">n</span><span class="mord mathnormal">d</span><span class="mopen">(</span></span></span></span>10–250K)
+Quarter 1: Open Philanthropy AI epistemics, arXiv Sustainability Partner (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>25</mn><mi>K</mi><mtext>–</mtext><mn>500</mn><mi>K</mi><mo stretchy="false">)</mo><mi>Y</mi><mi>e</mi><mi>a</mi><mi>r</mi><mn>1</mn><mo>:</mo><mi>N</mi><mi>S</mi><mi>F</mi><mi>P</mi><mi>O</mi><mi>S</mi><mi>E</mi><mo stretchy="false">(</mo></mrow><annotation encoding="application/x-tex">25K–500K)
+Year 1: NSF POSE (</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">25</span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mord">–500</span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mclose">)</span><span class="mord mathnormal" style="margin-right:0.2222em;">Y</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord">1</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">:</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.109em;">N</span><span class="mord mathnormal" style="margin-right:0.0576em;">S</span><span class="mord mathnormal" style="margin-right:0.1389em;">F</span><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="mord mathnormal" style="margin-right:0.0278em;">O</span><span class="mord mathnormal" style="margin-right:0.0576em;">S</span><span class="mord mathnormal" style="margin-right:0.0576em;">E</span><span class="mopen">(</span></span></span></span>300K–1.5M, needs 501(c)(3))
+Continuous: GitHub Sponsors, Open Collective ($50–5K/mo recurring)</p>
+<p>Framing: "open-source AI peer-review infrastructure for academic transparency; typed-output multi-agent workflows with verifier-gated escalation."</p>
+<hr>
+<h2 id="risk-matrix-updated-for-mvp-scope"><a class="anchor" aria-label="anchor" href="#risk-matrix-updated-for-mvp-scope">#</a>Risk matrix (updated for MVP scope)</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Likelihood</th>
+<th>Impact</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tier-1 OSS model quality below threshold</td>
+<td>Medium</td>
+<td>Medium</td>
+<td>Confidence-gated escalation IS the mitigation. Verifier ladder catches it. Easy to swap model.</td>
+</tr>
+<tr>
+<td>ToS interpretation on subscription microVMs</td>
+<td>Medium</td>
+<td>Medium-High</td>
+<td>Stay at low volume (50/day), document as research, never resell. Tier-3 Batch API documented as escape hatch (off in MVP).</td>
+</tr>
+<tr>
+<td>Mac at home goes offline (laptop closed, ISP)</td>
+<td>Medium</td>
+<td>Medium</td>
+<td>Cloud A6000 setup is documented and switchable via env var.</td>
+</tr>
+<tr>
+<td>Cloud A6000 spot eviction</td>
+<td>Low-Medium</td>
+<td>Low</td>
+<td>Auto-restart + state in Postgres; no in-flight work lost.</td>
+</tr>
+<tr>
+<td>Subscription account lockout</td>
+<td>Low</td>
+<td>High</td>
+<td>Tier 3 (Batch API) is documented + ready-to-enable. Configure it in advance, leave flag off.</td>
+</tr>
+<tr>
+<td>OSS license change (DeepSeek, Qwen, Llama)</td>
+<td>Low</td>
+<td>Low</td>
+<td>All Apache-2.0 / Llama-CL; weights stored locally; immune to upstream license shifts.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="implementation-phases-fp6-not-this-pass"><a class="anchor" aria-label="anchor" href="#implementation-phases-fp6-not-this-pass">#</a>Implementation phases (FP6+, NOT this pass)</h2>
+<p>After this architecture is approved:</p>
+<ul>
+<li><strong>FP6a — Local Tier 1 (week 1):</strong> Ollama in docker-compose with Qwen-2.5-32B-Q4 + Llama-3-8B for dev. Route citation/summary/novelty to it for local M1 testing. ~200 lines of Rust to add an <code>ollama</code> adapter (or reuse the vLLM adapter pointed at Ollama's compat endpoint).</li>
+<li><strong>FP6b — Cloud Tier 1 (week 2):</strong> Provision RunPod A6000, deploy vLLM with the same models. Same adapter just talks to a different URL. Validate cost at $281/mo.</li>
+<li><strong>FP6c — Typed-output Skill + retry loop (week 2):</strong> Build the <code>grokrxiv-review</code> Skill with all 6 schemas inlined. Add validate-and-retry logic to the adapter base trait. This is the core artifact for proving the typed-output story.</li>
+<li><strong>FP6d — Confidence scoring + verifier-gated routing (week 3):</strong> Add <code>confidence: f64</code> to every role schema (already a non-required field on most). Implement the composite-confidence formula in the verifier ladder. Supervisor reads it and escalates per-role on threshold breach.</li>
+<li><strong>FP6e — <code>claude-shim</code> container (week 4):</strong> Axum service that mounts <code>~/.claude</code>, exposes the contract above. Register as <code>claude-shim</code> provider. Route Tier-2 escalations for technical_correctness + meta_reviewer.</li>
+<li><strong>FP6f — <code>codex-shim</code> container (week 5):</strong> Same pattern for Codex CLI. Route novelty + reproducibility Tier-2 escalations.</li>
+<li><strong>FP6g — Validation pass (week 6):</strong> Run 100-paper sample through the full hybrid. Measure: cost per paper, escalation rate, verifier-pass rate, latency. Tune thresholds.</li>
+</ul>
+<p>Total: ~6 weeks for the MVP hybrid. Tier 3 Batch API stays off; documented and adapter-ready if/when scale demands.</p>
+<hr>
+<h2 id="verification-for-this-plan"><a class="anchor" aria-label="anchor" href="#verification-for-this-plan">#</a>Verification (for this plan)</h2>
+<ol>
+<li>
+<p><code>research/processing-costs.md</code> reads end-to-end as a coherent ~4000-word architecture doc with: measured cost baseline, 2-tier architecture rationale, hardware options (cloud + Mac), per-role model selection, expanded typed-output enforcement section, confidence-scoring formula, grant strategy, risk matrix, scaling math.</p>
+</li>
+<li>
+<p><code>research/processing-costs-plan.md</code> is a faithful copy of this plan file.</p>
+</li>
+<li>
+<p><code>~/.claude/plans/fp5-processing-costs-architecture.md</code> is the permanent record.</p>
+</li>
+<li>
+<p><code>~/.claude/plans/piped-bubbling-brook.md</code> is restored to slim index with FP5 row:</p>
+<pre><code>| FP5 | Processing-cost analysis + 2-tier hybrid architecture for MVP (local/cloud OSS Tier 1 + subscription microVM Tier 2; Tier 3 Batch API documented but off); typed-output enforcement + confidence routing as scaling moat; grant strategy. No code changes. | Shipped (doc only) | fp5-processing-costs-architecture.md |
+</code></pre>
+</li>
+<li>
+<p>No code is run, no tests are touched in this pass.</p>
+</li>
+</ol>
+<hr>
+<h2 id="critical-files-read-only-references"><a class="anchor" aria-label="anchor" href="#critical-files-read-only-references">#</a>Critical files (READ-ONLY references)</h2>
+<ul>
+<li><code>crates/orchestrator/src/state.rs</code> — current <code>ProviderRegistry</code> + <code>role_routing</code></li>
+<li><code>crates/orchestrator/src/supervisor.rs::run_review_dag</code> — where confidence routing inserts</li>
+<li><code>crates/llm-adapter/src/providers/{claude,openai,gemini,vllm}.rs</code> — adapter pattern for new shims (claude-shim, codex-shim, ollama)</li>
+<li><code>agents/*.yaml</code> — current per-role provider/model declarations (extend with <code>tiers:</code> array)</li>
+<li><code>schemas/*.schema.json</code> — the typed contract; add required <code>confidence</code> field</li>
+<li><code>crates/verifier/src/lib.rs</code> — extend with composite-confidence formula</li>
+<li><code>tests/m1-pipeline.sh</code> — end-to-end harness for validating new providers</li>
+</ul>
+</main>
+<footer class="doc-footer">
+<p>processing-costs-plan.md &middot; generated 2026-05-14T17:44:54.241Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>

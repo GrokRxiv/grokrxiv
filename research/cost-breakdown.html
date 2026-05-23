@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GrokRxiv — Cost Breakdown Analysis</title>
+<style>
+.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;position:relative;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.46"}.katex .katex-mathml{border:0;-webkit-clip-path:inset(50%);clip-path:inset(50%);height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .smash{display:inline;line-height:0}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+/* grokrxiv research — dark theme, embedded inline in generated HTML.
+   Baseline: 8px grid. Multiples of 4 used sparingly.
+   No external assets. No @import. */
+
+:root {
+  --bg: #0d1117;
+  --bg-alt: #161b22;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --fg: #e6edf3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --accent-strong: #388bfd;
+  --info: #388bfd;
+  --warn: #d29922;
+  --success: #3fb950;
+  --error: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main.prose {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  margin: 32px 0 16px;
+  line-height: 1.25;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h2 { font-size: 1.5rem; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.1rem; }
+h5, h6 { font-size: 1rem; color: var(--muted); }
+
+h1:first-child { margin-top: 0; }
+
+/* Heading autolinks (rehype-autolink-headings) */
+.anchor {
+  color: var(--muted);
+  text-decoration: none;
+  margin-right: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor,
+h4:hover .anchor, h5:hover .anchor, h6:hover .anchor { opacity: 1; }
+.anchor:hover { color: var(--accent); }
+
+/* Paragraphs / inline */
+p { margin: 0 0 16px; }
+strong { color: var(--fg); font-weight: 600; }
+em { color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+
+/* Links */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Lists */
+ul, ol { margin: 0 0 16px; padding-left: 32px; }
+li { margin: 4px 0; }
+li > p { margin-bottom: 8px; }
+
+/* Inline code */
+code {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg-alt);
+  color: var(--accent-strong);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+}
+
+/* Code blocks (Shiki via rehype-pretty-code emits <pre><code> with figure wrapper) */
+pre, figure[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+pre code, figure[data-rehype-pretty-code-figure] code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: inherit;
+  border-radius: 0;
+}
+figure[data-rehype-pretty-code-figure] { margin: 16px 0; }
+figcaption[data-rehype-pretty-code-title] {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+figcaption[data-rehype-pretty-code-title] + pre { border-radius: 0 0 8px 8px; }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  display: block;
+  overflow-x: auto;
+}
+thead { background: var(--bg-alt); }
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 600; color: var(--fg); }
+tbody tr:nth-child(odd) { background: var(--bg); }
+tbody tr:nth-child(even) { background: var(--bg-alt); }
+
+/* Blockquotes */
+blockquote {
+  margin: 16px 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent-strong);
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(56, 139, 253, 0.06);
+  border-radius: 0 4px 4px 0;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+/* Callouts */
+.callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--info);
+  background: rgba(56, 139, 253, 0.08);
+}
+.callout-info    { border-left-color: var(--info);    background: rgba(56, 139, 253, 0.08); }
+.callout-warn    { border-left-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }
+.callout-success { border-left-color: var(--success); background: rgba(63, 185, 80, 0.10); }
+.callout-error   { border-left-color: var(--error);   background: rgba(248, 81, 73, 0.10); }
+.callout p:last-child { margin-bottom: 0; }
+
+/* Images */
+img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* KaTeX containers */
+.katex-display { margin: 16px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Footer */
+.doc-footer {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-soft);
+}
+.doc-footer p { margin: 0; }
+
+/* Print fallback */
+@media print {
+  html, body { background: #fff; color: #000; }
+  main.prose { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+  pre, code, table, blockquote, .callout {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #ccc !important;
+  }
+  thead { background: #f0f0f0 !important; }
+  tbody tr:nth-child(even) { background: #f8f8f8 !important; }
+  th, td { border-color: #ccc !important; }
+  h1, h2 { border-bottom-color: #ccc; }
+  .anchor { display: none; }
+  .doc-footer { color: #555; border-top-color: #ccc; }
+}
+
+</style>
+</head>
+<body>
+<main class="prose">
+<h1 id="grokrxiv--cost-breakdown-analysis"><a class="anchor" aria-label="anchor" href="#grokrxiv--cost-breakdown-analysis">#</a>GrokRxiv — Cost Breakdown Analysis</h1>
+<blockquote>
+<p>Captured from conversation on 2026-05-15. Companion to <code>research/processing-costs.md</code>.</p>
+</blockquote>
+<h2 id="measured-cost-038paper"><a class="anchor" aria-label="anchor" href="#measured-cost-038paper">#</a>Measured cost: $0.38/paper</h2>
+<p>Single real run on arXiv <code>2605.12484</code> after FP4 close-out.</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Model</th>
+<th>Tokens in</th>
+<th>Tokens out</th>
+<th>Cost</th>
+<th>% of total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>citation</code></td>
+<td>gemini-2.5-flash</td>
+<td>609</td>
+<td>53</td>
+<td>&#x3C;$0.001</td>
+<td>~0%</td>
+</tr>
+<tr>
+<td><code>novelty</code></td>
+<td>gemini-2.5-flash</td>
+<td>608</td>
+<td>597</td>
+<td>&#x3C;$0.001</td>
+<td>~0%</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>claude-haiku-4-5</td>
+<td>891</td>
+<td>526</td>
+<td>$0.003</td>
+<td>1%</td>
+</tr>
+<tr>
+<td><code>reproducibility</code></td>
+<td>gpt-5.5</td>
+<td>869</td>
+<td>503</td>
+<td>$0.005</td>
+<td>1%</td>
+</tr>
+<tr>
+<td><code>technical_correctness</code></td>
+<td>claude-opus-4-7</td>
+<td>1,448</td>
+<td>1,800</td>
+<td>$0.157</td>
+<td>41%</td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code></td>
+<td>claude-sonnet-4-6</td>
+<td><strong>62,051</strong></td>
+<td>1,675</td>
+<td>$0.211</td>
+<td>56%</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td></td>
+<td><strong>66,476</strong></td>
+<td><strong>5,154</strong></td>
+<td><strong>$0.38</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-findings"><a class="anchor" aria-label="anchor" href="#key-findings">#</a>Key findings</h2>
+<p><strong>Two roles = 97% of cost.</strong></p>
+<ul>
+<li><code>meta_reviewer</code> at $0.211 (56%) is almost entirely an implementation bug: it re-sends the full paper extract alongside the 5 specialist outputs. The paper extract is already baked into specialist reasoning — only the ~10K specialist outputs need to be passed.</li>
+<li><code>technical_correctness</code> at $0.157 (41%) is a deliberate choice: Opus for claim-by-claim math/logic audit.</li>
+</ul>
+<p><strong>The 5 specialist workers are cheap.</strong> Their combined token load is only ~4.4K in / 3.5K out. This is not an expensive document processing pipeline — it's one bloated input and one expensive model.</p>
+<h2 id="token-reality"><a class="anchor" aria-label="anchor" href="#token-reality">#</a>Token reality</h2>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Tokens in</th>
+<th>Tokens out</th>
+<th>Total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Current (measured)</td>
+<td>66,476</td>
+<td>5,154</td>
+<td>~71K</td>
+</tr>
+<tr>
+<td>After meta_reviewer trim (bug fix)</td>
+<td>~14,425</td>
+<td>5,154</td>
+<td>~19K</td>
+</tr>
+</tbody>
+</table>
+<p>Fixing the meta_reviewer input (paper extract → specialist outputs only) gives a <strong>3.7× token reduction</strong> with zero quality loss.</p>
+<h2 id="cost-after-meta_reviewer-fix"><a class="anchor" aria-label="anchor" href="#cost-after-meta_reviewer-fix">#</a>Cost after meta_reviewer fix</h2>
+<ul>
+<li><code>meta_reviewer</code> drops from <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.211</mn><mo>→</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">0.211 → ~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.211</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace nobreak"> </span></span></span></span>0.02 (10K tokens instead of 62K)</li>
+<li>Total per-paper cost: ~**<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.17</mn><mo>∗</mo><mo>∗</mo><mo stretchy="false">(</mo><mi>f</mi><mi>r</mi><mi>o</mi><mi>m</mi></mrow><annotation encoding="application/x-tex">0.17** (from </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.17</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">∗</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal">o</span><span class="mord mathnormal">m</span></span></span></span>0.38)</li>
+<li>At 50 papers/day: ~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>8.50</mn><mi mathvariant="normal">/</mi><mi>d</mi><mi>a</mi><mi>y</mi><mo>→</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">8.50/day → ~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">8.50/</span><span class="mord mathnormal">d</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace nobreak"> </span></span></span></span>3,100/year (API only, no Tier-1 hybrid)</li>
+</ul>
+<p>With Tier-1 hybrid (local OSS models as default, subscription escalation only): marginal cost ~<strong>$0.0066/paper</strong>.</p>
+<h2 id="original-session-estimates-for-daily-arxiv-processing"><a class="anchor" aria-label="anchor" href="#original-session-estimates-for-daily-arxiv-processing">#</a>Original session estimates for daily arXiv processing</h2>
+<p>Context from the FP5 design session that produced these numbers. ArXiv submissions in 2026 average ~2,200/day (10–12% YoY growth), ~800K/year if fully covered.</p>
+<h3 id="at-measured-cost-038paper"><a class="anchor" aria-label="anchor" href="#at-measured-cost-038paper">#</a>At measured cost ($0.38/paper)</h3>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Papers/day</th>
+<th>Papers/year</th>
+<th>Annual API cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MVP</td>
+<td>50</td>
+<td>18,250</td>
+<td><strong>$6,935</strong></td>
+</tr>
+<tr>
+<td>Mid-scale</td>
+<td>250</td>
+<td>91,250</td>
+<td><strong>$34,675</strong></td>
+</tr>
+<tr>
+<td>Full arXiv 2026 (projected)</td>
+<td>2,200</td>
+<td>803,000</td>
+<td><strong>$305,140</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="at-trimmed-cost-023paper-after-meta_reviewer-fix"><a class="anchor" aria-label="anchor" href="#at-trimmed-cost-023paper-after-meta_reviewer-fix">#</a>At trimmed cost ($0.23/paper after meta_reviewer fix)</h3>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Papers/day</th>
+<th>Papers/year</th>
+<th>Annual API cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MVP</td>
+<td>50</td>
+<td>18,250</td>
+<td><strong>$4,198</strong></td>
+</tr>
+<tr>
+<td>Mid-scale</td>
+<td>250</td>
+<td>91,250</td>
+<td><strong>$20,988</strong></td>
+</tr>
+<tr>
+<td>Full arXiv 2026 (projected)</td>
+<td>2,200</td>
+<td>803,000</td>
+<td><strong>$184,690</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="why-these-numbers-triggered-the-2-tier-redesign"><a class="anchor" aria-label="anchor" href="#why-these-numbers-triggered-the-2-tier-redesign">#</a>Why these numbers triggered the 2-tier redesign</h3>
+<p>The operator's reaction during the session: <em>"we can't afford $80k a year for a self-funded project unless it is funded by donations and the infra is paid for"</em>.</p>
+<p>Even the <em>optimistic</em> trimmed estimate of <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>184</mn><mi>K</mi><mi mathvariant="normal">/</mi><mi>y</mi><mi>e</mi><mi>a</mi><mi>r</mi><mi>f</mi><mi>o</mi><mi>r</mi><mi>f</mi><mi>u</mi><mi>l</mi><mi>l</mi><mi>a</mi><mi>r</mi><mi>X</mi><mi>i</mi><mi>v</mi><mi>c</mi><mi>o</mi><mi>v</mi><mi>e</mi><mi>r</mi><mi>a</mi><mi>g</mi><mi>e</mi><mi>w</mi><mi>a</mi><mi>s</mi><mi>i</mi><mi>n</mi><mi>f</mi><mi>e</mi><mi>a</mi><mi>s</mi><mi>i</mi><mi>b</mi><mi>l</mi><mi>e</mi><mi mathvariant="normal">.</mi><mi>T</mi><mi>h</mi><mi>e</mi><mi>m</mi><mi>i</mi><mi>d</mi><mo>−</mo><mi>s</mi><mi>c</mi><mi>a</mi><mi>l</mi><mi>e</mi><mn>250</mn><mi mathvariant="normal">/</mi><mi>d</mi><mi>a</mi><mi>y</mi><mi>a</mi><mi>t</mi></mrow><annotation encoding="application/x-tex">184K/year for full arXiv coverage was infeasible. The mid-scale 250/day at </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">184</span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mord">/</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal" style="margin-right:0.0278em;">or</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal">u</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mord mathnormal">i</span><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="mord mathnormal">co</span><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="mord mathnormal" style="margin-right:0.0278em;">er</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">e</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">a</span><span class="mord mathnormal">s</span><span class="mord mathnormal">in</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal">s</span><span class="mord mathnormal">ib</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">e</span><span class="mord">.</span><span class="mord mathnormal" style="margin-right:0.1389em;">T</span><span class="mord mathnormal">h</span><span class="mord mathnormal">e</span><span class="mord mathnormal">mi</span><span class="mord mathnormal">d</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">sc</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0197em;">l</span><span class="mord mathnormal">e</span><span class="mord">250/</span><span class="mord mathnormal">d</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span></span></span></span>21K/year was borderline. Only the 50/day MVP at $4K/year was sustainable on personal budget — but that's &#x3C;2.3% of daily arXiv submissions, not a real product.</p>
+<p>This was the trigger that forced the architecture pivot:</p>
+<ol>
+<li><strong>Drop most calls off paid API entirely</strong> → self-hosted OSS on M5 Max as Tier 1 default</li>
+<li><strong>Use existing Claude Code + Codex CLI subscriptions</strong> for Tier 2 escalation (flat $400/mo already paid, not per-call)</li>
+<li><strong>Reserve paid Batch API as Tier 3</strong> — documented and adapter-ready, off in MVP</li>
+</ol>
+<h3 id="cost-comparison-api-only-vs-2-tier-hybrid-mvp-50day"><a class="anchor" aria-label="anchor" href="#cost-comparison-api-only-vs-2-tier-hybrid-mvp-50day">#</a>Cost comparison: API-only vs 2-tier hybrid (MVP 50/day)</h3>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>Monthly</th>
+<th>Annual</th>
+<th>$/paper marginal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API-only (measured $0.38)</td>
+<td>$580</td>
+<td>$6,935</td>
+<td>$0.38</td>
+</tr>
+<tr>
+<td>API-only (trimmed $0.23)</td>
+<td>$350</td>
+<td>$4,198</td>
+<td>$0.23</td>
+</tr>
+<tr>
+<td><strong>2-tier hybrid (M5 Max + subs)</strong></td>
+<td><strong>$10</strong> marginal</td>
+<td><strong>$120</strong> marginal</td>
+<td><strong>$0.0066</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The hybrid is ~35–58× cheaper at the marginal level (subscriptions counted as already paid).</p>
+<h2 id="acp-evaluation-2026-05-15"><a class="anchor" aria-label="anchor" href="#acp-evaluation-2026-05-15">#</a>ACP evaluation (2026-05-15)</h2>
+<p>Evaluated whether Agent Client Protocol (<code>agentclientprotocol.com</code>) could replace the plain HTTP contract for <code>claude-shim</code> and <code>codex-shim</code>.</p>
+<p><strong>Verdict: not a fit.</strong> ACP is editor ↔ agent (VS Code/Cursor talking to a coding agent). GrokRxiv needs orchestrator ↔ worker (Rust supervisor calling an HTTP service wrapping a CLI). The <code>POST /complete</code> HTTP contract in <code>processing-costs.md §6.2</code> is simpler, more stable, and already maps to the <code>LlmAdapter</code> trait. ACP remote transport is also still WIP.</p>
+<p>ACP would be relevant if GrokRxiv ships a VS Code extension for paper authors to invoke review inline — future, not MVP.</p>
+<h2 id="pricing-tools-for-ongoing-monitoring"><a class="anchor" aria-label="anchor" href="#pricing-tools-for-ongoing-monitoring">#</a>Pricing tools for ongoing monitoring</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://costgoat.com/compare/llm-api">CostGoat</a></td>
+<td>Monthly cost calculator with calls/month + token inputs; model quality scores</td>
+</tr>
+<tr>
+<td><a href="https://aipricing.org/">aipricing.org</a></td>
+<td>285+ models, real calculator, cheaper-alternative suggestions</td>
+</tr>
+<tr>
+<td><a href="https://pricepertoken.com/">pricepertoken.com</a></td>
+<td>Browse 300+ models quickly; no calculator</td>
+</tr>
+</tbody>
+</table>
+<p>None compare subscription flat-rate vs API per-token vs open-source $0-marginal. The FP5 doc (<code>processing-costs.md §8</code>) remains the authoritative three-way comparison for GrokRxiv's specific workload.</p>
+<hr>
+<h2 id="after-fp6--measured-cost-reduction-2026-05-15"><a class="anchor" aria-label="anchor" href="#after-fp6--measured-cost-reduction-2026-05-15">#</a>After FP6 — measured cost reduction (2026-05-15)</h2>
+<p>Real M1 smoke run on arXiv <code>2605.12484</code> after the four FP6 cost fixes landed (<code>review_id=2c9d69c2-068d-4069-a8a1-4bd84ff0020f</code>). Same paper, same 6 agents, same provider mix as the FP5 baseline — only the orchestrator changed.</p>
+<h3 id="per-role-measured-numbers-from-review_agents"><a class="anchor" aria-label="anchor" href="#per-role-measured-numbers-from-review_agents">#</a>Per-role measured numbers (from <code>review_agents</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Model</th>
+<th>Tokens in</th>
+<th>Tokens out</th>
+<th>Latency (ms)</th>
+<th>Verifier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>citation</code></td>
+<td>gemini-2.5-flash</td>
+<td>634</td>
+<td>399</td>
+<td>11,483</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>novelty</code></td>
+<td>gemini-2.5-flash</td>
+<td>633</td>
+<td>429</td>
+<td>14,005</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>claude-haiku-4-5-20251001</td>
+<td>915</td>
+<td>550</td>
+<td>6,504</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>reproducibility</code></td>
+<td>gpt-5.5</td>
+<td>894</td>
+<td>688</td>
+<td>13,508</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>technical_correctness</code></td>
+<td>claude-opus-4-7</td>
+<td>1,470</td>
+<td>1,715</td>
+<td>23,522</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code></td>
+<td>claude-sonnet-4-6</td>
+<td><strong>3</strong></td>
+<td>1,198</td>
+<td>23,152</td>
+<td>pass</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td></td>
+<td><strong>4,549</strong></td>
+<td><strong>4,979</strong></td>
+<td><strong>92 s wall</strong></td>
+<td>6/6 pass</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cost-computed-against-published-model-rates"><a class="anchor" aria-label="anchor" href="#cost-computed-against-published-model-rates">#</a>Cost computed against published model rates</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Input cost</th>
+<th>Output cost</th>
+<th>Subtotal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>citation</code> (Gemini free tier)</td>
+<td>~$0</td>
+<td>~$0</td>
+<td><strong>&#x3C;$0.001</strong></td>
+</tr>
+<tr>
+<td><code>novelty</code> (Gemini free tier)</td>
+<td>~$0</td>
+<td>~$0</td>
+<td><strong>&#x3C;$0.001</strong></td>
+</tr>
+<tr>
+<td><code>summary</code> (Haiku 4.5 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">1/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">1/</span></span></span></span>5 per M)</td>
+<td>$0.001</td>
+<td>$0.003</td>
+<td><strong>$0.004</strong></td>
+</tr>
+<tr>
+<td><code>reproducibility</code> (gpt-5.5 ~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1.25</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">1.25/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">1.25/</span></span></span></span>10 per M)</td>
+<td>$0.001</td>
+<td>$0.007</td>
+<td><strong>$0.008</strong></td>
+</tr>
+<tr>
+<td><code>technical_correctness</code> (Opus 4.7 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>15</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">15/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">15/</span></span></span></span>75 per M)</td>
+<td>$0.022</td>
+<td>$0.129</td>
+<td><strong>$0.151</strong></td>
+</tr>
+<tr>
+<td><code>meta_reviewer</code> (Sonnet 4.6 — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mi mathvariant="normal">/</mi></mrow><annotation encoding="application/x-tex">3/</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">3/</span></span></span></span>15 per M)</td>
+<td>~$0</td>
+<td>$0.018</td>
+<td><strong>$0.018</strong></td>
+</tr>
+<tr>
+<td><strong>DB-reported total</strong></td>
+<td></td>
+<td></td>
+<td><strong>~$0.181</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="calling-out-the-cache-accounting-gap"><a class="anchor" aria-label="anchor" href="#calling-out-the-cache-accounting-gap">#</a>Calling out the cache-accounting gap</h3>
+<p>Track A3 enabled Anthropic <code>cache_control</code> on user prompts ≥1024 tokens. For <code>meta_reviewer</code> the user prompt is the JSON map of 5 specialist outputs (~3.2K tokens here). What happened:</p>
+<ul>
+<li>Anthropic returned <code>input_tokens: 3</code> and (almost certainly) <code>cache_creation_input_tokens: ~3,200</code></li>
+<li>The schema only stores <code>input_tokens</code> and <code>cache_read_input_tokens</code> — <code>cache_creation_input_tokens</code> is dropped on the floor</li>
+<li>Cache creation bills at <strong>1.25× normal input rate</strong>, so the true <code>meta_reviewer</code> input cost is ~<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.012</mn><mo stretchy="false">(</mo><mi>c</mi><mi>a</mi><mi>c</mi><mi>h</mi><mi>e</mi><mi>c</mi><mi>r</mi><mi>e</mi><mi>a</mi><mi>t</mi><mi>e</mi><mo stretchy="false">)</mo><mo>+</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">0.012 (cache create) + ~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord">0.012</span><span class="mopen">(</span><span class="mord mathnormal">c</span><span class="mord mathnormal">a</span><span class="mord mathnormal">c</span><span class="mord mathnormal">h</span><span class="mord mathnormal" style="margin-right:0.0278em;">ecr</span><span class="mord mathnormal">e</span><span class="mord mathnormal">a</span><span class="mord mathnormal">t</span><span class="mord mathnormal">e</span><span class="mclose">)</span><span class="mord">+</span><span class="mspace nobreak"> </span></span></span></span>0 (the residual 3 tokens) = **<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.012</mn><mo>∗</mo><mo>∗</mo><mo separator="true">,</mo><mi>n</mi><mi>o</mi><mi>t</mi><mi>t</mi><mi>h</mi><mi>e</mi></mrow><annotation encoding="application/x-tex">0.012**, not the </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.012</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">∗</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">n</span><span class="mord mathnormal">o</span><span class="mord mathnormal">tt</span><span class="mord mathnormal">h</span><span class="mord mathnormal">e</span></span></span></span>0 the DB implies</li>
+<li>True per-paper cost: <strong>~$0.193</strong> (DB number adjusted upward by the missing cache_creation accounting)</li>
+</ul>
+<p>The cache-creation tax is real ON THE FIRST CALL with no immediate retry. For papers that don't trigger a verifier retry inside the 5-minute cache window, we pay 1.25× the meta_reviewer input portion and get no benefit. <strong>This is the worst case for prompt caching at our access pattern.</strong> Two future fixes:</p>
+<ol>
+<li><strong>Add <code>cache_creation_input_tokens</code> + <code>cache_read_input_tokens</code> columns</strong> to <code>review_agents</code> so cost accounting is honest. Follow-up to FP6, ~15 min of work.</li>
+<li><strong>Reconsider caching <code>meta_reviewer</code></strong> — at 3.2K tokens with no retries, it's net-negative. The Track A3 heuristic should bump the minimum threshold OR only cache for roles that have a meaningful retry rate. The cost savings already came from A1 (the input shape change), not from caching. ~30 min of tuning.</li>
+</ol>
+<h3 id="total-reduction-vs-the-fp5-baseline"><a class="anchor" aria-label="anchor" href="#total-reduction-vs-the-fp5-baseline">#</a>Total reduction vs the FP5 baseline</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>FP5 baseline</th>
+<th>After FP6 (true)</th>
+<th>Reduction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per paper</td>
+<td>$0.38</td>
+<td><strong>~$0.193</strong></td>
+<td><strong>49%</strong></td>
+</tr>
+<tr>
+<td>50/day MVP</td>
+<td>$6,935/yr</td>
+<td><strong>~$3,520/yr</strong></td>
+<td>$3,415 saved</td>
+</tr>
+<tr>
+<td>Full arXiv (2,200/day)</td>
+<td>$305,140/yr</td>
+<td><strong>~$155K/yr</strong></td>
+<td>$150K saved</td>
+</tr>
+</tbody>
+</table>
+<p>The 49% reduction is mostly Track A1 (meta_reviewer input trim — the paper extract is no longer in the user prompt). The smaller <code>tokens_in</code> numbers for specialists vs the FP5 baseline are within run-to-run noise (~5-10% per-role variance from sampling).</p>
+<h3 id="where-the-remaining-cost-lives"><a class="anchor" aria-label="anchor" href="#where-the-remaining-cost-lives">#</a>Where the remaining cost lives</h3>
+<p><code>technical_correctness</code> on Opus is now <strong>78% of the per-paper cost</strong> (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.151</mn><mi>o</mi><mi>f</mi></mrow><annotation encoding="application/x-tex">0.151 of </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">0.151</span><span class="mord mathnormal">o</span><span class="mord mathnormal" style="margin-right:0.1076em;">f</span></span></span></span>0.193). Two future avenues to compress further:</p>
+<ul>
+<li><strong>A5 (planned)</strong> — output cache hits within the 30-day TTL drop all costs to ~$0 on re-reviews. Saves at scale, not on the first call.</li>
+<li><strong>FP6.next</strong> — try <code>technical_correctness</code> on Sonnet 4.6 instead of Opus 4.7. Sonnet is ~5× cheaper. If quality holds on a 20-paper sample, that single change drops per-paper cost from <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.193</mn><mi>t</mi><mi>o</mi><mo>∗</mo><mo>∗</mo><mtext> </mtext></mrow><annotation encoding="application/x-tex">0.193 to **~</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.193</span><span class="mord mathnormal">t</span><span class="mord mathnormal">o</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">∗</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.4653em;"></span><span class="mord">∗</span><span class="mspace nobreak"> </span></span></span></span>0.07**. Out of FP6 scope (no model swap this pass); revisit on FP7 or later.</li>
+</ul>
+<h3 id="fp6-verification-status"><a class="anchor" aria-label="anchor" href="#fp6-verification-status">#</a>FP6 verification status</h3>
+<table>
+<thead>
+<tr>
+<th>Acceptance criterion</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-paper cost ≤ $0.15</td>
+<td>⚠️ measured <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.193</mn><mtext>—</mtext><mi>w</mi><mi>i</mi><mi>t</mi><mi>h</mi><mi>i</mi><mi>n</mi><mi>s</mi><mi>t</mi><mi>r</mi><mi>i</mi><mi>k</mi><mi>i</mi><mi>n</mi><mi>g</mi><mi>d</mi><mi>i</mi><mi>s</mi><mi>t</mi><mi>a</mi><mi>n</mi><mi>c</mi><mi>e</mi><mi>b</mi><mi>u</mi><mi>t</mi><mi>m</mi><mi>i</mi><mi>s</mi><mi>s</mi><mi>e</mi><mi>d</mi><mi>t</mi><mi>h</mi><mi>e</mi><mi>t</mi><mi>a</mi><mi>r</mi><mi>g</mi><mi>e</mi><mi>t</mi><mi>b</mi><mi>y</mi><mtext> </mtext><mn>30</mn></mrow><annotation encoding="application/x-tex">0.193 — within striking distance but missed the target by ~30%. Path to </annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord">0.193—</span><span class="mord mathnormal" style="margin-right:0.0269em;">w</span><span class="mord mathnormal">i</span><span class="mord mathnormal">t</span><span class="mord mathnormal">hin</span><span class="mord mathnormal">s</span><span class="mord mathnormal">t</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0315em;">ik</span><span class="mord mathnormal">in</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">d</span><span class="mord mathnormal">i</span><span class="mord mathnormal">s</span><span class="mord mathnormal">t</span><span class="mord mathnormal">an</span><span class="mord mathnormal">ce</span><span class="mord mathnormal">b</span><span class="mord mathnormal">u</span><span class="mord mathnormal">t</span><span class="mord mathnormal">mi</span><span class="mord mathnormal">sse</span><span class="mord mathnormal">d</span><span class="mord mathnormal">t</span><span class="mord mathnormal">h</span><span class="mord mathnormal">e</span><span class="mord mathnormal">t</span><span class="mord mathnormal">a</span><span class="mord mathnormal" style="margin-right:0.0278em;">r</span><span class="mord mathnormal" style="margin-right:0.0359em;">g</span><span class="mord mathnormal">e</span><span class="mord mathnormal">t</span><span class="mord mathnormal">b</span><span class="mord mathnormal" style="margin-right:0.0359em;">y</span><span class="mspace nobreak"> </span><span class="mord">30</span></span></span></span>0.07 identified (Opus→Sonnet on technical_correctness).</td>
+</tr>
+<tr>
+<td><code>review_inputs</code> table — 1 row per review</td>
+<td>✓ exactly 1 row, 175KB artifact stored once</td>
+</tr>
+<tr>
+<td><code>review_cache</code> populated on first run</td>
+<td>✓ 6 rows written, all <code>verifier_status=pass</code></td>
+</tr>
+<tr>
+<td>Prompt caching headers present</td>
+<td>✓ unit-tested + observable via <code>input_tokens=3</code> on meta_reviewer (cache create)</td>
+</tr>
+<tr>
+<td>Multi-provider DAG still working</td>
+<td>✓ 6/6 pass, 5 distinct models, 3 exercisable providers</td>
+</tr>
+</tbody>
+</table>
+</main>
+<footer class="doc-footer">
+<p>cost-breakdown.md &middot; generated 2026-05-16T00:37:13.699Z &middot; grokrxiv</p>
+</footer>
+</body>
+</html>
