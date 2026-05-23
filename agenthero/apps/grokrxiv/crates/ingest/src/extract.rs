@@ -348,6 +348,10 @@ static DOI_RE: Lazy<Regex> =
 static ARXIV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{4}\.\d{4,5}\b").unwrap());
 static BIB_HEADING_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?im)^\s*(References|Bibliography)\s*$").unwrap());
+static EXPLICIT_BIB_ENTRY_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)^\s*(?:\[\d{1,3}\]|\(\d{1,3}\)|\d{1,3}\.)\s+").unwrap());
+static BIB_YEAR_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(?:19|20)\d{2}[a-z]?\b|\?\?\?\?").unwrap());
 
 /// Pull a list of [`Citation`]s out of the text. We split on blank lines / `[n]`
 /// markers inside the `References`/`Bibliography` section.
@@ -357,28 +361,179 @@ pub fn extract_bibliography(text: &str) -> Vec<Citation> {
     };
     let bib = &text[m.end()..];
 
-    // Split on lines beginning with [n] or blank lines.
-    let entry_split = Regex::new(r"(?m)^\s*(?:\[\d+\]|\(\d+\)|\d+\.)\s+|\n\s*\n").unwrap();
+    let parts = split_bibliography_entries(bib);
     let mut citations = Vec::new();
-    for part in entry_split.split(bib) {
-        let raw = part.trim();
+    for raw in parts {
         if raw.len() < 12 {
             continue;
         }
-        let doi = DOI_RE.find(raw).map(|m| {
+        let doi = DOI_RE.find(&raw).map(|m| {
             m.as_str()
                 .trim_end_matches(|c: char| ",.;)".contains(c))
                 .to_string()
         });
-        let arxiv_id = ARXIV_RE.find(raw).map(|m| m.as_str().to_string());
+        let arxiv_id = ARXIV_RE.find(&raw).map(|m| m.as_str().to_string());
         citations.push(Citation {
-            raw: raw.to_string(),
+            raw,
             doi,
             arxiv_id,
             title: None,
         });
     }
     citations
+}
+
+fn split_bibliography_entries(bib: &str) -> Vec<String> {
+    let coarse_entries: Vec<String> = if EXPLICIT_BIB_ENTRY_RE.is_match(bib) {
+        Regex::new(r"(?m)^\s*(?:\[\d{1,3}\]|\(\d{1,3}\)|\d{1,3}\.)\s+|\n\s*\n")
+            .unwrap()
+            .split(bib)
+            .map(clean_bib_entry)
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![bib.to_string()]
+    };
+
+    let mut entries = Vec::new();
+    for entry in coarse_entries {
+        let author_year_entries = split_author_year_bibliography_entries(&entry);
+        if author_year_entries.len() > 1 {
+            entries.extend(author_year_entries);
+        } else {
+            let entry = clean_bib_entry(&entry);
+            if !entry.is_empty() {
+                entries.push(entry);
+            }
+        }
+    }
+    entries
+}
+
+fn split_author_year_bibliography_entries(bib: &str) -> Vec<String> {
+    let lines: Vec<&str> = bib
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('#'))
+        .collect();
+    let mut entries = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let lookahead = lines
+            .iter()
+            .skip(idx + 1)
+            .take(2)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let next = if lookahead.is_empty() {
+            None
+        } else {
+            Some(lookahead.as_str())
+        };
+        if !current.is_empty()
+            && !current
+                .last()
+                .is_some_and(|prev| line_continues_author_list(prev))
+            && looks_like_author_year_reference_start(line, next)
+        {
+            let entry = clean_bib_entry(&current.join(" "));
+            if !entry.is_empty() {
+                entries.push(entry);
+            }
+            current.clear();
+        }
+        current.push(line);
+    }
+    let entry = clean_bib_entry(&current.join(" "));
+    if !entry.is_empty() {
+        entries.push(entry);
+    }
+    entries
+}
+
+fn line_continues_author_list(line: &str) -> bool {
+    line.trim()
+        .trim_end_matches(|c: char| c == ',' || c == ';')
+        .to_ascii_lowercase()
+        .ends_with(" and")
+}
+
+fn clean_bib_entry(raw: &str) -> String {
+    INLINE_SPACE_RE.replace_all(raw.trim(), " ").into_owned()
+}
+
+fn looks_like_author_year_reference_start(line: &str, next: Option<&str>) -> bool {
+    if line.starts_with('#') {
+        return false;
+    }
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("and ") {
+        return false;
+    }
+    let line_has_year = BIB_YEAR_RE.is_match(trimmed);
+    if !line_has_year && !trimmed.contains([',', ';']) && !lower.contains(" and ") {
+        return false;
+    }
+    let combined = if line_has_year {
+        trimmed.to_string()
+    } else {
+        match next {
+            Some(next) => format!("{trimmed} {}", next.trim()),
+            None => trimmed.to_string(),
+        }
+    };
+    let Some(year_match) = BIB_YEAR_RE.find(&combined) else {
+        return false;
+    };
+    let author_prefix = combined[..year_match.start()].trim();
+    looks_like_author_prefix(author_prefix)
+}
+
+fn looks_like_author_prefix(prefix: &str) -> bool {
+    if prefix.is_empty() || prefix.len() > 240 {
+        return false;
+    }
+    let lower = prefix.to_ascii_lowercase();
+    if lower.starts_with("and ") || lower.contains(':') || lower.contains(" in ") {
+        return false;
+    }
+    let word_count = prefix.split_whitespace().count();
+    if word_count > 32 {
+        return false;
+    }
+    let first_name = prefix
+        .split([';', ','])
+        .next()
+        .unwrap_or(prefix)
+        .trim()
+        .trim_end_matches('.');
+    let alpha_count = first_name.chars().filter(|c| c.is_alphabetic()).count();
+    let starts_upper = first_name
+        .chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false);
+    if alpha_count < 2 || !starts_upper {
+        return false;
+    }
+    if prefix.contains(',') && !prefix.contains(';') && !has_author_initial_after_comma(prefix) {
+        return false;
+    }
+    prefix.contains(',') || prefix.contains(';') || lower.contains(" and ") || word_count <= 4
+}
+
+fn has_author_initial_after_comma(prefix: &str) -> bool {
+    prefix
+        .split_once(',')
+        .map(|(_, after)| after.trim_start().chars().take(2).collect::<String>())
+        .map(|head| {
+            let mut chars = head.chars();
+            matches!(chars.next(), Some(c) if c.is_uppercase()) && matches!(chars.next(), Some('.'))
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -510,5 +665,47 @@ REFERENCES
         assert_eq!(cites.len(), 2);
         assert_eq!(cites[0].doi.as_deref(), Some("10.1234/abc.def.123"));
         assert_eq!(cites[1].arxiv_id.as_deref(), Some("2401.12345"));
+    }
+
+    #[test]
+    fn bibliography_splits_author_year_pdf_references_without_blank_lines() {
+        let text = "\
+Body.
+
+References
+Abbas, T.; Rathore, S. A.; Turki, A.; Khan, S.; Alghushairy,
+O.; and Daud, A. 2025. Enhancing Software Engineering
+With AI: Innovations, Challenges, and Future Directions.
+IET Software, 2025(1): 5691460.
+Alam, A. 2023. Harnessing the power of AI to create intelligent tutoring systems for enhanced classroom experience
+and improved learning outcomes. In Intelligent communication technologies and virtual mobile networks, 571-591.
+Springer.
+Allen, T. J. 1977. Managing the flow of technology: technology transfer and the dissemination of technological information within the R and D organization.
+Bhat, A.; Aubin Le Quere, M.; Naaman, M.; and Jakesch, M.
+2026. Reactive Writers: How Co-Writing with AI Changes
+How We Engage with Ideas. In Proceedings of CHI, 1-21.
+Ehsan, U.; Passi, S.; Saha, K.; McNutt, T.; Riedl, M. O.; and
+Alcorn, S. 2026. From Future of Work to Future of Workers.
+Meske, C.; Hermanns, T.; Von der Weiden, E.; Loser, K.-U.;
+and Berger, T. 2025. Vibe coding as a reconfiguration of
+intent mediation in software development. IEEE Access, 13: 213242-213259.
+Time. 2023. How to end the unfairness of invisible work.
+Wells, J. E.; and MacAulay, D. ???? What Invisible Work Looks Like in the 21st Century.
+Zhang, X.; Subramonyam, H.; Sarkar, A.; Drosos, I.; Wang,
+Z.; Lee, K.; Pimenova, V.; Chen, X.; and Lukoff, K.
+2026. Generative Design and Vibe Coding: Rethinking The
+Design-Development Divide for UI Prototyping.
+";
+        let cites = extract_bibliography(text);
+        let raws: Vec<&str> = cites.iter().map(|c| c.raw.as_str()).collect();
+        assert_eq!(raws.len(), 9, "{raws:#?}");
+        assert!(raws[0].starts_with("Abbas, T."));
+        assert!(raws[3].starts_with("Bhat, A."));
+        assert!(raws[4].starts_with("Ehsan, U."));
+        assert!(raws[4].contains("and Alcorn, S. 2026"));
+        assert!(raws[5].starts_with("Meske, C."));
+        assert!(raws[5].contains("and Berger, T. 2025"));
+        assert!(raws[8].starts_with("Zhang, X."));
+        assert!(raws[8].contains("Z.; Lee, K."));
     }
 }

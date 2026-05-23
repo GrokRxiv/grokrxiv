@@ -4162,6 +4162,7 @@ async fn review_resolved_sources(
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
+    let _supervisor_shutdown = SupervisorShutdownOnDrop(supervisor.clone());
     let pool = state
         .db
         .as_ref()
@@ -4272,6 +4273,16 @@ async fn review_resolved_sources(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+struct SupervisorShutdownOnDrop(super::supervisor::Supervisor);
+
+#[cfg(feature = "grokrxiv-ingest")]
+impl Drop for SupervisorShutdownOnDrop {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 fn resolved_source_label(source: &ResolvedSource) -> String {

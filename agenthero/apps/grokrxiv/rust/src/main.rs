@@ -138,6 +138,7 @@ fn runtime_command(runtime_manifest: &Path) -> tokio::process::Command {
     if let Some(parent) = runtime_manifest.parent() {
         command.current_dir(parent);
     }
+    set_app_root_env(&mut command);
     command
 }
 
@@ -152,6 +153,7 @@ fn runtime_fallback_command(runtime_manifest: &Path) -> tokio::process::Command 
         .arg("grokrxiv-app")
         .arg("--")
         .current_dir(repo_root());
+    set_app_root_env(&mut command);
     command
 }
 
@@ -197,10 +199,30 @@ fn resolve_runtime_binary(env_key: &str, name: &str) -> PathBuf {
 }
 
 fn app_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
+    if let Some(path) = std::env::var_os("AGENTHERO_APP_ROOT").map(PathBuf::from) {
+        return if path.is_absolute() {
+            path
+        } else {
+            resolve_relative_path(&path)
+        };
+    }
+    if let Some(path) = std::env::var_os("AGENTHERO_APPS_ROOT").map(PathBuf::from) {
+        let apps_root = if path.is_absolute() {
+            path
+        } else {
+            resolve_relative_path(&path)
+        };
+        let candidate = apps_root.join("grokrxiv");
+        if candidate.join("app.yaml").is_file() {
+            return candidate;
+        }
+    }
+    discover_app_root().unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    })
 }
 
 fn repo_root() -> PathBuf {
@@ -210,4 +232,60 @@ fn repo_root() -> PathBuf {
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf()
+}
+
+fn set_app_root_env(command: &mut tokio::process::Command) {
+    let app_root = app_root();
+    command.env("AGENTHERO_APP_ROOT", &app_root);
+    if let Some(apps_root) = app_root.parent() {
+        command.env("AGENTHERO_APPS_ROOT", apps_root);
+    }
+}
+
+fn resolve_relative_path(path: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd_candidate = cwd.join(path);
+    if cwd_candidate.exists() {
+        return cwd_candidate;
+    }
+    if let Some(workspace) = discover_workspace_root() {
+        let workspace_candidate = workspace.join(path);
+        if workspace_candidate.exists() {
+            return workspace_candidate;
+        }
+    }
+    cwd_candidate
+}
+
+fn discover_app_root() -> Option<PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            starts.push(parent.to_path_buf());
+        }
+    }
+    starts.into_iter().find_map(|start| {
+        start.ancestors().find_map(|candidate| {
+            let direct = candidate.join("app.yaml");
+            if direct.is_file()
+                && candidate.file_name().and_then(|n| n.to_str()) == Some("grokrxiv")
+            {
+                return Some(candidate.to_path_buf());
+            }
+            let nested = candidate.join("agenthero/apps/grokrxiv");
+            nested.join("app.yaml").is_file().then_some(nested)
+        })
+    })
+}
+
+fn discover_workspace_root() -> Option<PathBuf> {
+    discover_app_root().and_then(|app| {
+        app.parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    })
 }

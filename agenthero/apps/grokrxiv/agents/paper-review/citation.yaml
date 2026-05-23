@@ -15,8 +15,8 @@ verifiers:
 prompt_context:
   body_budget_chars: 0
   bibliography: limited
-  max_bibliography_entries: 32
-  citation_context_budget_chars: 24000
+  max_bibliography_entries: 24
+  citation_context_budget_chars: 12000
 postprocessors:
   - merge_citation_verifier
 max_retries: 2

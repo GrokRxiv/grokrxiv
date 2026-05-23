@@ -451,9 +451,7 @@ pub fn apps_root() -> PathBuf {
         return if path.is_absolute() {
             path
         } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(path)
+            resolve_relative_apps_root(&path)
         };
     }
     discover_workspace_root()
@@ -470,6 +468,21 @@ pub fn app_root(app: &str) -> PathBuf {
 fn workspace_root() -> PathBuf {
     discover_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn resolve_relative_apps_root(path: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd_candidate = cwd.join(path);
+    if cwd_candidate.is_dir() {
+        return cwd_candidate;
+    }
+    if let Some(workspace) = discover_workspace_root() {
+        let workspace_candidate = workspace.join(path);
+        if workspace_candidate.is_dir() {
+            return workspace_candidate;
+        }
+    }
+    cwd_candidate
 }
 
 fn discover_workspace_root() -> Option<PathBuf> {

@@ -44,11 +44,107 @@ pub(super) async fn verify_artifact(
 }
 
 pub(super) fn specialist_failure_output(role: &str, error: &str) -> serde_json::Value {
+    match role {
+        "summary" => summary_failure_output(error),
+        "technical_correctness" => technical_failure_output(error),
+        "novelty" => novelty_failure_output(error),
+        "reproducibility" => reproducibility_failure_output(error),
+        "citation" => citation_failure_output(error),
+        _ => json!({
+            "error": error,
+            "role": role,
+            "status": "agent_failed",
+        }),
+    }
+}
+
+fn summary_failure_output(error: &str) -> serde_json::Value {
     json!({
-        "error": error,
-        "role": role,
-        "status": "agent_failed",
+        "tldr": "Summary reviewer failed before producing a normal review.",
+        "plain_language_summary": format!(
+            "Automated summary generation failed before producing a normal review. Failure: {}",
+            truncate_failure(error, 240)
+        ),
+        "key_contributions": [],
+        "audience": null,
     })
+}
+
+fn technical_failure_output(error: &str) -> serde_json::Value {
+    json!({
+        "claims": [
+            {
+                "id": "technical_correctness_agent_failure",
+                "claim": "Technical correctness reviewer failed before producing a normal review.",
+                "location": null,
+                "assessment": "partially_supported",
+                "severity": "major",
+                "evidence": format!("Failure: {}", truncate_failure(error, 240)),
+                "suggested_fix": "Rerun automated review after the configured CLI/model provider recovers."
+            }
+        ],
+        "overall_correctness": "questionable",
+        "confidence": 0.0,
+    })
+}
+
+fn novelty_failure_output(error: &str) -> serde_json::Value {
+    json!({
+        "novelty_score": 0.0,
+        "related_work": [],
+        "missing_prior_art": [
+            {
+                "title": "Novelty reviewer unavailable",
+                "reason": format!(
+                    "Automated novelty review failed before producing a normal prior-art assessment. Failure: {}",
+                    truncate_failure(error, 240)
+                )
+            }
+        ],
+        "verdict": "marginal",
+        "confidence": 0.0,
+    })
+}
+
+fn reproducibility_failure_output(error: &str) -> serde_json::Value {
+    json!({
+        "code_availability": "unspecified",
+        "code_url": null,
+        "data_availability": "unspecified",
+        "data_url": null,
+        "environment": null,
+        "concerns": [
+            {
+                "area": "other",
+                "description": format!(
+                    "Automated reproducibility review failed before producing a normal assessment. Failure: {}",
+                    truncate_failure(error, 240)
+                ),
+                "severity": "major"
+            }
+        ],
+        "reproducibility_score": 0.0,
+        "confidence": 0.0,
+    })
+}
+
+fn citation_failure_output(error: &str) -> serde_json::Value {
+    json!({
+        "entries": [],
+        "missing_references": [],
+        "summary": format!(
+            "Citation-use agent failed before producing a normal citation relevance review. Deterministic citation verification still runs separately; see external citation checks and verifier provenance for existence, DOI, URL, and resolver evidence. Failure: {}",
+            truncate_failure(error, 240)
+        ),
+        "confidence": 0.0,
+    })
+}
+
+fn truncate_failure(error: &str, max_chars: usize) -> String {
+    if error.chars().count() <= max_chars {
+        return error.to_string();
+    }
+    format!("{}...", error.chars().take(max_chars).collect::<String>())
 }
 
 pub(super) fn meta_failure_output(error: &str) -> serde_json::Value {

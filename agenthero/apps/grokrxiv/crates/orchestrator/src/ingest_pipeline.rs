@@ -671,6 +671,15 @@ async fn run_inner(
     }
     if should_use_citation_fallback(citations_res.as_ref(), opts, &body_md_str) {
         citations_res = deterministic_citations_outcome(arxiv_id, &body_md_str, &extract);
+    } else {
+        let deterministic_citations =
+            deterministic_citations_outcome(arxiv_id, &body_md_str, &extract);
+        if should_replace_low_quality_citations(
+            citations_res.as_ref(),
+            deterministic_citations.as_ref(),
+        ) {
+            citations_res = deterministic_citations;
+        }
     }
 
     push_tool_calls(&mut tool_call_log_entries, "macros", macros_res.as_ref());
@@ -2145,14 +2154,13 @@ fn deterministic_citations_outcome(
     use std::collections::{BTreeMap, BTreeSet};
 
     let started = std::time::Instant::now();
-    let sites = grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md);
-    let has_sites = !sites.is_empty();
     let bibliography_by_key: BTreeMap<String, &grokrxiv_schemas::Citation> = extract
         .bibliography
         .iter()
         .filter_map(|c| citation_key(c).map(|key| (key, c)))
         .collect();
-    if !has_sites && bibliography_by_key.is_empty() {
+    let sites = grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(body_md);
+    if sites.is_empty() && bibliography_by_key.is_empty() {
         return Some(deterministic_empty_outcome(
             "citations",
             json!({
@@ -2185,6 +2193,15 @@ fn deterministic_citations_outcome(
             "use": "cited_in_passing",
         }));
     }
+    if by_key.is_empty() && !bibliography_by_key.is_empty() {
+        let scan_body = body_without_references(body_md);
+        for (key, citation) in &bibliography_by_key {
+            for context in author_year_contexts(&scan_body, key, &citation.raw) {
+                by_key.entry(key.clone()).or_default().push(context);
+            }
+        }
+    }
+    let has_sites = !by_key.is_empty();
 
     let unmatched_citation_keys: Vec<String> = by_key
         .keys()
@@ -2257,12 +2274,249 @@ fn deterministic_citations_outcome(
 }
 
 fn citation_key(c: &grokrxiv_schemas::Citation) -> Option<String> {
-    c.raw
-        .split_once(": ")
-        .map(|(key, _)| key.trim().to_string())
+    explicit_citation_key_from_raw(&c.raw)
         .filter(|key| !key.is_empty())
         .or_else(|| c.title.as_ref().map(|title| title.trim().to_string()))
+        .or_else(|| citation_author_year_key(&c.raw))
         .filter(|key| !key.is_empty())
+}
+
+fn explicit_citation_key_from_raw(raw: &str) -> Option<String> {
+    let (key, _) = raw.split_once(": ")?;
+    let key = key.trim();
+    if key.is_empty() || key.len() > 96 {
+        return None;
+    }
+    key.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/' | '+'))
+        .then(|| key.to_string())
+}
+
+fn should_replace_low_quality_citations(
+    current: Option<&StageOutcome>,
+    deterministic: Option<&StageOutcome>,
+) -> bool {
+    let Some(current) = current else {
+        return false;
+    };
+    let Some(deterministic) = deterministic else {
+        return false;
+    };
+    let current_entries = citation_entries(&current.output);
+    let deterministic_entries = citation_entries(&deterministic.output);
+    let current_contexts = citation_context_count(current_entries);
+    let deterministic_contexts = citation_context_count(deterministic_entries);
+    if current_contexts == 0 && deterministic_contexts > 0 {
+        return true;
+    }
+    if deterministic_entries.len() <= current_entries.len() {
+        return false;
+    }
+    if deterministic_entries.len() >= current_entries.len().saturating_mul(2) {
+        return true;
+    }
+    current_entries.iter().any(|entry| {
+        entry
+            .get("raw")
+            .and_then(Value::as_str)
+            .is_some_and(|raw| raw.chars().count() > 1_200)
+    })
+}
+
+fn citation_context_count(entries: &[Value]) -> usize {
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("contexts")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+fn citation_entries(output: &Value) -> &[Value] {
+    output
+        .get("citations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn citation_author_year_key(raw: &str) -> Option<String> {
+    let (surnames, year) = citation_author_year_parts(raw)?;
+    let first = surnames.first()?;
+    Some(if surnames.len() >= 3 {
+        format!("{first} et al. {year}")
+    } else if surnames.len() == 2 {
+        format!("{} and {} {year}", surnames[0], surnames[1])
+    } else {
+        format!("{first} {year}")
+    })
+}
+
+fn citation_author_year_parts(raw: &str) -> Option<(Vec<String>, String)> {
+    let year_re = regex::Regex::new(r"\b(?:19|20)\d{2}[a-z]?\b").ok()?;
+    let year_match = year_re.find(raw)?;
+    let year = year_match.as_str().to_string();
+    let prefix = raw[..year_match.start()].trim();
+    let surnames = citation_surnames(prefix);
+    if surnames.is_empty() {
+        None
+    } else {
+        Some((surnames, year))
+    }
+}
+
+fn citation_surnames(prefix: &str) -> Vec<String> {
+    let normalized = prefix
+        .replace('\n', " ")
+        .replace(" and ", "; ")
+        .replace("; and ", "; ");
+    normalized
+        .split(';')
+        .filter_map(|part| {
+            let part = part
+                .trim()
+                .trim_start_matches("and ")
+                .trim_matches(|c: char| c.is_whitespace() || c == '.');
+            if part.is_empty() {
+                return None;
+            }
+            let surname = part
+                .split(',')
+                .next()
+                .unwrap_or(part)
+                .split_whitespace()
+                .next()
+                .unwrap_or(part)
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'');
+            let alpha = surname.chars().filter(|c| c.is_alphabetic()).count();
+            (alpha >= 2).then(|| surname.to_string())
+        })
+        .collect()
+}
+
+fn body_without_references(body_md: &str) -> String {
+    let refs_re = regex::Regex::new(r"(?im)^#{1,6}\s+(references|bibliography)\s*$").unwrap();
+    refs_re
+        .find(body_md)
+        .map(|m| body_md[..m.start()].to_string())
+        .unwrap_or_else(|| body_md.to_string())
+}
+
+fn author_year_contexts(body_md: &str, key: &str, raw: &str) -> Vec<Value> {
+    let Some((surnames, year)) = citation_author_year_parts(raw) else {
+        return Vec::new();
+    };
+    let labels = citation_author_year_labels(&surnames, &year);
+    let sections = citation_section_index(body_md);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for label in labels {
+        let pattern = flexible_author_year_pattern(&label);
+        let Ok(re) =
+            regex::RegexBuilder::new(&format!(r"(?i)(^|[^[:alnum:]])({pattern})([^[:alnum:]]|$)"))
+                .multi_line(true)
+                .build()
+        else {
+            continue;
+        };
+        for caps in re.captures_iter(body_md) {
+            let Some(m) = caps.get(2) else {
+                continue;
+            };
+            let sentence = citation_surrounding_sentence(body_md, m.start());
+            let section = citation_section_for_offset(m.start(), &sections);
+            if seen.insert((section.clone(), sentence.clone())) {
+                out.push(json!({
+                    "section": section,
+                    "sentence": sentence,
+                    "use": "cited_in_passing",
+                    "matched": label,
+                    "key": key,
+                }));
+            }
+        }
+    }
+    out
+}
+
+fn citation_author_year_labels(surnames: &[String], year: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    let Some(first) = surnames.first() else {
+        return labels;
+    };
+    labels.push(format!("{first} {year}"));
+    if surnames.len() == 2 {
+        labels.push(format!("{} and {} {year}", surnames[0], surnames[1]));
+    }
+    if surnames.len() >= 3 {
+        labels.push(format!("{first} et al. {year}"));
+        labels.push(format!(
+            "{}, {}, and {} {year}",
+            surnames[0], surnames[1], surnames[2]
+        ));
+    }
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn flexible_author_year_pattern(label: &str) -> String {
+    regex::escape(label).replace(r"\ ", r"\s+")
+}
+
+fn citation_section_index(body: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            let heading = trimmed.trim_start_matches('#').trim();
+            if !heading.is_empty() {
+                out.push((heading.to_string(), offset));
+            }
+        }
+        offset += line.len();
+    }
+    out
+}
+
+fn citation_section_for_offset(offset: usize, sections: &[(String, usize)]) -> String {
+    sections
+        .iter()
+        .take_while(|(_, start)| *start <= offset)
+        .last()
+        .map(|(heading, _)| heading.clone())
+        .unwrap_or_default()
+}
+
+fn citation_surrounding_sentence(body: &str, offset: usize) -> String {
+    let bytes = body.as_bytes();
+    let mut start = 0usize;
+    let mut idx = offset.min(bytes.len());
+    while idx > 0 {
+        idx -= 1;
+        if matches!(bytes[idx], b'.' | b'?' | b'!' | b'\n') {
+            start = idx + 1;
+            break;
+        }
+    }
+    let mut end = bytes.len();
+    idx = offset.min(bytes.len());
+    while idx < bytes.len() {
+        if matches!(bytes[idx], b'.' | b'?' | b'!' | b'\n') {
+            end = idx + 1;
+            break;
+        }
+        idx += 1;
+    }
+    body[start..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn deterministic_empty_outcome(stage: &str, output: Value) -> StageOutcome {
@@ -2870,7 +3124,8 @@ pub fn load_paper_extract(repo_root: &Path, ri: &ReviewInput) -> Result<PaperExt
             arr.iter()
                 .map(|c| grokrxiv_schemas::Citation {
                     raw: c
-                        .get("key")
+                        .get("raw")
+                        .or_else(|| c.get("key"))
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
@@ -3354,6 +3609,118 @@ mod a4_tests {
             outcome.output["uncited_bibliography_keys"],
             json!(["uncited_key"])
         );
+    }
+
+    #[test]
+    fn deterministic_citation_fallback_matches_author_year_pdf_citations() {
+        let body = "## Intro\n\n\
+            Agents completed tasks faster than humans (Wang et al. 2025). \
+            A large field study found gains for support specialists \
+            (Brynjolfsson, Li, and Raymond 2025). \
+            Social support remains central (House and Kahn 1985; Cohen and Wills 1985).\n\n\
+            ## References\n\n\
+            Wang, Z. Z.; Shao, Y.; Shaikh, O.; Fried, D.; Neubig, G.; and Yang, D. 2025. \
+            How Do AI Agents Do Human Work? arXiv:2510.22780.\n\
+            Brynjolfsson, E.; Li, D.; and Raymond, L. 2025. Generative AI at work.\n\
+            House, J.; and Kahn, R. 1985. Measures and concepts of social support.\n\
+            Cohen, S.; and Wills, T. A. 1985. Stress, social support, and the buffering hypothesis.\n";
+        let mut extract = extract_with(vec!["Intro"], 0);
+        extract.bibliography = vec![
+            Citation {
+                raw: "Wang, Z. Z.; Shao, Y.; Shaikh, O.; Fried, D.; Neubig, G.; and Yang, D. 2025. How Do AI Agents Do Human Work?".into(),
+                doi: None,
+                arxiv_id: Some("2510.22780".into()),
+                title: None,
+            },
+            Citation {
+                raw: "Brynjolfsson, E.; Li, D.; and Raymond, L. 2025. Generative AI at work.".into(),
+                doi: None,
+                arxiv_id: None,
+                title: None,
+            },
+            Citation {
+                raw: "House, J.; and Kahn, R. 1985. Measures and concepts of social support.".into(),
+                doi: None,
+                arxiv_id: None,
+                title: None,
+            },
+            Citation {
+                raw: "Cohen, S.; and Wills, T. A. 1985. Stress, social support, and the buffering hypothesis.".into(),
+                doi: None,
+                arxiv_id: None,
+                title: None,
+            },
+        ];
+
+        let outcome = deterministic_citations_outcome("2605.22707", body, &extract)
+            .expect("author-year fallback should produce citations");
+        let citations = outcome.output["citations"].as_array().unwrap();
+        assert_eq!(citations.len(), 4, "citations={citations:?}");
+        assert!(
+            citations
+                .iter()
+                .all(|c| c["contexts"].as_array().unwrap().len() == 1),
+            "citations={citations:?}"
+        );
+        assert!(outcome.output["unmatched_citation_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn citation_key_does_not_treat_pdf_title_colon_as_bibtex_key() {
+        let citation = Citation {
+            raw: "Abbas, T.; Rathore, S. A.; and Daud, A. 2025. Enhancing Software Engineering With AI: Innovations, Challenges, and Future Directions.".into(),
+            doi: None,
+            arxiv_id: None,
+            title: None,
+        };
+        assert_eq!(
+            citation_key(&citation).as_deref(),
+            Some("Abbas et al. 2025")
+        );
+
+        let keyed = Citation {
+            raw: "Barra:2012aa: Cited Paper".into(),
+            doi: None,
+            arxiv_id: None,
+            title: Some("Cited Paper".into()),
+        };
+        assert_eq!(citation_key(&keyed).as_deref(), Some("Barra:2012aa"));
+    }
+
+    #[test]
+    fn low_quality_citation_agent_chunks_are_replaced_by_deterministic_output() {
+        let oversized_raw = "A. Author. 2026. First.\n".repeat(80);
+        let current = deterministic_empty_outcome(
+            "citations",
+            json!({
+                "citations": [
+                    { "key": "chunk1", "raw": oversized_raw, "contexts": [] },
+                    { "key": "chunk2", "raw": "Small chunk", "contexts": [] }
+                ],
+                "unmatched_citation_keys": [],
+                "uncited_bibliography_keys": []
+            }),
+        );
+        let deterministic = deterministic_empty_outcome(
+            "citations",
+            json!({
+                "citations": [
+                    { "key": "ref1", "raw": "One", "contexts": [] },
+                    { "key": "ref2", "raw": "Two", "contexts": [] },
+                    { "key": "ref3", "raw": "Three", "contexts": [] }
+                ],
+                "unmatched_citation_keys": [],
+                "uncited_bibliography_keys": []
+            }),
+        );
+
+        assert!(should_replace_low_quality_citations(
+            Some(&current),
+            Some(&deterministic)
+        ));
     }
 
     #[test]

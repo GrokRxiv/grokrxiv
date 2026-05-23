@@ -318,6 +318,31 @@ function CitationDetails({
               </div>
             );
           })
+        ) : verifierEntries.length > 0 ? (
+          verifierEntries.map((entry, index) => (
+            <div
+              key={`${entry.citation_key ?? entry.raw ?? "verifier"}-${index}`}
+              className="rounded-md border border-[color:var(--color-border)] bg-slate-950/25 p-4"
+            >
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <StatusBadge
+                  value={citationVerifierStatusLabel(entry)}
+                />
+              </div>
+              <Field
+                label="Citation"
+                value={entry.title ?? entry.citation_key ?? entry.raw}
+                strong
+              />
+              <Field label="Verifier source" value={entry.source} />
+              <Field
+                label="Verifier note"
+                value={readableCitationReason(entry.reason)}
+              />
+              <Field label="Resolved DOI" value={entry.resolved_doi} />
+              <Field label="Resolved URL" value={entry.resolved_url} />
+            </div>
+          ))
         ) : (
           <EmptyState>No citation entries provided.</EmptyState>
         )}
@@ -493,6 +518,23 @@ function citationStatusLabel(
   if (entry.exists === true) return "verified";
   if (entry.exists === false) return "not resolved";
   return "unverified";
+}
+
+function citationVerifierStatusLabel(
+  verifierEntry: CitationVerifierEntry,
+): string | null {
+  return citationStatusLabel(
+    {
+      citation: null,
+      exists: null,
+      resolved_doi: null,
+      resolved_url: null,
+      relevance: "medium",
+      notes: null,
+      explanation: "",
+    },
+    verifierEntry,
+  );
 }
 
 function readableCitationReason(reason?: string | null): string | null {

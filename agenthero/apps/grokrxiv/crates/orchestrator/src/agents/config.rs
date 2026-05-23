@@ -414,6 +414,61 @@ fn validate_known_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    struct CurrentDirGuard {
+        prev: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn set(path: &Path) -> Self {
+            let prev = std::env::current_dir().expect("current dir");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self { prev }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.prev).expect("restore current dir");
+        }
+    }
+
+    fn workspace_root_for_test() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|candidate| candidate.join("agenthero/apps/grokrxiv/app.yaml").is_file())
+            .expect("workspace root")
+            .to_path_buf()
+    }
 
     #[test]
     fn parses_declarative_runtime_fields() {
@@ -523,5 +578,26 @@ output_schema: schemas/summary_review.schema.json
 
         assert!(err.to_string().contains("kind=extractor"));
         assert!(err.to_string().contains("kind=critic"));
+    }
+
+    #[test]
+    fn relative_apps_root_resolves_from_workspace_when_runtime_cwd_is_app_crate() {
+        let workspace = workspace_root_for_test();
+        let runtime_cwd = workspace.join("agenthero/apps/grokrxiv/crates/orchestrator");
+        let _cwd = CurrentDirGuard::set(&runtime_cwd);
+        let _apps_root = EnvVarGuard::set("AGENTHERO_APPS_ROOT", "agenthero/apps");
+        let _dags_dir = EnvVarGuard::clear("AGENTHERO_DAGS_DIR");
+
+        let manifest = dag_manifest_path("paper-review");
+
+        assert_eq!(
+            manifest,
+            workspace.join("agenthero/apps/grokrxiv/dags/paper-review.yaml")
+        );
+        assert!(
+            manifest.is_file(),
+            "manifest should resolve to installed app root, got {}",
+            manifest.display()
+        );
     }
 }

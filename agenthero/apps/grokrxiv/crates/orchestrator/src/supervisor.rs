@@ -760,6 +760,41 @@ mod tests {
     }
 
     #[test]
+    fn merge_citation_verifier_annotates_degraded_output_with_checked_count() {
+        let degraded_output = specialist_failure_output(
+            "citation",
+            "CliRunner timed out after 360s for role citation",
+        );
+        let v_notes = serde_json::json!({
+            "citation": {
+                "status": "pass",
+                "notes": {
+                    "checked": 95,
+                    "entries": [
+                        { "raw": "Foo et al.", "status": "resolved", "resolved_doi": "10.1/foo", "resolved_url": "https://doi.org/10.1/foo", "source": "crossref" }
+                    ]
+                }
+            }
+        });
+
+        let merged = merge_citation_verifier_into_output(degraded_output, Some(&v_notes));
+
+        assert!(merged["summary"]
+            .as_str()
+            .unwrap()
+            .contains("checked 95 bibliography entries"));
+        let entries = merged["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["citation"]["key"], "ref1");
+        assert_eq!(entries[0]["citation"]["raw"], "Foo et al.");
+        assert_eq!(entries[0]["exists"], true);
+        assert_eq!(entries[0]["resolved_doi"], "10.1/foo");
+        assert_eq!(entries[0]["resolved_url"], "https://doi.org/10.1/foo");
+        assert_eq!(entries[0]["relevance"], "medium");
+        assert_citation_review_shape(&merged);
+    }
+
+    #[test]
     fn merge_novelty_facts_does_not_append_schema_invalid_candidates() {
         let llm_output = serde_json::json!({
             "novelty_score": 0.7,
@@ -1069,16 +1104,80 @@ mod tests {
     }
 
     #[test]
-    fn specialist_failure_output_records_role_and_error() {
+    fn citation_timeout_failure_output_is_schema_valid_degraded_review() {
         let output = specialist_failure_output(
             "citation",
             "CliRunner timed out after 120s for role Citation",
         );
+        assert_eq!(output["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(output["missing_references"].as_array().unwrap().len(), 0);
+        assert!(output["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Citation-use agent failed"));
+        assert!(output["summary"]
+            .as_str()
+            .unwrap()
+            .contains("CliRunner timed out after 120s"));
+        assert_eq!(output["confidence"], 0.0);
+        assert!(
+            output.get("error").is_none(),
+            "citation fallback must be schema-valid output, not debug JSON"
+        );
+        assert_citation_review_shape(&output);
+    }
+
+    #[test]
+    fn specialist_failure_outputs_for_known_roles_match_role_schemas() {
+        let cases = [
+            (
+                "summary",
+                include_str!("../../../schemas/summary_review.schema.json"),
+            ),
+            (
+                "technical_correctness",
+                include_str!("../../../schemas/technical_review.schema.json"),
+            ),
+            (
+                "novelty",
+                include_str!("../../../schemas/novelty_review.schema.json"),
+            ),
+            (
+                "reproducibility",
+                include_str!("../../../schemas/reproducibility_review.schema.json"),
+            ),
+        ];
+        for (role, schema_str) in cases {
+            let output = specialist_failure_output(
+                role,
+                "CliRunner parse/validate failure after corrective retry",
+            );
+            assert!(
+                output.get("error").is_none(),
+                "{role} fallback must be schema-valid output, not debug JSON"
+            );
+            assert_matches_schema(&output, schema_str);
+        }
+
+        let citation_output = specialist_failure_output(
+            "citation",
+            "CliRunner parse/validate failure after corrective retry",
+        );
+        assert!(citation_output.get("error").is_none());
+        assert_citation_review_shape(&citation_output);
+    }
+
+    #[test]
+    fn unknown_specialist_failure_output_records_role_and_error() {
+        let output = specialist_failure_output(
+            "custom_role",
+            "CliRunner timed out after 120s for role custom_role",
+        );
         assert_eq!(
             output["error"],
-            "CliRunner timed out after 120s for role Citation"
+            "CliRunner timed out after 120s for role custom_role"
         );
-        assert_eq!(output["role"], "citation");
+        assert_eq!(output["role"], "custom_role");
         assert_eq!(output["status"], "agent_failed");
     }
 
@@ -1092,6 +1191,41 @@ mod tests {
             .contains("`claude` exited"));
         serde_json::from_value::<grokrxiv_schemas::MetaReview>(output)
             .expect("synthetic meta-review should deserialize");
+    }
+
+    fn assert_citation_review_shape(value: &serde_json::Value) {
+        let obj = value.as_object().expect("citation review object");
+        assert!(obj.get("entries").and_then(|v| v.as_array()).is_some());
+        assert!(obj
+            .get("missing_references")
+            .and_then(|v| v.as_array())
+            .is_some());
+        assert!(obj.get("summary").and_then(|v| v.as_str()).is_some());
+        assert!(obj.get("confidence").and_then(|v| v.as_f64()).is_some());
+        for key in obj.keys() {
+            assert!(
+                matches!(
+                    key.as_str(),
+                    "entries" | "missing_references" | "summary" | "confidence"
+                ),
+                "unexpected citation review field `{key}`"
+            );
+        }
+    }
+
+    fn assert_matches_schema(value: &serde_json::Value, schema_str: &str) {
+        let schema: serde_json::Value = serde_json::from_str(schema_str).expect("schema JSON");
+        let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+        let errors: Vec<String> = validator
+            .iter_errors(value)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "expected value to match schema, got errors: {}\nvalue: {}",
+            errors.join("; "),
+            serde_json::to_string_pretty(value).unwrap()
+        );
     }
 
     /// The quorum failure payload keeps its structured moderation shape.
