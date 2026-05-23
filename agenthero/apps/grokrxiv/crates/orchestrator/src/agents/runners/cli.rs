@@ -869,9 +869,15 @@ fn build_command(
         CliProviderBackend::Antigravity => {
             // Antigravity replaces the Gemini CLI path. It has no model flag or
             // JSON output flag, so the DAG prompt/schema contract is the JSON
-            // boundary and schema validation remains in AgentHero.
+            // boundary and schema validation remains in AgentHero. Its print
+            // mode can return success with empty stdout on quota/auth errors,
+            // so route logs to a per-call file that exec_and_capture can
+            // classify.
+            let log_path = antigravity_log_path(&role_slug)?;
             let args = vec![
-                "--prompt".to_string(),
+                "--log-file".to_string(),
+                log_path.to_string_lossy().into_owned(),
+                "--print".to_string(),
                 provider_prompt.clone(),
                 "--print-timeout".to_string(),
                 format!("{}s", cli_timeout_for(spec).as_secs()),
@@ -1005,7 +1011,8 @@ async fn exec_and_capture(
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
         // failure.
-        if let Some(snippet) = detect_quota_signal(&stderr) {
+        let combined_error_log = combine_stderr_and_cli_log(&stderr, built);
+        if let Some(snippet) = detect_quota_signal(&combined_error_log) {
             return Err(anyhow::Error::new(CliError::QuotaExhausted {
                 provider: provider.to_string(),
                 message: snippet,
@@ -1026,7 +1033,68 @@ async fn exec_and_capture(
     }
 
     let stdout = String::from_utf8_lossy(&stdout).to_string();
+    if stdout.trim().is_empty() {
+        let cli_log = cli_log_from_args(built).unwrap_or_default();
+        if let Some(snippet) = detect_quota_signal(&cli_log) {
+            return Err(anyhow::Error::new(CliError::QuotaExhausted {
+                provider: provider.to_string(),
+                message: snippet,
+            })
+            .context(format!(
+                "`{}` exited successfully with empty stdout for role {} but its log contains a quota signal",
+                built.program, role,
+            )));
+        }
+        if matches!(provider, "gemini" | "antigravity") {
+            let log_hint = if cli_log.trim().is_empty() {
+                String::new()
+            } else {
+                let snippet: String = cli_log.chars().take(200).collect();
+                format!("; log={snippet:?}")
+            };
+            anyhow::bail!(
+                "`{}` exited successfully with empty stdout for role {}{}",
+                built.program,
+                role,
+                log_hint
+            );
+        }
+    }
     Ok(stdout)
+}
+
+fn antigravity_log_path(role_slug: &str) -> anyhow::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("grokrxiv-cli-logs");
+    std::fs::create_dir_all(&dir)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    Ok(dir.join(format!("{role_slug}-{}-{nanos}.log", std::process::id())))
+}
+
+fn combine_stderr_and_cli_log(stderr: &str, built: &BuiltCommand) -> String {
+    let Some(cli_log) = cli_log_from_args(built) else {
+        return stderr.to_string();
+    };
+    if stderr.trim().is_empty() {
+        cli_log
+    } else if cli_log.trim().is_empty() {
+        stderr.to_string()
+    } else {
+        format!("{stderr}\n{cli_log}")
+    }
+}
+
+fn cli_log_from_args(built: &BuiltCommand) -> Option<String> {
+    let path = arg_value(&built.args, "--log-file")?;
+    std::fs::read_to_string(path).ok()
+}
+
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|window| window[0] == flag)
+        .map(|window| window[1].as_str())
 }
 
 #[cfg(unix)]
@@ -1955,18 +2023,22 @@ mod tests {
 
         let args = &built.args;
 
-        // Antigravity print mode uses `agy --prompt <task>`, not the old
+        // Antigravity print mode uses `agy --print <task>`, not the old
         // Gemini `-p <task> --model <model> -o json` shape.
         let prompt_idx = args
             .iter()
-            .position(|a| a == "--prompt")
-            .expect("missing --prompt flag in agy args");
+            .position(|a| a == "--print")
+            .expect("missing --print flag in agy args");
         let prompt_value = args
             .get(prompt_idx + 1)
-            .expect("missing --prompt value in agy args");
+            .expect("missing --print value in agy args");
         assert!(
             prompt_value == "the prompt body",
             "expected raw prompt for agy, got {prompt_value:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "--log-file"),
+            "agy args should include a log file for quota/auth diagnostics: {args:?}"
         );
 
         assert!(
@@ -1998,8 +2070,13 @@ mod tests {
             built
                 .args
                 .windows(2)
-                .any(|w| w[0] == "--prompt" && w[1] == "return JSON"),
-            "missing agy --prompt pair in {:?}",
+                .any(|w| w[0] == "--print" && w[1] == "return JSON"),
+            "missing agy --print pair in {:?}",
+            built.args
+        );
+        assert!(
+            built.args.windows(2).any(|w| w[0] == "--log-file"),
+            "missing agy --log-file pair in {:?}",
             built.args
         );
         assert!(built.schema_path.is_none());
@@ -2396,6 +2473,55 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_classifies_antigravity_quota_from_log_on_empty_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("grokrxiv-cli-antigravity-quota-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("fake-agy.sh");
+        let log_file = dir.join("agy.log");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nlog=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = '--log-file' ]; then shift; log=\"$1\"; fi\n  shift || true\ndone\nprintf 'RESOURCE_EXHAUSTED (code 429): Individual quota reached' > \"$log\"\nexit 0\n",
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![
+                "--log-file".to_string(),
+                log_file.to_string_lossy().to_string(),
+                "--print".to_string(),
+                "return JSON".to_string(),
+            ],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "gemini")
+            .await
+            .expect_err("empty stdout plus quota log should be classified");
+
+        let downcast = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>())
+            .expect("error chain should carry CliError");
+        match downcast {
+            CliError::QuotaExhausted { provider, message } => {
+                assert_eq!(provider, "gemini");
+                assert!(
+                    message.to_lowercase().contains("resource_exhausted"),
+                    "log snippet missing quota signal: {message}"
+                );
+            }
+        }
+    }
+
     /// FP-RPT3b B5: non-quota subprocess failures must NOT be classified as
     /// QuotaExhausted; they should keep bubbling up as generic anyhow errors.
     #[cfg(unix)]
@@ -2432,6 +2558,62 @@ mod tests {
         assert!(
             downcast.is_none(),
             "non-quota failures must not be tagged as QuotaExhausted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_rejects_empty_antigravity_stdout_without_quota() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake-agy.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --log-file)
+      shift
+      echo "authentication failed without quota wording" > "$1"
+      ;;
+  esac
+  shift
+done
+exit 0
+"#,
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let log_path = dir.path().join("agy.log");
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![
+                "--log-file".to_string(),
+                log_path.to_string_lossy().to_string(),
+            ],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "antigravity")
+            .await
+            .expect_err("empty agy stdout should fail before schema parsing");
+
+        assert!(
+            err.to_string().contains("empty stdout"),
+            "unexpected error: {err:#}"
+        );
+        let downcast = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>());
+        assert!(
+            downcast.is_none(),
+            "non-quota empty stdout must not be tagged as QuotaExhausted"
         );
     }
 
