@@ -132,14 +132,11 @@ You MUST output a SINGLE JSON object that validates against the schema. NO prose
 static CLAUDE_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 static CODEX_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 static GEMINI_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
-static ANTIGRAVITY_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 
-/// Spawns local CLI binaries (`claude` / `codex` / `agy`; legacy `gemini` is
-/// opt-in). The binary path for each is overridable via
-/// `AGENTHERO_CLAUDE_BIN` / `AGENTHERO_CODEX_BIN` /
-/// `AGENTHERO_ANTIGRAVITY_BIN`; `AGENTHERO_GEMINI_BIN=gemini` keeps the legacy
-/// Gemini CLI shape available while it exists. Default timeout 360s via
-/// `AGENTHERO_CLI_TIMEOUT_SECS`.
+/// Spawns local CLI binaries (`claude` / `codex` / `gemini`) based on
+/// `spec.provider`. The binary path for each is overridable via
+/// `AGENTHERO_CLAUDE_BIN` / `AGENTHERO_CODEX_BIN` / `AGENTHERO_GEMINI_BIN`.
+/// Default timeout 360s via `AGENTHERO_CLI_TIMEOUT_SECS`.
 #[derive(Default)]
 pub struct CliRunner;
 
@@ -160,13 +157,9 @@ impl CliRunner {
             "openai" => {
                 Ok(std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()))
             }
-            "gemini" => Ok(std::env::var("AGENTHERO_GEMINI_BIN")
-                .or_else(|_| std::env::var("AGENTHERO_ANTIGRAVITY_BIN"))
-                .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
-                .unwrap_or_else(|_| "agy".to_string())),
-            "antigravity" => Ok(std::env::var("AGENTHERO_ANTIGRAVITY_BIN")
-                .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
-                .unwrap_or_else(|_| "agy".to_string())),
+            "gemini" => {
+                Ok(std::env::var("AGENTHERO_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()))
+            }
             other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
         }
     }
@@ -177,26 +170,15 @@ enum CliProviderBackend {
     Claude,
     Codex,
     GeminiLegacy,
-    Antigravity,
 }
 
-fn cli_provider_backend(provider: &str, program: &str) -> anyhow::Result<CliProviderBackend> {
+fn cli_provider_backend(provider: &str, _program: &str) -> anyhow::Result<CliProviderBackend> {
     match provider {
         "claude" => Ok(CliProviderBackend::Claude),
         "openai" => Ok(CliProviderBackend::Codex),
-        "antigravity" => Ok(CliProviderBackend::Antigravity),
-        "gemini" if program_basename(program) == "gemini" => Ok(CliProviderBackend::GeminiLegacy),
-        "gemini" => Ok(CliProviderBackend::Antigravity),
+        "gemini" => Ok(CliProviderBackend::GeminiLegacy),
         other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
     }
-}
-
-fn program_basename(program: &str) -> String {
-    Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(program)
-        .to_string()
 }
 
 /// Specification for the constructed subprocess. Captured separately from the
@@ -220,13 +202,8 @@ struct BuiltCommand {
     cwd: Option<PathBuf>,
 }
 
-#[async_trait]
-impl AgentRunner for CliRunner {
-    fn name(&self) -> &'static str {
-        "cli"
-    }
-
-    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
+impl CliRunner {
+    async fn run_once(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
         // 1. Reject Container sandbox explicitly — RPT2 Track B is host-only.
         if matches!(spec.sandbox, SandboxPolicy::Container) {
             anyhow::bail!(
@@ -325,6 +302,33 @@ impl AgentRunner for CliRunner {
             verifier_notes: None,
         })
     }
+}
+
+#[async_trait]
+impl AgentRunner for CliRunner {
+    fn name(&self) -> &'static str {
+        "cli"
+    }
+
+    async fn run(&self, spec: &AgentSpec, input: &AgentInput) -> anyhow::Result<AgentRun> {
+        match self.run_once(spec, input).await {
+            Ok(run) => Ok(run),
+            Err(err) => {
+                let Some(fallback_spec) = cli_quota_fallback_spec(spec, &err) else {
+                    return Err(err);
+                };
+                tracing::warn!(
+                    role = %spec.role,
+                    provider = %spec.provider,
+                    fallback_provider = %fallback_spec.provider,
+                    fallback_model = %fallback_spec.model,
+                    error = %err,
+                    "CLI provider quota exhausted; retrying role with fallback CLI provider"
+                );
+                self.run_once(&fallback_spec, input).await
+            }
+        }
+    }
 
     async fn complete_with_tools(
         &self,
@@ -356,9 +360,7 @@ impl AgentRunner for CliRunner {
         let backend = cli_provider_backend(&spec.provider, &program)?;
         if !matches!(
             backend,
-            CliProviderBackend::Claude
-                | CliProviderBackend::GeminiLegacy
-                | CliProviderBackend::Antigravity
+            CliProviderBackend::Claude | CliProviderBackend::GeminiLegacy
         ) {
             anyhow::bail!(
                 "CliRunner.complete_with_tools: provider `{}` is not supported for native \
@@ -543,12 +545,6 @@ fn build_tool_command(
             spec.model.clone(),
             "-o".to_string(),
             "json".to_string(),
-        ],
-        CliProviderBackend::Antigravity => vec![
-            "--prompt".to_string(),
-            prompt.to_string(),
-            "--print-timeout".to_string(),
-            format!("{}s", cli_timeout_for(spec).as_secs()),
         ],
         CliProviderBackend::Codex => {
             anyhow::bail!("unsupported provider for CLI tool loop: {}", spec.provider)
@@ -786,6 +782,39 @@ fn timeout_env_secs(key: &str) -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
+fn cli_quota_fallback_spec(spec: &AgentSpec, err: &anyhow::Error) -> Option<AgentSpec> {
+    let quota_error = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<CliError>())?;
+    match quota_error {
+        CliError::QuotaExhausted { .. } => {}
+    }
+    let provider = std::env::var("AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    if matches!(provider.as_str(), "0" | "off" | "none" | "disabled") || provider == spec.provider {
+        return None;
+    }
+    let model = std::env::var("AGENTHERO_CLI_QUOTA_FALLBACK_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_cli_quota_fallback_model(&provider).to_string());
+    let mut fallback = spec.clone();
+    fallback.provider = provider;
+    fallback.model = model;
+    Some(fallback)
+}
+
+fn default_cli_quota_fallback_model(provider: &str) -> &'static str {
+    match provider {
+        "claude" => "claude-sonnet-4-6",
+        "gemini" => "gemini-3-flash-preview",
+        _ => "gpt-5.5",
+    }
+}
+
 fn role_timeout_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_TIMEOUT_SECS", role_env_suffix(role))
 }
@@ -805,7 +834,7 @@ fn build_command(
     // A7: for claude and legacy gemini, the JSON-only output contract is enforced
     // via the `/grokrxiv-review` skill which both CLIs resolve from a
     // `/skill-name` prefix on the prompt body (neither CLI has a `--skill`
-    // flag). codex uses `--output-schema` and agy gets a direct task prompt.
+    // flag). codex uses `--output-schema`.
     let provider_prompt = if matches!(
         backend,
         CliProviderBackend::Claude | CliProviderBackend::GeminiLegacy
@@ -866,24 +895,6 @@ fn build_command(
             ];
             (args, None)
         }
-        CliProviderBackend::Antigravity => {
-            // Antigravity replaces the Gemini CLI path. It has no model flag or
-            // JSON output flag, so the DAG prompt/schema contract is the JSON
-            // boundary and schema validation remains in AgentHero. Its print
-            // mode can return success with empty stdout on quota/auth errors,
-            // so route logs to a per-call file that exec_and_capture can
-            // classify.
-            let log_path = antigravity_log_path(&role_slug)?;
-            let args = vec![
-                "--log-file".to_string(),
-                log_path.to_string_lossy().into_owned(),
-                "--print".to_string(),
-                provider_prompt.clone(),
-                "--print-timeout".to_string(),
-                format!("{}s", cli_timeout_for(spec).as_secs()),
-            ];
-            (args, None)
-        }
     };
 
     // `stdin_payload` is only consumed by the claude branch (which reads
@@ -922,7 +933,7 @@ async fn exec_and_capture(
     cmd.kill_on_drop(true);
     configure_process_group(&mut cmd);
     scrub_provider_api_env(&mut cmd);
-    if provider == "gemini" && program_basename(&built.program) == "gemini" {
+    if provider == "gemini" {
         // Extraction and review subprocesses run in isolated temp workdirs so
         // CLI tools cannot scan the repo root. Gemini requires an explicit
         // trust signal for headless automation in such directories.
@@ -1045,7 +1056,7 @@ async fn exec_and_capture(
                 built.program, role,
             )));
         }
-        if matches!(provider, "gemini" | "antigravity") {
+        if provider == "gemini" {
             let log_hint = if cli_log.trim().is_empty() {
                 String::new()
             } else {
@@ -1061,16 +1072,6 @@ async fn exec_and_capture(
         }
     }
     Ok(stdout)
-}
-
-fn antigravity_log_path(role_slug: &str) -> anyhow::Result<PathBuf> {
-    let dir = std::env::temp_dir().join("grokrxiv-cli-logs");
-    std::fs::create_dir_all(&dir)?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    Ok(dir.join(format!("{role_slug}-{}-{nanos}.log", std::process::id())))
 }
 
 fn combine_stderr_and_cli_log(stderr: &str, built: &BuiltCommand) -> String {
@@ -1370,7 +1371,7 @@ fn cleanup_schema_path(path: &Option<PathBuf>) {
 /// FP-RPT3b B4: log the per-provider auth surface exactly once per process.
 /// Best-effort: any I/O failure becomes `auth_method=unknown` rather than a
 /// hard error. Reads config files but never writes to them.
-fn log_auth_path_once(provider: &str, backend: CliProviderBackend) {
+fn log_auth_path_once(_provider: &str, backend: CliProviderBackend) {
     match backend {
         CliProviderBackend::Claude => {
             if CLAUDE_AUTH_LOGGED.set(()).is_ok() {
@@ -1417,21 +1418,6 @@ fn log_auth_path_once(provider: &str, backend: CliProviderBackend) {
                     provider = "gemini",
                     auth_method = %auth_method,
                     "gemini CLI uses local CLI auth; provider API key env is scrubbed"
-                );
-            }
-        }
-        CliProviderBackend::Antigravity => {
-            if ANTIGRAVITY_AUTH_LOGGED.set(()).is_ok() {
-                tracing::info!(
-                    event = "cli_auth_path",
-                    provider = %provider,
-                    auth_method = "antigravity_cli",
-                    "antigravity CLI auth path"
-                );
-                tracing::info!(
-                    provider = %provider,
-                    auth_method = "antigravity_cli",
-                    "antigravity CLI uses local CLI auth; provider API key env is scrubbed"
                 );
             }
         }
@@ -1757,24 +1743,16 @@ mod tests {
         std::env::remove_var("AGENTHERO_CLAUDE_BIN");
         std::env::remove_var("AGENTHERO_CODEX_BIN");
         std::env::remove_var("AGENTHERO_GEMINI_BIN");
-        std::env::remove_var("AGENTHERO_ANTIGRAVITY_BIN");
-        std::env::remove_var("AGENTHERO_AGY_BIN");
 
         let r = CliRunner::new();
         assert_eq!(r.binary_for("claude").unwrap(), "claude");
         assert_eq!(r.binary_for("openai").unwrap(), "codex");
-        assert_eq!(r.binary_for("gemini").unwrap(), "agy");
-        assert_eq!(r.binary_for("antigravity").unwrap(), "agy");
+        assert_eq!(r.binary_for("gemini").unwrap(), "gemini");
 
         // Now exercise the env override path.
         std::env::set_var("AGENTHERO_CLAUDE_BIN", "/opt/bin/claude-test");
         assert_eq!(r.binary_for("claude").unwrap(), "/opt/bin/claude-test");
         std::env::remove_var("AGENTHERO_CLAUDE_BIN");
-
-        std::env::set_var("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy-test");
-        assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/agy-test");
-        assert_eq!(r.binary_for("antigravity").unwrap(), "/opt/bin/agy-test");
-        std::env::remove_var("AGENTHERO_ANTIGRAVITY_BIN");
 
         std::env::set_var("AGENTHERO_GEMINI_BIN", "/opt/bin/gemini");
         assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/gemini");
@@ -2007,78 +1985,45 @@ mod tests {
     #[test]
     fn test_command_construction_gemini() {
         let r = CliRunner::new();
-        let _env = EnvVarGuard::clear(&[
-            "AGENTHERO_GEMINI_BIN",
-            "AGENTHERO_ANTIGRAVITY_BIN",
-            "AGENTHERO_AGY_BIN",
-        ]);
+        let _env = EnvVarGuard::clear(&["AGENTHERO_GEMINI_BIN"]);
         let spec = stub_spec("gemini", "gemini-2.5-pro");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
         assert!(
-            built.program.ends_with("agy"),
-            "program should be agy binary, got {}",
+            built.program.ends_with("gemini"),
+            "program should be gemini binary, got {}",
             built.program
         );
 
         let args = &built.args;
 
-        // Antigravity print mode uses `agy --print <task>`, not the old
-        // Gemini `-p <task> --model <model> -o json` shape.
         let prompt_idx = args
             .iter()
-            .position(|a| a == "--print")
-            .expect("missing --print flag in agy args");
+            .position(|a| a == "-p")
+            .expect("missing -p flag in gemini args");
         let prompt_value = args
             .get(prompt_idx + 1)
-            .expect("missing --print value in agy args");
+            .expect("missing -p value in gemini args");
         assert!(
-            prompt_value == "the prompt body",
-            "expected raw prompt for agy, got {prompt_value:?}"
+            prompt_value == "/grokrxiv-review\n\nthe prompt body",
+            "expected skill-prefixed prompt for gemini, got {prompt_value:?}"
         );
         assert!(
-            args.windows(2).any(|w| w[0] == "--log-file"),
-            "agy args should include a log file for quota/auth diagnostics: {args:?}"
-        );
-
-        assert!(
-            !args.iter().any(|arg| arg == "--model"),
-            "agy does not accept --model; model routing belongs in AgentHero config: {args:?}"
+            args.windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"),
+            "gemini args should include --model gemini-2.5-pro: {args:?}"
         );
         assert!(
-            !args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
-            "agy does not accept Gemini's `-o json` flag: {args:?}"
+            args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
+            "gemini args should request JSON wrapper output: {args:?}"
         );
 
         assert!(
-            built.stdin_payload == "the prompt body",
-            "stdin_payload should mirror the agy prompt, got {:?}",
+            built.stdin_payload == "/grokrxiv-review\n\nthe prompt body",
+            "stdin_payload should mirror the gemini prompt, got {:?}",
             built.stdin_payload
         );
 
-        assert!(built.schema_path.is_none());
-    }
-
-    #[test]
-    fn test_command_construction_antigravity_provider() {
-        let r = CliRunner::new();
-        let spec = stub_spec("antigravity", "gemini-3-flash-preview");
-        let built = build_command(&r, &spec, "return JSON").unwrap();
-
-        assert!(built.program.ends_with("agy"));
-        assert!(
-            built
-                .args
-                .windows(2)
-                .any(|w| w[0] == "--print" && w[1] == "return JSON"),
-            "missing agy --print pair in {:?}",
-            built.args
-        );
-        assert!(
-            built.args.windows(2).any(|w| w[0] == "--log-file"),
-            "missing agy --log-file pair in {:?}",
-            built.args
-        );
         assert!(built.schema_path.is_none());
     }
 
@@ -2166,13 +2111,6 @@ mod tests {
     fn test_extract_json_text_gemini_falls_back_when_no_wrapper() {
         let raw = "not a json wrapper";
         let got = extract_json_text("gemini", raw);
-        assert_eq!(got, raw);
-    }
-
-    #[test]
-    fn test_extract_json_text_antigravity_passes_print_output_through() {
-        let raw = "{\"summary\":\"ok\"}";
-        let got = extract_json_text("antigravity", raw);
         assert_eq!(got, raw);
     }
 
@@ -2426,6 +2364,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cli_quota_fallback_requires_explicit_provider() {
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER",
+            "AGENTHERO_CLI_QUOTA_FALLBACK_MODEL",
+        ]);
+        let spec = stub_spec("gemini", "gemini-3-flash-preview");
+        let err = anyhow::Error::new(CliError::QuotaExhausted {
+            provider: "gemini".to_string(),
+            message: "quota exceeded".to_string(),
+        });
+
+        assert!(cli_quota_fallback_spec(&spec, &err).is_none());
+    }
+
     /// FP-RPT3b B5: end-to-end quota detection via a fake subprocess. Writes
     /// a tiny shell script that emits a known quota signature on stderr and
     /// exits 1, then asserts `exec_and_capture` returns an `anyhow::Error`
@@ -2475,51 +2428,58 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_and_capture_classifies_antigravity_quota_from_log_on_empty_stdout() {
+    async fn run_uses_explicit_openai_cli_fallback_when_gemini_quota_is_exhausted() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("grokrxiv-cli-antigravity-quota-test");
-        let _ = std::fs::create_dir_all(&dir);
-        let script = dir.join("fake-agy.sh");
-        let log_file = dir.join("agy.log");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gemini = dir.path().join("fake-gemini.sh");
+        let codex = dir.path().join("fake-codex.sh");
         std::fs::write(
-            &script,
-            "#!/bin/sh\nlog=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = '--log-file' ]; then shift; log=\"$1\"; fi\n  shift || true\ndone\nprintf 'RESOURCE_EXHAUSTED (code 429): Individual quota reached' > \"$log\"\nexit 0\n",
+            &gemini,
+            "#!/bin/sh\nprintf 'RESOURCE_EXHAUSTED (code 429): Individual quota reached' >&2\nexit 1\n",
         )
-        .expect("write fake script");
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        .expect("write fake gemini");
+        std::fs::write(
+            &codex,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}}'\n",
+        )
+        .expect("write fake codex");
+        for path in [&gemini, &codex] {
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
 
-        let built = BuiltCommand {
-            program: script.to_string_lossy().to_string(),
-            args: vec![
-                "--log-file".to_string(),
-                log_file.to_string_lossy().to_string(),
-                "--print".to_string(),
-                "return JSON".to_string(),
-            ],
-            stdin_payload: String::new(),
-            schema_path: None,
-            cwd: None,
+        let _env = EnvVarGuard::set_owned(&[
+            ("AGENTHERO_GEMINI_BIN", gemini.to_string_lossy().to_string()),
+            ("AGENTHERO_CODEX_BIN", codex.to_string_lossy().to_string()),
+            (
+                "AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER",
+                "openai".to_string(),
+            ),
+            (
+                "AGENTHERO_CLI_QUOTA_FALLBACK_MODEL",
+                "gpt-fallback".to_string(),
+            ),
+        ]);
+        let mut spec = stub_spec("gemini", "gemini-3-flash-preview");
+        spec.role = "citation".to_string();
+        let input = AgentInput {
+            paper_id: uuid::Uuid::nil(),
+            review_id: uuid::Uuid::nil(),
+            role: "citation".to_string(),
+            content_hash_material: serde_json::json!({"paper": "x"}),
+            artifact: serde_json::json!({"title": "Paper", "sections": []}),
+            system_prompt: "system".to_string(),
+            user_prompt: "return json".to_string(),
+            source_bundle_path: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "gemini")
+        let run = CliRunner::new()
+            .run(&spec, &input)
             .await
-            .expect_err("empty stdout plus quota log should be classified");
-
-        let downcast = err
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<CliError>())
-            .expect("error chain should carry CliError");
-        match downcast {
-            CliError::QuotaExhausted { provider, message } => {
-                assert_eq!(provider, "gemini");
-                assert!(
-                    message.to_lowercase().contains("resource_exhausted"),
-                    "log snippet missing quota signal: {message}"
-                );
-            }
-        }
+            .expect("quota-exhausted gemini should fall back to codex CLI");
+        assert_eq!(run.model, "gpt-fallback");
+        assert_eq!(run.output, serde_json::json!({"ok": true}));
     }
 
     /// FP-RPT3b B5: non-quota subprocess failures must NOT be classified as
@@ -2563,23 +2523,14 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_and_capture_rejects_empty_antigravity_stdout_without_quota() {
+    async fn exec_and_capture_rejects_empty_gemini_stdout_without_quota() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let script = dir.path().join("fake-agy.sh");
+        let script = dir.path().join("fake-gemini.sh");
         std::fs::write(
             &script,
             r#"#!/bin/sh
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --log-file)
-      shift
-      echo "authentication failed without quota wording" > "$1"
-      ;;
-  esac
-  shift
-done
 exit 0
 "#,
         )
@@ -2588,21 +2539,17 @@ exit 0
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();
 
-        let log_path = dir.path().join("agy.log");
         let built = BuiltCommand {
             program: script.to_string_lossy().to_string(),
-            args: vec![
-                "--log-file".to_string(),
-                log_path.to_string_lossy().to_string(),
-            ],
+            args: vec![],
             stdin_payload: String::new(),
             schema_path: None,
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "antigravity")
+        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "gemini")
             .await
-            .expect_err("empty agy stdout should fail before schema parsing");
+            .expect_err("empty gemini stdout should fail before schema parsing");
 
         assert!(
             err.to_string().contains("empty stdout"),
@@ -2699,7 +2646,7 @@ exit 0
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_and_capture_scrubs_provider_api_env_for_antigravity_child() {
+    async fn exec_and_capture_scrubs_provider_api_env_for_gemini_child() {
         use std::os::unix::fs::PermissionsExt;
         let _env = EnvVarGuard::set(&[
             ("ANTHROPIC_API_KEY", "parent-anthropic-key"),
@@ -2746,7 +2693,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         assert_eq!(observed["google"], "");
         assert_eq!(observed["gemini"], "");
         assert_eq!(observed["marker"], "1");
-        assert_eq!(observed["gemini_trust"], "");
+        assert_eq!(observed["gemini_trust"], "true");
     }
 
     #[tokio::test]

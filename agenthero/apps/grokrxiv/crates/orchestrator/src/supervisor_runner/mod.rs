@@ -1,6 +1,6 @@
 //! FP-RPT3d MVP — operator-locked supervisor-as-parent-process runtime.
 //!
-//! `agh` is the parent process. Agent CLIs (claude / codex / agy /
+//! `agh` is the parent process. Agent CLIs (claude / codex / gemini /
 //! local) are child workers. Every agent call goes through the typed
 //! [`AgentRunner`] interface in this module: the supervisor prepares a
 //! read-only `input/` directory plus a writable `output/` directory, spawns

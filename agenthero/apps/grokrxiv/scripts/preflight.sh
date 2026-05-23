@@ -46,7 +46,7 @@ if [[ "${AGENTHERO_RUNNER:-cli}" == "api" || "${AGENTHERO_EXTRACTOR:-cli}" == "a
 else
   command -v claude >/dev/null 2>&1 || fail "claude CLI not on PATH"
   command -v codex  >/dev/null 2>&1 || fail "codex CLI not on PATH"
-  command -v agy >/dev/null 2>&1 || fail "agy CLI not on PATH"
+  command -v gemini >/dev/null 2>&1 || fail "gemini CLI not on PATH"
   ok "CLI runners present"
 fi
 

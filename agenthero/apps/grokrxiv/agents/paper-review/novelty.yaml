@@ -4,7 +4,7 @@ role: "Assess novelty against related work; figure-aware (multimodal)."
 provider: gemini
 # Default can be overridden with GROKRXIV_NOVELTY_MODEL or
 # `--model-for novelty=<model>`.
-model: gemini-3-flash-preview
+model: gemini-2.5-pro
 runner: cli
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json

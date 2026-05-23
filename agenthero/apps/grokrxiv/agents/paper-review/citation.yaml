@@ -4,7 +4,7 @@ role: "Verify each bibliography entry exists and is relevantly cited."
 provider: gemini
 # Default can be overridden with GROKRXIV_CITATION_MODEL or
 # `--model-for citation=<model>`.
-model: gemini-3-flash-preview
+model: gemini-2.5-pro
 runner: cli
 prompt_template: prompts/citation.md
 input_schema: schemas/paper_extract.schema.json

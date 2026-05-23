@@ -526,7 +526,7 @@ fn grokrxiv_env_templates_use_agenthero_operator_contract() {
         "AGENTHERO_SCHEDULER_WORKERS",
         "AGENTHERO_CLAUDE_BIN",
         "AGENTHERO_CODEX_BIN",
-        "AGENTHERO_ANTIGRAVITY_BIN",
+        "AGENTHERO_GEMINI_BIN",
         "AGENTHERO_CLI_TIMEOUT_SECS",
         "AGENTHERO_MAX_COST_USD",
         "AGENTHERO_MODE",

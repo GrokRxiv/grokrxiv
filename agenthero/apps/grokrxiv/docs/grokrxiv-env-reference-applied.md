@@ -93,7 +93,7 @@ files are gitignored.
 | `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
 | `GROKRXIV_DOCKER_INSTALL_PANDOC` | `1`                       | docker-compose build arg. Set `0` before build to omit Pandoc from the orchestrator image |
-| `GROKRXIV_DOCKER_INSTALL_AGENT_CLIS` | `1`                    | docker-compose build arg. Installs Claude, Codex, and the Gemini-family CLI (`agy`/Antigravity) into the orchestrator image |
+| `GROKRXIV_DOCKER_INSTALL_AGENT_CLIS` | `1`                    | docker-compose build arg. Installs Claude, Codex, and the Gemini CLI into the orchestrator image |
 | `GROKRXIV_ORCHESTRATOR_PLATFORM` | `linux/arm64`             | Local Docker platform for orchestrator; set `linux/amd64` only when ARM is unavailable |
 | `GROKRXIV_TEX_ENABLE_LATEXML`  | _none_                      | Opt into LaTeXML semantic AST enrichment. Pandoc remains the default TeX-to-Markdown converter |
 | `GROKRXIV_TEX_DISABLE_LATEXML` | _none_                      | Force LaTeXML enrichment off even if `GROKRXIV_TEX_ENABLE_LATEXML=1` is present |
@@ -116,15 +116,14 @@ files are gitignored.
 |------------------------------|-------|
 | `CLAUDE_CONFIG_DIR`          | Where the local `claude` CLI looks for auth (`~/.claude` typical) |
 | `CODEX_HOME`                 | Where the local `codex` CLI looks for auth (`~/.codex` typical) |
-| `AGENTHERO_ANTIGRAVITY_BIN`  | Gemini-family CLI transport. Defaults to `agy`; the active Antigravity model selection controls the actual model used by `agy --prompt` |
-| `AGENTHERO_GEMINI_BIN`       | Legacy escape hatch for the old `gemini` CLI. Leave unset for Antigravity/`agy` |
-| `GEMINI_HOME`                | Legacy `gemini` CLI auth location. Antigravity stores local state under `~/.gemini/antigravity*` |
+| `AGENTHERO_GEMINI_BIN`       | Optional override for the local `gemini` CLI binary. Defaults to `gemini` |
+| `GEMINI_HOME`                | Gemini CLI auth location |
 | `AGENTHERO_CLI_TIMEOUT_SECS`  | Global per-call timeout in the CLI runner. Role-specific `GROKRXIV_<ROLE>_TIMEOUT_SECS` vars take precedence |
 | `GROKRXIV_CITATION_REVIEW_DETERMINISTIC` | Set `1` only to force the old deterministic no-LLM citation review fallback |
 | `AGENTHERO_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
 
 When the resolved runtime is `--runner cli --extractor cli`, GrokRxiv removes
-provider API key env vars from child `claude` / `codex` / `agy` processes so
+provider API key env vars from child `claude` / `codex` / `gemini` processes so
 those CLIs use their own logged-in local auth instead of inherited API keys.
 
 For Docker on macOS, export Claude Code's Keychain-backed OAuth item into a
@@ -138,8 +137,8 @@ chmod 600 ~/.claude/docker-claude-code-credentials.secret
 
 The orchestrator entrypoint copies that file into Claude Code's Linux
 credentials paths inside `/home/grokrxiv`. Codex uses `~/.codex/auth.json`.
-Antigravity/`agy` uses the signed-in Antigravity profile; legacy `gemini` uses
-`~/.gemini/oauth_creds.json` plus `~/.gemini/google_accounts.json`.
+Gemini uses `~/.gemini/oauth_creds.json` plus
+`~/.gemini/google_accounts.json`.
 
 ## Publisher
 

@@ -1,14 +1,13 @@
 //! `GeminiRunner` — stub. Not implemented in the FP-RPT3d MVP.
 //!
 //! TODO FP-RPT3d-followup: if this supervisor-runner path survives, route the
-//! Gemini-family transport through Antigravity `agy --prompt <task>` with the
-//! same supervisor contract as ClaudeRunner.
+//! Gemini CLI transport through the same supervisor contract as ClaudeRunner.
 
 use async_trait::async_trait;
 
 use super::{AgentJob, AgentRunResult, AgentRunner, Capabilities, RunStatus, Stage};
 
-/// Placeholder for the future Gemini-family CLI runner.
+/// Placeholder for the future Gemini CLI runner.
 pub struct GeminiRunner;
 
 impl GeminiRunner {

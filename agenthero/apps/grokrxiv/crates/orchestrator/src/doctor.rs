@@ -103,8 +103,7 @@ pub struct CliRunnerStatus {
     pub claude: Option<CheckResult>,
     /// `codex` CLI on PATH.
     pub codex: Option<CheckResult>,
-    /// Gemini-family CLI on PATH. Defaults to Antigravity `agy`; legacy
-    /// `gemini` is opt-in via `AGENTHERO_GEMINI_BIN`.
+    /// `gemini` CLI on PATH.
     pub gemini: Option<CheckResult>,
 }
 
@@ -466,10 +465,7 @@ fn cli_binary_for_cli_name(name: &str) -> String {
     match name {
         "claude" => std::env::var("AGENTHERO_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
         "codex" => std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()),
-        "gemini" => std::env::var("AGENTHERO_GEMINI_BIN")
-            .or_else(|_| std::env::var("AGENTHERO_ANTIGRAVITY_BIN"))
-            .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
-            .unwrap_or_else(|_| "agy".to_string()),
+        "gemini" => std::env::var("AGENTHERO_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()),
         other => other.to_string(),
     }
 }
@@ -483,7 +479,7 @@ pub(crate) fn binary_available_in_path(bin: &str, path: &OsString) -> Option<Str
     which_in_path(bin, path)
 }
 
-fn cli_auth_status(name: &str, binary: &str, home: &Path) -> Option<&'static str> {
+fn cli_auth_status(name: &str, _binary: &str, home: &Path) -> Option<&'static str> {
     match name {
         "claude" => {
             if home.join(".claude.json").is_file() {
@@ -499,32 +495,13 @@ fn cli_auth_status(name: &str, binary: &str, home: &Path) -> Option<&'static str
             .join("auth.json")
             .is_file()
             .then_some("present (.codex/auth.json)"),
-        "gemini" if cli_binary_basename(binary) == "gemini" => home
+        "gemini" => home
             .join(".gemini")
             .join("oauth_creds.json")
             .is_file()
             .then_some("present (.gemini/oauth_creds.json)"),
-        "gemini" => home
-            .join(".gemini")
-            .join("antigravity")
-            .join("antigravity_state.pbtxt")
-            .is_file()
-            .then_some("present (.gemini/antigravity/antigravity_state.pbtxt)")
-            .or_else(|| {
-                home.join(".gemini")
-                    .join("antigravity-cli")
-                    .exists()
-                    .then_some("present (.gemini/antigravity-cli)")
-            }),
         _ => None,
     }
-}
-
-fn cli_binary_basename(binary: &str) -> &str {
-    Path::new(binary)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(binary)
 }
 
 fn check_publisher(report: &mut DoctorReport) {
@@ -874,6 +851,45 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    struct EnvVarGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect();
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Self { saved }
+        }
+
+        fn clear(keys: &[&'static str]) -> Self {
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn fake_bin(dir: &tempfile::TempDir, name: &str, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
@@ -1046,13 +1062,39 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cli_binary_for_provider_uses_gemini_cli() {
+        let _clear = EnvVarGuard::clear(&["AGENTHERO_GEMINI_BIN"]);
+
+        assert_eq!(cli_binary_for_provider("gemini").unwrap(), "gemini");
+        assert_eq!(cli_binary_for_cli_name("gemini"), "gemini");
+
+        let _set = EnvVarGuard::set(&[("AGENTHERO_GEMINI_BIN", "/opt/bin/gemini")]);
+        assert_eq!(
+            cli_binary_for_provider("gemini").unwrap(),
+            "/opt/bin/gemini"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_binary_for_provider_rejects_unsupported_providers() {
+        let err = cli_binary_for_provider("not-a-provider").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported provider for CliRunner"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cli_runner_check_accepts_binary_and_auth_bundle() {
         let tmp = tempfile::tempdir().unwrap();
         let bin_dir = tmp.path().join("bin");
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&bin_dir).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        for name in ["claude", "codex", "agy", "gemini"] {
+        for name in ["claude", "codex", "gemini"] {
             let bin = fake_bin(&tmp, name, &format!("echo '{name} ok'"));
             std::fs::rename(&bin, bin_dir.join(name)).unwrap();
         }
@@ -1061,14 +1103,6 @@ mod tests {
         std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
         std::fs::write(home.join(".gemini").join("oauth_creds.json"), "{}").unwrap();
-        std::fs::create_dir_all(home.join(".gemini").join("antigravity")).unwrap();
-        std::fs::write(
-            home.join(".gemini")
-                .join("antigravity")
-                .join("antigravity_state.pbtxt"),
-            "account: \"test\"",
-        )
-        .unwrap();
 
         let config = CliRunnerCheckConfig {
             path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
