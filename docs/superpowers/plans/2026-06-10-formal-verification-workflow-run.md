@@ -137,11 +137,13 @@ git checkout -b feature/formal-verify-phase1
 
 Operator directive: every older review still open in the database and on GitHub is marked closed/done before the new workflow starts producing artifacts.
 
-**Files:** none created — operational task using existing app actions (`close <UUID>` hides a review from web output and optionally closes its PR; `withdraw`, `reject` exist for other terminal states).
+> **Coordination:** `docs/superpowers/plans/2026-06-10-grokrxiv-agentic-team-workflow.md` (authored in a parallel session, same day) implements review closeout as a reusable DAG node with dry-run/apply modes (its Team B) and verified the baseline this task uses: the review status constraint has **no `closed`/`done` state — the terminal state for closed-out reviews is `withdrawn`**, `list reviews` supports `--review-status <STATUS>`, and `close` takes `--reason <TEXT>`. If that plan's closeout has already executed, skip to Step 5 verification here.
+
+**Files:** none created — operational task using existing app actions.
 
 - [ ] **Step 1: Inventory open reviews**
 
-Run: `agh app run grokrxiv list reviews --json > /tmp/reviews-inventory.json` (check `agh app run grokrxiv list --help` for status filters first). Record the count and the set of non-terminal statuses present (e.g. `awaiting_moderation`, `changes_requested`, open revision states).
+Run: `agh app run grokrxiv list reviews --json > /tmp/reviews-inventory.json`, then check the live status vocabulary: `jq -r '.[].status' /tmp/reviews-inventory.json | sort | uniq -c`. Terminal states are `published`, `withdrawn`, `rejected`; everything else is a closeout candidate. Confirm flags with `agh app run grokrxiv list --help` and `agh app run grokrxiv close --help`.
 
 - [ ] **Step 2: Inventory open GitHub PRs on the moderation repo**
 
@@ -151,11 +153,13 @@ Find the moderation repo name: `grep -rn "GROKRXIV_.*REPO\|moderation" agenthero
 - [ ] **Step 3: Close every non-terminal review through the app action** (keeps DB and PR state consistent — do NOT close PRs directly with `gh` first; the app action owns both sides)
 
 ```bash
-jq -r '.[] | select(.status != "published" and .status != "closed" and .status != "withdrawn" and .status != "rejected") | .id' /tmp/reviews-inventory.json \
-  | while read -r id; do agh app run grokrxiv close "$id"; done
+jq -r '.[] | select(.status != "published" and .status != "withdrawn" and .status != "rejected") | .id' /tmp/reviews-inventory.json \
+  | while read -r id; do
+      agh app run grokrxiv close "$id" --reason "Superseded: closed as part of formal-verification workflow rollout."
+    done
 ```
 
-(Adjust the jq filter to the actual status vocabulary found in Step 1; the principle is: everything not already terminal gets `close`.)
+(The resulting DB state is `withdrawn` — that IS this repo's "closed/done". Do not invent a new status.)
 
 - [ ] **Step 4: Sweep stragglers on GitHub**
 
@@ -163,7 +167,7 @@ Re-run the Step 2 `gh pr list`. Any PR still open that maps to a closed/legacy r
 
 - [ ] **Step 5: Verify and record**
 
-Run: `agh app run grokrxiv list reviews --json | jq '[.[] | select(.status != "published" and .status != "closed" and .status != "withdrawn" and .status != "rejected")] | length'`
+Run: `agh app run grokrxiv list reviews --json | jq '[.[] | select(.status != "published" and .status != "withdrawn" and .status != "rejected")] | length'`
 Expected: `0`. Append the before/after counts to the run journal (commit message body of the next commit is fine).
 
 ---
