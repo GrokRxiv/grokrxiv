@@ -48,6 +48,35 @@ This is a multi-day agentic run. Do **not** treat later workstreams as deferred 
 - The only sequencing rule is **dependency order**: Workstream 1's artifacts (schemas, report, Lean harness) are the contracts Workstreams 2–5 build on, so Tasks 0–12 execute first and must be green before the Workstream 2 planning checkpoint starts.
 - Genuinely out of scope (the only items): changes to AgentHero root `crates/` that would make the platform app-aware (hard rule in `agenthero/apps/grokrxiv/CLAUDE.md` — platform changes must stay app-neutral), and upstream changes to Lean/mathlib/CLI harness binaries themselves.
 
+### Governing context: `docs/agent-orchestration-recommendations.md` (2026-06-08)
+
+This run implements that doc's orchestration doctrine. Binding on every workstream:
+
+- **AgentHero stays the orchestrator.** It owns topology, scheduling, concurrency, cache, persistence, verifier gates, rendering, moderation, publishing, and all final side effects. Claude/Codex/Gemini CLIs, containers, and cloud sandboxes are **runner backends**, never the control plane.
+- **The runner working rule** (quoted from the doc) decides every role's execution mode:
+
+  ```text
+  If a role reads prepared artifacts and returns JSON, use an API or CLI inference runner.
+  If a role needs files, shell, compilers, generated artifacts, or patch proposals, use an agent runner.
+  If a role can mutate files or execute untrusted code, run it in an isolated workdir or sandbox.
+  If a role only needs an external service, prefer a scoped connector/MCP/tool over prompt stuffing.
+  If a role needs reusable project procedure, use a skill or role config instead of always-on prompt text.
+  Deterministic AgentHero code validates and applies side effects.
+  ```
+
+  Applied here: `claim_extractor`/`formalizer`/`semantic_mapper` read prepared artifacts and return JSON → inference runners (`runner: cli`). The WS4 `prover` needs a compiler loop → agent runner, and it can mutate files → sandbox required first. `lean_check`/`claim_graph_check`/`report_render` are deterministic Rust tool nodes — never agents.
+- **Manager topology, structured handoffs:** nodes hand off named artifacts validated against strict schemas — never prose summaries between agents. The paper-verify DAG already follows this; keep it that way in WS3/WS4 when inserting nodes.
+- **Doc non-goals are binding here too:** no agent gets direct production DB, publishing, moderation, or canonical-repo mutation privileges; schemas + verifier gates + durable runtime state are not replaceable by prompts or skills; no MCP wrappers around commands `agh` already runs.
+
+**Workstream H: Orchestration hardening** (the doc's "Near-Term Implementation Order", interleaved with WS1–WS5 — these are run deliverables, not suggestions):
+
+- [ ] **H1** (must land before the WS3 eval gate): architecture-eval suite — fixed regression papers + failure-mode papers for `paper-review`, `paper-extract`, and (new) `paper-verify`; each eval records task, node trace, tool calls, artifacts, verifier results, latency, tokens, cache hits, runner choice, and final state. WS3 Task 3.4's elaboration-rate comparison runs on this harness, not ad hoc.
+- [ ] **H2** (with WS1): cache identity versioned by role-config hash + prompt/template hash + schema hash + verifier-policy hash + model + runner + input hash, so a prompt or schema change can never reuse stale agent output.
+- [ ] **H3** (with WS2 persistence work): runner economics persisted per node — runner, provider, model, latency, token counts, cache status, fallback usage, sandbox ref.
+- [ ] **H4** (with WS2): live run watch view over `dag_run_nodes`, `dag_events`, and artifact metadata (CLI first; web later) — per-node state, verifier result, retries, latency, cache status, block/error reason.
+- [ ] **H5** (with WS1 agent contracts): prompt-budget report per role; `claim_extractor`/`formalizer` prompts stay lean — task-specific policy lives in role configs, schemas, and verifier inputs, not prompt prose.
+- [ ] **H6** (gates WS4): sandbox runner lands **before** any write-capable prover role executes (already encoded as WS4 Task 4.2 ordering; this checkbox makes the doc's gap 5 explicit).
+
 ### Ground rules for the executing engineer
 
 - **Docs in this repo are known to drift** (e.g. `docs/DEPLOYMENT.md` references env names that never shipped; `research/` plans reference an RPT3 doc that isn't in the repo). **Code and tests are the only authority.** Every wiring task below starts by reading the neighboring implementation, not docs.
