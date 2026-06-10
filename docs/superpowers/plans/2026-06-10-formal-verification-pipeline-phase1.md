@@ -1,4 +1,4 @@
-# Formal Verification Pipeline — Phase 1 Implementation Plan
+# GrokRxiv Formal Verification Workflow (AgentHero DAGOps App Workflow) — Phase 1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,9 @@
 
 ## North Star (the full program)
 
-GrokRxiv becomes a CI/CD pipeline for mathematical truth claims: every paper gets a continuously updated **verification identity** — claim inventory, formal statements, machine-checked status, and integrity scores — alongside its arXiv identity.
+A new **GrokRxiv agentic team workflow on the AgentHero platform**: AgentHero's DAGOps runtime orchestrates a team of agents (claim extractor, formalizer) and deterministic tools (claim-graph validation, Lean type-check, report render) that together give every paper a continuously updated **verification identity** — claim inventory, formal statements, machine-checked status, and integrity scores — alongside its arXiv identity.
+
+The product boundary does not move: **AgentHero owns** scheduling, DAG execution, workers, runner dispatch, and runtime state; **GrokRxiv owns** this workflow's contracts (DAG manifest, agent YAMLs, prompts, schemas, tool handlers) under `agenthero/apps/grokrxiv/`, exactly like the existing paper-review, citation-validation, and paper-publish workflows it composes with. The "CI/CD pipeline for mathematical truth claims" is what the workflow *delivers*, not a new identity for GrokRxiv — and any future DAGOps app gets the same continuous-verification machinery from the platform for free.
 
 ```
 arXiv ID     → publication identity
