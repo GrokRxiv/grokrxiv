@@ -1,8 +1,10 @@
-# GrokRxiv Formal Verification Workflow (AgentHero DAGOps App Workflow) — Phase 1 Implementation Plan
+# GrokRxiv Formal Verification Workflow (AgentHero DAGOps App Workflow) — Multi-Day Agentic Run Plan
+
+*Workstreams 0–5 are all in scope for this run. Workstream 1 is fully task-specified (Tasks 0–12); Workstreams 2–5 are outlined with planning checkpoints that author their full task lists mid-run.*
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `paper-verify` DAG to GrokRxiv that extracts a structured claim inventory from an already-extracted paper, validates the claim dependency graph, generates Lean 4 statement formalizations, type-checks them with the Lean toolchain, and emits a per-paper formal verification report (PASS / PARTIAL / FAIL per claim, coverage metrics) — runnable as `agh app run grokrxiv formal-verify <PAPER_ID_OR_PATH>`.
+**Goal:** Deliver the full GrokRxiv formal-verification workflow on the AgentHero platform in **one multi-day agentic run** executed by agent teams under a `/loop`: Workstream 1 lands the `paper-verify` DAG (claim inventory → graph validation → Lean 4 statement formalization → type-check → report, runnable as `agh app run grokrxiv formal-verify <PAPER_ID_OR_PATH>`); Workstreams 2–5 then land persistence/scoring/web display, the categorical semantic layer, the proof-generation loop, and verification identity with continuous re-verification. Nothing in the program is deferred out of the run; later workstreams' detailed task lists are authored mid-run at each phase boundary, grounded in the previous workstream's artifacts.
 
 **Architecture:** Follows the existing citation-validation pattern exactly: a new DAG manifest with agent nodes (claim extraction, formalization) and deterministic Rust tool nodes (graph validation, Lean type-check, report render). Domain logic lives in a new app-owned crate `grokrxiv-formal`; the app orchestrator only adds thin handler glue and registry entries. The Lean toolchain is an operator-provisioned external dependency (like the `claude`/`gemini` CLIs), overridable via env for tests.
 
@@ -23,11 +25,13 @@ GrokRxiv ID  → verification identity   (Formal Soundness, Proof Coverage,
                                          Citation Integrity, Semantic Consistency)
 ```
 
-### Phase roadmap (each later phase gets its own plan once the previous lands)
+### Workstream roadmap (ALL in scope for this run — this is a multi-day agentic run)
 
-| Phase | Deliverable | Builds on |
+Workstream 1 is fully task-specified below (Tasks 0–12). Workstreams 2–5 have their task outlines in this document; each begins with a **planning checkpoint** where the executing team authors the full TDD task list for that workstream (same rigor as Tasks 0–12), grounded in the artifacts the previous workstream actually produced — then continues executing without waiting for a human.
+
+| Workstream | Deliverable | Builds on |
 |---|---|---|
-| **0** (in this plan) | Green `main`: relocate root `research/` (fails `dag_app_registry` boundary test), fresh branch | — |
+| **0** (in this plan) | Green `main`: relocate root `research/` (fails `dag_app_registry` boundary test), close out legacy reviews in DB + GitHub, fresh branch | — |
 | **1** (this plan) | `paper-verify` DAG: claims → graph check → Lean statements → type-check → report artifact | existing `derive_theorems`/`theorem_graph.json`, citation-validation DAG pattern |
 | **2** | Persistence & scoring: `grokrxiv_formal_verifications` projection, proof-coverage in review verdict + web UI, cross-paper claim/knowledge-graph tables | Phase 1 report schema |
 | **3** | Categorical semantic layer: semantic-spec schema (objects/morphisms/functors/adjunctions/natural transformations), semantic-mapper agent between claim inventory and formalizer, semantic-consistency verifier | Phase 1 claim inventory |
@@ -36,13 +40,13 @@ GrokRxiv ID  → verification identity   (Formal Soundness, Proof Coverage,
 
 **Why type-check before proof search:** the hardest problem (per the spec) is Claim Extraction → Semantic Specification, not proof generation. A statement that *elaborates* in Lean proves the pipeline reconstructed the paper's mathematical intent precisely. Phase 1 makes that measurable (formalization rate, elaboration rate) before any proof automation.
 
-### Out of scope for Phase 1 (deliberately)
+### Scope: everything above is IN scope for this run
 
-- No proof search / proof generation (`sorry` bodies are expected; `partial` is the target outcome).
-- No categorical semantic layer (Phase 3) — but the claim-inventory schema carries a free-form `semantics` slot so Phase 3 won't need a schema migration.
-- No DB migrations/projections, no web UI, no GX score integration (Phase 2).
-- No changes to the review/citation/revise DAGs.
-- No mathlib proof-cache management beyond an operator-provisioned workspace.
+This is a multi-day agentic run. Do **not** treat later workstreams as deferred work for humans:
+
+- Proof search/generation, the categorical semantic layer, DB migrations/projections, web UI, GX score integration, review-DAG integration, and mathlib workspace management are all delivered by this run (Workstreams 2–5 below).
+- The only sequencing rule is **dependency order**: Workstream 1's artifacts (schemas, report, Lean harness) are the contracts Workstreams 2–5 build on, so Tasks 0–12 execute first and must be green before the Workstream 2 planning checkpoint starts.
+- Genuinely out of scope (the only items): changes to AgentHero root `crates/` that would make the platform app-aware (hard rule in `agenthero/apps/grokrxiv/CLAUDE.md` — platform changes must stay app-neutral), and upstream changes to Lean/mathlib/CLI harness binaries themselves.
 
 ### Ground rules for the executing engineer
 
@@ -126,6 +130,41 @@ git add -A
 git commit -m "chore: move research artifacts under docs/ to restore app-boundary contract"
 git checkout -b feature/formal-verify-phase1
 ```
+
+---
+
+### Task 0b: Close out legacy reviews (database + GitHub)
+
+Operator directive: every older review still open in the database and on GitHub is marked closed/done before the new workflow starts producing artifacts.
+
+**Files:** none created — operational task using existing app actions (`close <UUID>` hides a review from web output and optionally closes its PR; `withdraw`, `reject` exist for other terminal states).
+
+- [ ] **Step 1: Inventory open reviews**
+
+Run: `agh app run grokrxiv list reviews --json > /tmp/reviews-inventory.json` (check `agh app run grokrxiv list --help` for status filters first). Record the count and the set of non-terminal statuses present (e.g. `awaiting_moderation`, `changes_requested`, open revision states).
+
+- [ ] **Step 2: Inventory open GitHub PRs on the moderation repo**
+
+Find the moderation repo name: `grep -rn "GROKRXIV_.*REPO\|moderation" agenthero/apps/grokrxiv/env/ | head`, then:
+`gh pr list --repo <moderation-repo> --state open --json number,title,createdAt > /tmp/prs-inventory.json`
+
+- [ ] **Step 3: Close every non-terminal review through the app action** (keeps DB and PR state consistent — do NOT close PRs directly with `gh` first; the app action owns both sides)
+
+```bash
+jq -r '.[] | select(.status != "published" and .status != "closed" and .status != "withdrawn" and .status != "rejected") | .id' /tmp/reviews-inventory.json \
+  | while read -r id; do agh app run grokrxiv close "$id"; done
+```
+
+(Adjust the jq filter to the actual status vocabulary found in Step 1; the principle is: everything not already terminal gets `close`.)
+
+- [ ] **Step 4: Sweep stragglers on GitHub**
+
+Re-run the Step 2 `gh pr list`. Any PR still open that maps to a closed/legacy review gets `gh pr close <number> --repo <moderation-repo> --comment "Superseded: closed as part of formal-verification workflow rollout."` PRs not owned by GrokRxiv are left alone.
+
+- [ ] **Step 5: Verify and record**
+
+Run: `agh app run grokrxiv list reviews --json | jq '[.[] | select(.status != "published" and .status != "closed" and .status != "withdrawn" and .status != "rejected")] | length'`
+Expected: `0`. Append the before/after counts to the run journal (commit message body of the next commit is fine).
 
 ---
 
@@ -1653,9 +1692,58 @@ git add agenthero/apps/grokrxiv/env
 git commit -m "feat(formal): document lean toolchain env contract"
 ```
 
-- [ ] **Step 5: Finish the branch**
+- [ ] **Step 5: Finish the workstream and continue the run**
 
-Use superpowers:finishing-a-development-branch — run the full suite, then merge/PR per its options.
+Run the full suite (`cargo test --workspace`), merge `feature/formal-verify-phase1` to `main` per the repo's Plan Run Workflow, then **continue immediately to the Workstream 2 planning checkpoint below** — do not stop the run or wait for a human.
+
+---
+
+## Workstream 2: Persistence, scoring, knowledge graph, web display
+
+- [ ] **Task 2.0 — Planning checkpoint:** author `docs/superpowers/plans/<date>-formal-verify-ws2.md` with full TDD tasks (same rigor as Tasks 0–12), grounded in the Workstream 1 artifacts (`formal_verification_report.json` shape as actually produced on ≥3 real papers). Commit it, create `feature/formal-verify-ws2`, then execute it task-by-task. The outline it must cover:
+- [ ] **Task 2.1:** Migration `agenthero/apps/grokrxiv/migrations/<ts>_formal_verifications.sql` — `grokrxiv_formal_verifications` projection (paper_id, claim_count, formalized_count, elaborated_count, proven_count, status, report artifact ref, toolchain fingerprint, timestamps) + combined `supabase/migrations/` copy. Read an existing `grokrxiv_*` migration first for conventions.
+- [ ] **Task 2.2:** Projection persistence at `paper-verify` completion — discover how review runs persist projections (`crates/orchestrator/src/db*` in the app crate) and mirror; new tool node or post-run hook, whichever the discovered pattern uses.
+- [ ] **Task 2.3:** Cross-paper knowledge graph: `grokrxiv_claims` + `grokrxiv_claim_edges` tables keyed (paper_id, claim_id), populated from `claims.json`; dedup/linking across papers stays heuristic (exact-statement and label match) in this workstream.
+- [ ] **Task 2.4:** Score integration: add `formal_soundness` (= elaborated/formalized) and `proof_coverage` (= proven/claim_count) to the meta-review/render path when a verification report exists; extend `render` crate output and `review.schema.json`-adjacent contracts; snapshot tests updated.
+- [ ] **Task 2.5:** Web UI: "Formal Verification" section on the paper/review page in `agenthero/apps/grokrxiv/web/` reading the projection (follow the existing review-display components); deploy via the app's declared Vercel surface.
+- [ ] **Task 2.6:** Validation gate: full suite + one real paper end-to-end with scores visible on the web preview; CLI and API runner paths both validated.
+
+## Workstream 3: Categorical semantic layer
+
+- [ ] **Task 3.0 — Planning checkpoint:** author `<date>-formal-verify-ws3.md` grounded in Workstream 1's measured failure modes (which claims failed to elaborate and why — read the diagnostics). Then execute. Outline:
+- [ ] **Task 3.1:** `schemas/semantic_spec.schema.json`: objects, morphisms (src/dst), functors (source/target categories, object/morphism maps), adjunctions (left/right functor refs), natural_transformations (component refs), each linked to claim ids. The Phase-1 `semantics` slot on claims is the migration-free attachment point.
+- [ ] **Task 3.2:** `semantic_mapper` agent (claims → semantic spec) + prompt + role YAML, inserted between `claim_graph_check` and `formalizer` in `paper-verify.yaml`.
+- [ ] **Task 3.3:** Deterministic semantic-consistency verifier in `grokrxiv-formal::semantics` (TDD): every morphism's endpoints declared, functor maps total on referenced objects, adjunction functors compose source↔target correctly, naturality squares reference existing morphisms.
+- [ ] **Task 3.4:** Formalizer v2 consumes the semantic spec (prompt + `input_schema` update). **Eval gate:** elaboration rate on the same ≥10-paper corpus must beat the Workstream 1 baseline; record both numbers in the run journal. This is the program's core hypothesis (Paper → Meaning → Proof beats Paper → Syntax → Proof) — measure it, don't assume it.
+
+## Workstream 4: Proof generation loop
+
+- [ ] **Task 4.0 — Planning checkpoint:** author `<date>-formal-verify-ws4.md`. Outline:
+- [ ] **Task 4.1:** Resolve the supervisor-runner fork (documented in the 2026-06-10 gap analysis): either adopt `supervisor_runner/`'s guarded contract (output allowlist, read-only inputs, timeout, schema gate) as the backend for agentic runs and implement its `CodexRunner`/`GeminiRunner`, or delete the module and grow the same guardrails inside `agents/runners/cli.rs`. Decision recorded in the WS4 plan with rationale; one implementation survives.
+- [ ] **Task 4.2:** Implement `agents/sandbox.rs::run_in_container` (Track D — the mount/network design is already written in its comments) so write-capable agent runs are isolated.
+- [ ] **Task 4.3:** `prover` agent loop: for each `partial` claim, agentic harness session (claude headless with tool allowlist, inside the sandbox) iterates propose-proof → `lake` check → feed diagnostics back, bounded attempts; `pass` count and per-claim attempt economics recorded in the report.
+- [ ] **Task 4.4:** Mathlib workspace management: pinned `lean-toolchain` + `lake exe cache get` automation, toolchain fingerprint already in the report becomes the re-verification trigger key.
+
+## Workstream 5: Verification identity & continuous re-verification
+
+- [ ] **Task 5.0 — Planning checkpoint:** author `<date>-formal-verify-ws5.md`. Outline:
+- [ ] **Task 5.1:** GX identity: `GX-<year>-<seq>` assignment in the formal-verifications projection + display on web and in `formal-verification.md`.
+- [ ] **Task 5.2:** Re-verification scheduler: when the toolchain fingerprint or agent model pins change, enqueue `paper-verify` re-runs (follow the existing daily-ingest scheduler tick pattern); status history kept, never overwritten.
+- [ ] **Task 5.3:** PR-fixer integration: verification gaps (failed claims, missing assumptions, dangling references) feed the existing `request-revisions`/`paper-revise` flow as a structured suggestions artifact.
+- [ ] **Task 5.4:** Public surface: verification badge + JSON endpoint on the web app.
+
+---
+
+## Execution Methodology: agent teams + /loop (multi-day run)
+
+This plan is executed by agent teams, not a single linear session:
+
+- **Loop driver:** the lead session runs under `/loop` (dynamic, self-paced). Each loop iteration: read this plan's checkboxes → dispatch the next unchecked task → review → check it off → commit. Long Lean/mathlib builds and test suites run as background tasks; the loop schedules long fallback wakeups rather than polling.
+- **Per-task workers:** one fresh subagent per task (superpowers:subagent-driven-development), receiving the task text verbatim — tasks are written self-contained for exactly this reason. Independent tasks within a workstream (e.g. Tasks 1+2, or 4+5+8 after 3) are dispatched in parallel; tasks touching the same files are serialized.
+- **Review gate between tasks:** a reviewer agent (code-review) checks each task's diff against the task spec before the checkbox is ticked; findings are fixed by the implementing agent, not deferred.
+- **Workstream gates (hard):** full `cargo test --workspace` green; smoke via `agh app run grokrxiv <action>`; **both runner paths validated** (CLI = operator subscriptions, API = paid — memory `cli-path-is-cost-control`); merge to `main`; planning checkpoint authors the next workstream's task file before execution continues.
+- **Progress ledger:** the checkboxes in this file (and the WS2–WS5 plan files as they are authored) are the single source of progress truth; every commit message references its task id. If the run is interrupted, resume by reading the ledger — never by memory.
+- **Escalate to the operator only for:** credentials/billing, destructive actions outside Task 0b's explicit mandate, or a workstream gate failing twice in a row for the same root cause.
 
 ---
 
