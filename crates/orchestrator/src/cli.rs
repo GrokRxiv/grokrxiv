@@ -374,6 +374,106 @@ fn is_agenthero_control_flag(arg: &str) -> bool {
     )
 }
 
+/// Help styling that mirrors clap's defaults; `anstream` strips the ANSI codes
+/// when stdout is not a terminal or `NO_COLOR` is set.
+const HELP_HEADER: anstyle::Style = anstyle::Style::new().bold().underline();
+const HELP_LITERAL: anstyle::Style = anstyle::Style::new().bold();
+const HELP_PLACEHOLDER: anstyle::Style =
+    anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan)));
+const HELP_MUTED: anstyle::Style = anstyle::Style::new().dimmed();
+
+/// Column threshold above which a row's description wraps onto its own line.
+const HELP_COLUMN_MAX: usize = 32;
+
+/// One help row: styled left column, its unstyled display width, and the
+/// description column (which may itself carry styled suffixes).
+type HelpRow = (String, usize, String);
+
+fn print_help_rows(rows: &[HelpRow]) {
+    let column = rows
+        .iter()
+        .map(|row| row.1)
+        .filter(|width| *width <= HELP_COLUMN_MAX)
+        .max()
+        .unwrap_or(0);
+    for (styled, width, description) in rows {
+        if description.is_empty() {
+            anstream::println!("  {styled}");
+        } else if *width <= column {
+            anstream::println!("  {styled}{}  {description}", " ".repeat(column - width));
+        } else {
+            // Row wider than the column: drop the description to its own line,
+            // aligned with the shared description column.
+            anstream::println!("  {styled}");
+            anstream::println!("  {}  {description}", " ".repeat(column));
+        }
+    }
+}
+
+fn positional_placeholder(option: &crate::dag_apps::AppActionOption) -> String {
+    let value = option
+        .value_name
+        .clone()
+        .unwrap_or_else(|| option.name.to_ascii_uppercase().replace('-', "_"));
+    let token = if option.required {
+        format!("<{value}>")
+    } else {
+        format!("[<{value}>]")
+    };
+    if option.multiple {
+        format!("{token}...")
+    } else {
+        token
+    }
+}
+
+/// Styled `command <ARGS>...` summary used by app overviews and listings.
+fn app_action_summary(action: &crate::dag_apps::AppManifestAction) -> (String, usize) {
+    let command = action.command.join(" ");
+    let mut styled = format!("{HELP_LITERAL}{command}{HELP_LITERAL:#}");
+    let mut width = command.len();
+    for option in action
+        .options
+        .iter()
+        .filter(|option| option.kind == "positional")
+    {
+        let token = positional_placeholder(option);
+        styled.push_str(&format!(" {HELP_PLACEHOLDER}{token}{HELP_PLACEHOLDER:#}"));
+        width += token.len() + 1;
+    }
+    (styled, width)
+}
+
+fn option_help_row(option: &crate::dag_apps::AppActionOption) -> HelpRow {
+    let (styled, width) = if option.kind == "positional" {
+        let token = positional_placeholder(option);
+        let width = token.len();
+        (
+            format!("{HELP_PLACEHOLDER}{token}{HELP_PLACEHOLDER:#}"),
+            width,
+        )
+    } else {
+        let mut styled = format!("{HELP_LITERAL}{}{HELP_LITERAL:#}", option.name);
+        let mut width = option.name.len();
+        if let Some(value) = option.value_name.as_deref() {
+            styled.push_str(&format!(" {HELP_PLACEHOLDER}<{value}>{HELP_PLACEHOLDER:#}"));
+            width += value.len() + 3;
+        }
+        (styled, width)
+    };
+
+    let mut description = option.description.clone();
+    if option.kind != "positional" {
+        if option.required {
+            description.push_str(&format!(" {HELP_MUTED}[required]{HELP_MUTED:#}"));
+        }
+        if option.multiple {
+            description.push_str(&format!(" {HELP_MUTED}[repeatable]{HELP_MUTED:#}"));
+        }
+    }
+    (styled, width, description.trim_start().to_string())
+}
+
 fn app_list(json: bool) -> anyhow::Result<()> {
     let apps = crate::dag_apps::load_app_manifests()?;
     if json {
@@ -384,11 +484,24 @@ fn app_list(json: bool) -> anyhow::Result<()> {
             }))?
         );
     } else {
-        for app in &apps {
-            println!("{} - {}", app.slug, app.label);
-            for action in &app.actions {
-                println!("  {} -> {}", action.command.join(" "), action.dag_type);
+        for (index, app) in apps.iter().enumerate() {
+            if index > 0 {
+                println!();
             }
+            anstream::println!(
+                "{HELP_LITERAL}{}{HELP_LITERAL:#} {HELP_MUTED}- {}{HELP_MUTED:#}",
+                app.slug,
+                app.label
+            );
+            let rows = app
+                .actions
+                .iter()
+                .map(|action| {
+                    let (styled, width) = app_action_summary(action);
+                    (styled, width, action.description.clone())
+                })
+                .collect::<Vec<_>>();
+            print_help_rows(&rows);
         }
     }
     Ok(())
@@ -403,56 +516,72 @@ fn app_show_manifest(app: &crate::dag_apps::AppManifest, json: bool) -> anyhow::
     if json {
         println!("{}", serde_json::to_string_pretty(&app_catalog_json(app))?);
     } else {
-        println!("{} - {}", app.slug, app.label);
-        for action in &app.actions {
-            println!(
-                "{}\n  command={}\n  dag_type={}\n  {}",
-                action.id,
-                action.command.join(" "),
-                action.dag_type,
-                action.description
-            );
-            for option in &action.options {
-                let value = option
-                    .value_name
-                    .as_deref()
-                    .map(|name| format!(" <{name}>"))
-                    .unwrap_or_default();
-                let required = if option.required { " required" } else { "" };
-                let repeat = if option.multiple { " repeatable" } else { "" };
-                println!(
-                    "  option={}{} kind={}{}{} {}",
-                    option.name, value, option.kind, required, repeat, option.description
-                );
-            }
+        anstream::println!(
+            "{HELP_LITERAL}{}{HELP_LITERAL:#} {HELP_MUTED}({}){HELP_MUTED:#}",
+            app.label,
+            app.slug
+        );
+        if !app.description.is_empty() {
+            println!("{}", app.description);
         }
-        for deployment in &app.deployments {
-            match deployment {
-                crate::dag_apps::AppDeployment::Vercel {
-                    id,
-                    project,
-                    root,
-                    framework,
-                    build_command,
-                    output_directory,
-                    env,
-                } => {
-                    println!("deployment={id}\n  kind=vercel\n  project={project}\n  root={root}");
-                    if let Some(framework) = framework {
-                        println!("  framework={framework}");
-                    }
-                    if let Some(build_command) = build_command {
-                        println!("  build_command={build_command}");
-                    }
-                    if let Some(output_directory) = output_directory {
-                        println!("  output_directory={output_directory}");
-                    }
-                    if !env.is_empty() {
-                        println!("  env={}", env.join(","));
+        println!();
+        anstream::println!(
+            "{HELP_HEADER}Usage:{HELP_HEADER:#} {HELP_LITERAL}agh app run {}{HELP_LITERAL:#} {HELP_PLACEHOLDER}<COMMAND>{HELP_PLACEHOLDER:#} [ARGS] [OPTIONS]",
+            app.slug
+        );
+        if !app.actions.is_empty() {
+            println!();
+            anstream::println!("{HELP_HEADER}Commands:{HELP_HEADER:#}");
+            let rows = app
+                .actions
+                .iter()
+                .map(|action| {
+                    let (styled, width) = app_action_summary(action);
+                    (styled, width, action.description.clone())
+                })
+                .collect::<Vec<_>>();
+            print_help_rows(&rows);
+        }
+        if !app.deployments.is_empty() {
+            println!();
+            anstream::println!("{HELP_HEADER}Deployments:{HELP_HEADER:#}");
+            for deployment in &app.deployments {
+                match deployment {
+                    crate::dag_apps::AppDeployment::Vercel {
+                        id,
+                        project,
+                        root,
+                        framework,
+                        build_command,
+                        output_directory,
+                        env,
+                    } => {
+                        let mut fields = vec![format!("project={project}"), format!("root={root}")];
+                        if let Some(framework) = framework {
+                            fields.push(format!("framework={framework}"));
+                        }
+                        if let Some(build_command) = build_command {
+                            fields.push(format!("build_command={build_command}"));
+                        }
+                        if let Some(output_directory) = output_directory {
+                            fields.push(format!("output_directory={output_directory}"));
+                        }
+                        if !env.is_empty() {
+                            fields.push(format!("env={}", env.join(",")));
+                        }
+                        anstream::println!(
+                            "  {HELP_LITERAL}{id}{HELP_LITERAL:#} {HELP_PLACEHOLDER}vercel{HELP_PLACEHOLDER:#} {HELP_MUTED}{}{HELP_MUTED:#}",
+                            fields.join(" ")
+                        );
                     }
                 }
             }
         }
+        println!();
+        anstream::println!(
+            "{HELP_MUTED}See `agh app run {} <command> --help` for command arguments and options.{HELP_MUTED:#}",
+            app.slug
+        );
     }
     Ok(())
 }
@@ -497,62 +626,60 @@ fn print_app_action_help(
     }
 
     let command = action.command.join(" ");
-    println!("{} {}", app.label, command);
+    anstream::println!("{HELP_LITERAL}{} {}{HELP_LITERAL:#}", app.label, command);
     if !action.description.is_empty() {
         println!("{}", action.description);
     }
+    anstream::println!("{HELP_MUTED}dag: {}{HELP_MUTED:#}", action.dag_type);
     println!();
-    println!("Usage: {}", app_action_usage(app, action));
+    anstream::println!(
+        "{HELP_HEADER}Usage:{HELP_HEADER:#} {}",
+        app_action_usage(app, action)
+    );
 
     let positionals = action
         .options
         .iter()
         .filter(|option| option.kind == "positional")
+        .map(option_help_row)
         .collect::<Vec<_>>();
     if !positionals.is_empty() {
         println!();
-        println!("Arguments:");
-        for option in positionals {
-            println!("  {}", format_option_help(option));
-        }
+        anstream::println!("{HELP_HEADER}Arguments:{HELP_HEADER:#}");
+        print_help_rows(&positionals);
     }
 
     let flags = action
         .options
         .iter()
         .filter(|option| option.kind != "positional")
+        .map(option_help_row)
         .collect::<Vec<_>>();
     if !flags.is_empty() {
         println!();
-        println!("Options:");
-        for option in flags {
-            println!("  {}", format_option_help(option));
-        }
+        anstream::println!("{HELP_HEADER}Options:{HELP_HEADER:#}");
+        print_help_rows(&flags);
     }
     Ok(())
 }
 
+/// Styled one-line usage string for an app action.
 fn app_action_usage(
     app: &crate::dag_apps::AppManifest,
     action: &crate::dag_apps::AppManifestAction,
 ) -> String {
-    let mut usage = format!("agh app run {} {}", app.slug, action.command.join(" "));
+    let mut usage = format!(
+        "{HELP_LITERAL}agh app run {} {}{HELP_LITERAL:#}",
+        app.slug,
+        action.command.join(" ")
+    );
     for option in action
         .options
         .iter()
         .filter(|option| option.kind == "positional")
     {
-        let value = option.value_name.as_deref().unwrap_or(option.name.as_str());
-        let token = if option.required {
-            format!("<{value}>")
-        } else {
-            format!("[<{value}>]")
-        };
-        usage.push(' ');
-        usage.push_str(&token);
-        if option.multiple {
-            usage.push_str("...");
-        }
+        let token = positional_placeholder(option);
+        usage.push_str(&format!(" {HELP_PLACEHOLDER}{token}{HELP_PLACEHOLDER:#}"));
     }
     if action
         .options
@@ -562,25 +689,6 @@ fn app_action_usage(
         usage.push_str(" [OPTIONS]");
     }
     usage
-}
-
-fn format_option_help(option: &crate::dag_apps::AppActionOption) -> String {
-    let value = option
-        .value_name
-        .as_deref()
-        .map(|name| format!(" <{name}>"))
-        .unwrap_or_default();
-    let required = if option.required { " required" } else { "" };
-    let repeatable = if option.multiple { " repeatable" } else { "" };
-    let suffix = if option.description.is_empty() {
-        String::new()
-    } else {
-        format!(" - {}", option.description)
-    };
-    format!(
-        "{}{}{}{}{}",
-        option.name, value, required, repeatable, suffix
-    )
 }
 
 async fn app_run_command(

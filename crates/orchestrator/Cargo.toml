@@ -23,6 +23,8 @@ path = "src/lib.rs"
 agenthero-agent-runtime = { path = "../agent-runtime" }
 agenthero-dag-executor = { path = "../dag-executor" }
 agenthero-dag-runtime = { path = "../dag-runtime" }
+anstream = "0.6"
+anstyle = "1"
 anyhow = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }

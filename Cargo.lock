@@ -69,6 +69,8 @@ dependencies = [
  "agenthero-agent-runtime",
  "agenthero-dag-executor",
  "agenthero-dag-runtime",
+ "anstream",
+ "anstyle",
  "anyhow",
  "axum",
  "chrono",
