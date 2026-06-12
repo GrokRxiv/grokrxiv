@@ -1,0 +1,14 @@
+id: pr_artifact_reviewer
+kind: verifier
+role: "Codex formatting and artifact review for corrected GrokRxiv review LaTeX."
+provider: openai
+model: gpt-5.5
+runner: cli
+prompt_template: prompts/review-loop/pr_artifact_reviewer.md
+input_schema: schemas/review_loop_code_task.schema.json
+output_schema: schemas/review_loop_code_review.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 300
+escalation: agent

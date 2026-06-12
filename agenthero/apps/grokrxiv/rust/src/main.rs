@@ -5,6 +5,7 @@
 use std::io::ErrorKind;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 use agenthero_agent_runtime::{AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL};
 use agenthero_dag_executor::{
@@ -13,10 +14,18 @@ use agenthero_dag_executor::{
 };
 use agenthero_dag_runtime::DagManifest;
 use async_trait::async_trait;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[derive(Debug, Clone)]
 struct GrokrxivAdapter {
     app_name: &'static str,
+}
+
+#[derive(Debug)]
+struct RuntimeProcessOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 #[async_trait]
@@ -85,14 +94,15 @@ async fn run_app_runtime_action(request: &AppAdapterRequest) -> anyhow::Result<A
         .join("crates")
         .join("orchestrator")
         .join("Cargo.toml");
+    let stream_stderr = runtime_stderr_stream_requested(request);
     let mut command = runtime_command(&runtime_manifest);
     build_runtime_args(&mut command, request);
-    let output = match command.output().await {
+    let output = match run_runtime_process(command, stream_stderr).await {
         Ok(output) => output,
         Err(err) if err.kind() == ErrorKind::NotFound && runtime_fallback_allowed() => {
             let mut fallback = runtime_fallback_command(&runtime_manifest);
             build_runtime_args(&mut fallback, request);
-            fallback.output().await.map_err(|fallback_err| {
+            run_runtime_process(fallback, stream_stderr).await.map_err(|fallback_err| {
                 anyhow::anyhow!(
                     "run GrokRxiv app action `{}`: compiled binary was not found and cargo fallback failed: {fallback_err}",
                     request.action
@@ -167,7 +177,91 @@ fn build_runtime_args(command: &mut tokio::process::Command, request: &AppAdapte
     if request.dry_run {
         command.arg("--dry-run");
     }
+    if runtime_debug_logs_requested(request) {
+        command.arg("--debug-logs");
+    }
+    if runtime_status_requested(request) || review_debug_requested(request) {
+        command.arg("--status");
+    }
     command.arg(&request.action).args(&request.args);
+}
+
+async fn run_runtime_process(
+    mut command: tokio::process::Command,
+    tee_stderr: bool,
+) -> std::io::Result<RuntimeProcessOutput> {
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::new(ErrorKind::Other, "runtime stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::new(ErrorKind::Other, "runtime stderr unavailable"))?;
+    let stdout_task = tokio::spawn(async move { read_runtime_pipe(stdout, false).await });
+    let stderr_task = tokio::spawn(async move { read_runtime_pipe(stderr, tee_stderr).await });
+    let status = child.wait().await?;
+    let stdout = stdout_task
+        .await
+        .map_err(|err| std::io::Error::new(ErrorKind::Other, format!("join stdout: {err}")))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|err| std::io::Error::new(ErrorKind::Other, format!("join stderr: {err}")))??;
+    Ok(RuntimeProcessOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn read_runtime_pipe(
+    mut pipe: impl tokio::io::AsyncRead + Unpin,
+    tee_stderr: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut stderr = tokio::io::stderr();
+    loop {
+        let n = pipe.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+        if tee_stderr {
+            stderr.write_all(&buf[..n]).await?;
+            stderr.flush().await?;
+        }
+    }
+    Ok(out)
+}
+
+fn runtime_status_requested(request: &AppAdapterRequest) -> bool {
+    request
+        .input
+        .values
+        .get("stream_stderr")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn runtime_debug_logs_requested(request: &AppAdapterRequest) -> bool {
+    request
+        .input
+        .values
+        .get("debug_logs")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn review_debug_requested(request: &AppAdapterRequest) -> bool {
+    request.args.iter().any(|arg| arg == "--debug")
+}
+
+fn runtime_stderr_stream_requested(request: &AppAdapterRequest) -> bool {
+    runtime_status_requested(request)
+        || runtime_debug_logs_requested(request)
+        || review_debug_requested(request)
 }
 
 fn runtime_fallback_allowed() -> bool {
@@ -288,4 +382,70 @@ fn discover_workspace_root() -> Option<PathBuf> {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agenthero_dag_executor::DagIo;
+
+    fn request_with_flags(stream: bool, debug_logs: bool, args: Vec<String>) -> AppAdapterRequest {
+        let mut input = DagIo::default();
+        input
+            .values
+            .insert("stream_stderr".to_string(), serde_json::json!(stream));
+        input
+            .values
+            .insert("debug_logs".to_string(), serde_json::json!(debug_logs));
+        AppAdapterRequest::new(
+            "grokrxiv",
+            "review",
+            "review-loop",
+            args,
+            input,
+            false,
+            false,
+        )
+    }
+
+    fn request_with_stream(stream: bool) -> AppAdapterRequest {
+        request_with_flags(
+            stream,
+            false,
+            vec!["2606.00799".to_string(), "--loop".to_string()],
+        )
+    }
+
+    #[test]
+    fn runtime_status_requested_follows_adapter_input_flag() {
+        assert!(runtime_status_requested(&request_with_stream(true)));
+        assert!(!runtime_status_requested(&request_with_stream(false)));
+    }
+
+    #[test]
+    fn runtime_debug_logs_requested_follows_adapter_input_flag() {
+        assert!(runtime_debug_logs_requested(&request_with_flags(
+            false,
+            true,
+            vec!["2606.00799".to_string(), "--loop".to_string()],
+        )));
+        assert!(!runtime_debug_logs_requested(&request_with_flags(
+            false,
+            false,
+            vec!["2606.00799".to_string(), "--loop".to_string()],
+        )));
+    }
+
+    #[test]
+    fn runtime_stderr_streaming_includes_review_debug_flag() {
+        assert!(runtime_stderr_stream_requested(&request_with_flags(
+            false,
+            false,
+            vec![
+                "2606.00799".to_string(),
+                "--loop".to_string(),
+                "--debug".to_string()
+            ],
+        )));
+    }
 }

@@ -1,0 +1,215 @@
+id: review-loop
+version: 1
+accepts:
+  - verifier
+  - code_generator
+concurrency: 2
+roles:
+  - id: haskell_semantic_author
+    kind: code_generator
+    config: agents/review-loop/haskell_semantic_author.yaml
+  - id: haskell_code_reviewer
+    kind: verifier
+    config: agents/review-loop/haskell_code_reviewer.yaml
+  - id: haskell_code_fixer
+    kind: code_generator
+    config: agents/review-loop/haskell_code_fixer.yaml
+  - id: lean_proof_author
+    kind: code_generator
+    config: agents/review-loop/lean_proof_author.yaml
+  - id: lean_code_reviewer
+    kind: verifier
+    config: agents/review-loop/lean_code_reviewer.yaml
+  - id: lean_code_fixer
+    kind: code_generator
+    config: agents/review-loop/lean_code_fixer.yaml
+  - id: pr_artifact_fixer
+    kind: code_generator
+    config: agents/review-loop/pr_artifact_fixer.yaml
+  - id: pr_artifact_reviewer
+    kind: verifier
+    config: agents/review-loop/pr_artifact_reviewer.yaml
+tools:
+  - id: claim_extractor
+    executor: rust
+    handler: review_loop::claim_extractor
+    timeout_secs: 30
+  - id: knowledge_graph_builder
+    executor: rust
+    handler: review_loop::knowledge_graph_builder
+    timeout_secs: 30
+  - id: semantic_category_mapper
+    executor: rust
+    handler: review_loop::semantic_category_mapper
+    timeout_secs: 60
+  - id: review_fix_code
+    executor: rust
+    handler: review_loop::review_fix_code
+    timeout_secs: 300
+  - id: proof_obligation_generator
+    executor: rust
+    handler: review_loop::proof_obligation_generator
+    timeout_secs: 60
+  - id: pr_fixer
+    executor: rust
+    handler: review_loop::pr_fixer
+    timeout_secs: 300
+  - id: policy_gate
+    executor: rust
+    handler: review_loop::policy_gate
+    timeout_secs: 30
+  - id: review_loop_report
+    executor: rust
+    handler: review_loop::review_loop_report
+    timeout_secs: 30
+  - id: publish_decision
+    executor: rust
+    handler: review_loop::publish_decision
+    timeout_secs: 30
+nodes:
+  - id: paper_review
+    kind: dag_call
+    dag_type: paper-review
+    outputs: [review_id, review_agents, render_artifacts]
+    required: true
+  - id: claim_extractor
+    kind: tool
+    tool: claim_extractor
+    inputs: [review_id, review_agents]
+    outputs: [review_loop/claims.json]
+    required: true
+  - id: knowledge_graph_builder
+    kind: tool
+    tool: knowledge_graph_builder
+    inputs: [review_loop/claims.json]
+    outputs: [review_loop/knowledge_graph.json]
+    required: true
+  - id: semantic_category_mapper
+    kind: tool
+    tool: semantic_category_mapper
+    inputs:
+      - review_loop/claims.json
+      - review_loop/knowledge_graph.json
+    outputs:
+      - review_loop/semantic_model.json
+      - review_loop/haskell/SemanticModel.hs
+    required: true
+  - id: haskell_review_fix_code
+    kind: tool
+    tool: review_fix_code
+    inputs:
+      - review_loop/semantic_model.json
+      - review_loop/haskell/SemanticModel.hs
+    outputs:
+      - review_loop/haskell/results.json
+      - review_loop/haskell/fix_rounds.json
+    required: true
+  - id: proof_obligation_generator
+    kind: tool
+    tool: proof_obligation_generator
+    inputs:
+      - review_loop/semantic_model.json
+      - review_loop/haskell/results.json
+    outputs: [review_loop/proof_obligations.json]
+    required: true
+  - id: lean_review_fix_code
+    kind: tool
+    tool: review_fix_code
+    inputs: [review_loop/proof_obligations.json]
+    outputs:
+      - review_loop/lean/GrokRxiv/Proofs.lean
+      - review_loop/lean/results.json
+      - review_loop/lean/fix_rounds.json
+    required: true
+  - id: citation_validation
+    kind: dag_call
+    dag_type: citation-validation
+    inputs: [references.json]
+    outputs:
+      - citation_validation_report.json
+      - citation_validation_adjudication.json
+    required: true
+  - id: pr_fixer
+    kind: tool
+    tool: pr_fixer
+    inputs:
+      - render_artifacts
+      - review_loop/claims.json
+      - citation_validation_report.json
+      - review_loop/lean/results.json
+    outputs:
+      - review_loop/pr_fixes.json
+      - review_loop/fixed/review.tex
+      - review_loop/fixed/review.pdf
+    required: true
+  - id: pr_review_fix_code
+    kind: tool
+    tool: review_fix_code
+    inputs:
+      - review_loop/pr_fixes.json
+      - review_loop/fixed/review.tex
+    outputs:
+      - review_loop/pr_review/results.json
+      - review_loop/pr_review/fix_rounds.json
+    required: true
+  - id: policy_gate
+    kind: tool
+    tool: policy_gate
+    inputs:
+      - review_loop/haskell/results.json
+      - review_loop/lean/results.json
+      - citation_validation_report.json
+      - review_loop/pr_review/results.json
+    outputs: [review_loop/policy_gate.json]
+    required: true
+  - id: review_loop_report
+    kind: tool
+    tool: review_loop_report
+    inputs:
+      - review_loop/claims.json
+      - review_loop/knowledge_graph.json
+      - review_loop/semantic_model.json
+      - review_loop/haskell/results.json
+      - review_loop/lean/results.json
+      - citation_validation_report.json
+      - review_loop/pr_fixes.json
+      - review_loop/policy_gate.json
+    outputs: [review_loop/review_loop_report.json]
+    required: true
+  - id: publish_decision
+    kind: tool
+    tool: publish_decision
+    inputs: [review_loop/review_loop_report.json]
+    outputs: [review_loop/publish_decision.json]
+    required: true
+edges:
+  - from: paper_review
+    to: claim_extractor
+  - from: claim_extractor
+    to: knowledge_graph_builder
+  - from: knowledge_graph_builder
+    to: semantic_category_mapper
+  - from: semantic_category_mapper
+    to: haskell_review_fix_code
+  - from: haskell_review_fix_code
+    to: proof_obligation_generator
+  - from: proof_obligation_generator
+    to: lean_review_fix_code
+  - from: paper_review
+    to: citation_validation
+  - from:
+      - citation_validation
+      - lean_review_fix_code
+    to: pr_fixer
+  - from: pr_fixer
+    to: pr_review_fix_code
+  - from:
+      - haskell_review_fix_code
+      - lean_review_fix_code
+      - citation_validation
+      - pr_review_fix_code
+    to: policy_gate
+  - from: policy_gate
+    to: review_loop_report
+  - from: review_loop_report
+    to: publish_decision

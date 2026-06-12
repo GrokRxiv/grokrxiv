@@ -10,14 +10,21 @@ async fn main() -> ExitCode {
     }
     let mut json = false;
     let mut dry_run = false;
+    let mut status = false;
+    let mut no_status = false;
+    let mut debug_logs = false;
     let mut args = Vec::new();
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--json" => json = true,
             "--dry-run" => dry_run = true,
+            "--status" => status = true,
+            "--no-status" => no_status = true,
+            "--debug-logs" => debug_logs = true,
             _ => args.push(arg),
         }
     }
+    grokrxiv_app_runtime::cli_status::set_enabled(status || (!no_status && debug_logs));
     let Some(action) = args.first().cloned() else {
         eprintln!("error: missing GrokRxiv action");
         return ExitCode::from(2);

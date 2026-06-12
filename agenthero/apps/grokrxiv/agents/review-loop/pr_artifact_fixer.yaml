@@ -1,0 +1,14 @@
+id: pr_artifact_fixer
+kind: code_generator
+role: "Fix GrokRxiv review LaTeX artifacts before PR publication."
+provider: claude
+model: claude-opus-4-7
+runner: cli
+prompt_template: prompts/review-loop/pr_artifact_fixer.md
+input_schema: schemas/review_loop_code_task.schema.json
+output_schema: schemas/review_loop_code_artifact.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 600
+escalation: agent

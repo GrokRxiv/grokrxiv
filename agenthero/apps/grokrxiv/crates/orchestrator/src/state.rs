@@ -235,12 +235,13 @@ impl AppState {
 type RoleYamlMap = HashMap<String, Option<AgentConfig>>;
 
 const PAPER_REVIEW_DAG_ID: &str = "paper-review";
+const REVIEW_LOOP_DAG_ID: &str = "review-loop";
 
 /// Read each configured review role YAML once for the configured-agent
 /// registry. `paper-review.yaml` is the source of truth.
 fn load_role_configs() -> anyhow::Result<RoleYamlMap> {
     let mut out: RoleYamlMap = HashMap::new();
-    for config_ref in review_role_config_refs()? {
+    for config_ref in loaded_role_config_refs()? {
         let cfg = match config::read_agent_config(&config_ref.path) {
             Ok(config) => Some(config),
             Err(e) => {
@@ -259,7 +260,7 @@ fn load_role_configs() -> anyhow::Result<RoleYamlMap> {
 }
 
 fn validate_role_configs(role_yaml: &RoleYamlMap) -> anyhow::Result<()> {
-    let config_refs = review_role_config_refs()?;
+    let config_refs = loaded_role_config_refs()?;
     let missing: Vec<String> = config_refs
         .iter()
         .filter_map(|config_ref| match role_yaml.get(&config_ref.role_id) {
@@ -332,7 +333,7 @@ fn build_agent_registry(
     schemas: &Arc<AgentSchemaMap>,
 ) -> anyhow::Result<AgentRegistry> {
     let mut out: AgentRegistry = HashMap::new();
-    for config_ref in review_role_config_refs()? {
+    for config_ref in loaded_role_config_refs()? {
         let role = config_ref.role_id;
         let Some(cfg) = role_yaml.get(&role).and_then(|c| c.as_ref()) else {
             continue;
@@ -356,8 +357,12 @@ fn build_agent_registry(
     Ok(out)
 }
 
-fn review_role_config_refs() -> anyhow::Result<Vec<config::AgentConfigRef>> {
-    role_config_refs(PAPER_REVIEW_DAG_ID)
+fn loaded_role_config_refs() -> anyhow::Result<Vec<config::AgentConfigRef>> {
+    let mut refs = Vec::new();
+    for dag_id in [PAPER_REVIEW_DAG_ID, REVIEW_LOOP_DAG_ID] {
+        refs.extend(role_config_refs(dag_id)?);
+    }
+    Ok(refs)
 }
 
 fn role_config_refs(dag_id: &str) -> anyhow::Result<Vec<config::AgentConfigRef>> {

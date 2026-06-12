@@ -1,0 +1,14 @@
+id: lean_proof_author
+kind: code_generator
+role: "Generate Lean proof obligations from the Haskell semantic model and GrokRxiv claims."
+provider: claude
+model: claude-opus-4-7
+runner: cli
+prompt_template: prompts/review-loop/lean_proof_author.md
+input_schema: schemas/review_loop_code_task.schema.json
+output_schema: schemas/review_loop_code_artifact.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 600
+escalation: agent

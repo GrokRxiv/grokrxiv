@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
 use crate::agents::config as agent_config;
-use crate::agents::{AgentMode, AgentRunnerKind, RevisionTarget, SandboxPolicy};
+use crate::agents::{AgentInput, AgentMode, AgentRun, AgentRunnerKind, RevisionTarget, SandboxPolicy};
 use crate::cli_status;
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
@@ -885,6 +885,8 @@ pub async fn run_grokrxiv_action(
                     limit: request.limit,
                     include: request.include,
                     exclude: request.exclude,
+                    loop_enabled: request.loop_enabled,
+                    debug_output: request.debug_output,
                 },
                 json,
                 dry_run,
@@ -1104,6 +1106,8 @@ struct ResearchReviewArgs {
     limit: Option<usize>,
     include: Vec<String>,
     exclude: Vec<String>,
+    loop_enabled: bool,
+    debug_output: bool,
 }
 
 struct IngestArgs {
@@ -1182,6 +1186,8 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
         limit: None,
         include: Vec::new(),
         exclude: Vec::new(),
+        loop_enabled: false,
+        debug_output: false,
     };
 
     while let Some(arg) = iter.next() {
@@ -1210,6 +1216,8 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
             }
             "--include" => parsed.include.push(next_arg(&mut iter, "--include")?),
             "--exclude" => parsed.exclude.push(next_arg(&mut iter, "--exclude")?),
+            "--loop" => parsed.loop_enabled = true,
+            "--debug" => parsed.debug_output = true,
             other => anyhow::bail!("unknown GrokRxiv review argument `{other}`"),
         }
     }
@@ -3850,6 +3858,36 @@ struct ReviewSourceOptions {
     limit: Option<usize>,
     include: Vec<String>,
     exclude: Vec<String>,
+    loop_enabled: bool,
+    debug_output: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ReviewLoopStage {
+    id: String,
+    kind: String,
+    dag_type: Option<String>,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    required: bool,
+}
+
+fn review_loop_stage_plan() -> anyhow::Result<Vec<ReviewLoopStage>> {
+    let manifest_path = agent_config::dag_manifest_path("review-loop");
+    let manifest = DagManifest::from_path(&manifest_path)
+        .map_err(|e| anyhow::anyhow!("validate {}: {e}", manifest_path.display()))?;
+    Ok(manifest
+        .nodes
+        .iter()
+        .map(|node| ReviewLoopStage {
+            id: node.id.clone(),
+            kind: node.kind.to_string(),
+            dag_type: node.dag_type.clone(),
+            inputs: node.inputs.clone(),
+            outputs: node.outputs.clone(),
+            required: node.required,
+        })
+        .collect())
 }
 
 /// Try to recognise the source as an arXiv id or arXiv URL. Returns the bare
@@ -4026,9 +4064,17 @@ async fn review_source(
     json: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
+    if options.debug_output {
+        cli_status::set_enabled(true);
+    }
     let resolved = resolve_source(source, type_hint).await?;
     let resolved = expand_corpus_sources(resolved, &options).await?;
     if dry_run {
+        let loop_stages = if options.loop_enabled {
+            Some(review_loop_stage_plan()?)
+        } else {
+            None
+        };
         if resolved.len() == 1 {
             emit_pipeline_header("review", resolved_source_label(&resolved[0]).as_str());
             cli_status::emit_stage(
@@ -4065,14 +4111,35 @@ async fn review_source(
             })
             .collect();
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({"plan": plan}))?
-            );
+            let mut output = serde_json::json!({
+                "plan": plan,
+                "loop": {
+                    "enabled": options.loop_enabled,
+                    "dag_type": if options.loop_enabled { Some("review-loop") } else { None::<&str> },
+                },
+                "debug": {
+                    "enabled": options.debug_output,
+                }
+            });
+            if let Some(stages) = loop_stages.as_ref() {
+                output["loop"]["stages"] = serde_json::to_value(stages)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             println!("dry-run plan:");
             for p in plan {
                 println!("  {}", p);
+            }
+            if let Some(stages) = loop_stages {
+                println!("review-loop stages:");
+                for stage in stages {
+                    let dag_call = stage
+                        .dag_type
+                        .as_deref()
+                        .map(|dag| format!(" dag_call={dag}"))
+                        .unwrap_or_default();
+                    println!("  {} ({}){}", stage.id, stage.kind, dag_call);
+                }
             }
         }
         return Ok(());
@@ -4176,14 +4243,24 @@ async fn review_resolved_sources(
                 let review_id =
                     super::supervisor::run_one_paper_blocking(&supervisor, &state, id).await?;
                 crate::cli_status::emit(format!(
-                    "paper {id}: review_id={review_id} opening GitHub review PR"
+                    "paper {id}: review_id={review_id} running publication policy"
                 ));
-                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                let (pr, loop_outcome) =
+                    open_review_pr_after_optional_loop(
+                        &state,
+                        review_id,
+                        options.loop_enabled,
+                        options.debug_output,
+                        json,
+                    )
+                    .await?;
                 let paper_id = paper_id_for_review(pool, review_id).await.ok();
-                let envelope = review_result_envelope_with_pr(
-                    review_result_envelope(pool, review_id, "arxiv", id, paper_id).await?,
-                    &pr,
-                );
+                let mut envelope =
+                    review_result_envelope(pool, review_id, "arxiv", id, paper_id).await?;
+                if let Some(loop_outcome) = loop_outcome.as_ref() {
+                    envelope = review_result_envelope_with_loop(envelope, loop_outcome);
+                }
+                let envelope = review_result_envelope_with_pr(envelope, &pr);
                 if !json {
                     println!(
                         "source_kind=arxiv source_id={id} paper_id={} review_id={review_id} pr_url={}",
@@ -4206,24 +4283,33 @@ async fn review_resolved_sources(
                 };
                 let (paper_id, review_id, source_kind, source_id) =
                     review_prepared_source(&state, spec).await?;
-                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                let (pr, loop_outcome) =
+                    open_review_pr_after_optional_loop(
+                        &state,
+                        review_id,
+                        options.loop_enabled,
+                        options.debug_output,
+                        json,
+                    )
+                    .await?;
                 if !json {
                     println!(
                         "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
                         pr.pr_url
                     );
                 }
-                let envelope = review_result_envelope_with_pr(
-                    review_result_envelope(
-                        pool,
-                        review_id,
-                        &source_kind,
-                        &source_id,
-                        Some(paper_id),
-                    )
-                    .await?,
-                    &pr,
-                );
+                let mut envelope = review_result_envelope(
+                    pool,
+                    review_id,
+                    &source_kind,
+                    &source_id,
+                    Some(paper_id),
+                )
+                .await?;
+                if let Some(loop_outcome) = loop_outcome.as_ref() {
+                    envelope = review_result_envelope_with_loop(envelope, loop_outcome);
+                }
+                let envelope = review_result_envelope_with_pr(envelope, &pr);
                 results.push(envelope);
             }
             ResolvedSource::GitRepo {
@@ -4242,24 +4328,33 @@ async fn review_resolved_sources(
                 };
                 let (paper_id, review_id, source_kind, source_id) =
                     review_prepared_source(&state, spec).await?;
-                let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+                let (pr, loop_outcome) =
+                    open_review_pr_after_optional_loop(
+                        &state,
+                        review_id,
+                        options.loop_enabled,
+                        options.debug_output,
+                        json,
+                    )
+                    .await?;
                 if !json {
                     println!(
                         "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
                         pr.pr_url
                     );
                 }
-                let envelope = review_result_envelope_with_pr(
-                    review_result_envelope(
-                        pool,
-                        review_id,
-                        &source_kind,
-                        &source_id,
-                        Some(paper_id),
-                    )
-                    .await?,
-                    &pr,
-                );
+                let mut envelope = review_result_envelope(
+                    pool,
+                    review_id,
+                    &source_kind,
+                    &source_id,
+                    Some(paper_id),
+                )
+                .await?;
+                if let Some(loop_outcome) = loop_outcome.as_ref() {
+                    envelope = review_result_envelope_with_loop(envelope, loop_outcome);
+                }
+                let envelope = review_result_envelope_with_pr(envelope, &pr);
                 results.push(envelope);
             }
         }
@@ -4442,6 +4537,1771 @@ fn review_result_envelope_with_pr(
         obj.insert("pr_kind".to_string(), serde_json::json!(pr.kind.as_str()));
     }
     envelope
+}
+
+fn review_result_envelope_with_loop(
+    mut envelope: serde_json::Value,
+    loop_outcome: &ReviewLoopOutcome,
+) -> serde_json::Value {
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert(
+            "review_loop".to_string(),
+            serde_json::json!({
+                "dag_type": "review-loop",
+                "status": loop_outcome.deterministic_status,
+                "publisher_ready": loop_outcome.publisher_ready,
+                "blocking_issues": loop_outcome.blocking_issues,
+                "artifact_dir": loop_outcome.artifact_dir,
+                "report_path": loop_outcome.report_path,
+            }),
+        );
+    }
+    envelope
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReviewLoopOutcome {
+    publisher_ready: bool,
+    deterministic_status: String,
+    blocking_issues: Vec<String>,
+    artifact_dir: String,
+    report_path: String,
+    report: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommandRunReport {
+    command: Vec<String>,
+    status: String,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    duration_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewFixCodeTask {
+    target_id: &'static str,
+    language: &'static str,
+    filename: &'static str,
+    author_role: &'static str,
+    reviewer_role: &'static str,
+    fixer_role: &'static str,
+    compile_program: &'static str,
+    compile_args: Vec<String>,
+    forbidden_terms: Vec<&'static str>,
+    max_attempts: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewLoopGitHarness {
+    path: PathBuf,
+    branch: String,
+}
+
+impl ReviewLoopGitHarness {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "path": self.path.display().to_string(),
+            "branch": self.branch.clone(),
+        })
+    }
+}
+
+async fn run_review_fix_code_loop(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    task: ReviewFixCodeTask,
+    base_artifact: serde_json::Value,
+    workdir: &Path,
+    final_path: &Path,
+    debug_output: bool,
+) -> serde_json::Value {
+    let mut attempts = Vec::new();
+    let mut previous_code: Option<String> = None;
+    let mut previous_compile: Option<serde_json::Value> = None;
+    let mut previous_review: Option<serde_json::Value> = None;
+    let mut final_status = "fail".to_string();
+    let harness = match prepare_review_loop_git_harness(review_id, &task, base_artifact.clone(), workdir).await {
+        Ok(harness) => harness,
+        Err(err) => {
+            return serde_json::json!({
+                "stage": format!("{}_review_fix_code", task.target_id),
+                "target": task.target_id,
+                "language": task.language,
+                "filename": task.filename,
+                "author_role": task.author_role,
+                "reviewer_role": task.reviewer_role,
+                "fixer_role": task.fixer_role,
+                "max_attempts": task.max_attempts,
+                "attempts": [{
+                    "attempt": 0,
+                    "status": "fail",
+                    "harness_error": format!("{err:#}"),
+                }],
+                "status": "fail",
+                "final_path": final_path.display().to_string(),
+                "harness": {
+                    "path": workdir.display().to_string(),
+                    "branch": review_loop_harness_branch(review_id, task.target_id),
+                },
+            });
+        }
+    };
+
+    for attempt in 1..=task.max_attempts {
+        let round_dir = workdir.join(format!("round_{attempt}"));
+        if let Err(err) = tokio::fs::create_dir_all(&round_dir).await {
+            attempts.push(serde_json::json!({
+                "attempt": attempt,
+                "status": "fail",
+                "error": format!("create round dir {}: {err}", round_dir.display()),
+            }));
+            break;
+        }
+
+        let role = if attempt == 1 {
+            task.author_role
+        } else {
+            task.fixer_role
+        };
+        let agent_artifact = serde_json::json!({
+            "target": task.target_id,
+            "language": task.language,
+            "filename": task.filename,
+            "attempt": attempt,
+            "max_attempts": task.max_attempts,
+            "base": base_artifact,
+            "previous_code": previous_code,
+            "previous_compile": previous_compile,
+            "previous_codex_review": previous_review,
+            "harness": harness.as_json(),
+        });
+        if debug_output {
+            cli_status::emit_detail(
+                role,
+                cli_status::StatusMark::Run,
+                &format!(
+                    "attempt={attempt} target={} branch={} path={}",
+                    task.target_id,
+                    harness.branch,
+                    harness.path.display()
+                ),
+            );
+        }
+        let generation_run = match run_review_loop_agent(
+            state,
+            paper_id,
+            review_id,
+            role,
+            agent_artifact,
+            review_loop_code_system_prompt(&task, role, attempt),
+            review_loop_code_user_prompt(&task, role, attempt),
+            Some(&harness.path),
+        )
+        .await
+        {
+            Ok(run) => run,
+            Err(err) => {
+                attempts.push(serde_json::json!({
+                    "attempt": attempt,
+                    "status": "fail",
+                    "author_role": role,
+                    "author_error": format!("{err:#}"),
+                }));
+                break;
+            }
+        };
+        let generation_path = round_dir.join("generation.json");
+        let _ = write_loop_json(&generation_path, &generation_run.output).await;
+        let code = match code_from_agent_run(&generation_run, &task) {
+            Ok(code) => code,
+            Err(err) => {
+                attempts.push(serde_json::json!({
+                    "attempt": attempt,
+                    "status": "fail",
+                    "author_role": role,
+                    "generation": generation_run.output,
+                    "author_error": format!("{err:#}"),
+                }));
+                break;
+            }
+        };
+        if let Err(err) = write_review_loop_code_file(final_path, &code).await {
+            attempts.push(serde_json::json!({
+                "attempt": attempt,
+                "status": "fail",
+                "author_role": role,
+                "generation": generation_run.output,
+                "write_error": format!("write {}: {err}", final_path.display()),
+            }));
+            break;
+        }
+        let round_source_path = round_dir.join(task.filename);
+        let _ = write_review_loop_code_file(&round_source_path, &code).await;
+
+        let forbidden = forbidden_terms_in_code(&code, &task.forbidden_terms);
+        let compile_run = if forbidden.is_empty() {
+            let compile_args = task
+                .compile_args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            run_loop_command(
+                task.compile_program,
+                &compile_args,
+                workdir,
+                std::time::Duration::from_secs(120),
+            )
+            .await
+        } else {
+            CommandRunReport {
+                command: std::iter::once(task.compile_program.to_string())
+                    .chain(task.compile_args.iter().cloned())
+                    .collect(),
+                status: "fail".to_string(),
+                exit_code: None,
+                stdout: String::new(),
+                stderr: format!("generated code contains forbidden terms: {}", forbidden.join(", ")),
+                duration_ms: 0,
+            }
+        };
+        let compile_value =
+            serde_json::to_value(&compile_run).unwrap_or_else(|_| serde_json::json!({}));
+        let _ = write_loop_json(&round_dir.join("compile.json"), &compile_value).await;
+
+        let reviewer_artifact = serde_json::json!({
+            "target": task.target_id,
+            "language": task.language,
+            "filename": task.filename,
+            "attempt": attempt,
+            "code": code,
+            "compile": compile_value,
+            "forbidden_terms": forbidden,
+            "base": base_artifact,
+            "harness": harness.as_json(),
+        });
+        let review_output = match run_review_loop_agent(
+            state,
+            paper_id,
+            review_id,
+            task.reviewer_role,
+            reviewer_artifact,
+            review_loop_code_system_prompt(&task, task.reviewer_role, attempt),
+            review_loop_code_user_prompt(&task, task.reviewer_role, attempt),
+            Some(&harness.path),
+        )
+        .await
+        {
+            Ok(run) => run.output,
+            Err(err) => serde_json::json!({
+                "status": "fail",
+                "issues": [
+                    {
+                        "severity": "blocking",
+                        "message": format!("Codex review agent failed: {err:#}"),
+                        "line": null
+                    }
+                ],
+                "summary": "Codex review agent failed.",
+                "confidence": 1.0
+            }),
+        };
+        let _ = write_loop_json(&round_dir.join("codex_review.json"), &review_output).await;
+
+        let compile_pass = compile_run.status == "pass" && forbidden.is_empty();
+        let review_pass = code_review_passed(&review_output);
+        let attempt_status = if compile_pass && review_pass {
+            "pass"
+        } else {
+            "fail"
+        };
+        let git_evidence =
+            record_review_loop_harness_attempt(&harness, task.target_id, attempt).await;
+        attempts.push(serde_json::json!({
+            "attempt": attempt,
+            "status": attempt_status,
+            "author_role": role,
+            "reviewer_role": task.reviewer_role,
+            "source_path": round_source_path.display().to_string(),
+            "final_path": final_path.display().to_string(),
+            "harness": harness.as_json(),
+            "git": git_evidence,
+            "generation": generation_run.output,
+            "compile": compile_run,
+            "codex_review": review_output,
+        }));
+
+        if attempt_status == "pass" {
+            final_status = "pass".to_string();
+            break;
+        }
+        previous_code = Some(
+            tokio::fs::read_to_string(final_path)
+                .await
+                .unwrap_or_default(),
+        );
+        previous_compile = attempts
+            .last()
+            .and_then(|attempt| attempt.get("compile").cloned());
+        previous_review = attempts
+            .last()
+            .and_then(|attempt| attempt.get("codex_review").cloned());
+    }
+
+    serde_json::json!({
+        "stage": format!("{}_review_fix_code", task.target_id),
+        "target": task.target_id,
+        "language": task.language,
+        "filename": task.filename,
+        "author_role": task.author_role,
+        "reviewer_role": task.reviewer_role,
+        "fixer_role": task.fixer_role,
+        "max_attempts": task.max_attempts,
+        "attempts": attempts,
+        "status": final_status,
+        "final_path": final_path.display().to_string(),
+        "harness": harness.as_json(),
+    })
+}
+
+async fn prepare_review_loop_git_harness(
+    review_id: Uuid,
+    task: &ReviewFixCodeTask,
+    base_artifact: serde_json::Value,
+    workdir: &Path,
+) -> anyhow::Result<ReviewLoopGitHarness> {
+    tokio::fs::create_dir_all(workdir)
+        .await
+        .with_context(|| format!("create review-loop harness {}", workdir.display()))?;
+    let branch = review_loop_harness_branch(review_id, task.target_id);
+    let harness = ReviewLoopGitHarness {
+        path: workdir.to_path_buf(),
+        branch,
+    };
+
+    let harness_readme = format!(
+        "# GrokRxiv Review-Loop Code Harness\n\n\
+         Review ID: `{review_id}`\n\
+         Target: `{target}`\n\
+         Language: `{language}`\n\
+         Required file: `{filename}`\n\
+         Branch: `{branch}`\n\n\
+         This directory is the full working harness for the code generator, \
+         compiler/verifier, Codex reviewer, and fix loop. Work only inside this \
+         directory. Do not inspect parent directories or the GrokRxiv repository \
+         checkout. Generated code is itself a review artifact and will be \
+         committed here by the orchestrator after each round.\n",
+        target = task.target_id,
+        language = task.language,
+        filename = task.filename,
+        branch = harness.branch,
+    );
+    tokio::fs::write(workdir.join("GROKRXIV_HARNESS.md"), harness_readme)
+        .await
+        .with_context(|| format!("write harness readme {}", workdir.display()))?;
+    write_loop_json(&workdir.join("harness_task_input.json"), &base_artifact).await?;
+
+    let mut setup_reports = Vec::new();
+    let init = run_review_loop_git_command(workdir, vec!["init".to_string()]).await;
+    ensure_review_loop_git_pass(&init, "git init")?;
+    setup_reports.push(command_report_json(&init));
+
+    for (key, value) in [
+        ("user.name", "GrokRxiv Review Loop"),
+        ("user.email", "review-loop@grokrxiv.local"),
+    ] {
+        let report = run_review_loop_git_command(
+            workdir,
+            vec!["config".to_string(), key.to_string(), value.to_string()],
+        )
+        .await;
+        ensure_review_loop_git_pass(&report, &format!("git config {key}"))?;
+        setup_reports.push(command_report_json(&report));
+    }
+
+    let checkout = run_review_loop_git_command(
+        workdir,
+        vec![
+            "checkout".to_string(),
+            "-B".to_string(),
+            harness.branch.clone(),
+        ],
+    )
+    .await;
+    ensure_review_loop_git_pass(&checkout, "git checkout harness branch")?;
+    setup_reports.push(command_report_json(&checkout));
+
+    let baseline_commit =
+        commit_review_loop_harness(&harness, "baseline review-loop harness".to_string()).await;
+    let report = serde_json::json!({
+        "path": harness.path.display().to_string(),
+        "branch": harness.branch.clone(),
+        "setup": setup_reports,
+        "baseline_commit": baseline_commit,
+    });
+    write_loop_json(&workdir.join("harness.json"), &report).await?;
+    Ok(harness)
+}
+
+fn review_loop_harness_branch(review_id: Uuid, target_id: &str) -> String {
+    let review_id = review_id.simple().to_string();
+    let short = review_id.get(0..12).unwrap_or(&review_id);
+    format!("review-loop/{target_id}/{short}")
+}
+
+async fn record_review_loop_harness_attempt(
+    harness: &ReviewLoopGitHarness,
+    target_id: &str,
+    attempt: usize,
+) -> serde_json::Value {
+    let status_before =
+        run_review_loop_git_command(&harness.path, vec!["status".to_string(), "--short".to_string()])
+            .await;
+    let commit = commit_review_loop_harness(
+        harness,
+        format!("review-loop {target_id} attempt {attempt}"),
+    )
+    .await;
+    let status_after =
+        run_review_loop_git_command(&harness.path, vec!["status".to_string(), "--short".to_string()])
+            .await;
+    serde_json::json!({
+        "branch": harness.branch.clone(),
+        "path": harness.path.display().to_string(),
+        "status_before": command_report_json(&status_before),
+        "commit": commit,
+        "status_after": command_report_json(&status_after),
+    })
+}
+
+async fn commit_review_loop_harness(
+    harness: &ReviewLoopGitHarness,
+    message: String,
+) -> serde_json::Value {
+    let add = run_review_loop_git_command(&harness.path, vec!["add".to_string(), ".".to_string()]).await;
+    let diff_cached = run_review_loop_git_command(
+        &harness.path,
+        vec!["diff".to_string(), "--cached".to_string(), "--stat".to_string()],
+    )
+    .await;
+    let mut commit = run_review_loop_git_command(
+        &harness.path,
+        vec!["commit".to_string(), "-m".to_string(), message],
+    )
+    .await;
+    if commit.status != "pass" {
+        let output = format!("{}\n{}", commit.stdout, commit.stderr);
+        if output.contains("nothing to commit") || output.contains("no changes added to commit") {
+            commit.status = "no_changes".to_string();
+        }
+    }
+    let head = run_review_loop_git_command(
+        &harness.path,
+        vec!["rev-parse".to_string(), "--short".to_string(), "HEAD".to_string()],
+    )
+    .await;
+    serde_json::json!({
+        "add": command_report_json(&add),
+        "cached_diff_stat": command_report_json(&diff_cached),
+        "commit": command_report_json(&commit),
+        "head": command_report_json(&head),
+    })
+}
+
+async fn run_review_loop_git_command(workdir: &Path, args: Vec<String>) -> CommandRunReport {
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_loop_command(
+        "git",
+        &arg_refs,
+        workdir,
+        std::time::Duration::from_secs(20),
+    )
+    .await
+}
+
+fn ensure_review_loop_git_pass(report: &CommandRunReport, action: &str) -> anyhow::Result<()> {
+    if report.status == "pass" {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{action} failed: {}",
+        truncate(
+            &format!("{} {}", report.stdout.trim(), report.stderr.trim()),
+            600
+        )
+    )
+}
+
+fn command_report_json(report: &CommandRunReport) -> serde_json::Value {
+    serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+async fn run_review_loop_agent(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    role: &str,
+    artifact: serde_json::Value,
+    system_prompt: String,
+    user_prompt: String,
+    source_bundle_path: Option<&Path>,
+) -> anyhow::Result<AgentRun> {
+    let agent = state
+        .agents
+        .get(role)
+        .ok_or_else(|| anyhow::anyhow!("review-loop agent role `{role}` is not configured"))?;
+    let runner_kind = agent.spec().runner;
+    let runner = state
+        .runners
+        .get(&runner_kind)
+        .ok_or_else(|| anyhow::anyhow!("review-loop runner `{runner_kind:?}` is not registered"))?;
+    let input = AgentInput {
+        paper_id,
+        review_id,
+        role: role.to_string(),
+        content_hash_material: artifact.clone(),
+        artifact,
+        system_prompt,
+        user_prompt,
+        source_bundle_path: source_bundle_path.map(|path| path.display().to_string()),
+    };
+    agent.run(runner.as_ref(), input).await
+}
+
+fn review_loop_code_system_prompt(
+    task: &ReviewFixCodeTask,
+    role: &str,
+    attempt: usize,
+) -> String {
+    format!(
+        "You are GrokRxiv role `{role}` in the review-loop code verification path. \
+         Target={target} language={language} file={filename} attempt={attempt}. \
+         Follow schema.json exactly and return one JSON object only.",
+        target = task.target_id,
+        language = task.language,
+        filename = task.filename,
+    )
+}
+
+fn review_loop_code_user_prompt(
+    task: &ReviewFixCodeTask,
+    role: &str,
+    attempt: usize,
+) -> String {
+    let action = if role == task.reviewer_role {
+        "Review the generated code, compiler diagnostics, and paper-derived task evidence."
+    } else if attempt == 1 {
+        "Generate the complete requested code artifact from the paper-derived review evidence."
+    } else {
+        "Fix the complete code artifact using the compiler diagnostics and Codex review from the prior round."
+    };
+    format!(
+        "{action}\n\n\
+         Required file: {filename}\n\
+         Language: {language}\n\
+         Compile command: {compile}\n\
+         Max attempts: {max_attempts}\n\n\
+         The canonical task input is in review_input.json. Return strict JSON \
+         matching schema.json. Do not include markdown fences or prose outside JSON.",
+        filename = task.filename,
+        language = task.language,
+        compile = std::iter::once(task.compile_program)
+            .chain(task.compile_args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        max_attempts = task.max_attempts,
+    )
+}
+
+fn code_from_agent_run(run: &AgentRun, task: &ReviewFixCodeTask) -> anyhow::Result<String> {
+    let language = run
+        .output
+        .get("language")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if language != task.language {
+        anyhow::bail!(
+            "role `{}` returned language `{language}`, expected `{}`",
+            run.role,
+            task.language
+        );
+    }
+    let filename = run
+        .output
+        .get("filename")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !filename.ends_with(task.filename) && filename != task.filename {
+        anyhow::bail!(
+            "role `{}` returned filename `{filename}`, expected `{}`",
+            run.role,
+            task.filename
+        );
+    }
+    let code = run
+        .output
+        .get("code")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .unwrap_or_default();
+    if code.trim().is_empty() {
+        anyhow::bail!("role `{}` returned empty code", run.role);
+    }
+    Ok(code)
+}
+
+async fn write_review_loop_code_file(path: &Path, code: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, code).await?;
+    Ok(())
+}
+
+fn forbidden_terms_in_code(code: &str, terms: &[&'static str]) -> Vec<&'static str> {
+    terms
+        .iter()
+        .copied()
+        .filter(|term| code.contains(term))
+        .collect()
+}
+
+fn code_review_passed(review: &serde_json::Value) -> bool {
+    if review.get("status").and_then(|value| value.as_str()) != Some("pass") {
+        return false;
+    }
+    !review
+        .get("issues")
+        .and_then(|value| value.as_array())
+        .map(|issues| {
+            issues.iter().any(|issue| {
+            issue
+                .get("severity")
+                .and_then(|value| value.as_str())
+                == Some("blocking")
+        })
+        })
+        .unwrap_or(false)
+}
+
+fn review_fix_loop_summary(results: &serde_json::Value) -> String {
+    let attempts = results
+        .get("attempts")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if results.get("status").and_then(|value| value.as_str()) == Some("pass") {
+        return format!("attempts={}", attempts.len());
+    }
+    for attempt in attempts.iter().rev() {
+        if let Some(error) = attempt.get("author_error").and_then(|value| value.as_str()) {
+            return truncate(error, 260);
+        }
+        if let Some(error) = attempt.get("write_error").and_then(|value| value.as_str()) {
+            return truncate(error, 260);
+        }
+        if let Some(issue) = attempt
+            .get("codex_review")
+            .and_then(|review| review.get("issues"))
+            .and_then(|issues| issues.as_array())
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue.get("message"))
+            .and_then(|message| message.as_str())
+        {
+            return truncate(issue, 260);
+        }
+        if let Some(stderr) = attempt
+            .get("compile")
+            .and_then(|compile| compile.get("stderr"))
+            .and_then(|stderr| stderr.as_str())
+            .filter(|stderr| !stderr.trim().is_empty())
+        {
+            return truncate(&stderr.replace('\n', " "), 260);
+        }
+    }
+    "review-fix-code loop failed".to_string()
+}
+
+async fn run_review_loop_for_review(
+    state: &super::AppState,
+    review_id: Uuid,
+    debug_output: bool,
+) -> anyhow::Result<ReviewLoopOutcome> {
+    use grokrxiv_schemas::VerifierStatus;
+
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("review-loop: DATABASE_URL not configured"))?;
+    let stages = review_loop_stage_plan()?;
+    let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+    tokio::fs::create_dir_all(&artifact_dir).await?;
+    let paper_id = paper_id_for_review(pool, review_id)
+        .await
+        .context("review-loop: load paper_id for review")?;
+
+    crate::cli_status::emit_stage(
+        6,
+        6,
+        "Review loop",
+        cli_status::StatusMark::Run,
+        "semantic/proof/citation/fix policy",
+    );
+    if debug_output {
+        cli_status::emit_detail(
+            "review_loop",
+            cli_status::StatusMark::Run,
+            &format!("artifact_dir={}", artifact_dir.display()),
+        );
+    }
+
+    let agent_rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        serde_json::Value,
+        Option<serde_json::Value>,
+    )> = sqlx::query_as(
+        "select role, coalesce(dag_type, 'paper-review'), verifier_status, output, verifier_notes \
+         from review_agents \
+         where review_id = $1 and dag_type = 'paper-review' \
+         order by role, created_at desc",
+    )
+    .bind(review_id)
+    .fetch_all(pool)
+    .await?;
+
+    let claims = extract_review_loop_claims(&agent_rows);
+    let claims_value = serde_json::json!({
+        "review_id": review_id,
+        "claims": claims,
+    });
+    write_loop_json(&artifact_dir.join("claims.json"), &claims_value).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "claim_extractor",
+        claims_value.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/claims.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "claim_extractor",
+        true,
+        "review_loop/claims.json",
+        debug_output,
+        &format!("claims={}", claims_value["claims"].as_array().map(Vec::len).unwrap_or(0)),
+    );
+
+    let knowledge_graph = build_review_loop_knowledge_graph(&claims_value);
+    write_loop_json(&artifact_dir.join("knowledge_graph.json"), &knowledge_graph).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "knowledge_graph_builder",
+        knowledge_graph.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/knowledge_graph.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "knowledge_graph_builder",
+        true,
+        "review_loop/knowledge_graph.json",
+        debug_output,
+        &format!(
+            "nodes={} edges={}",
+            knowledge_graph["nodes"].as_array().map(Vec::len).unwrap_or(0),
+            knowledge_graph["edges"].as_array().map(Vec::len).unwrap_or(0)
+        ),
+    );
+
+    let haskell_dir = artifact_dir.join("haskell");
+    tokio::fs::create_dir_all(&haskell_dir).await?;
+    let claim_count = claims_value
+        .get("claims")
+        .and_then(|v| v.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    let semantic_model = serde_json::json!({
+        "review_id": review_id,
+        "claim_count": claim_count,
+        "categories": semantic_categories(&claims_value),
+        "haskell_module": "review_loop/haskell/SemanticModel.hs",
+        "author_role": "haskell_semantic_author",
+        "reviewer_role": "haskell_code_reviewer",
+        "fixer_role": "haskell_code_fixer",
+    });
+    write_loop_json(&artifact_dir.join("semantic_model.json"), &semantic_model).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "semantic_category_mapper",
+        semantic_model.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({
+            "artifacts": [
+                "review_loop/semantic_model.json",
+                "review_loop/haskell/SemanticModel.hs"
+            ]
+        }),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "semantic_category_mapper",
+        true,
+        "review_loop/semantic_model.json",
+        debug_output,
+        "semantic task ready for Claude/Codex code loop",
+    );
+
+    let haskell_results = run_review_fix_code_loop(
+        state,
+        paper_id,
+        review_id,
+        ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        },
+        serde_json::json!({
+            "review_id": review_id,
+            "task": "Generate a Haskell semantic model from GrokRxiv paper-review claims.",
+            "requirements": [
+                "Create module SemanticModel.",
+                "Use only pure Haskell definitions.",
+                "Represent paper-derived claims and review categories from the supplied JSON.",
+                "Include claimCount :: Int and publisherReadyLowerBound :: Bool.",
+                "The file must compile with ghc -fno-code SemanticModel.hs."
+            ],
+            "claims": claims_value,
+            "knowledge_graph": knowledge_graph,
+            "semantic_model": semantic_model,
+        }),
+        &haskell_dir,
+        &haskell_dir.join("SemanticModel.hs"),
+        debug_output,
+    )
+    .await;
+    let haskell_pass = haskell_results["status"] == "pass";
+    write_loop_json(&haskell_dir.join("results.json"), &haskell_results).await?;
+    write_loop_json(&haskell_dir.join("fix_rounds.json"), &haskell_results).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "haskell_review_fix_code",
+        haskell_results.clone(),
+        if haskell_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/haskell/results.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "haskell_review_fix_code",
+        haskell_pass,
+        "review_loop/haskell/results.json",
+        debug_output,
+        &review_fix_loop_summary(&haskell_results),
+    );
+
+    let proof_obligations = serde_json::json!({
+        "review_id": review_id,
+        "source": "review_loop/semantic_model.json",
+        "obligations": [
+            {
+                "id": "claim_count_nonnegative",
+                "statement": format!("0 <= {claim_count}"),
+                "severity": "blocking"
+            }
+        ]
+    });
+    write_loop_json(
+        &artifact_dir.join("proof_obligations.json"),
+        &proof_obligations,
+    )
+    .await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "proof_obligation_generator",
+        proof_obligations.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/proof_obligations.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "proof_obligation_generator",
+        true,
+        "review_loop/proof_obligations.json",
+        debug_output,
+        "generated proof obligations",
+    );
+
+    let lean_dir = artifact_dir.join("lean");
+    let lean_src_dir = lean_dir.join("GrokRxiv");
+    tokio::fs::create_dir_all(&lean_src_dir).await?;
+    let lean_results = run_review_fix_code_loop(
+        state,
+        paper_id,
+        review_id,
+        ReviewFixCodeTask {
+            target_id: "lean",
+            language: "lean",
+            filename: "GrokRxiv/Proofs.lean",
+            author_role: "lean_proof_author",
+            reviewer_role: "lean_code_reviewer",
+            fixer_role: "lean_code_fixer",
+            compile_program: "lean",
+            compile_args: vec!["GrokRxiv/Proofs.lean".to_string()],
+            forbidden_terms: vec!["sorry", "admit", "axiom"],
+            max_attempts: 2,
+        },
+        serde_json::json!({
+            "review_id": review_id,
+            "task": "Generate Lean proofs for GrokRxiv proof obligations.",
+            "requirements": [
+                "Write the complete file GrokRxiv/Proofs.lean.",
+                "Do not use sorry, admit, or axiom.",
+                "The file must verify with lean GrokRxiv/Proofs.lean.",
+                "Keep proofs tied to the supplied Haskell semantic model and obligations."
+            ],
+            "proof_obligations": proof_obligations,
+            "semantic_model": semantic_model,
+            "haskell_results": haskell_results,
+        }),
+        &lean_dir,
+        &lean_src_dir.join("Proofs.lean"),
+        debug_output,
+    )
+    .await;
+    let lean_pass = lean_results["status"] == "pass";
+    write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
+    write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "lean_review_fix_code",
+        lean_results.clone(),
+        if lean_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/lean/results.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "lean_review_fix_code",
+        lean_pass,
+        "review_loop/lean/results.json",
+        debug_output,
+        &review_fix_loop_summary(&lean_results),
+    );
+
+    let citation_summary = citation_verifier_summary(pool, review_id).await;
+    let citation_report = serde_json::json!({
+        "stage": "citation_validation",
+        "dag_type": "citation-validation",
+        "source": "paper-review citation verifier evidence plus declared review-loop DAG call",
+        "status": citation_summary
+            .as_ref()
+            .and_then(|s| s.verifier_status.as_deref())
+            .unwrap_or("fail"),
+        "checked": citation_summary.as_ref().map(|s| s.checked).unwrap_or(0),
+        "unresolved": citation_summary.as_ref().map(|s| s.unresolved).unwrap_or(0),
+        "unverified": citation_summary.as_ref().map(|s| s.unverified).unwrap_or(0),
+        "transient_unknown": citation_summary.as_ref().map(|s| s.unknown).unwrap_or(0),
+        "malformed": citation_summary.as_ref().map(|s| s.malformed).unwrap_or(0),
+        "unresolved_fraction": citation_summary
+            .as_ref()
+            .map(|s| s.unresolved_fraction)
+            .unwrap_or(1.0),
+        "evidence": citation_summary
+            .as_ref()
+            .map(|s| serde_json::to_value(&s.evidence).unwrap_or_else(|_| serde_json::json!([])))
+            .unwrap_or_else(|| serde_json::json!([])),
+        "artifact_hint": citation_summary
+            .as_ref()
+            .map(|s| s.artifact_hint.clone())
+            .unwrap_or_else(|| "paper-review citation verifier evidence missing".to_string()),
+    });
+    write_loop_json(&artifact_dir.join("citation_validation_report.json"), &citation_report)
+        .await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "citation_validation",
+        citation_report.clone(),
+        if citation_report["status"] == "pass" || citation_report["status"] == "warn" {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/citation_validation_report.json"}),
+    )
+    .await?;
+    let citation_pass = citation_report["status"] == "pass" || citation_report["status"] == "warn";
+    emit_review_loop_node_debug(
+        "citation_validation",
+        citation_pass,
+        "review_loop/citation_validation_report.json",
+        debug_output,
+        &format!(
+            "status={} unresolved={} unknown={}",
+            citation_report["status"].as_str().unwrap_or("unknown"),
+            citation_report["unresolved"].as_u64().unwrap_or(0),
+            citation_report["transient_unknown"].as_u64().unwrap_or(0)
+        ),
+    );
+
+    let pr_fixes =
+        run_review_loop_pr_fixer(state, paper_id, review_id, &artifact_dir, debug_output).await?;
+    let pr_fixer_pass = pr_fixes
+        .get("status")
+        .and_then(|v| v.as_str())
+        .is_some_and(|status| status == "pass");
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "pr_fixer",
+        pr_fixes.clone(),
+        if pr_fixer_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/pr_fixes.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "pr_fixer",
+        pr_fixer_pass,
+        "review_loop/pr_fixes.json",
+        debug_output,
+        pr_fixes
+            .get("issues")
+            .and_then(|value| value.as_array())
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue.as_str())
+            .unwrap_or("fixed artifacts checked"),
+    );
+
+    let pr_review_results = serde_json::json!({
+        "stage": "pr_review_fix_code",
+        "max_attempts": 2,
+        "status": if pr_fixer_pass { "pass" } else { "fail" },
+        "attempts": pr_fixes
+            .get("compile_review_loop")
+            .and_then(|value| value.get("attempts"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+        "reviewer_role": "pr_artifact_reviewer",
+    });
+    let pr_review_dir = artifact_dir.join("pr_review");
+    tokio::fs::create_dir_all(&pr_review_dir).await?;
+    write_loop_json(&pr_review_dir.join("results.json"), &pr_review_results).await?;
+    write_loop_json(&pr_review_dir.join("fix_rounds.json"), &pr_review_results).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "pr_review_fix_code",
+        pr_review_results.clone(),
+        if pr_fixer_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/pr_review/results.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "pr_review_fix_code",
+        pr_fixer_pass,
+        "review_loop/pr_review/results.json",
+        debug_output,
+        if pr_fixer_pass {
+            "formatting review passed"
+        } else {
+            "formatting review failed"
+        },
+    );
+
+    let (_, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let mut blocking_issues = Vec::new();
+    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass {
+        blocking_issues.push(publication_gate.reason.clone());
+    }
+    if !haskell_pass {
+        blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
+    }
+    if !lean_pass {
+        blocking_issues.push("Lean proof obligations did not verify cleanly.".to_string());
+    }
+    if citation_report["status"] == "fail" {
+        blocking_issues.push("Citation-validation evidence failed deterministic policy.".to_string());
+    }
+    if !pr_fixer_pass {
+        blocking_issues.push("PR fixer did not produce compile-reviewed corrected artifacts.".to_string());
+    }
+    let publisher_ready = blocking_issues.is_empty();
+    let deterministic_status = if publisher_ready { "pass" } else { "fail" }.to_string();
+    let policy_gate = serde_json::json!({
+        "deterministic_status": deterministic_status,
+        "publisher_ready": publisher_ready,
+        "score_thresholds": {
+            "haskell_compile": "pass",
+            "lean_verify": "pass",
+            "citation_validation": "pass_or_warn",
+            "pr_artifacts": "fixed_tex_and_pdf_present",
+            "publication_gate": "pass"
+        },
+        "blocking_issues": blocking_issues,
+        "component_status": {
+            "publication_gate": format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
+            "haskell": if haskell_pass { "pass" } else { "fail" },
+            "lean": if lean_pass { "pass" } else { "fail" },
+            "citation_validation": citation_report["status"],
+            "pr_fixer": pr_fixes["status"],
+        }
+    });
+    write_loop_json(&artifact_dir.join("policy_gate.json"), &policy_gate).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "policy_gate",
+        policy_gate.clone(),
+        if publisher_ready {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/policy_gate.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "policy_gate",
+        publisher_ready,
+        "review_loop/policy_gate.json",
+        debug_output,
+        blocking_issues
+            .first()
+            .map(String::as_str)
+            .unwrap_or("deterministic policy passed"),
+    );
+
+    let report = serde_json::json!({
+        "review_id": review_id,
+        "dag_type": "review-loop",
+        "deterministic_status": deterministic_status,
+        "publisher_ready": publisher_ready,
+        "blocking_issues": policy_gate["blocking_issues"],
+        "fix_attempts": {
+            "haskell": haskell_results["attempts"],
+            "lean": lean_results["attempts"],
+            "pr_review": pr_review_results["attempts"],
+        },
+        "artifact_paths": {
+            "claims": "review_loop/claims.json",
+            "knowledge_graph": "review_loop/knowledge_graph.json",
+            "semantic_model": "review_loop/semantic_model.json",
+            "haskell": "review_loop/haskell/results.json",
+            "haskell_harness": "review_loop/haskell/harness.json",
+            "lean": "review_loop/lean/results.json",
+            "lean_harness": "review_loop/lean/harness.json",
+            "citation_validation": "review_loop/citation_validation_report.json",
+            "pr_fixes": "review_loop/pr_fixes.json",
+            "pr_harness": "review_loop/fixed/harness.json",
+            "policy_gate": "review_loop/policy_gate.json",
+        },
+        "pr_evidence": pr_fixes,
+        "publish_decision": {
+            "publisher_ready": publisher_ready,
+            "action": if publisher_ready { "publication_pr" } else { "revision_needed_pr" },
+            "auto_publish": publisher_ready,
+        }
+    });
+    write_loop_json(&artifact_dir.join("review_loop_report.json"), &report).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "review_loop_report",
+        report.clone(),
+        if publisher_ready {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/review_loop_report.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "review_loop_report",
+        publisher_ready,
+        "review_loop/review_loop_report.json",
+        debug_output,
+        "final loop report persisted",
+    );
+
+    let publish_decision = report["publish_decision"].clone();
+    write_loop_json(&artifact_dir.join("publish_decision.json"), &publish_decision).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "publish_decision",
+        publish_decision,
+        if publisher_ready {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/publish_decision.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "publish_decision",
+        publisher_ready,
+        "review_loop/publish_decision.json",
+        debug_output,
+        if publisher_ready {
+            "auto-publish allowed"
+        } else {
+            "left in review with blocking issues"
+        },
+    );
+
+    let outcome = ReviewLoopOutcome {
+        publisher_ready,
+        deterministic_status,
+        blocking_issues: policy_gate["blocking_issues"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        artifact_dir: artifact_dir.display().to_string(),
+        report_path: artifact_dir.join("review_loop_report.json").display().to_string(),
+        report,
+    };
+    apply_review_loop_meta_summary(pool, review_id, &outcome).await?;
+    crate::cli_status::emit_stage(
+        6,
+        6,
+        "Review loop",
+        if outcome.publisher_ready {
+            cli_status::StatusMark::Ok
+        } else {
+            cli_status::StatusMark::Fail
+        },
+        &format!("deterministic_status={}", outcome.deterministic_status),
+    );
+    Ok(outcome)
+}
+
+fn extract_review_loop_claims(
+    agent_rows: &[(String, String, Option<String>, serde_json::Value, Option<serde_json::Value>)],
+) -> Vec<serde_json::Value> {
+    let mut claims = Vec::new();
+    for (role, _dag_type, verifier_status, output, _notes) in agent_rows {
+        collect_claim_strings(role, output, &mut claims, verifier_status.as_deref());
+    }
+    claims
+        .into_iter()
+        .enumerate()
+        .map(|(idx, mut value)| {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("id".to_string(), serde_json::json!(format!("claim_{}", idx + 1)));
+            }
+            value
+        })
+        .collect()
+}
+
+fn collect_claim_strings(
+    role: &str,
+    value: &serde_json::Value,
+    out: &mut Vec<serde_json::Value>,
+    verifier_status: Option<&str>,
+) {
+    match value {
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            out.push(serde_json::json!({
+                "role": role,
+                "text": truncate(text.trim(), 500),
+                "verifier_status": verifier_status,
+            }));
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter().take(12) {
+                collect_claim_strings(role, item, out, verifier_status);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in [
+                "tldr",
+                "plain_language_summary",
+                "overall_correctness",
+                "verdict",
+                "summary",
+                "recommendation",
+                "relation",
+                "delta",
+                "notes",
+                "explanation",
+            ] {
+                if let Some(v) = map.get(key) {
+                    collect_claim_strings(role, v, out, verifier_status);
+                }
+            }
+            for key in [
+                "claims",
+                "key_contributions",
+                "related_work",
+                "missing_prior_art",
+                "concerns",
+                "strengths",
+                "weaknesses",
+                "questions",
+                "entries",
+            ] {
+                if let Some(v) = map.get(key) {
+                    collect_claim_strings(role, v, out, verifier_status);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_review_loop_knowledge_graph(claims_value: &serde_json::Value) -> serde_json::Value {
+    let claims = claims_value
+        .get("claims")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for claim in claims {
+        let id = claim
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claim");
+        let role = claim
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        nodes.push(serde_json::json!({
+            "id": id,
+            "kind": "claim",
+            "label": truncate(claim.get("text").and_then(|v| v.as_str()).unwrap_or("claim"), 120),
+            "role": role,
+        }));
+        let role_id = format!("role:{role}");
+        if !nodes.iter().any(|node| node["id"] == role_id) {
+            nodes.push(serde_json::json!({
+                "id": role_id,
+                "kind": "review_role",
+                "label": role,
+            }));
+        }
+        edges.push(serde_json::json!({
+            "from": role_id,
+            "to": id,
+            "relation": "emits_claim",
+        }));
+    }
+    serde_json::json!({
+        "nodes": nodes,
+        "edges": edges,
+    })
+}
+
+fn semantic_categories(claims_value: &serde_json::Value) -> serde_json::Value {
+    let mut counts = serde_json::Map::new();
+    if let Some(claims) = claims_value.get("claims").and_then(|v| v.as_array()) {
+        for claim in claims {
+            let role = claim
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let count = counts.get(role).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+            counts.insert(role.to_string(), serde_json::json!(count));
+        }
+    }
+    serde_json::Value::Object(counts)
+}
+
+fn emit_review_loop_node_debug(
+    node_id: &str,
+    pass: bool,
+    artifact_path: &str,
+    debug_output: bool,
+    detail: &str,
+) {
+    if pass && !debug_output {
+        return;
+    }
+    let mark = if pass {
+        cli_status::StatusMark::Ok
+    } else {
+        cli_status::StatusMark::Fail
+    };
+    let detail = if detail.trim().is_empty() {
+        format!("artifact={artifact_path}")
+    } else {
+        format!("artifact={artifact_path} {}", truncate(detail.trim(), 260))
+    };
+    cli_status::emit_detail(node_id, mark, &detail);
+}
+
+async fn run_loop_command(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    timeout_dur: std::time::Duration,
+) -> CommandRunReport {
+    let started = std::time::Instant::now();
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let command_vec = std::iter::once(program.to_string())
+        .chain(args.iter().map(|arg| (*arg).to_string()))
+        .collect::<Vec<_>>();
+    match tokio::time::timeout(timeout_dur, command.output()).await {
+        Err(_) => CommandRunReport {
+            command: command_vec,
+            status: "timeout".to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: format!("command exceeded {}s", timeout_dur.as_secs()),
+            duration_ms: started.elapsed().as_millis(),
+        },
+        Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => CommandRunReport {
+            command: command_vec,
+            status: "unavailable".to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: format!("{program} not found"),
+            duration_ms: started.elapsed().as_millis(),
+        },
+        Ok(Err(err)) => CommandRunReport {
+            command: command_vec,
+            status: "fail".to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: err.to_string(),
+            duration_ms: started.elapsed().as_millis(),
+        },
+        Ok(Ok(output)) => CommandRunReport {
+            command: command_vec,
+            status: if output.status.success() {
+                "pass".to_string()
+            } else {
+                "fail".to_string()
+            },
+            exit_code: output.status.code(),
+            stdout: truncate(&String::from_utf8_lossy(&output.stdout), 4000),
+            stderr: truncate(&String::from_utf8_lossy(&output.stderr), 4000),
+            duration_ms: started.elapsed().as_millis(),
+        },
+    }
+}
+
+async fn run_review_loop_pr_fixer(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    artifact_dir: &Path,
+    debug_output: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let fixed_dir = artifact_dir.join("fixed");
+    tokio::fs::create_dir_all(&fixed_dir).await?;
+    let render_dir = crate::artifacts::review_artifact_dir(review_id);
+    let source_tex = render_dir.join("review.tex");
+    let fixed_tex = fixed_dir.join("review.tex");
+    let source_tex_body = tokio::fs::read_to_string(&source_tex).await.ok();
+    let (compile_program, compile_args) = latex_compile_command();
+    let compile_command = std::iter::once(compile_program)
+        .chain(compile_args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let fix_loop = run_review_fix_code_loop(
+        state,
+        paper_id,
+        review_id,
+        ReviewFixCodeTask {
+            target_id: "pr",
+            language: "latex",
+            filename: "review.tex",
+            author_role: "pr_artifact_fixer",
+            reviewer_role: "pr_artifact_reviewer",
+            fixer_role: "pr_artifact_fixer",
+            compile_program,
+            compile_args: compile_args.clone(),
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        },
+        serde_json::json!({
+            "review_id": review_id,
+            "task": "Generate corrected GrokRxiv review LaTeX for PR publication.",
+            "requirements": [
+                "Return the complete review.tex file.",
+                "Preserve review identifiers and substantive review evidence.",
+                "Fix LaTeX/build/formatting issues only.",
+                format!("The artifact must compile with {compile_command}.")
+            ],
+            "compile_command": compile_command,
+            "source_tex_path": source_tex.display().to_string(),
+            "source_tex": source_tex_body,
+        }),
+        &fixed_dir,
+        &fixed_tex,
+        debug_output,
+    )
+    .await;
+    let mut issues = Vec::new();
+    if fix_loop.get("status").and_then(|value| value.as_str()) != Some("pass") {
+        issues.push(review_fix_loop_summary(&fix_loop));
+    }
+    let pdf_path = fixed_dir.join("review.pdf");
+    if !pdf_path.is_file() {
+        issues.push("fixed review.pdf was not produced".to_string());
+    }
+    let report = serde_json::json!({
+        "stage": "pr_fixer",
+        "status": if issues.is_empty() { "pass" } else { "fail" },
+        "artifact_worktree": fixed_dir.display().to_string(),
+        "fixed_tex": "review_loop/fixed/review.tex",
+        "fixed_pdf": if pdf_path.is_file() { Some("review_loop/fixed/review.pdf") } else { None::<&str> },
+        "compile_review_loop": fix_loop,
+        "issues": issues,
+    });
+    write_loop_json(&artifact_dir.join("pr_fixes.json"), &report).await?;
+    Ok(report)
+}
+
+fn latex_compile_command() -> (&'static str, Vec<String>) {
+    if command_available("tectonic") {
+        return (
+            "tectonic",
+            vec!["--outdir".to_string(), ".".to_string(), "review.tex".to_string()],
+        );
+    }
+    if command_available("latexmk") {
+        return (
+            "latexmk",
+            vec![
+                "-pdf".to_string(),
+                "-interaction=nonstopmode".to_string(),
+                "-halt-on-error".to_string(),
+                "review.tex".to_string(),
+            ],
+        );
+    }
+    if command_available("pdflatex") {
+        return (
+            "pdflatex",
+            vec![
+                "-interaction=nonstopmode".to_string(),
+                "-halt-on-error".to_string(),
+                "review.tex".to_string(),
+            ],
+        );
+    }
+    (
+        "tectonic",
+        vec!["--outdir".to_string(), ".".to_string(), "review.tex".to_string()],
+    )
+}
+
+fn command_available(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(program);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+async fn write_loop_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, serde_json::to_vec_pretty(value)?).await?;
+    Ok(())
+}
+
+async fn record_review_loop_node(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    stages: &[ReviewLoopStage],
+    node_id: &str,
+    output: serde_json::Value,
+    verifier_status: grokrxiv_schemas::VerifierStatus,
+    verifier_notes: serde_json::Value,
+) -> anyhow::Result<()> {
+    let stage = stages
+        .iter()
+        .find(|stage| stage.id == node_id)
+        .ok_or_else(|| anyhow::anyhow!("review-loop manifest missing node `{node_id}`"))?;
+    crate::db::insert_review_agent(
+        pool,
+        crate::db::ReviewAgentInsert {
+            review_id,
+            dag_type: "review-loop".to_string(),
+            role: node_id.to_string(),
+            node_id: Some(node_id.to_string()),
+            agent_type: Some("verifier".to_string()),
+            node_kind: Some(stage.kind.clone()),
+            runner: crate::agents::AgentRunnerKind::Cli,
+            model: "deterministic-review-loop",
+            output,
+            verifier_status: Some(verifier_status),
+            verifier_notes: Some(verifier_notes),
+            tokens_in: None,
+            tokens_out: None,
+            latency_ms: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn apply_review_loop_meta_summary(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    outcome: &ReviewLoopOutcome,
+) -> anyhow::Result<()> {
+    let mut meta: serde_json::Value =
+        sqlx::query_scalar("select meta_review from reviews where id = $1")
+            .bind(review_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "summary": "Review-loop policy evaluated persisted review evidence.",
+                    "strengths": [],
+                    "weaknesses": [],
+                    "questions": [],
+                    "recommendation": "major_revision",
+                    "confidence": 1.0
+                })
+            });
+    if !meta.is_object() {
+        meta = serde_json::json!({});
+    }
+    let obj = meta.as_object_mut().expect("object checked");
+    obj.insert(
+        "review_loop".to_string(),
+        serde_json::json!({
+            "deterministic_status": outcome.deterministic_status,
+            "publisher_ready": outcome.publisher_ready,
+            "blocking_issues": outcome.blocking_issues,
+            "artifact_dir": outcome.artifact_dir,
+            "report_path": outcome.report_path,
+        }),
+    );
+    if !outcome.publisher_ready {
+        obj.insert(
+            "recommendation".to_string(),
+            serde_json::json!("major_revision"),
+        );
+        let weaknesses = obj
+            .entry("weaknesses".to_string())
+            .or_insert_with(|| serde_json::json!([]));
+        if !weaknesses.is_array() {
+            *weaknesses = serde_json::json!([]);
+        }
+        if let Some(items) = weaknesses.as_array_mut() {
+            for issue in &outcome.blocking_issues {
+                let text = format!("Review-loop policy blocker: {issue}");
+                if !items.iter().any(|item| item.as_str() == Some(text.as_str())) {
+                    items.push(serde_json::json!(text));
+                }
+            }
+        }
+    }
+    crate::db::set_review_meta_review(pool, review_id, &meta).await?;
+    Ok(())
+}
+
+async fn append_review_loop_pr_files(
+    review_id: Uuid,
+    repo_prefix: &str,
+    files: &mut Vec<(String, Vec<u8>)>,
+) {
+    let dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+    for rel in [
+        "review_loop_report.json",
+        "policy_gate.json",
+        "claims.json",
+        "knowledge_graph.json",
+        "semantic_model.json",
+        "citation_validation_report.json",
+        "pr_fixes.json",
+        "haskell/GROKRXIV_HARNESS.md",
+        "haskell/harness.json",
+        "haskell/harness_task_input.json",
+        "haskell/SemanticModel.hs",
+        "haskell/results.json",
+        "lean/GROKRXIV_HARNESS.md",
+        "lean/harness.json",
+        "lean/harness_task_input.json",
+        "lean/GrokRxiv/Proofs.lean",
+        "lean/results.json",
+        "fixed/GROKRXIV_HARNESS.md",
+        "fixed/harness.json",
+        "fixed/harness_task_input.json",
+        "fixed/review.tex",
+        "fixed/review.pdf",
+    ] {
+        let path = dir.join(rel);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => files.push((format!("{repo_prefix}/review_loop/{rel}"), bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::warn!(
+                    %review_id,
+                    path = %path.display(),
+                    err = %err,
+                    "review-loop: failed to attach PR artifact"
+                );
+            }
+        }
+    }
 }
 
 async fn load_publication_gate_context(
@@ -4988,6 +6848,22 @@ async fn open_review_pr_for_gate(
         recommendation: gate.recommendation,
         kind,
     })
+}
+
+async fn open_review_pr_after_optional_loop(
+    state: &super::AppState,
+    review_id: Uuid,
+    loop_enabled: bool,
+    debug_output: bool,
+    json: bool,
+) -> anyhow::Result<(ReviewPrDispatchOutcome, Option<ReviewLoopOutcome>)> {
+    let loop_outcome = if loop_enabled {
+        Some(run_review_loop_for_review(state, review_id, debug_output).await?)
+    } else {
+        None
+    };
+    let pr = open_review_pr_for_gate(state, review_id, json, false).await?;
+    Ok((pr, loop_outcome))
 }
 
 async fn verify(review_id: Uuid) -> anyhow::Result<()> {
@@ -5841,6 +7717,7 @@ async fn open_publication_pr_impl(
             tracing::warn!(path = %path.display(), "approve: artifact missing, skipping");
         }
     }
+    append_review_loop_pr_files(review_id, &repo_prefix, &mut files).await;
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under {} — \
@@ -6045,6 +7922,7 @@ async fn request_revisions_impl(
             tracing::warn!(path = %path.display(), "request-revisions: artifact missing, skipping");
         }
     }
+    append_review_loop_pr_files(review_id, &repo_prefix, &mut files).await;
     if files.is_empty() {
         anyhow::bail!(
             "no rendered artifacts found under {} — \
@@ -8239,6 +10117,102 @@ mod tests {
             }
             other => panic!("expected forced review-extracted command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_grokrxiv_review_args_accepts_loop_flag() {
+        let parsed = parse_grokrxiv_review_args(vec![
+            "https://arxiv.org/abs/2606.00799".to_string(),
+            "--loop".to_string(),
+            "--debug".to_string(),
+            "--type".to_string(),
+            "arxiv".to_string(),
+        ])
+        .expect("review --loop args parse");
+
+        assert_eq!(parsed.source, "https://arxiv.org/abs/2606.00799");
+        assert_eq!(parsed.source_type, Some(SourceType::Arxiv));
+        assert!(parsed.loop_enabled);
+        assert!(parsed.debug_output);
+    }
+
+    #[test]
+    fn review_loop_stage_plan_is_loaded_from_manifest() {
+        let stages = review_loop_stage_plan().expect("review-loop stage plan");
+
+        assert_eq!(stages.first().map(|stage| stage.id.as_str()), Some("paper_review"));
+        assert!(stages.iter().any(|stage| {
+            stage.id == "citation_validation"
+                && stage.kind == "dag_call"
+                && stage.dag_type.as_deref() == Some("citation-validation")
+        }));
+        assert_eq!(
+            stages.last().map(|stage| stage.id.as_str()),
+            Some("publish_decision")
+        );
+    }
+
+    #[tokio::test]
+    async fn review_loop_code_harness_initializes_git_branch() {
+        if !command_available("git") {
+            return;
+        }
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-loop-harness-")
+            .tempdir()
+            .expect("tempdir");
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+
+        let harness = prepare_review_loop_git_harness(
+            review_id,
+            &task,
+            serde_json::json!({"claims": []}),
+            tempdir.path(),
+        )
+        .await
+        .expect("git harness");
+
+        assert!(tempdir.path().join(".git").is_dir());
+        assert_eq!(harness.branch, "review-loop/haskell/76665eba7670");
+        let branch = run_process(
+            "git",
+            vec!["branch".to_string(), "--show-current".to_string()],
+            Some(tempdir.path()),
+        )
+        .await
+        .expect("branch");
+        assert_eq!(branch.trim(), harness.branch);
+        assert!(tempdir.path().join("GROKRXIV_HARNESS.md").exists());
+
+        tokio::fs::write(
+            tempdir.path().join("SemanticModel.hs"),
+            "module SemanticModel where\nclaimCount :: Int\nclaimCount = 0\n",
+        )
+        .await
+        .expect("write generated code");
+        let evidence = record_review_loop_harness_attempt(&harness, "haskell", 1).await;
+        assert_eq!(
+            evidence["commit"]["commit"]["status"].as_str(),
+            Some("pass")
+        );
+        assert!(evidence["commit"]["head"]["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .len()
+            >= 7);
     }
 
     #[test]

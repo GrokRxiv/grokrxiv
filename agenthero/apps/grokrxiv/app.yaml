@@ -86,8 +86,8 @@ actions:
     description: Run the daily research ingest scheduler tick once.
   - id: review
     command: [review]
-    dag_type: paper-review
-    description: Run the research review DAG for a paper source.
+    dag_type: review-loop
+    description: Run the research review DAG and optional semantic/proof/citation loop for a paper source.
     options:
       - name: source
         kind: positional
@@ -135,6 +135,12 @@ actions:
         value_name: GLOB
         multiple: true
         description: Exclude corpus paths matching this pattern.
+      - name: --loop
+        kind: flag
+        description: Continue after paper review through the semantic/proof/citation/fix/publish loop.
+      - name: --debug
+        kind: flag
+        description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

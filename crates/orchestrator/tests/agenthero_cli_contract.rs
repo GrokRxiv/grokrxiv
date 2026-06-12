@@ -103,6 +103,194 @@ fn app_run_grokrxiv_dry_run_parses_at_agenthero_layer() {
 }
 
 #[test]
+fn app_run_grokrxiv_review_loop_parses_as_product_path() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "--json",
+        "--dry-run",
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "https://arxiv.org/abs/2606.00799",
+        "--loop",
+    ])
+    .expect("review --loop should parse as the canonical app review path");
+
+    assert!(cli.json);
+    assert!(cli.dry_run);
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(
+                    args,
+                    vec!["review", "https://arxiv.org/abs/2606.00799", "--loop"]
+                );
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_run_defaults_to_streaming_adapter_status_unless_suppressed() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "https://arxiv.org/abs/2606.00799",
+        "--loop",
+    ])
+    .expect("review --loop should parse");
+    assert!(agenthero_orchestrator::cli::stream_app_stderr_for_cli(&cli));
+
+    let quiet = Cli::try_parse_from([
+        "agh",
+        "--no-status",
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "https://arxiv.org/abs/2606.00799",
+        "--loop",
+    ])
+    .expect("review --loop --no-status should parse");
+    assert!(!agenthero_orchestrator::cli::stream_app_stderr_for_cli(
+        &quiet
+    ));
+}
+
+#[test]
+fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
+    let app = std::fs::read_to_string(
+        workspace_root()
+            .join("agenthero")
+            .join("apps")
+            .join("grokrxiv")
+            .join("app.yaml"),
+    )
+    .expect("read grokrxiv app manifest");
+    let manifest: serde_yaml::Value = serde_yaml::from_str(&app).expect("parse grokrxiv app yaml");
+    let actions = manifest
+        .get("actions")
+        .and_then(|value| value.as_sequence())
+        .expect("actions array");
+    let review = actions
+        .iter()
+        .find(|action| action.get("id").and_then(|id| id.as_str()) == Some("review"))
+        .expect("review action");
+
+    assert_eq!(
+        review.get("dag_type").and_then(|value| value.as_str()),
+        Some("review-loop"),
+        "review --loop should be the product review path, with paper-review called inside the loop DAG"
+    );
+    let options = review
+        .get("options")
+        .and_then(|value| value.as_sequence())
+        .expect("review options");
+    let loop_option = options
+        .iter()
+        .find(|option| option.get("name").and_then(|name| name.as_str()) == Some("--loop"))
+        .expect("review action should advertise --loop");
+    assert_eq!(
+        loop_option.get("kind").and_then(|value| value.as_str()),
+        Some("flag")
+    );
+    let debug_option = options
+        .iter()
+        .find(|option| option.get("name").and_then(|name| name.as_str()) == Some("--debug"))
+        .expect("review action should advertise --debug");
+    assert_eq!(
+        debug_option.get("kind").and_then(|value| value.as_str()),
+        Some("flag")
+    );
+}
+
+#[test]
+fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
+    let path = workspace_root()
+        .join("agenthero")
+        .join("apps")
+        .join("grokrxiv")
+        .join("dags")
+        .join("review-loop.yaml");
+    let yaml = std::fs::read_to_string(&path).expect("read review-loop manifest");
+    let manifest: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse review-loop yaml");
+    assert_eq!(
+        manifest.get("id").and_then(|value| value.as_str()),
+        Some("review-loop")
+    );
+
+    let nodes = manifest
+        .get("nodes")
+        .and_then(|value| value.as_sequence())
+        .expect("nodes array");
+    let ids = nodes
+        .iter()
+        .filter_map(|node| node.get("id").and_then(|id| id.as_str()))
+        .collect::<Vec<_>>();
+    for expected in [
+        "paper_review",
+        "claim_extractor",
+        "knowledge_graph_builder",
+        "semantic_category_mapper",
+        "haskell_review_fix_code",
+        "proof_obligation_generator",
+        "lean_review_fix_code",
+        "citation_validation",
+        "pr_fixer",
+        "pr_review_fix_code",
+        "policy_gate",
+        "review_loop_report",
+        "publish_decision",
+    ] {
+        assert!(
+            ids.contains(&expected),
+            "review-loop manifest missing node {expected}; nodes were {ids:?}"
+        );
+    }
+    let roles = manifest
+        .get("roles")
+        .and_then(|value| value.as_sequence())
+        .expect("roles array");
+    for expected in [
+        "haskell_semantic_author",
+        "haskell_code_reviewer",
+        "haskell_code_fixer",
+        "lean_proof_author",
+        "lean_code_reviewer",
+        "lean_code_fixer",
+        "pr_artifact_fixer",
+        "pr_artifact_reviewer",
+    ] {
+        assert!(
+            roles
+                .iter()
+                .any(|role| role.get("id").and_then(|id| id.as_str()) == Some(expected)),
+            "review-loop manifest missing role {expected}"
+        );
+    }
+
+    let citation = nodes
+        .iter()
+        .find(|node| node.get("id").and_then(|id| id.as_str()) == Some("citation_validation"))
+        .expect("citation_validation node");
+    assert_eq!(
+        citation.get("kind").and_then(|value| value.as_str()),
+        Some("dag_call")
+    );
+    assert_eq!(
+        citation.get("dag_type").and_then(|value| value.as_str()),
+        Some("citation-validation")
+    );
+}
+
+#[test]
 fn app_run_grokrxiv_command_parses_without_separator() {
     let cli = Cli::try_parse_from([
         "agh",

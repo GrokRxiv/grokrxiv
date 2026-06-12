@@ -79,6 +79,51 @@ const RUST_TOOL_HANDLERS: &[RustToolDescriptor] = &[
         module: "publisher",
         description: "Open or update the publication pull request for an approved review.",
     },
+    RustToolDescriptor {
+        handler: "review_loop::claim_extractor",
+        module: "review_loop",
+        description: "Extract load-bearing claims from persisted review outputs.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::knowledge_graph_builder",
+        module: "review_loop",
+        description: "Build the review-loop knowledge graph artifact from extracted claims.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::semantic_category_mapper",
+        module: "review_loop",
+        description: "Materialize the Haskell semantic model and JSON semantic model.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::review_fix_code",
+        module: "review_loop",
+        description: "Bounded generate, compile/verify, review, fix, and retry primitive.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::proof_obligation_generator",
+        module: "review_loop",
+        description: "Generate Lean proof obligations from semantic-model evidence.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::pr_fixer",
+        module: "review_loop",
+        description: "Create corrected PR artifacts in an isolated artifact worktree.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::policy_gate",
+        module: "review_loop",
+        description: "Apply deterministic review-loop publication policy.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::review_loop_report",
+        module: "review_loop",
+        description: "Persist the final review-loop report artifact.",
+    },
+    RustToolDescriptor {
+        handler: "review_loop::publish_decision",
+        module: "review_loop",
+        description: "Convert deterministic policy output into an explicit publish decision.",
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -122,6 +167,7 @@ mod tests {
         assert!(is_known_rust_tool_handler(
             "citation_validation::metadata_consistency_validator"
         ));
+        assert!(is_known_rust_tool_handler("review_loop::policy_gate"));
         assert!(!is_known_rust_tool_handler("citation_validation::missing"));
     }
 

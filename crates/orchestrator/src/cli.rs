@@ -291,10 +291,14 @@ pub enum JobsCommand {
 /// Run the parsed CLI.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let _status_enabled = cli.status || (!cli.no_status && std::io::stderr().is_terminal());
+    let stream_app_stderr = stream_app_stderr_for_cli(&cli);
     let json = cli.json;
     let dry_run = cli.dry_run;
+    let debug_logs = cli.debug_logs;
     match cli.command {
-        Command::App { command } => app_command(command, json, dry_run).await,
+        Command::App { command } => {
+            app_command(command, json, dry_run, stream_app_stderr, debug_logs).await
+        }
         Command::Serve => crate::serve::run().await,
         Command::Doctor => crate::doctor::doctor(json).await,
         Command::Dag { command } => dag_command(command, json).await,
@@ -307,7 +311,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::Result<()> {
+/// Whether `agh app run` should tee adapter stderr to the operator while the app runs.
+pub fn stream_app_stderr_for_cli(cli: &Cli) -> bool {
+    !cli.no_status
+}
+
+async fn app_command(
+    command: AppCommand,
+    json: bool,
+    dry_run: bool,
+    stream_app_stderr: bool,
+    debug_logs: bool,
+) -> anyhow::Result<()> {
     match command {
         AppCommand::List => app_list(json),
         AppCommand::Show { app } => app_show(&app, json),
@@ -317,7 +332,16 @@ async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::
                 return app_show_manifest(&manifest, json);
             }
             let resolved = crate::dag_apps::resolve_app_action_args_in_manifest(&manifest, &args)?;
-            app_run_command(&manifest, &resolved.id, resolved.args, json, dry_run).await
+            app_run_command(
+                &manifest,
+                &resolved.id,
+                resolved.args,
+                json,
+                dry_run,
+                stream_app_stderr,
+                debug_logs,
+            )
+            .await
         }
         AppCommand::Runs { app, state, limit } => {
             app_runs(app.as_deref(), state.as_deref(), limit, json).await
@@ -697,22 +721,32 @@ async fn app_run_command(
     args: Vec<String>,
     json: bool,
     dry_run: bool,
+    stream_app_stderr: bool,
+    debug_logs: bool,
 ) -> anyhow::Result<()> {
     let binding = app
         .actions
         .iter()
         .find(|candidate| candidate.id == action)
         .ok_or_else(|| anyhow::anyhow!("unknown app action `{} {action}`", app.slug))?;
-    let mut input = agenthero_dag_executor::DagIo::default();
-    input.values.insert("app".into(), json!(app.slug));
-    input.values.insert("action".into(), json!(action));
-    input
-        .values
-        .insert("dag_type".into(), json!(binding.dag_type));
+    let input = app_run_adapter_input(
+        &app.slug,
+        action,
+        &binding.dag_type,
+        stream_app_stderr,
+        debug_logs,
+    );
 
-    let response =
-        crate::dag_apps::run_app_action_with_manifest(app, action, args, input, json, dry_run)
-            .await?;
+    let response = crate::dag_apps::run_app_action_with_manifest(
+        app,
+        action,
+        args,
+        input,
+        json,
+        dry_run,
+        stream_app_stderr,
+    )
+    .await?;
     if !response.ok {
         anyhow::bail!(
             "{}",
@@ -738,6 +772,24 @@ async fn app_run_command(
         println!("app={} action={} ok", app.slug, action);
     }
     Ok(())
+}
+
+fn app_run_adapter_input(
+    app: &str,
+    action: &str,
+    dag_type: &str,
+    stream_app_stderr: bool,
+    debug_logs: bool,
+) -> agenthero_dag_executor::DagIo {
+    let mut input = agenthero_dag_executor::DagIo::default();
+    input.values.insert("app".into(), json!(app));
+    input.values.insert("action".into(), json!(action));
+    input.values.insert("dag_type".into(), json!(dag_type));
+    input
+        .values
+        .insert("stream_stderr".into(), json!(stream_app_stderr));
+    input.values.insert("debug_logs".into(), json!(debug_logs));
+    input
 }
 
 async fn app_runs(
@@ -1473,4 +1525,20 @@ async fn connect_db() -> anyhow::Result<sqlx::PgPool> {
         .max_connections(2)
         .connect(&url)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_run_adapter_input_carries_status_and_debug_flags() {
+        let input = app_run_adapter_input("grokrxiv", "review", "review-loop", true, true);
+
+        assert_eq!(input.values["app"], json!("grokrxiv"));
+        assert_eq!(input.values["action"], json!("review"));
+        assert_eq!(input.values["dag_type"], json!("review-loop"));
+        assert_eq!(input.values["stream_stderr"], json!(true));
+        assert_eq!(input.values["debug_logs"], json!(true));
+    }
 }

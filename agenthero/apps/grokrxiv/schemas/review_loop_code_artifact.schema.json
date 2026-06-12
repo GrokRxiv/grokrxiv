@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GrokRxiv Review Loop Code Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["language", "filename", "code", "notes", "confidence"],
+  "properties": {
+    "language": {
+      "type": "string",
+      "enum": ["haskell", "lean", "latex"]
+    },
+    "filename": {
+      "type": "string",
+      "minLength": 1
+    },
+    "code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

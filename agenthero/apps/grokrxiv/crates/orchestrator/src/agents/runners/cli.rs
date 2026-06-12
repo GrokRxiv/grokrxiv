@@ -437,29 +437,51 @@ fn enrich_cli_tool_raw(mut raw: serde_json::Value, elapsed: Duration) -> serde_j
     })
 }
 
+struct PreparedReviewWorkdir {
+    path: PathBuf,
+    _tempdir: Option<tempfile::TempDir>,
+}
+
+impl PreparedReviewWorkdir {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 fn prepare_review_workdir(
     spec: &AgentSpec,
     input: &AgentInput,
-) -> anyhow::Result<tempfile::TempDir> {
-    let dir = tempfile::Builder::new()
-        .prefix("grokrxiv-review-")
-        .tempdir()
-        .map_err(|e| anyhow::anyhow!("create review CLI workdir: {e}"))?;
-    write_json_file(&dir.path().join("review_input.json"), &input.artifact)?;
-    write_json_file(&dir.path().join("schema.json"), spec.schema.as_ref())?;
-    std::fs::write(dir.path().join("prompt.md"), &input.user_prompt)
+) -> anyhow::Result<PreparedReviewWorkdir> {
+    let (path, tempdir) = if let Some(source_bundle_path) = input.source_bundle_path.as_deref() {
+        let path = PathBuf::from(source_bundle_path);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| anyhow::anyhow!("create review CLI harness {}: {e}", path.display()))?;
+        (path, None)
+    } else {
+        let dir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-")
+            .tempdir()
+            .map_err(|e| anyhow::anyhow!("create review CLI workdir: {e}"))?;
+        (dir.path().to_path_buf(), Some(dir))
+    };
+    write_json_file(&path.join("review_input.json"), &input.artifact)?;
+    write_json_file(&path.join("schema.json"), spec.schema.as_ref())?;
+    std::fs::write(path.join("prompt.md"), &input.user_prompt)
         .map_err(|e| anyhow::anyhow!("write prompt.md: {e}"))?;
-    std::fs::write(dir.path().join("system.md"), &input.system_prompt)
+    std::fs::write(path.join("system.md"), &input.system_prompt)
         .map_err(|e| anyhow::anyhow!("write system.md: {e}"))?;
     std::fs::write(
-        dir.path().join("README.md"),
+        path.join("README.md"),
         "GrokRxiv prepared this directory for one review role.\n\
          Use review_input.json as the paper/review artifact, prompt.md as the task, \
          system.md as the role instruction, and schema.json as the required output schema.\n\
          Do not search parent directories or the GrokRxiv repository.\n",
     )
     .map_err(|e| anyhow::anyhow!("write README.md: {e}"))?;
-    Ok(dir)
+    Ok(PreparedReviewWorkdir {
+        path,
+        _tempdir: tempdir,
+    })
 }
 
 fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow::Result<()> {
@@ -1882,6 +1904,37 @@ mod tests {
             "review prompt should reference prompt.md instead of duplicating the role task"
         );
         assert!(rendered.contains("Do not search parent directories"));
+    }
+
+    #[test]
+    fn review_workdir_uses_source_bundle_path_as_persistent_harness() {
+        let spec = stub_spec("gemini", "gemini-test");
+        let harness = tempfile::Builder::new()
+            .prefix("grokrxiv-review-harness-")
+            .tempdir()
+            .expect("harness tempdir");
+        let harness_path = harness.path().to_path_buf();
+        let input = AgentInput {
+            paper_id: uuid::Uuid::nil(),
+            review_id: uuid::Uuid::nil(),
+            role: "haskell_semantic_author".to_string(),
+            content_hash_material: serde_json::json!({"ignored": true}),
+            artifact: serde_json::json!({"target": "haskell"}),
+            system_prompt: "system instructions".to_string(),
+            user_prompt: "write code".to_string(),
+            source_bundle_path: Some(harness_path.display().to_string()),
+        };
+
+        let dir = prepare_review_workdir(&spec, &input).expect("prepare harness workdir");
+        assert_eq!(dir.path(), harness_path.as_path());
+        assert!(harness_path.join("review_input.json").exists());
+        assert!(harness_path.join("prompt.md").exists());
+
+        drop(dir);
+        assert!(
+            harness_path.join("review_input.json").exists(),
+            "source bundle harness must not be deleted when the run completes"
+        );
     }
 
     #[test]

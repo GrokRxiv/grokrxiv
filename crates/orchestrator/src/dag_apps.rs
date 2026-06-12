@@ -474,7 +474,7 @@ pub async fn run_app_action(
     dry_run: bool,
 ) -> anyhow::Result<AppAdapterResponse> {
     let manifest = load_app_manifest_by_slug(app_id)?;
-    run_app_action_with_manifest(&manifest, action_id, args, input, json, dry_run).await
+    run_app_action_with_manifest(&manifest, action_id, args, input, json, dry_run, false).await
 }
 
 /// Run an action through an already loaded app manifest.
@@ -485,6 +485,7 @@ pub async fn run_app_action_with_manifest(
     input: DagIo,
     json: bool,
     dry_run: bool,
+    stream_stderr: bool,
 ) -> anyhow::Result<AppAdapterResponse> {
     let action = manifest
         .actions
@@ -500,7 +501,7 @@ pub async fn run_app_action_with_manifest(
         json,
         dry_run,
     );
-    run_adapter_process(&manifest, &request).await
+    run_adapter_process(&manifest, &request, stream_stderr).await
 }
 
 /// Run a discovered DAG type through its owning app adapter.
@@ -518,7 +519,7 @@ pub async fn run_registered_dag_app(
         true,
         false,
     );
-    let response = run_adapter_process(&manifest, &request).await?;
+    let response = run_adapter_process(&manifest, &request, false).await?;
     if !response.ok {
         anyhow::bail!(
             "{}",
@@ -554,6 +555,7 @@ fn find_action_for_dag(dag_type: &str) -> anyhow::Result<(AppManifest, AppManife
 async fn run_adapter_process(
     manifest: &AppManifest,
     request: &AppAdapterRequest,
+    stream_stderr: bool,
 ) -> anyhow::Result<AppAdapterResponse> {
     let AppAdapter::Process {
         command,
@@ -624,7 +626,13 @@ async fn run_adapter_process(
         .take()
         .ok_or_else(|| anyhow::anyhow!("adapter `{}` stderr unavailable", manifest.slug))?;
     let stdout_task = tokio::spawn(async move { read_limited(&mut stdout, output_limit).await });
-    let stderr_task = tokio::spawn(async move { read_limited(&mut stderr, output_limit).await });
+    let stderr_task = tokio::spawn(async move {
+        if stream_stderr {
+            read_limited_and_tee_stderr(&mut stderr, output_limit).await
+        } else {
+            read_limited(&mut stderr, output_limit).await
+        }
+    });
 
     let payload = serde_json::to_vec(request)?;
     let mut stdin = child
@@ -724,6 +732,40 @@ where
                 truncated,
             });
         }
+        let remaining = limit.saturating_sub(out.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+        if read > remaining {
+            out.extend_from_slice(&buf[..remaining]);
+            truncated = true;
+        } else {
+            out.extend_from_slice(&buf[..read]);
+        }
+    }
+}
+
+async fn read_limited_and_tee_stderr<R>(
+    reader: &mut R,
+    limit: usize,
+) -> anyhow::Result<LimitedOutput>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut err = tokio::io::stderr();
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut buf = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            return Ok(LimitedOutput {
+                bytes: out,
+                truncated,
+            });
+        }
+        err.write_all(&buf[..read]).await?;
         let remaining = limit.saturating_sub(out.len());
         if remaining == 0 {
             truncated = true;
