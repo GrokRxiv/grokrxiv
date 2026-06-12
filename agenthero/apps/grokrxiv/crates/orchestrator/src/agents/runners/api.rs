@@ -447,8 +447,7 @@ mod tests {
 
     fn agent_input() -> AgentInput {
         AgentInput {
-            paper_id: uuid::Uuid::new_v4(),
-            review_id: uuid::Uuid::new_v4(),
+            context: Default::default(),
             role: "summary".to_string(),
             content_hash_material: json!({ "paper": "x" }),
             artifact: json!({ "paper": "x" }),

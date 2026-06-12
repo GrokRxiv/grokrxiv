@@ -1885,8 +1885,7 @@ mod tests {
     fn review_workdir_materializes_explicit_input_files() {
         let spec = stub_spec("gemini", "gemini-test");
         let input = AgentInput {
-            paper_id: uuid::Uuid::nil(),
-            review_id: uuid::Uuid::nil(),
+            context: Default::default(),
             role: "summary".to_string(),
             content_hash_material: serde_json::json!({"ignored": true}),
             artifact: serde_json::json!({"title": "Paper", "sections": []}),
@@ -1924,8 +1923,7 @@ mod tests {
             .expect("harness tempdir");
         let harness_path = harness.path().to_path_buf();
         let input = AgentInput {
-            paper_id: uuid::Uuid::nil(),
-            review_id: uuid::Uuid::nil(),
+            context: Default::default(),
             role: "haskell_semantic_author".to_string(),
             content_hash_material: serde_json::json!({"ignored": true}),
             artifact: serde_json::json!({"target": "haskell"}),
@@ -2118,8 +2116,7 @@ mod tests {
         spec.sandbox = SandboxPolicy::Container;
 
         let input = AgentInput {
-            paper_id: uuid::Uuid::nil(),
-            review_id: uuid::Uuid::nil(),
+            context: Default::default(),
             role: "summary".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
@@ -2527,8 +2524,7 @@ mod tests {
         let mut spec = stub_spec("gemini", "gemini-3-flash-preview");
         spec.role = "citation".to_string();
         let input = AgentInput {
-            paper_id: uuid::Uuid::nil(),
-            review_id: uuid::Uuid::nil(),
+            context: Default::default(),
             role: "citation".to_string(),
             content_hash_material: serde_json::json!({"paper": "x"}),
             artifact: serde_json::json!({"title": "Paper", "sections": []}),

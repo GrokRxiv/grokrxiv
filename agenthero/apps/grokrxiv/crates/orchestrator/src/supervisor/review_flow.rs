@@ -17,6 +17,7 @@ use super::verification::{
 };
 use super::{MAX_RETRIES, MIN_SPECIALIST_QUORUM};
 use crate::cli_status::StatusMark;
+use crate::agents::grokrxiv_agent_context;
 use crate::state::AppState;
 use agenthero_dag_runtime::{DagManifest, DagNodeKind};
 use serde_json::json;
@@ -677,8 +678,7 @@ pub(super) async fn run_review_dag_inner_with_context(
             );
 
             let input = AgentInput {
-                paper_id,
-                review_id,
+                context: grokrxiv_agent_context(paper_id, review_id),
                 role: role_for_task.clone(),
                 content_hash_material: specialist_input_cloned.clone(),
                 artifact: specialist_input_cloned,
@@ -980,8 +980,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                     "cache miss"
                 );
                 let meta_agent_input = AgentInput {
-                    paper_id,
-                    review_id,
+                    context: grokrxiv_agent_context(paper_id, review_id),
                     role: meta_role.clone(),
                     content_hash_material: meta_input.clone(),
                     artifact: meta_input.clone(),

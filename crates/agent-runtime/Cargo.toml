@@ -19,4 +19,3 @@ agenthero-llm-adapter = { path = "../llm-adapter" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }

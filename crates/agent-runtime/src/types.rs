@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub use agenthero_llm_adapter::{
     ProviderToolCall as ToolCall, ToolChatRequest, ToolCompletion, ToolContent, ToolMessage,
@@ -56,7 +55,9 @@ impl Default for AgentRunnerKind {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentRunnerKind;
+    use std::collections::BTreeMap;
+
+    use super::{AgentInput, AgentRunnerKind};
 
     #[test]
     fn runner_kind_only_accepts_active_backends() {
@@ -75,6 +76,24 @@ mod tests {
                 "{stale} must not deserialize as an active runner backend"
             );
         }
+    }
+
+    #[test]
+    fn agent_input_contract_is_domain_neutral() {
+        let input = AgentInput {
+            context: BTreeMap::from([("app_key".to_string(), serde_json::json!("value"))]),
+            role: "generic_agent".to_string(),
+            content_hash_material: serde_json::json!({"input": true}),
+            artifact: serde_json::json!({"input": true}),
+            system_prompt: "system".to_string(),
+            user_prompt: "user".to_string(),
+            source_bundle_path: None,
+        };
+
+        assert_eq!(
+            input.context.get("app_key"),
+            Some(&serde_json::json!("value"))
+        );
     }
 }
 
@@ -177,10 +196,10 @@ impl AgentSpec {
 /// Input payload a runner receives.
 #[derive(Debug, Clone)]
 pub struct AgentInput {
-    /// Paper this review pertains to.
-    pub paper_id: Uuid,
-    /// Review ID the run belongs to.
-    pub review_id: Uuid,
+    /// App-owned execution context values. Product apps can store durable ids,
+    /// tenant metadata, or other runner-scoped values here without extending
+    /// the platform runtime contract.
+    pub context: std::collections::BTreeMap<String, serde_json::Value>,
     /// DAG-scoped role id being executed.
     pub role: String,
     /// Bytes used to derive the cache content hash. Typically the JSON of the

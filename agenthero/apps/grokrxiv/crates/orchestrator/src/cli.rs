@@ -5099,8 +5099,7 @@ async fn run_review_loop_agent(
         .get(&runner_kind)
         .ok_or_else(|| anyhow::anyhow!("review-loop runner `{runner_kind:?}` is not registered"))?;
     let input = AgentInput {
-        paper_id,
-        review_id,
+        context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
         role: role.to_string(),
         content_hash_material: artifact.clone(),
         artifact,

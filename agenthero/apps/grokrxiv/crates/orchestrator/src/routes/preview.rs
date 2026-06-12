@@ -386,8 +386,7 @@ async fn run_meta_review_cli(state: &AppState, paper: &PaperExtract) -> anyhow::
         timeout_secs: preview_timeout_secs(),
     };
     let input = AgentInput {
-        paper_id: Uuid::new_v4(),
-        review_id: Uuid::new_v4(),
+        context: Default::default(),
         role: "preview_meta_reviewer".to_string(),
         content_hash_material: paper_json.clone(),
         artifact: paper_json,

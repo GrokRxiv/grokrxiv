@@ -347,8 +347,7 @@ mod tests {
             timeout_secs: 1,
         };
         let input = AgentInput {
-            paper_id: Uuid::nil(),
-            review_id: Uuid::nil(),
+            context: Default::default(),
             role: "summary".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),
@@ -388,8 +387,7 @@ mod tests {
             timeout_secs: 1,
         };
         let input = AgentInput {
-            paper_id: Uuid::nil(),
-            review_id: Uuid::nil(),
+            context: Default::default(),
             role: "citation".to_string(),
             content_hash_material: serde_json::json!({}),
             artifact: serde_json::json!({}),

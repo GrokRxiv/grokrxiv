@@ -10,11 +10,13 @@
 //! - [`sandbox`] — orthogonal `SandboxPolicy::Container` helper
 
 pub mod config;
+pub mod context;
 pub mod review;
 pub mod runners;
 pub mod sandbox;
 pub mod types;
 
+pub use context::{grokrxiv_agent_context, review_only_agent_context};
 pub use review::{build_agent, ConfiguredAgent};
 pub use runners::AgentRunner;
 pub use types::{
@@ -26,7 +28,6 @@ pub use types::{
 mod tests {
     use async_trait::async_trait;
     use serde_json::json;
-    use uuid::Uuid;
 
     use super::types::{AgentInput, AgentRun, AgentRunnerKind, AgentSpec, SandboxPolicy};
     use super::AgentRunner;
@@ -72,8 +73,7 @@ mod tests {
             "bibliography": []
         });
         AgentInput {
-            paper_id: Uuid::new_v4(),
-            review_id: Uuid::new_v4(),
+            context: Default::default(),
             role: role.to_string(),
             content_hash_material: artifact.clone(),
             artifact,

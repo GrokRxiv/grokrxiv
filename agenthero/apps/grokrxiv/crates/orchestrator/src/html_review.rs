@@ -97,8 +97,7 @@ pub async fn clean_pr_text(
         .replace("{{title}}", title)
         .replace("{{body}}", body);
     let input = AgentInput {
-        paper_id: Uuid::nil(),
-        review_id,
+        context: crate::agents::review_only_agent_context(review_id),
         role: "pr_text_quality".to_string(),
         content_hash_material: Value::String("pr_text_quality".into()),
         artifact: Value::String(format!("{title}\n\n{body}")),
@@ -246,8 +245,7 @@ pub async fn review_and_fix_html_with_timeout(
 
     let prompt = render_html_quality_prompt(&original_html);
     let input = AgentInput {
-        paper_id: Uuid::nil(),
-        review_id,
+        context: crate::agents::review_only_agent_context(review_id),
         role: role.to_string(),
         content_hash_material: Value::String("html_quality".into()),
         artifact: Value::String(original_html.clone()),
