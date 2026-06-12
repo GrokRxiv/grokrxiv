@@ -4811,6 +4811,12 @@ async fn run_review_fix_code_loop(
                         "status": "fail",
                         "harness_error": format!("{err:#}"),
                     }],
+                    "agent_output_audit_summary": {
+                        "total": 0,
+                        "accepted": 0,
+                        "rejected": 0,
+                        "by_role": {}
+                    },
                     "status": "fail",
                     "final_path": final_path.display().to_string(),
                     "harness": {
@@ -4820,6 +4826,7 @@ async fn run_review_fix_code_loop(
                 });
             }
         };
+    let artifact_root = workdir.parent().unwrap_or(workdir).to_path_buf();
 
     for attempt in 1..=task.max_attempts {
         let round_dir = workdir.join(format!("round_{attempt}"));
@@ -4838,6 +4845,7 @@ async fn run_review_fix_code_loop(
             task.fixer_role
         };
         let agent_artifact = serde_json::json!({
+            "phase": "generate",
             "target": task.target_id,
             "language": task.language,
             "filename": task.filename,
@@ -4866,7 +4874,7 @@ async fn run_review_fix_code_loop(
             paper_id,
             review_id,
             role,
-            agent_artifact,
+            agent_artifact.clone(),
             review_loop_code_system_prompt(&task, role, attempt),
             review_loop_code_user_prompt(&task, role, attempt),
             Some(&harness.path),
@@ -4875,11 +4883,37 @@ async fn run_review_fix_code_loop(
         {
             Ok(run) => run,
             Err(err) => {
+                let audit = write_review_loop_agent_output_audit(
+                    &artifact_root,
+                    &task,
+                    attempt,
+                    role,
+                    "generate",
+                    &agent_artifact,
+                    None,
+                    None,
+                    None,
+                    "rejected",
+                    &format!("{err:#}"),
+                )
+                .await
+                .unwrap_or_else(|audit_err| {
+                    serde_json::json!({
+                        "role": role,
+                        "phase": "generate",
+                        "attempt": attempt,
+                        "decision": {
+                            "status": "rejected",
+                            "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
+                        }
+                    })
+                });
                 attempts.push(serde_json::json!({
                     "attempt": attempt,
                     "status": "fail",
                     "author_role": role,
                     "author_error": format!("{err:#}"),
+                    "agent_output_audits": [audit],
                 }));
                 break;
             }
@@ -4889,23 +4923,75 @@ async fn run_review_fix_code_loop(
         let code = match code_from_agent_run(&generation_run, &task) {
             Ok(code) => code,
             Err(err) => {
+                let audit = write_review_loop_agent_output_audit(
+                    &artifact_root,
+                    &task,
+                    attempt,
+                    role,
+                    "generate",
+                    &agent_artifact,
+                    Some(&generation_run),
+                    None,
+                    None,
+                    "rejected",
+                    &format!("{err:#}"),
+                )
+                .await
+                .unwrap_or_else(|audit_err| {
+                    serde_json::json!({
+                        "role": role,
+                        "phase": "generate",
+                        "attempt": attempt,
+                        "decision": {
+                            "status": "rejected",
+                            "reason": format!("generated code extraction failed: {err:#}; audit write failed: {audit_err:#}")
+                        }
+                    })
+                });
                 attempts.push(serde_json::json!({
                     "attempt": attempt,
                     "status": "fail",
                     "author_role": role,
                     "generation": generation_run.output,
                     "author_error": format!("{err:#}"),
+                    "agent_output_audits": [audit],
                 }));
                 break;
             }
         };
         if let Err(err) = write_review_loop_code_file(final_path, &code).await {
+            let audit = write_review_loop_agent_output_audit(
+                &artifact_root,
+                &task,
+                attempt,
+                role,
+                "generate",
+                &agent_artifact,
+                Some(&generation_run),
+                None,
+                None,
+                "rejected",
+                &format!("write {}: {err}", final_path.display()),
+            )
+            .await
+            .unwrap_or_else(|audit_err| {
+                serde_json::json!({
+                    "role": role,
+                    "phase": "generate",
+                    "attempt": attempt,
+                    "decision": {
+                        "status": "rejected",
+                        "reason": format!("generated code write failed: {err}; audit write failed: {audit_err:#}")
+                    }
+                })
+            });
             attempts.push(serde_json::json!({
                 "attempt": attempt,
                 "status": "fail",
                 "author_role": role,
                 "generation": generation_run.output,
                 "write_error": format!("write {}: {err}", final_path.display()),
+                "agent_output_audits": [audit],
             }));
             break;
         }
@@ -4958,10 +5044,12 @@ async fn run_review_fix_code_loop(
         let _ = write_loop_json(&round_dir.join("compile.json"), &compile_value).await;
 
         let reviewer_artifact = serde_json::json!({
+            "phase": "review",
             "target": task.target_id,
             "language": task.language,
             "filename": task.filename,
             "attempt": attempt,
+            "max_attempts": task.max_attempts,
             "code": code,
             "compile": compile_value,
             "semantic_validation": semantic_validation,
@@ -4969,31 +5057,35 @@ async fn run_review_fix_code_loop(
             "base": base_artifact,
             "harness": harness.as_json(),
         });
-        let review_output = match run_review_loop_agent(
+        let (review_output, review_run, review_error) = match run_review_loop_agent(
             state,
             paper_id,
             review_id,
             task.reviewer_role,
-            reviewer_artifact,
+            reviewer_artifact.clone(),
             review_loop_code_system_prompt(&task, task.reviewer_role, attempt),
             review_loop_code_user_prompt(&task, task.reviewer_role, attempt),
             Some(&harness.path),
         )
         .await
         {
-            Ok(run) => run.output,
-            Err(err) => serde_json::json!({
-                "status": "fail",
-                "issues": [
-                    {
-                        "severity": "blocking",
-                        "message": format!("Codex review agent failed: {err:#}"),
-                        "line": null
-                    }
-                ],
-                "summary": "Codex review agent failed.",
-                "confidence": 1.0
-            }),
+            Ok(run) => (run.output.clone(), Some(run), None),
+            Err(err) => (
+                serde_json::json!({
+                    "status": "fail",
+                    "issues": [
+                        {
+                            "severity": "blocking",
+                            "message": format!("Codex review agent failed: {err:#}"),
+                            "line": null
+                        }
+                    ],
+                    "summary": "Codex review agent failed.",
+                    "confidence": 1.0
+                }),
+                None,
+                Some(format!("{err:#}")),
+            ),
         };
         let _ = write_loop_json(&round_dir.join("codex_review.json"), &review_output).await;
 
@@ -5005,6 +5097,80 @@ async fn run_review_fix_code_loop(
         } else {
             "fail"
         };
+        let generation_decision_reason = if attempt_status == "pass" {
+            "generated artifact accepted by schema, semantic validator, compiler, and reviewer"
+                .to_string()
+        } else {
+            review_fix_attempt_rejection_reason(&semantic_validation, &compile_run, &review_output)
+        };
+        let generation_audit = write_review_loop_agent_output_audit(
+            &artifact_root,
+            &task,
+            attempt,
+            role,
+            "generate",
+            &agent_artifact,
+            Some(&generation_run),
+            Some(&semantic_validation),
+            Some(&compile_value),
+            if attempt_status == "pass" {
+                "accepted"
+            } else {
+                "rejected"
+            },
+            &generation_decision_reason,
+        )
+        .await
+        .unwrap_or_else(|audit_err| {
+            serde_json::json!({
+                "role": role,
+                "phase": "generate",
+                "attempt": attempt,
+                "decision": {
+                    "status": "rejected",
+                    "reason": format!("audit write failed: {audit_err:#}")
+                }
+            })
+        });
+        let reviewer_decision_reason = review_error.unwrap_or_else(|| {
+            format!(
+                "reviewer output schema-valid with status={}",
+                review_output
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+            )
+        });
+        let reviewer_audit = write_review_loop_agent_output_audit(
+            &artifact_root,
+            &task,
+            attempt,
+            task.reviewer_role,
+            "review",
+            &reviewer_artifact,
+            review_run.as_ref(),
+            Some(&semantic_validation),
+            Some(&compile_value),
+            if review_run.is_some() {
+                "accepted"
+            } else {
+                "rejected"
+            },
+            &reviewer_decision_reason,
+        )
+        .await
+        .unwrap_or_else(|audit_err| {
+            serde_json::json!({
+                "role": task.reviewer_role,
+                "phase": "review",
+                "attempt": attempt,
+                "decision": {
+                    "status": "rejected",
+                    "reason": format!("audit write failed: {audit_err:#}")
+                }
+            })
+        });
+        let agent_output_audits = vec![generation_audit, reviewer_audit];
         let git_evidence =
             record_review_loop_harness_attempt(&harness, task.target_id, attempt).await;
         attempts.push(serde_json::json!({
@@ -5021,6 +5187,7 @@ async fn run_review_fix_code_loop(
             "compile": compile_run,
             "compile_timeout_secs": task.compile_timeout_secs,
             "codex_review": review_output,
+            "agent_output_audits": agent_output_audits,
         }));
 
         if attempt_status == "pass" {
@@ -5040,6 +5207,10 @@ async fn run_review_fix_code_loop(
             .and_then(|attempt| attempt.get("codex_review").cloned());
     }
 
+    let agent_output_audit_summary = review_fix_loop_agent_output_audit_summary(
+        &serde_json::json!({ "attempts": attempts.clone() }),
+    );
+
     serde_json::json!({
         "stage": format!("{}_review_fix_code", task.target_id),
         "target": task.target_id,
@@ -5051,6 +5222,7 @@ async fn run_review_fix_code_loop(
         "compile_timeout_secs": task.compile_timeout_secs,
         "max_attempts": task.max_attempts,
         "attempts": attempts,
+        "agent_output_audit_summary": agent_output_audit_summary,
         "status": final_status,
         "final_path": final_path.display().to_string(),
         "harness": harness.as_json(),
@@ -5397,6 +5569,223 @@ fn code_review_passed(review: &serde_json::Value) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+fn review_fix_code_node_id(target_id: &str) -> &'static str {
+    match target_id {
+        "haskell" => "haskell_review_fix_code",
+        "lean" => "lean_review_fix_code",
+        "pr" => "pr_fixer",
+        _ => "review_fix_code",
+    }
+}
+
+fn review_loop_agent_output_schema(role: &str) -> (&'static str, serde_json::Value) {
+    if role.ends_with("_reviewer") || role.contains("code_reviewer") {
+        (
+            "schemas/review_loop_code_review.schema.json",
+            serde_json::from_str(include_str!(
+                "../../../schemas/review_loop_code_review.schema.json"
+            ))
+            .expect("review-loop code review schema is valid JSON"),
+        )
+    } else {
+        (
+            "schemas/review_loop_code_artifact.schema.json",
+            serde_json::from_str(include_str!(
+                "../../../schemas/review_loop_code_artifact.schema.json"
+            ))
+            .expect("review-loop code artifact schema is valid JSON"),
+        )
+    }
+}
+
+async fn write_review_loop_agent_output_audit(
+    artifact_root: &Path,
+    task: &ReviewFixCodeTask,
+    attempt: usize,
+    role: &str,
+    phase: &str,
+    input: &serde_json::Value,
+    run: Option<&AgentRun>,
+    semantic_validation: Option<&serde_json::Value>,
+    tool_validation: Option<&serde_json::Value>,
+    decision_status: &str,
+    decision_reason: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let node = review_fix_code_node_id(task.target_id);
+    let rel_dir = format!("agent_outputs/{node}/round_{attempt}/{role}");
+    let dir = artifact_root.join(&rel_dir);
+    tokio::fs::create_dir_all(&dir).await?;
+
+    let (schema_path, schema_json) = review_loop_agent_output_schema(role);
+    let output = run
+        .map(|run| run.output.clone())
+        .unwrap_or(serde_json::Value::Null);
+    let raw_stdout = run
+        .and_then(|run| run.raw_output.as_deref())
+        .unwrap_or_default();
+    let raw_stderr = if run.is_some() { "" } else { decision_reason };
+    let schema_validation = serde_json::json!({
+        "status": if run.is_some() { "pass" } else { "fail" },
+        "schema_path": schema_path,
+        "reason": if run.is_some() {
+            "runner returned JSON already validated against role output schema"
+        } else {
+            decision_reason
+        }
+    });
+    let semantic_validation = semantic_validation
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"status": "not_applicable"}));
+    let tool_validation = tool_validation
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"status": "not_applicable"}));
+    let decision = serde_json::json!({
+        "status": decision_status,
+        "reason": decision_reason,
+    });
+
+    write_loop_json(&dir.join("input.json"), input).await?;
+    write_loop_json(&dir.join("schema.json"), &schema_json).await?;
+    tokio::fs::write(dir.join("raw_stdout.txt"), raw_stdout).await?;
+    tokio::fs::write(dir.join("raw_stderr.txt"), raw_stderr).await?;
+    write_loop_json(&dir.join("output.json"), &output).await?;
+    write_loop_json(&dir.join("schema_validation.json"), &schema_validation).await?;
+    write_loop_json(&dir.join("semantic_validation.json"), &semantic_validation).await?;
+    write_loop_json(&dir.join("tool_validation.json"), &tool_validation).await?;
+    write_loop_json(&dir.join("decision.json"), &decision).await?;
+
+    Ok(serde_json::json!({
+        "role": role,
+        "phase": phase,
+        "attempt": attempt,
+        "runner": run.map(|run| format!("{:?}", run.runner).to_ascii_lowercase()),
+        "model": run.map(|run| run.model.clone()),
+        "tokens_in": run.and_then(|run| run.tokens_in),
+        "tokens_out": run.and_then(|run| run.tokens_out),
+        "latency_ms": run.map(|run| run.latency_ms),
+        "schema_path": schema_path,
+        "artifact_dir": format!("review_loop/{rel_dir}"),
+        "artifacts": {
+            "input": format!("review_loop/{rel_dir}/input.json"),
+            "schema": format!("review_loop/{rel_dir}/schema.json"),
+            "raw_stdout": format!("review_loop/{rel_dir}/raw_stdout.txt"),
+            "raw_stderr": format!("review_loop/{rel_dir}/raw_stderr.txt"),
+            "output": format!("review_loop/{rel_dir}/output.json"),
+            "schema_validation": format!("review_loop/{rel_dir}/schema_validation.json"),
+            "semantic_validation": format!("review_loop/{rel_dir}/semantic_validation.json"),
+            "tool_validation": format!("review_loop/{rel_dir}/tool_validation.json"),
+            "decision": format!("review_loop/{rel_dir}/decision.json")
+        },
+        "schema_validation": schema_validation,
+        "semantic_validation": semantic_validation,
+        "tool_validation": tool_validation,
+        "decision": decision,
+    }))
+}
+
+fn review_fix_loop_agent_output_audit_summary(
+    results: &serde_json::Value,
+) -> serde_json::Value {
+    let mut total = 0_i64;
+    let mut accepted = 0_i64;
+    let mut rejected = 0_i64;
+    let mut by_role = serde_json::Map::new();
+
+    for audit in results
+        .get("attempts")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|attempt| {
+            attempt
+                .get("agent_output_audits")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+        })
+    {
+        total += 1;
+        let role = audit
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let status = audit
+            .get("decision")
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("rejected");
+        let role_entry = by_role.entry(role.to_string()).or_insert_with(|| {
+            serde_json::json!({
+                "total": 0,
+                "accepted": 0,
+                "rejected": 0,
+            })
+        });
+        if let Some(entry) = role_entry.as_object_mut() {
+            let current_total = entry.get("total").and_then(|value| value.as_i64()).unwrap_or(0);
+            entry.insert("total".to_string(), serde_json::json!(current_total + 1));
+            if status == "accepted" {
+                let current = entry
+                    .get("accepted")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                entry.insert("accepted".to_string(), serde_json::json!(current + 1));
+            } else {
+                let current = entry
+                    .get("rejected")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                entry.insert("rejected".to_string(), serde_json::json!(current + 1));
+            }
+        }
+        if status == "accepted" {
+            accepted += 1;
+        } else {
+            rejected += 1;
+        }
+    }
+
+    serde_json::json!({
+        "total": total,
+        "accepted": accepted,
+        "rejected": rejected,
+        "by_role": by_role,
+    })
+}
+
+fn review_fix_attempt_rejection_reason(
+    semantic_validation: &serde_json::Value,
+    compile_run: &CommandRunReport,
+    review_output: &serde_json::Value,
+) -> String {
+    if let Some(issue) = semantic_validation
+        .get("issues")
+        .and_then(|value| value.as_array())
+        .and_then(|issues| issues.first())
+        .and_then(|issue| issue.as_str())
+    {
+        return truncate(issue, 260);
+    }
+    if compile_run.status != "pass" {
+        let detail = if compile_run.stderr.trim().is_empty() {
+            compile_run.stdout.as_str()
+        } else {
+            compile_run.stderr.as_str()
+        };
+        return truncate(&detail.replace('\n', " "), 260);
+    }
+    if let Some(issue) = review_output
+        .get("issues")
+        .and_then(|value| value.as_array())
+        .and_then(|issues| issues.first())
+        .and_then(|issue| issue.get("message"))
+        .and_then(|message| message.as_str())
+    {
+        return truncate(issue, 260);
+    }
+    "generated artifact did not pass all deterministic and reviewer gates".to_string()
 }
 
 fn review_fix_loop_summary(results: &serde_json::Value) -> String {
@@ -6006,6 +6395,11 @@ async fn run_review_loop_for_review(
             .and_then(|value| value.get("attempts"))
             .cloned()
             .unwrap_or_else(|| serde_json::json!([])),
+        "agent_output_audit_summary": review_fix_loop_agent_output_audit_summary(
+            pr_fixes
+                .get("compile_review_loop")
+                .unwrap_or(&serde_json::Value::Null),
+        ),
         "reviewer_role": "pr_artifact_reviewer",
     });
     let pr_review_dir = artifact_dir.join("pr_review");
@@ -6157,7 +6551,18 @@ async fn run_review_loop_for_review(
             "citation_validation": "review_loop/citation_validation_report.json",
             "pr_fixes": "review_loop/pr_fixes.json",
             "pr_harness": "review_loop/fixed/harness.json",
+            "agent_outputs": "review_loop/agent_outputs",
             "policy_gate": "review_loop/policy_gate.json",
+        },
+        "agent_output_audits": {
+            "haskell": haskell_results["agent_output_audit_summary"],
+            "lean": lean_results["agent_output_audit_summary"],
+            "pr": pr_fixes
+                .get("compile_review_loop")
+                .and_then(|value| value.get("agent_output_audit_summary"))
+                .cloned()
+                .unwrap_or_else(|| review_fix_loop_agent_output_audit_summary(&serde_json::Value::Null)),
+            "pr_review": pr_review_results["agent_output_audit_summary"],
         },
         "theorem_formalization": theorem_map,
         "semantic_adequacy": semantic_adequacy,
@@ -6408,6 +6813,12 @@ fn skipped_review_fix_code_results(
                 }
             }
         ],
+        "agent_output_audit_summary": {
+            "total": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "by_role": {}
+        },
         "status": "fail",
         "skipped": true,
         "skip_reason": reason,
@@ -10776,6 +11187,85 @@ mod tests {
         assert!(review_score.contains("semantic_adequacy"));
         assert!(release_tiers.contains("formally_verified"));
         assert!(repair_policy.contains("requires_escalation"));
+    }
+
+    #[test]
+    fn review_loop_code_task_schema_rejects_extra_fields() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/review_loop_code_task.schema.json"))
+                .expect("schema json");
+        let validator = jsonschema::validator_for(&schema).expect("compiled schema");
+
+        let valid_generation = serde_json::json!({
+            "phase": "generate",
+            "target": "haskell",
+            "language": "haskell",
+            "filename": "SemanticModel.hs",
+            "attempt": 1,
+            "max_attempts": 2,
+            "base": {},
+            "previous_code": null,
+            "previous_compile": null,
+            "previous_codex_review": null,
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/haskell/abc123"}
+        });
+        validator
+            .validate(&valid_generation)
+            .expect("valid generation task");
+
+        let valid_review = serde_json::json!({
+            "phase": "review",
+            "target": "lean",
+            "language": "lean",
+            "filename": "GrokRxiv/Proofs.lean",
+            "attempt": 1,
+            "max_attempts": 2,
+            "code": "theorem t : True := by trivial",
+            "compile": {"status": "pass"},
+            "semantic_validation": {"status": "pass", "issues": []},
+            "forbidden_terms": [],
+            "base": {},
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/lean/abc123"}
+        });
+        validator.validate(&valid_review).expect("valid review task");
+
+        let mut invalid = valid_generation;
+        invalid["undeclared"] = serde_json::json!("must fail");
+        assert!(
+            validator.validate(&invalid).is_err(),
+            "review_loop_code_task schema must be closed"
+        );
+    }
+
+    #[test]
+    fn review_fix_loop_agent_output_audit_summary_counts_rejected_outputs() {
+        let results = serde_json::json!({
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "agent_output_audits": [
+                        {"role": "haskell_semantic_author", "decision": {"status": "accepted"}},
+                        {"role": "haskell_code_reviewer", "decision": {"status": "rejected"}}
+                    ]
+                },
+                {
+                    "attempt": 2,
+                    "agent_output_audits": [
+                        {"role": "haskell_code_fixer", "decision": {"status": "accepted"}}
+                    ]
+                }
+            ]
+        });
+
+        let summary = review_fix_loop_agent_output_audit_summary(&results);
+
+        assert_eq!(summary["total"], 3);
+        assert_eq!(summary["accepted"], 2);
+        assert_eq!(summary["rejected"], 1);
+        assert_eq!(
+            summary["by_role"]["haskell_code_reviewer"]["rejected"],
+            1
+        );
     }
 
     #[test]

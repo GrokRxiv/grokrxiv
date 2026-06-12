@@ -230,6 +230,9 @@ pub struct AgentRun {
     pub model: String,
     /// JSON output validated against the role's schema.
     pub output: serde_json::Value,
+    /// Raw model/CLI text captured before JSON extraction and schema
+    /// validation. Cache hits and legacy runners may leave this empty.
+    pub raw_output: Option<String>,
     /// Optional verifier result if the runner ran its own verifier rungs.
     pub verifier_status: Option<String>,
     /// Optional verifier notes if the runner produced them.
@@ -265,6 +268,7 @@ impl AgentRun {
             runner,
             model,
             output,
+            raw_output: None,
             verifier_status: None,
             verifier_notes: None,
             tokens_in,
