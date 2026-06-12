@@ -4492,6 +4492,125 @@ async fn paper_id_for_review(pool: &sqlx::PgPool, review_id: Uuid) -> sqlx::Resu
         .await
 }
 
+async fn load_review_loop_paper_math_sources(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+) -> anyhow::Result<serde_json::Value> {
+    let mut artifact_sources = Vec::new();
+    let mut warnings = Vec::new();
+    let mut body = serde_json::json!({
+        "artifact": "review_inputs.artifact",
+        "sections": [],
+    });
+    let mut equations = serde_json::json!({
+        "artifact": "equations.json",
+        "equations": [],
+        "reason": "not_loaded",
+    });
+    let mut theorem_graph = serde_json::json!({
+        "artifact": "theorem_graph.json",
+        "nodes": [],
+        "reason": "not_loaded",
+    });
+    let mut semantic_ast = serde_json::Value::Null;
+
+    if let Some(artifact) = crate::db::load_latest_review_input_artifact(pool, paper_id).await? {
+        artifact_sources.push("review_inputs.artifact".to_string());
+        body = serde_json::json!({
+            "artifact": "review_inputs.artifact",
+            "sections": artifact
+                .get("sections")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        });
+    }
+
+    #[cfg(feature = "grokrxiv-storage")]
+    if let Some(assets) = crate::db::read_paper_assets(pool, paper_id).await? {
+        if matches!(assets.extraction_status, crate::db::ExtractionStatus::Ready) {
+            match (assets.git_path.as_deref(), data_repo_root()) {
+                (Some(git_path), Ok(repo_root)) => {
+                    let review_input_path = repo_root.join(git_path).join("review_input.json");
+                    match std::fs::read(&review_input_path) {
+                        Ok(bytes) => match serde_json::from_slice::<grokrxiv_storage::ReviewInput>(&bytes) {
+                            Ok(review_input) => {
+                                artifact_sources.push(format!(
+                                    "review_input:{}",
+                                    review_input_path.display()
+                                ));
+                                match read_review_text(&repo_root, &review_input.body_markdown, "body.md") {
+                                    Ok(body_text) => {
+                                        body = serde_json::json!({
+                                            "artifact": "body.md",
+                                            "text": body_text,
+                                            "sections": body
+                                                .get("sections")
+                                                .cloned()
+                                                .unwrap_or_else(|| serde_json::json!([])),
+                                        });
+                                    }
+                                    Err(err) => warnings.push(format!("body.md not loaded: {err:#}")),
+                                }
+                                match read_review_json(&repo_root, &review_input.equations, "equations.json") {
+                                    Ok(doc) => {
+                                        equations = doc;
+                                        artifact_sources.push("equations.json".to_string());
+                                    }
+                                    Err(err) => warnings.push(format!("equations.json not loaded: {err:#}")),
+                                }
+                                match read_review_json(
+                                    &repo_root,
+                                    &review_input.theorem_graph,
+                                    "theorem_graph.json",
+                                ) {
+                                    Ok(doc) => {
+                                        theorem_graph = doc;
+                                        artifact_sources.push("theorem_graph.json".to_string());
+                                    }
+                                    Err(err) => warnings.push(format!("theorem_graph.json not loaded: {err:#}")),
+                                }
+                                if let Some(uri) = review_input.semantic_ast_uri.as_deref() {
+                                    if !uri.starts_with("supabase://") {
+                                        match read_review_json(&repo_root, uri, "semantic_ast.json") {
+                                            Ok(doc) => {
+                                                semantic_ast = doc;
+                                                artifact_sources.push("semantic_ast.json".to_string());
+                                            }
+                                            Err(err) => warnings.push(format!("semantic_ast.json not loaded: {err:#}")),
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => warnings.push(format!(
+                                "review_input.json parse failed at {}: {err}",
+                                review_input_path.display()
+                            )),
+                        },
+                        Err(err) => warnings.push(format!(
+                            "review_input.json not loaded at {}: {err}",
+                            review_input_path.display()
+                        )),
+                    }
+                }
+                (None, _) => warnings.push("paper_assets ready but git_path is missing".to_string()),
+                (_, Err(err)) => warnings.push(format!("GROKRXIV_DATA_REPO_PATH unavailable: {err:#}")),
+            }
+                        }
+    }
+
+    Ok(serde_json::json!({
+        "schema_version": "1.0.0",
+        "paper_id": paper_id,
+        "source": "paper_extract_artifacts",
+        "artifact_sources": artifact_sources,
+        "warnings": warnings,
+        "body": body,
+        "equations": equations,
+        "theorem_graph": theorem_graph,
+        "semantic_ast": semantic_ast,
+    }))
+}
+
 #[cfg(feature = "grokrxiv-ingest")]
 async fn review_result_envelope(
     pool: &sqlx::PgPool,
@@ -5397,6 +5516,50 @@ async fn run_review_loop_for_review(
         ),
     );
 
+    let paper_math_sources = load_review_loop_paper_math_sources(pool, paper_id).await?;
+    write_loop_json(&artifact_dir.join("paper_math_sources.json"), &paper_math_sources).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "paper_math_source_collector",
+        paper_math_sources.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/paper_math_sources.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "paper_math_source_collector",
+        true,
+        "review_loop/paper_math_sources.json",
+        debug_output,
+        &format!(
+            "theorem_nodes={} equations={} sources={} warnings={}",
+            paper_math_sources["theorem_graph"]["nodes"]
+                .as_array()
+                .map(Vec::len)
+                .or_else(|| {
+                    paper_math_sources["theorem_graph"]["theorem_graph"]
+                        .as_array()
+                        .map(Vec::len)
+                })
+                .unwrap_or(0),
+            paper_math_sources["equations"]["equations"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0),
+            paper_math_sources["artifact_sources"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+            ,
+            paper_math_sources["warnings"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+        ),
+    );
+
     let knowledge_graph = build_review_loop_knowledge_graph(&claims_value);
     write_loop_json(&artifact_dir.join("knowledge_graph.json"), &knowledge_graph).await?;
     record_review_loop_node(
@@ -5429,8 +5592,12 @@ async fn run_review_loop_for_review(
 
     let haskell_dir = artifact_dir.join("haskell");
     tokio::fs::create_dir_all(&haskell_dir).await?;
-    let semantic_ir =
-        grokrxiv_review_loop::build_semantic_ir(review_id, &claims_value, &knowledge_graph);
+    let semantic_ir = grokrxiv_review_loop::build_semantic_ir_from_paper_math(
+        review_id,
+        &paper_math_sources,
+        &claims_value,
+        &knowledge_graph,
+    );
     write_loop_json(&artifact_dir.join("semantic_ir.json"), &semantic_ir).await?;
     let theorem_candidate_count = semantic_ir["theorem_candidates"]
         .as_array()
@@ -5448,6 +5615,7 @@ async fn run_review_loop_for_review(
         "schema_version": "1.0.0",
         "review_id": review_id,
         "semantic_ir": "review_loop/semantic_ir.json",
+        "paper_math_sources": "review_loop/paper_math_sources.json",
         "theorem_candidate_count": theorem_candidate_count,
         "definition_count": definition_count,
         "assumption_count": assumption_count,
@@ -5466,6 +5634,7 @@ async fn run_review_loop_for_review(
         VerifierStatus::Pass,
         serde_json::json!({
             "artifacts": [
+                "review_loop/paper_math_sources.json",
                 "review_loop/semantic_ir.json",
                 "review_loop/semantic_model.json",
                 "review_loop/haskell/SemanticModel.hs"
@@ -5504,8 +5673,10 @@ async fn run_review_loop_for_review(
             "requirements": [
                 "Create module SemanticModel.",
                 "Use only pure Haskell definitions.",
+                "Treat review_loop/semantic_ir.json as the canonical typed mathematical IR contract.",
+                "The Haskell file is a checked consumer/round-trip artifact derived from canonical IR JSON; do not invent theorem statements outside that IR.",
                 "Define SourceSpan, MathType, Term, Proposition, Binder, Definition, Assumption, TheoremIR, ClaimIR, ProofObligation, and LeanTarget types.",
-                "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir.",
+                "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir and paper_math_sources.",
                 "Treat semantic categories as annotations over typed mathematical transcription, not as replacements for the math.",
                 "Do not turn summary, novelty, citation, reviewer recommendation, or publisher-readiness claims into Lean obligations.",
                 "Do not model this as review roles, category counts, claimCount, or publisherReadyLowerBound.",
@@ -5513,6 +5684,7 @@ async fn run_review_loop_for_review(
                 "The file must compile with ghc -fno-code SemanticModel.hs."
             ],
             "claims": claims_value,
+            "paper_math_sources": paper_math_sources,
             "knowledge_graph": knowledge_graph,
             "semantic_ir": semantic_ir,
             "semantic_model": semantic_model,
@@ -5626,9 +5798,11 @@ async fn run_review_loop_for_review(
             lean_task.clone(),
             serde_json::json!({
                 "review_id": review_id,
-                "task": "Formalize and prove GrokRxiv mathematical Lean targets emitted from the Haskell IR.",
+                "task": "Complete proofs for GrokRxiv mathematical Lean targets deterministically emitted from the typed IR.",
                 "requirements": [
                     "Write the complete file GrokRxiv/Proofs.lean.",
+                    "Use the lean_skeleton strings in review_loop/lean_targets.json as the theorem statement source of truth.",
+                    "You may replace proof bodies only; do not alter theorem names, binders, assumptions, or conclusions.",
                     "Do not use sorry, admit, or axiom.",
                     "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
                     "For every theorem_formalization obligation, declare the exact lean_declaration name.",
@@ -5961,12 +6135,14 @@ async fn run_review_loop_for_review(
         },
         "artifact_paths": {
             "claims": "review_loop/claims.json",
+            "paper_math_sources": "review_loop/paper_math_sources.json",
             "knowledge_graph": "review_loop/knowledge_graph.json",
             "semantic_ir": "review_loop/semantic_ir.json",
             "semantic_model": "review_loop/semantic_model.json",
             "haskell": "review_loop/haskell/results.json",
             "haskell_harness": "review_loop/haskell/harness.json",
             "lean": "review_loop/lean/results.json",
+            "lean_targets": "review_loop/lean_targets.json",
             "lean_harness": "review_loop/lean/harness.json",
             "lean_theorem_map": "review_loop/lean/theorem_map.json",
             "lean_verification_report": "review_loop/lean/verification_report.json",
@@ -10482,6 +10658,22 @@ mod tests {
             stages.first().map(|stage| stage.id.as_str()),
             Some("paper_review")
         );
+        let paper_math_source_collector = stages
+            .iter()
+            .find(|stage| stage.id == "paper_math_source_collector")
+            .expect("paper math source collector stage");
+        assert!(paper_math_source_collector
+            .outputs
+            .iter()
+            .any(|output| output == "review_loop/paper_math_sources.json"));
+        let semantic_mapper = stages
+            .iter()
+            .find(|stage| stage.id == "semantic_category_mapper")
+            .expect("semantic mapper stage");
+        assert!(semantic_mapper
+            .inputs
+            .iter()
+            .any(|input| input == "review_loop/paper_math_sources.json"));
         assert!(stages.iter().any(|stage| {
             stage.id == "citation_validation"
                 && stage.kind == "dag_call"

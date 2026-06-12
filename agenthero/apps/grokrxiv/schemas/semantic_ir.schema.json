@@ -8,7 +8,7 @@
   "properties": {
     "schema_version": { "type": "string", "const": "1.0.0" },
     "review_id": { "type": "string", "minLength": 1 },
-    "source": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "enum": ["review_loop/claims.json", "paper_math_sources"] },
     "formalization_policy": {
       "type": "object",
       "additionalProperties": true,
@@ -19,6 +19,11 @@
         "reject_review_role_histograms": { "type": "boolean" },
         "forbidden_lean_terms": { "type": "array", "items": { "type": "string" } }
       }
+    },
+    "paper_math_sources": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Paper-derived extraction artifacts used as the formal math source: body.md, equations.json, theorem_graph.json, and semantic_ast.json when available."
     },
     "definitions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
     "assumptions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
@@ -32,18 +37,24 @@
             "required": ["formalization_class", "formalization_target"],
             "properties": {
               "formalization_class": { "type": "string", "const": "formal_math" },
+              "semantic_category": {
+                "type": "string",
+                "enum": ["plain_theorem", "equation", "equivalence", "type_safety", "compiler_correctness", "invariant_preservation"]
+              },
               "typed_transcription": {
                 "type": "object",
-                "additionalProperties": true,
+                "additionalProperties": false,
+                "required": ["status", "source_text", "math_objects", "binders", "assumptions", "conclusion"],
                 "properties": {
-                  "status": { "type": "string" },
+                  "status": { "type": "string", "enum": ["transcribed", "partial", "needs_haskell_transcription"] },
                   "source_text": { "type": "string" },
                   "math_objects": { "type": "array" },
-                  "binders": { "type": "array" },
-                  "assumptions": { "type": "array" },
-                  "conclusion": {}
+                  "binders": { "type": "array", "items": { "$ref": "#/$defs/binder" } },
+                  "assumptions": { "type": "array", "items": { "$ref": "#/$defs/proposition" } },
+                  "conclusion": { "oneOf": [{ "$ref": "#/$defs/proposition" }, { "type": "null" }] }
                 }
               },
+              "theorem_ir": { "$ref": "#/$defs/theorem_ir" },
               "formalization_target": {
                 "type": "object",
                 "additionalProperties": false,
@@ -98,14 +109,130 @@
         "source_claim_id": { "type": "string", "minLength": 1 },
         "source_span": {
           "type": "object",
-          "additionalProperties": true,
           "required": ["artifact", "claim_id"],
+          "additionalProperties": false,
           "properties": {
             "artifact": { "type": "string", "minLength": 1 },
-            "claim_id": { "type": "string", "minLength": 1 }
+            "claim_id": { "type": "string", "minLength": 1 },
+            "paper_source_id": { "type": "string" },
+            "section_id": {},
+            "role": { "type": "string" },
+            "text_excerpt": { "type": "string" }
           }
         }
       }
+    },
+    "theorem_ir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theorem_name", "source_span", "binders", "assumptions", "conclusion"],
+      "properties": {
+        "theorem_name": { "type": "string", "minLength": 1 },
+        "source_span": { "$ref": "#/$defs/semantic_item/properties/source_span" },
+        "binders": { "type": "array", "items": { "$ref": "#/$defs/binder" } },
+        "assumptions": { "type": "array", "items": { "$ref": "#/$defs/proposition" } },
+        "conclusion": { "$ref": "#/$defs/proposition" }
+      }
+    },
+    "binder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/math_type" }
+      }
+    },
+    "math_type": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "nat" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "int" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "real" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "bool" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "prop" } } },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "custom" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason"],
+          "properties": {
+            "kind": { "const": "unknown_type" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "term": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "var" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "nat_lit" },
+            "value": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "lhs", "rhs"],
+          "properties": {
+            "kind": { "const": "add" },
+            "lhs": { "$ref": "#/$defs/term" },
+            "rhs": { "$ref": "#/$defs/term" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "unknown_term" },
+            "text": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "proposition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "lhs", "rhs"],
+          "properties": {
+            "kind": { "const": "equals" },
+            "lhs": { "$ref": "#/$defs/term" },
+            "rhs": { "$ref": "#/$defs/term" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "unknown_prop" },
+            "text": { "type": "string" }
+          }
+        }
+      ]
     }
   }
 }

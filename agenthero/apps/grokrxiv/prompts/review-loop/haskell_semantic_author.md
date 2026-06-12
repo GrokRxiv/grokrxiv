@@ -5,9 +5,11 @@ Return strict JSON matching `schema.json`. The `code` field must contain only
 the Haskell source for the requested file.
 
 The module is not a review-status inventory and it is not a philosophical
-semantic summary. It must encode the paper-derived mathematical transcription
-from `semantic_ir`: source spans, symbols, math types, terms, propositions,
-definitions, assumptions, theorem statements, dependencies, and Lean targets.
+semantic summary. Treat `semantic_ir.json` as the canonical typed mathematical
+IR. The Haskell file is a checked consumer/round-trip artifact derived from
+that JSON: source spans, symbols, math types, terms, propositions, definitions,
+assumptions, theorem statements, dependencies, and Lean targets must match the
+supplied IR rather than new statements invented in Haskell.
 
 Define explicit types named `SourceSpan`, `MathType`, `Term`, `Proposition`,
 `Binder`, `Definition`, `Assumption`, `TheoremIR`, `ClaimIR`,
@@ -23,4 +25,6 @@ Do not define review-role histograms, `claimCount`, `categoryCounts`, or
 
 Include pure mapping functions named `categoryToObligations`,
 `claimToObligations`, and `obligationToLean`. Do not use foreign imports, IO,
-or unsafe language extensions. The code must compile with `ghc -fno-code`.
+or unsafe language extensions. Preserve explicit unknown/hole values when the
+IR marks a type, term, or proposition as unknown. The code must compile with
+`ghc -fno-code`.

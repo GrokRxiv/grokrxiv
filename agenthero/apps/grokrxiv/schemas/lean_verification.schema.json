@@ -28,6 +28,8 @@
             "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "MISSING_DEFINITION", "TYPE_ERROR", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
           },
           "statement": { "type": "string" },
+          "emitted_statement": { "type": ["string", "null"] },
+          "verified_statement": { "type": ["string", "null"] },
           "diagnostics": { "type": "array", "items": { "type": "string" } }
         }
       }

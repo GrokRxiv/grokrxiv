@@ -34,6 +34,10 @@ tools:
     executor: rust
     handler: review_loop::claim_extractor
     timeout_secs: 30
+  - id: paper_math_source_collector
+    executor: rust
+    handler: review_loop::paper_math_source_collector
+    timeout_secs: 30
   - id: knowledge_graph_builder
     executor: rust
     handler: review_loop::knowledge_graph_builder
@@ -82,6 +86,17 @@ nodes:
     inputs: [review_id, review_agents]
     outputs: [review_loop/claims.json]
     required: true
+  - id: paper_math_source_collector
+    kind: tool
+    tool: paper_math_source_collector
+    inputs:
+      - review_id
+      - body.md
+      - equations.json
+      - theorem_graph.json
+      - semantic_ast.json
+    outputs: [review_loop/paper_math_sources.json]
+    required: true
   - id: knowledge_graph_builder
     kind: tool
     tool: knowledge_graph_builder
@@ -92,6 +107,7 @@ nodes:
     kind: tool
     tool: semantic_category_mapper
     inputs:
+      - review_loop/paper_math_sources.json
       - review_loop/claims.json
       - review_loop/knowledge_graph.json
     outputs:
@@ -107,6 +123,7 @@ nodes:
     inputs:
       - review_loop/semantic_model.json
       - review_loop/semantic_ir.json
+      - review_loop/paper_math_sources.json
       - review_loop/haskell/SemanticModel.hs
     outputs:
       - review_loop/haskell/results.json
@@ -197,11 +214,13 @@ nodes:
     tool: review_loop_report
     inputs:
       - review_loop/claims.json
+      - review_loop/paper_math_sources.json
       - review_loop/knowledge_graph.json
       - review_loop/semantic_ir.json
       - review_loop/semantic_model.json
       - review_loop/haskell/results.json
       - review_loop/lean/results.json
+      - review_loop/lean_targets.json
       - review_loop/lean/theorem_map.json
       - review_loop/semantic_adequacy.json
       - citation_validation_report.json
@@ -218,9 +237,13 @@ nodes:
 edges:
   - from: paper_review
     to: claim_extractor
+  - from: paper_review
+    to: paper_math_source_collector
   - from: claim_extractor
     to: knowledge_graph_builder
-  - from: knowledge_graph_builder
+  - from:
+      - paper_math_source_collector
+      - knowledge_graph_builder
     to: semantic_category_mapper
   - from: semantic_category_mapper
     to: haskell_review_fix_code
