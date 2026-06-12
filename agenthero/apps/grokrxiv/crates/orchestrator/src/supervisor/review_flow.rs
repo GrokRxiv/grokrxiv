@@ -428,6 +428,17 @@ edges:
 "#,
         )
         .expect("write manifest");
+        std::fs::write(
+            dir.path().join("review-loop.yaml"),
+            r#"
+id: review-loop
+version: 1
+accepts: []
+nodes: []
+edges: []
+"#,
+        )
+        .expect("write review-loop manifest");
         let _guard = EnvGuard::set("AGENTHERO_DAGS_DIR", dir.path().to_str().unwrap());
 
         let cfg = load_review_dag_runtime_config().expect("runtime config");
