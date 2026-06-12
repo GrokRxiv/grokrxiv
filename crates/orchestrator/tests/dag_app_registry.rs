@@ -381,6 +381,7 @@ fn orchestrator_does_not_depend_on_dag_app_crates() {
         "grokrxiv-ingest",
         "grokrxiv-publisher",
         "grokrxiv-render",
+        "grokrxiv-review-loop",
         "grokrxiv-schemas",
         "grokrxiv-storage",
         "grokrxiv-verifier",

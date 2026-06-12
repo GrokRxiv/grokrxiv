@@ -1837,6 +1837,7 @@ dependencies = [
  "grokrxiv-ingest",
  "grokrxiv-publisher",
  "grokrxiv-render",
+ "grokrxiv-review-loop",
  "grokrxiv-schemas",
  "grokrxiv-storage",
  "grokrxiv-verifier",
@@ -1956,6 +1957,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zip 2.2.3",
+]
+
+[[package]]
+name = "grokrxiv-review-loop"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

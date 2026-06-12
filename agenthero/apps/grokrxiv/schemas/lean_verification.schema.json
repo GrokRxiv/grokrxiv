@@ -9,7 +9,7 @@
     "schema_version": { "type": "string", "const": "1.0.0" },
     "status": {
       "type": "string",
-      "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
+      "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "MISSING_DEFINITION", "TYPE_ERROR", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
     },
     "entries": {
       "type": "array",
@@ -25,7 +25,7 @@
           "lean_declaration": { "type": ["string", "null"] },
           "status": {
             "type": "string",
-            "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
+            "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "MISSING_DEFINITION", "TYPE_ERROR", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
           },
           "statement": { "type": "string" },
           "diagnostics": { "type": "array", "items": { "type": "string" } }

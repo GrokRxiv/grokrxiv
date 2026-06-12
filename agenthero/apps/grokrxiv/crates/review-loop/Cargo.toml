@@ -1,0 +1,15 @@
+[package]
+name = "grokrxiv-review-loop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GrokRxiv review-loop mathematical IR and proof artifact helpers."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }

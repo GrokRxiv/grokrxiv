@@ -51,6 +51,7 @@ pdfium-render = { version = "0.8", default-features = false, features = ["pdfium
 image = { version = "0.24", default-features = false, features = ["png"] }
 
 grokrxiv-schemas = { workspace = true }
+grokrxiv-review-loop = { workspace = true }
 agenthero-agent-runtime = { workspace = true }
 agenthero-dag-executor = { workspace = true }
 agenthero-dag-runtime = { workspace = true }

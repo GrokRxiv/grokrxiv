@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "rust",
     "crates/orchestrator",
+    "crates/review-loop",
     "crates/ingest",
     "crates/render",
     "crates/publisher",
@@ -60,6 +61,7 @@ grokrxiv-extraction = { path = "crates/extraction" }
 grokrxiv-ingest = { path = "crates/ingest" }
 grokrxiv-publisher = { path = "crates/publisher" }
 grokrxiv-render = { path = "crates/render" }
+grokrxiv-review-loop = { path = "crates/review-loop" }
 grokrxiv-schemas = { path = "crates/schemas" }
 grokrxiv-storage = { path = "crates/storage" }
 grokrxiv-verifier = { path = "crates/verifier" }

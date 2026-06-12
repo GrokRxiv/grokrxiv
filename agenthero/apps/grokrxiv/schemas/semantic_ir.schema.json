@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grokrxiv.org/schemas/semantic_ir.schema.json",
-  "title": "GrokRxiv Theorem-Level Semantic IR",
+  "title": "GrokRxiv Mathematical Transcription IR",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "review_id", "source", "definitions", "assumptions", "theorem_candidates", "limitations"],
+  "required": ["schema_version", "review_id", "source", "definitions", "assumptions", "theorem_candidates", "nonformal_review_claims", "limitations"],
   "properties": {
     "schema_version": { "type": "string", "const": "1.0.0" },
     "review_id": { "type": "string", "minLength": 1 },
@@ -14,6 +14,7 @@
       "additionalProperties": true,
       "properties": {
         "requires_theorem_level_lean": { "type": "boolean" },
+        "lean_verifies_only_formal_math": { "type": "boolean" },
         "reject_metadata_only_models": { "type": "boolean" },
         "reject_review_role_histograms": { "type": "boolean" },
         "forbidden_lean_terms": { "type": "array", "items": { "type": "string" } }
@@ -28,8 +29,21 @@
           { "$ref": "#/$defs/semantic_item" },
           {
             "type": "object",
-            "required": ["formalization_target"],
+            "required": ["formalization_class", "formalization_target"],
             "properties": {
+              "formalization_class": { "type": "string", "const": "formal_math" },
+              "typed_transcription": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "status": { "type": "string" },
+                  "source_text": { "type": "string" },
+                  "math_objects": { "type": "array" },
+                  "binders": { "type": "array" },
+                  "assumptions": { "type": "array" },
+                  "conclusion": {}
+                }
+              },
               "formalization_target": {
                 "type": "object",
                 "additionalProperties": false,
@@ -40,6 +54,22 @@
                   "proof_policy": { "type": "string", "const": "closed_proof_no_sorry_admit_axiom" }
                 }
               }
+            }
+          }
+        ]
+      }
+    },
+    "nonformal_review_claims": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/semantic_item" },
+          {
+            "type": "object",
+            "required": ["lean_eligible", "reason"],
+            "properties": {
+              "lean_eligible": { "type": "boolean", "const": false },
+              "reason": { "type": "string", "minLength": 1 }
             }
           }
         ]

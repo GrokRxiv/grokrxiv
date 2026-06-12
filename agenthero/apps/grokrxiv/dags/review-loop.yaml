@@ -106,6 +106,7 @@ nodes:
       max_rounds: 3
     inputs:
       - review_loop/semantic_model.json
+      - review_loop/semantic_ir.json
       - review_loop/haskell/SemanticModel.hs
     outputs:
       - review_loop/haskell/results.json
@@ -118,14 +119,18 @@ nodes:
       - review_loop/semantic_ir.json
       - review_loop/semantic_model.json
       - review_loop/haskell/results.json
-    outputs: [review_loop/proof_obligations.json]
+    outputs:
+      - review_loop/proof_obligations.json
+      - review_loop/lean_targets.json
     required: true
   - id: lean_review_fix_code
     kind: loop
     tool: review_fix_code
     loop:
       max_rounds: 3
-    inputs: [review_loop/proof_obligations.json]
+    inputs:
+      - review_loop/proof_obligations.json
+      - review_loop/lean_targets.json
     outputs:
       - review_loop/lean/GrokRxiv/Proofs.lean
       - review_loop/lean/results.json
