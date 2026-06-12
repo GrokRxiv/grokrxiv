@@ -8,6 +8,14 @@
 | 2026-06-12T23:01:56Z | `0f157da` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
 | 2026-06-12T23:01:56Z | `0f157da` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
 | 2026-06-12T23:19:27Z | `34158da` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | chat transcript |
+| 2026-06-12T23:21:39Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `agh doctor` | pass, exit 0 | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/preflight-agh-doctor.log` |
+| 2026-06-12T23:21:39Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `agh --version` | pass, exit 0, `agh 0.1.0` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/preflight-agh-version.log` |
+| 2026-06-12T23:21:39Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `ghc --version` | pass, exit 0, `9.14.1` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/preflight-ghc-version.log` |
+| 2026-06-12T23:21:39Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `lake --version` | pass, exit 0, Lean `4.30.0` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/preflight-lake-version.log` |
+| 2026-06-12T23:21:39Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `lean --version` | pass, exit 0, `4.30.0` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/preflight-lean-version.log` |
+| 2026-06-12T23:22:50Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `agh app run grokrxiv review arxiv:2606.00799 --loop --debug --json` | fail, exit 1, installed runtime rejects `--loop` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/run.log` |
+| 2026-06-12T23:23:43Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `agh app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --json` | fail, exit 1, installed runtime rejects `--loop` | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/run-url.log` |
+| 2026-06-12T23:23:30Z | `04bb2b6` | `grokrxiv-local-corpus-harness` | `cargo run --manifest-path agenthero/apps/grokrxiv/crates/orchestrator/Cargo.toml --quiet --bin grokrxiv-app -- --json --dry-run review https://arxiv.org/abs/2606.00799 --loop --debug` | pass, exit 0, source runtime emits review-loop stage plan | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/runtime-source-url-dry-run.log` |
 
 ## Logging Rule
 
