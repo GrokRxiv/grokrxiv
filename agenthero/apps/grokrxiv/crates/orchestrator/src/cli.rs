@@ -5505,70 +5505,103 @@ async fn run_review_loop_for_review(
         &proof_obligations,
     )
     .await?;
+    let proof_obligations_ready = proof_obligations_require_lean(&proof_obligations);
     record_review_loop_node(
         pool,
         review_id,
         &stages,
         "proof_obligation_generator",
         proof_obligations.clone(),
-        VerifierStatus::Pass,
+        if proof_obligations_ready {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
         serde_json::json!({"artifact_path": "review_loop/proof_obligations.json"}),
     )
     .await?;
-    emit_review_loop_node_debug(
-        "proof_obligation_generator",
-        true,
-        "review_loop/proof_obligations.json",
-        debug_output,
-        &format!(
+    let proof_obligation_debug = if proof_obligations_ready {
+        format!(
             "theorem_obligations={}",
             proof_obligations["obligations"]
                 .as_array()
                 .map(Vec::len)
                 .unwrap_or(0)
-        ),
+        )
+    } else {
+        proof_obligations["obligations"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("statement"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("formalization blocked")
+            .to_string()
+    };
+    emit_review_loop_node_debug(
+        "proof_obligation_generator",
+        proof_obligations_ready,
+        "review_loop/proof_obligations.json",
+        debug_output,
+        &proof_obligation_debug,
     );
 
     let lean_dir = artifact_dir.join("lean");
     let lean_src_dir = lean_dir.join("GrokRxiv");
     tokio::fs::create_dir_all(&lean_src_dir).await?;
-    let lean_results = run_review_fix_code_loop(
-        state,
-        paper_id,
-        review_id,
-        ReviewFixCodeTask {
-            target_id: "lean",
-            language: "lean",
-            filename: "GrokRxiv/Proofs.lean",
-            author_role: "lean_proof_author",
-            reviewer_role: "lean_code_reviewer",
-            fixer_role: "lean_code_fixer",
-            compile_program: "lean",
-            compile_args: vec!["GrokRxiv/Proofs.lean".to_string()],
-            forbidden_terms: vec!["sorry", "admit", "axiom"],
-            max_attempts: 2,
-        },
-        serde_json::json!({
-            "review_id": review_id,
-            "task": "Formalize and prove GrokRxiv theorem-level proof obligations in Lean.",
-            "requirements": [
-                "Write the complete file GrokRxiv/Proofs.lean.",
-                "Do not use sorry, admit, or axiom.",
-                "The file must verify with lean GrokRxiv/Proofs.lean.",
-                "For every theorem_formalization obligation, declare the exact lean_declaration name.",
-                "Do not prove claim counts, review statuses, or metadata in place of the theorem obligation.",
-                "If a theorem cannot be formalized honestly, emit code that fails review rather than masking the gap."
-            ],
-            "proof_obligations": proof_obligations,
-            "semantic_ir": semantic_ir,
-            "semantic_model": semantic_model,
-            "haskell_results": haskell_results,
-        }),
-        &lean_dir,
-        &lean_src_dir.join("Proofs.lean"),
-        debug_output,
-    )
-    .await;
+    let lean_task = ReviewFixCodeTask {
+        target_id: "lean",
+        language: "lean",
+        filename: "GrokRxiv/Proofs.lean",
+        author_role: "lean_proof_author",
+        reviewer_role: "lean_code_reviewer",
+        fixer_role: "lean_code_fixer",
+        compile_program: "lean",
+        compile_args: vec!["GrokRxiv/Proofs.lean".to_string()],
+        forbidden_terms: vec!["sorry", "admit", "axiom"],
+        max_attempts: 2,
+    };
+    let lean_final_path = lean_src_dir.join("Proofs.lean");
+    let lean_results = if proof_obligations_ready {
+        run_review_fix_code_loop(
+            state,
+            paper_id,
+            review_id,
+            lean_task.clone(),
+            serde_json::json!({
+                "review_id": review_id,
+                "task": "Formalize and prove GrokRxiv theorem-level proof obligations in Lean.",
+                "requirements": [
+                    "Write the complete file GrokRxiv/Proofs.lean.",
+                    "Do not use sorry, admit, or axiom.",
+                    "The file must verify with lean GrokRxiv/Proofs.lean.",
+                    "For every theorem_formalization obligation, declare the exact lean_declaration name.",
+                    "Do not prove claim counts, review statuses, or metadata in place of the theorem obligation.",
+                    "If a theorem cannot be formalized honestly, emit code that fails review rather than masking the gap."
+                ],
+                "proof_obligations": proof_obligations,
+                "semantic_ir": semantic_ir,
+                "semantic_model": semantic_model,
+                "haskell_results": haskell_results,
+            }),
+            &lean_dir,
+            &lean_final_path,
+            debug_output,
+        )
+        .await
+    } else {
+        let reason = proof_obligations["obligations"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("statement"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("Lean formalization skipped because upstream semantic obligations are blocked.");
+        let _ = write_review_loop_code_file(
+            &lean_final_path,
+            &format!("/- Lean formalization skipped: {reason} -/\n"),
+        )
+        .await;
+        skipped_review_fix_code_results(&lean_task, &lean_final_path, reason)
+    };
     let lean_pass = lean_results["status"] == "pass";
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
@@ -6260,6 +6293,29 @@ fn build_review_loop_proof_obligations(
     semantic_ir: &serde_json::Value,
     haskell_results: &serde_json::Value,
 ) -> serde_json::Value {
+    let haskell_status = haskell_results
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if haskell_status != "pass" {
+        return serde_json::json!({
+            "schema_version": "1.0.0",
+            "review_id": review_id,
+            "source": "review_loop/semantic_ir.json",
+            "haskell_status": haskell_status,
+            "obligations": [
+                {
+                    "id": "semantic_gap_haskell_model_failed",
+                    "kind": "semantic_gap",
+                    "statement": "Haskell semantic IR generation did not pass; theorem-level Lean formalization is blocked.",
+                    "lean_declaration": null,
+                    "severity": "blocking",
+                    "upstream_artifact": "review_loop/haskell/results.json",
+                    "upstream_summary": review_fix_loop_summary(haskell_results),
+                }
+            ]
+        });
+    }
     let theorem_candidates = semantic_ir
         .get("theorem_candidates")
         .and_then(|v| v.as_array())
@@ -6301,8 +6357,52 @@ fn build_review_loop_proof_obligations(
         "schema_version": "1.0.0",
         "review_id": review_id,
         "source": "review_loop/semantic_ir.json",
-        "haskell_status": haskell_results.get("status").cloned().unwrap_or_else(|| serde_json::json!("unknown")),
+        "haskell_status": haskell_status,
         "obligations": obligations,
+    })
+}
+
+fn proof_obligations_require_lean(proof_obligations: &serde_json::Value) -> bool {
+    proof_obligations
+        .get("obligations")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization")
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn skipped_review_fix_code_results(
+    task: &ReviewFixCodeTask,
+    final_path: &Path,
+    reason: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "stage": format!("{}_review_fix_code", task.target_id),
+        "target": task.target_id,
+        "language": task.language,
+        "filename": task.filename,
+        "author_role": task.author_role,
+        "reviewer_role": task.reviewer_role,
+        "fixer_role": task.fixer_role,
+        "max_attempts": task.max_attempts,
+        "attempts": [
+            {
+                "attempt": 0,
+                "status": "fail",
+                "skipped": true,
+                "semantic_validation": {
+                    "status": "fail",
+                    "issues": [reason]
+                }
+            }
+        ],
+        "status": "fail",
+        "skipped": true,
+        "skip_reason": reason,
+        "final_path": final_path.display().to_string(),
     })
 }
 
@@ -10923,6 +11023,48 @@ publisherReadyLowerBound = claimCount == 43
         assert!(obligation_items
             .iter()
             .all(|item| item["id"] != "claim_count_nonnegative"));
+    }
+
+    #[test]
+    fn review_loop_haskell_failure_blocks_theorem_formalization_obligations() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let semantic_ir = serde_json::json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_claim_1",
+                    "kind": "theorem",
+                    "statement": "A compatible torsion-free affine connection is unique up to projective equivalence.",
+                    "source_claim_id": "claim_1",
+                    "formalization_target": {
+                        "lean_declaration": "theorem_claim_1_formalized",
+                        "expected_shape": "theorem"
+                    }
+                }
+            ]
+        });
+
+        let obligations = build_review_loop_proof_obligations(
+            review_id,
+            &semantic_ir,
+            &serde_json::json!({
+                "status": "fail",
+                "attempts": [{
+                    "semantic_validation": {
+                        "issues": ["SemanticModel.hs must include theorem candidate id theorem_claim_1."]
+                    }
+                }]
+            }),
+        );
+        let obligation_items = obligations["obligations"].as_array().expect("obligations");
+
+        assert_eq!(obligations["haskell_status"], "fail");
+        assert_eq!(obligation_items.len(), 1);
+        assert_eq!(obligation_items[0]["kind"], "semantic_gap");
+        assert_eq!(obligation_items[0]["id"], "semantic_gap_haskell_model_failed");
+        assert!(obligation_items.iter().all(|item| {
+            item.get("kind").and_then(|kind| kind.as_str()) != Some("theorem_formalization")
+        }));
     }
 
     #[test]
