@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 2: fix P0-001 first. Use local Codex only; do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 3: fix P0-002 first. Use local Codex only; do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -15,19 +15,20 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Review the P0-001 dossier:
+Review the P0-002/P0-003/P0-004 dossiers:
 - .agent/FINDINGS.md
-- agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/dossier.md
+- agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/dossier-p0-002-no-pr-guardrail.md
+- agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/dossier-p0-003-n1-extraction-gate.md
+- agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/dossier-p0-004-citation-waterfall.md
 
-Install current local product binaries:
-- cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
-- cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked
+Start with P0-002. Do not run another full corpus review until the command is guaranteed not to open PRs or publish.
 
-Re-run the exact product command:
-- agh app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --json
+Expected P0-002 implementation shape:
+- failing product-surface test proving corpus/eval mode does not call PR/publisher side effects
+- minimal runtime/adapter option or policy that disables approve/request-revisions/publisher/revision-PR creation during corpus loop runs
+- LOOP.md updated with the exact safe local command
 
-If the product command starts the review-loop, continue LOOP.md RUN+CHECK for regression-pr54-weyl and classify the next failure F1-F5.
-If it still fails before review start, add adapter/runtime product-surface coverage and fix the resolution path before moving on.
+After P0-002 is fixed, rerun only the affected product-surface check first. Then continue to P0-003 / N1 extraction-completeness gate.
 After the CLI runner starts successfully, lock the exact local `api` runner command in LOOP.md or PHASES.md before making any two-runner green claim.
 Append agenthero/apps/grokrxiv/evals/results/LEDGER.md.
 Update .agent/AGENT_STATUS.md and .agent/TEST_LOG.md.
