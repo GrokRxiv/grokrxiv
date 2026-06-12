@@ -37,6 +37,7 @@ coverage/
 
 # AgentHero runtime state and generated artifacts
 .agenthero/
+.agent/worktrees/
 artifacts/
 **/artifacts/
 **/.vercel/
@@ -44,6 +45,9 @@ artifacts/
 **/test-results/
 **/playwright-report/
 **/__snapshots__/
+agenthero/apps/grokrxiv/evals/results/*
+!agenthero/apps/grokrxiv/evals/results/
+!agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
 # pnpm content-addressable store at repo root
 .pnpm-store/
