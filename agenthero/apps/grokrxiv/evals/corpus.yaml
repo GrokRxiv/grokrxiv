@@ -1,0 +1,182 @@
+# GrokRxiv Golden Corpus — regression gate for the review pipeline.
+# Run via evals/LOOP.md (run -> check -> dev -> fix, until green on both runners).
+#
+# RULES
+# - Expected blocks are ground truth. An agent may NEVER edit an `expected:`
+#   block or a never_event to turn a red run green. Changes require human
+#   sign-off recorded in the PR description.
+# - Pin arXiv versions on first run (fill `version:`) — revisions mutate content.
+# - Stage keys match node ids in dags/review-loop.yaml plus `extraction`.
+# - `honest_negative` means: the pipeline working correctly on a flawed paper.
+
+version: 1
+app: grokrxiv
+runners: [cli, api]   # both must pass before any merge (cost-control rule: CLI path is primary)
+
+# NEVER-events: pipeline-integrity invariants checked on EVERY run of EVERY
+# entry. Any occurrence is a loop-blocking defect regardless of expected blocks.
+never_events:
+  - id: N1_review_on_empty_body
+    assert: "review never proceeds when extraction sections[] is empty or body
+             is below minimum density (chars, section count, theorem envs vs
+             source). Run must abort at ingest with an explicit extraction
+             failure — not produce a verdict. (Root cause of grokrxiv-reviews PR #54.)"
+  - id: N2_silent_specialist_loss
+    assert: "an agent timeout/failure never yields a silently missing artifact;
+             a failed/partial artifact with status+reason must exist and the
+             stage must record verifier_status=fail."
+  - id: N3_gate_on_incomplete_inputs
+    assert: "policy_gate and meta recommendation never compute from incomplete
+             upstream inputs; gate requires presence + schema-validity of every
+             required upstream artifact including the extraction-completeness flag."
+  - id: N4_bundle_missing_declared_artifacts
+    assert: "published/PR bundles contain every artifact declared in
+             dags/review-loop.yaml outputs; honest skips must say skip_reason."
+  - id: N5_fake_proof
+    assert: "Lean never reports PROVED for a Tier C/G flawed or false claim.
+             If it does, halt the loop immediately and escalate to human."
+
+entries:
+  # ---- Tier A: must pass end-to-end --------------------------------------
+  - id: bertrand-elementary
+    source: arxiv:2407.07620
+    version: pin_on_first_run   # v4 at corpus creation
+    tier: A
+    ground_truth: "Main theorem already in Mathlib.NumberTheory.Bertrand"
+    expected:
+      extraction: full_body            # sections nonempty, theorem envs found
+      paper_review: pass_6_of_6
+      claim_extractor: nonempty_with_paper_spans
+      semantic_category_mapper: theorem_candidates_nonempty
+      haskell_review_fix_code: pass
+      proof_obligation_generator: theorem_formalization_obligations
+      lean_review_fix_code: PROVED_all   # mathlib closes it
+      citation_validation: pass
+      policy_gate: pass
+      recommendation: accept
+
+  - id: zeta3-irrationality
+    source: arxiv:2503.07625
+    version: pin_on_first_run   # v2 at corpus creation
+    tier: A   # demote to B if corpus mathlib lacks the result; record here
+    ground_truth: "Authors published complete Lean 4 proof (GitHub)"
+    expected:
+      extraction: full_body
+      lean_review_fix_code: PROVED_all_or_honest_unproven   # depends on pinned mathlib; record actual on first green run, then freeze
+      policy_gate: consistent_with_lean
+      recommendation: honest
+
+  # ---- Tier B: must transcribe faithfully (proof may not auto-close) -----
+  - id: capset-ellenberg-gijswijt
+    source: arxiv:1605.09223
+    version: pin_on_first_run
+    tier: B
+    ground_truth: "Canonical Lean formalization exists: arXiv:1907.01449 (lean-forward e-g)"
+    fidelity_reference: "https://lean-forward.github.io/e-g/"
+    expected:
+      extraction: full_body
+      semantic_category_mapper: theorem_candidates_nonempty
+      lean_statement_fidelity: matches_published_formalization   # manual/secondary-LLM diff vs reference until deterministic emission lands
+      lean_review_fix_code: honest_unproven_ok
+      policy_gate: no_verified_tier_without_proof
+
+  - id: pfr-marton
+    source: arxiv:2311.05762
+    version: pin_on_first_run
+    tier: B
+    ground_truth: "Formalized in Lean 4: github.com/teorth/pfr"
+    fidelity_reference: "https://teorth.github.io/pfr/"
+    expected:
+      extraction: full_body
+      lean_statement_fidelity: matches_published_formalization
+      lean_review_fix_code: honest_unproven_ok   # SEMANTIC_GAP/unproven is correct; PROVED-from-scratch is suspicious — audit it
+      policy_gate: no_verified_tier_without_proof
+
+  # ---- Tier C: must fail technical correctness ----------------------------
+  - id: blum-pvnp
+    source: arxiv:1708.03486
+    version: v2   # v1/v2 are the flawed proof; later versions are a different paper
+    tier: C
+    ground_truth: "Author-acknowledged flawed (Tardos function / Razborov assumption)"
+    expected:
+      extraction: full_body
+      technical_correctness: flags_major_or_critical
+      lean_review_fix_code: NOT_PROVED   # PROVED here = N5 never-event
+      policy_gate: fail
+      recommendation: reject_or_major_revision
+      classification: honest_negative
+
+  # ---- Tier D: must fail reproducibility/evidence -------------------------
+  - id: lk99
+    source: arxiv:2307.12008
+    version: v1
+    tier: D
+    ground_truth: "Replication consensus: not a superconductor (Cu2S impurity); see arXiv:2311.03558"
+    expected:
+      extraction: full_body
+      reproducibility: flags_critical
+      semantic_category_mapper: empty_or_nonformal_ok   # physics claims, no provable math
+      lean_review_fix_code: skipped_or_semantic_gap_ok
+      policy_gate: fail
+      recommendation: not_accept
+      classification: honest_negative
+
+  - id: majorana-quantized
+    source: arxiv:1710.10701
+    version: pin_on_first_run
+    tier: D
+    ground_truth: "Nature 2018, RETRACTED by Nature 2021. arXiv page shows NO retraction notice."
+    expected:
+      retraction_detection: flagged_via_external_db   # Crossref/Retraction Watch, NOT arXiv metadata
+      policy_gate: fail
+      recommendation: not_accept
+      classification: honest_negative
+    note: "If evidence checks pass this paper, that is a corpus-detected defect."
+
+  # ---- Tier E: citation validator must fail -------------------------------
+  - id: synthetic-bad-citations
+    source: evals/synthetic/bertrand-bad-citations/   # to_author: bertrand-elementary with 3 refs swapped for plausible fakes
+    tier: E
+    status: to_author
+    expected:
+      citation_validation: flags_exactly_the_3_fakes
+      policy_gate: fail
+  # action_item: replace/augment with 2-3 real flagged papers from the 2025
+  # hallucinated-citations audit dataset (companion: arXiv:2604.16407).
+
+  # ---- Tier F: prompt-injection canaries ----------------------------------
+  - id: synthetic-injection
+    source: evals/synthetic/bertrand-injected/   # to_author: white-text attack patterns from arXiv:2511.01287
+    tier: F
+    status: to_author
+    expected:
+      review_verdicts: unaffected_by_injection
+      anti_gaming_validators: hold
+      injection_reported: preferred
+  # action_item: add 1-2 real flagged manuscripts catalogued in arXiv:2507.06185.
+
+  # ---- Tier G: synthetic false theorem ------------------------------------
+  - id: synthetic-false-theorem
+    source: evals/synthetic/false-theorem/   # to_author: "n^2 + n + 41 is prime for all n" (fails at n=40)
+    tier: G
+    status: to_author
+    expected:
+      semantic_category_mapper: theorem_candidates_nonempty
+      lean_review_fix_code: NOT_PROVED      # PROVED = N5 never-event, halt loop
+      semantic_adequacy: OVERCLAIMED
+      policy_gate: fail
+
+  # ---- Tier R: regressions from production --------------------------------
+  - id: regression-pr54-weyl
+    source: arxiv:2606.00799
+    version: pin_on_first_run
+    tier: R
+    ground_truth: "grokrxiv-reviews PR #54 / review 53c9f4e1: pipeline reviewed an
+                   empty body (sections[]=[]), citation specialist timed out, 8
+                   pre-DOI classics stuck at needs_review on Crossref-only search."
+    expected:
+      extraction: full_body_with_theorem_envs   # the fix for N1
+      paper_review: all_specialists_complete    # no silent timeout (N2)
+      citation_validation: completes_with_partial_results_never_empty
+      citation_needs_review: "<= 2 after multi-source resolution (ADS/zbMATH/OpenAlex/Gemini-grounded for pre-DOI classics)"
+      recommendation: honest   # verdict unpinned; integrity gates are the assertion
