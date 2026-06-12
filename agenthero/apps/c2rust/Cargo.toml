@@ -16,5 +16,6 @@ serde_json = "1"
 tokio = { version = "1.41", features = ["full"] }
 
 agenthero-agent-runtime = { path = "../../../crates/agent-runtime" }
+agenthero-app-sdk = { path = "../../../crates/app-sdk" }
 agenthero-dag-executor = { path = "../../../crates/dag-executor" }
 agenthero-dag-runtime = { path = "../../../crates/dag-runtime" }

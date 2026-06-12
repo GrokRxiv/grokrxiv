@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 agenthero-agent-runtime = { workspace = true }
+agenthero-app-sdk = { workspace = true }
 agenthero-dag-executor = { workspace = true }
 agenthero-dag-runtime = { workspace = true }
 anyhow = { workspace = true }

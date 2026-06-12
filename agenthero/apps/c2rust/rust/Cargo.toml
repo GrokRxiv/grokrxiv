@@ -11,6 +11,7 @@ description = "C2Rust DAG app proving the generic executor is not paper-review s
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 agenthero-agent-runtime = { workspace = true }
+agenthero-app-sdk = { workspace = true }
 agenthero-dag-executor = { workspace = true }
 agenthero-dag-runtime = { workspace = true }
 serde_json = { workspace = true }

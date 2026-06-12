@@ -52,10 +52,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agenthero-app-sdk"
+version = "0.1.0"
+dependencies = [
+ "agenthero-agent-runtime",
+ "agenthero-dag-executor",
+ "agenthero-dag-runtime",
+ "anyhow",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "agenthero-dag-app-grokrxiv"
 version = "0.1.0"
 dependencies = [
  "agenthero-agent-runtime",
+ "agenthero-app-sdk",
  "agenthero-dag-executor",
  "agenthero-dag-runtime",
  "agenthero-llm-adapter",

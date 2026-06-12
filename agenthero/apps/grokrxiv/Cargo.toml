@@ -50,6 +50,7 @@ octocrab = "0.42"
 zip = "2.2"
 
 agenthero-agent-runtime = { path = "../../../crates/agent-runtime" }
+agenthero-app-sdk = { path = "../../../crates/app-sdk" }
 agenthero-dag-executor = { path = "../../../crates/dag-executor" }
 agenthero-dag-runtime = { path = "../../../crates/dag-runtime" }
 grokrxiv-llm-adapter = { package = "agenthero-llm-adapter", path = "../../../crates/llm-adapter" }

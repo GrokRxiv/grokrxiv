@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/app-sdk",
     "crates/dag-runtime",
     "crates/dag-executor",
     "crates/agent-runtime",
