@@ -517,20 +517,18 @@ mod tests {
 
     #[test]
     fn build_agent_registry_applies_resolved_model_override() {
+        let role = "haskell_semantic_author";
         let _guard = EnvVarGuard::set(
-            crate::runtime_config::role_model_override_env_var("summary"),
+            crate::runtime_config::role_model_override_env_var(role),
             "claude-sonnet-test",
         );
         let mut role_yaml = RoleYamlMap::new();
-        role_yaml.insert(
-            "summary".to_string(),
-            Some(test_agent_config(AgentRunnerKind::Cli)),
-        );
+        role_yaml.insert(role.to_string(), Some(test_agent_config(AgentRunnerKind::Cli)));
         let mut schemas = AgentSchemaMap::new();
         let schema = Arc::new(serde_json::json!({ "type": "object" }));
-        schemas.insert("summary".to_string(), schema.clone());
+        schemas.insert(role.to_string(), schema.clone());
         let registry = build_agent_registry(&role_yaml, &Arc::new(schemas)).unwrap();
-        let agent = registry.get("summary").expect("summary agent");
+        let agent = registry.get(role).expect("haskell semantic author agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
         assert!(

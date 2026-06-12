@@ -97,6 +97,23 @@ export async function getReviewById(id: string): Promise<Review | null> {
   return data as unknown as Review;
 }
 
+async function findPaperBySourceKey(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  sourceKey: string,
+): Promise<Paper | null> {
+  const key = sourceKey.trim();
+  if (!key) return null;
+  for (const column of ["arxiv_id", "source_id"] as const) {
+    const { data, error } = await supabase
+      .from("papers")
+      .select("*")
+      .eq(column, key)
+      .maybeSingle();
+    if (!error && data) return data as Paper;
+  }
+  return null;
+}
+
 export async function getPaperByArxivId(arxivId: string): Promise<{
   paper: Paper;
   reviews: ReviewSummary[];
@@ -110,23 +127,19 @@ export async function getPaperBySourceKey(sourceKey: string): Promise<{
 } | null> {
   if (!isSupabaseConfigured()) return null;
   const supabase = await createSupabaseServerClient();
-  const { data: paper, error: paperErr } = await supabase
-    .from("papers")
-    .select("*")
-    .or(`arxiv_id.eq.${sourceKey},source_id.eq.${sourceKey}`)
-    .single();
-  if (paperErr || !paper) return null;
+  const paper = await findPaperBySourceKey(supabase, sourceKey);
+  if (!paper) return null;
   const { data: reviews } = await supabase
     .from("reviews")
     .select(
       "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, created_at, published_at",
     )
-    .eq("paper_id", (paper as Paper).id)
+    .eq("paper_id", paper.id)
     .eq("visibility", "public")
     .in("status", PUBLIC_REVIEW_STATUSES as unknown as string[])
     .order("created_at", { ascending: false });
   return {
-    paper: paper as Paper,
+    paper,
     reviews: (reviews ?? []) as ReviewSummary[],
   };
 }

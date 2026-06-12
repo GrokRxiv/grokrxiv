@@ -9,10 +9,16 @@ provider: gemini
 # deterministic TeX munging that doesn't benefit from extended thinking.
 model: gemini-2.5-flash
 runner: cli
+execution_mode: tool_loop
 prompt_template: prompts/extraction/equations.md
+input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/extraction/equations.schema.json
 verifiers:
   - json_schema
+tools:
+  - read_section
+  - query_ast
+  - submit
 max_iters: 60
 max_cost_usd: 0.50
 max_retries: 2

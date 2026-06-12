@@ -6,7 +6,9 @@ provider: gemini
 # Math-heavy papers can still override the model/runner explicitly.
 model: gemini-2.5-flash
 runner: cli
+execution_mode: tool_loop
 prompt_template: prompts/extraction/theorems.md
+input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/extraction/theorems.schema.json
 tools:
   - read_file

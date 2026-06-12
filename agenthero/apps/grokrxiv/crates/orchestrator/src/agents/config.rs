@@ -13,6 +13,7 @@ use crate::agents::types::AgentRunnerKind;
 
 /// YAML shape read from `agenthero/apps/<app>/agents/<dag-type>/<role-id>.yaml`.
 #[derive(Debug, serde::Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// Human-readable/local id. The DAG manifest role id is still authoritative.
     #[serde(default)]
@@ -77,6 +78,7 @@ pub struct AgentConfig {
 
 /// Declarative prompt-context selection for one agent.
 #[derive(Debug, serde::Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AgentPromptContext {
     /// Character budget for the paper body block.
     #[serde(default)]
@@ -329,7 +331,10 @@ pub fn resolve_agent_config_path(repo_root: &Path, config: &str) -> PathBuf {
     }
     if let Some(agents_dir) = std::env::var_os("AGENTHERO_AGENTS_DIR").map(PathBuf::from) {
         if let Ok(stripped) = path.strip_prefix("agents") {
-            return agents_dir.join(stripped);
+            let candidate = agents_dir.join(stripped);
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
     repo_root.join(path)
@@ -508,6 +513,26 @@ escalation: agent
         assert_eq!(config.max_iters, Some(80));
         assert_eq!(config.max_cost_usd, Some(0.5));
         assert_eq!(config.escalation.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_agent_config_fields() {
+        let err = serde_yaml::from_str::<AgentConfig>(
+            r#"
+kind: extractor
+provider: gemini
+model: gemini-2.5-flash
+runner: cli
+prompt_template: prompts/extraction/macros.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/extraction/macros.schema.json
+loop:
+  max_iters: 20
+"#,
+        )
+        .expect_err("unknown agent YAML fields must fail");
+
+        assert!(err.to_string().contains("unknown field `loop`"));
     }
 
     #[test]

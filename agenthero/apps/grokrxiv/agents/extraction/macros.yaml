@@ -7,6 +7,9 @@ provider: gemini
 # opt-in.
 model: gemini-2.5-flash
 runner: cli
+execution_mode: tool_loop
+prompt_template: prompts/extraction/macros.md
+input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/extraction/macros.schema.json
 tools:
   - list_files
@@ -14,8 +17,7 @@ tools:
   - find_definitions
   - apply_expansions
   - submit
-loop:
-  max_iters: 20
-  max_cost_usd: 0.40
+max_iters: 20
+max_cost_usd: 0.40
 max_retries: 2
 timeout_secs: 120

@@ -1701,6 +1701,9 @@ pub fn ensure_grokrxiv_review_skill_installed() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::agents::types::{AgentSpec, SandboxPolicy};
+    use std::sync::{Mutex, MutexGuard};
+
+    static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn stub_spec(provider: &str, model: &str) -> AgentSpec {
         let mut s = AgentSpec::api_default("summary", provider.to_string(), model.to_string());
@@ -1710,11 +1713,13 @@ mod tests {
     }
 
     struct EnvVarGuard {
+        _lock: MutexGuard<'static, ()>,
         saved: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvVarGuard {
         fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -1722,10 +1727,11 @@ mod tests {
             for (key, value) in vars {
                 std::env::set_var(key, value);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
 
         fn set_owned(vars: &[(&'static str, String)]) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -1733,10 +1739,11 @@ mod tests {
             for (key, value) in vars {
                 std::env::set_var(key, value);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
 
         fn clear(vars: &[&'static str]) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
             let saved = vars
                 .iter()
                 .map(|key| (*key, std::env::var(key).ok()))
@@ -1744,7 +1751,7 @@ mod tests {
             for key in vars {
                 std::env::remove_var(key);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
     }
 
@@ -1762,9 +1769,11 @@ mod tests {
     #[test]
     fn test_provider_to_binary_mapping_claude_openai_google_cli_backends() {
         // Clear env vars so we exercise the default-name branch.
-        std::env::remove_var("AGENTHERO_CLAUDE_BIN");
-        std::env::remove_var("AGENTHERO_CODEX_BIN");
-        std::env::remove_var("AGENTHERO_GEMINI_BIN");
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_CLAUDE_BIN",
+            "AGENTHERO_CODEX_BIN",
+            "AGENTHERO_GEMINI_BIN",
+        ]);
 
         let r = CliRunner::new();
         assert_eq!(r.binary_for("claude").unwrap(), "claude");
@@ -1987,6 +1996,7 @@ mod tests {
 
     #[test]
     fn test_command_construction_codex() {
+        let _env = EnvVarGuard::clear(&["AGENTHERO_CODEX_BIN"]);
         let r = CliRunner::new();
         let spec = stub_spec("openai", "gpt-5-codex");
         let built = build_command(&r, &spec, "do a review").unwrap();

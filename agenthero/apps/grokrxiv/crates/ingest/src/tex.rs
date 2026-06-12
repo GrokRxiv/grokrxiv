@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -44,6 +44,9 @@ use tracing::{debug, warn};
 use crate::types::{Citation, Section};
 
 const ARXIV_SOURCE: &str = "https://arxiv.org/e-print/";
+const TEX_BUNDLE_MAX_TEXT_FILES: usize = 512;
+const TEX_BUNDLE_MAX_TEXT_FILE_BYTES: usize = 8 * 1024 * 1024;
+const TEX_BUNDLE_MAX_TOTAL_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Result of pulling the source bundle and parsing it.
 pub struct TexExtract {
@@ -129,15 +132,17 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
 /// Decode the raw bytes returned by arXiv's `e-print` endpoint into a
 /// `{relpath → contents}` map of `.tex`, `.bib`, and `.bbl` files.
 fn unpack(bytes: &Bytes) -> Result<HashMap<String, String>> {
-    if let Ok(map) = try_targz(bytes) {
-        if !map.is_empty() {
-            return Ok(map);
-        }
+    match try_targz(bytes) {
+        Ok(map) if !map.is_empty() => return Ok(map),
+        Ok(_) => {}
+        Err(err) if is_fatal_bundle_unpack_error(&err) => return Err(err),
+        Err(_) => {}
     }
-    if let Ok(map) = try_tar(bytes) {
-        if !map.is_empty() {
-            return Ok(map);
-        }
+    match try_tar(bytes) {
+        Ok(map) if !map.is_empty() => return Ok(map),
+        Ok(_) => {}
+        Err(err) if is_fatal_bundle_unpack_error(&err) => return Err(err),
+        Err(_) => {}
     }
     if let Ok(text) = try_gz_single(bytes) {
         let mut m = HashMap::new();
@@ -152,6 +157,14 @@ fn unpack(bytes: &Bytes) -> Result<HashMap<String, String>> {
         }
     }
     Err(anyhow!("source bundle is not in a recognised format"))
+}
+
+fn is_fatal_bundle_unpack_error(err: &anyhow::Error) -> bool {
+    let message = format!("{err:#}");
+    message.contains("unsafe tex bundle path")
+        || message.contains("too many tex bundle text files")
+        || message.contains("tex bundle file too large")
+        || message.contains("tex bundle text too large")
 }
 
 fn try_targz(bytes: &Bytes) -> Result<HashMap<String, String>> {
@@ -178,20 +191,81 @@ fn try_gz_single(bytes: &Bytes) -> Result<String> {
 
 fn extract_text_files<R: Read>(archive: &mut Archive<R>) -> Result<HashMap<String, String>> {
     let mut out = HashMap::new();
+    let mut total_text_bytes = 0usize;
     for entry in archive.entries().context("read tar entries")? {
         let mut entry = entry.context("tar entry")?;
         let path = entry.path().context("entry path")?.to_path_buf();
-        let rel = path.to_string_lossy().to_string();
+        let safe_path = validate_tex_bundle_path(&path)?;
+        let rel = safe_path.to_string_lossy().replace('\\', "/");
         let lower = rel.to_lowercase();
         if !(lower.ends_with(".tex") || lower.ends_with(".bib") || lower.ends_with(".bbl")) {
             continue;
         }
+
+        if out.len() >= TEX_BUNDLE_MAX_TEXT_FILES {
+            return Err(anyhow!(
+                "too many tex bundle text files; max is {TEX_BUNDLE_MAX_TEXT_FILES}"
+            ));
+        }
+        if entry.size() > TEX_BUNDLE_MAX_TEXT_FILE_BYTES as u64 {
+            return Err(anyhow!(
+                "tex bundle file too large `{rel}`: {} bytes exceeds {}",
+                entry.size(),
+                TEX_BUNDLE_MAX_TEXT_FILE_BYTES
+            ));
+        }
+
         let mut text = String::new();
-        if entry.read_to_string(&mut text).is_ok() {
+        let mut limited = (&mut entry).take(TEX_BUNDLE_MAX_TEXT_FILE_BYTES as u64 + 1);
+        if limited.read_to_string(&mut text).is_ok() {
+            if text.len() > TEX_BUNDLE_MAX_TEXT_FILE_BYTES {
+                return Err(anyhow!(
+                    "tex bundle file too large `{rel}`: decoded text exceeds {} bytes",
+                    TEX_BUNDLE_MAX_TEXT_FILE_BYTES
+                ));
+            }
+            total_text_bytes = total_text_bytes.saturating_add(text.len());
+            if total_text_bytes > TEX_BUNDLE_MAX_TOTAL_TEXT_BYTES {
+                return Err(anyhow!(
+                    "tex bundle text too large: total decoded text exceeds {} bytes",
+                    TEX_BUNDLE_MAX_TOTAL_TEXT_BYTES
+                ));
+            }
             out.insert(rel, text);
         }
     }
     Ok(out)
+}
+
+fn validate_tex_bundle_path(path: &Path) -> Result<PathBuf> {
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part_text = part.to_string_lossy();
+                if part_text == ".git" || part_text.starts_with('-') {
+                    return Err(anyhow!(
+                        "unsafe tex bundle path `{}`: disallowed path component",
+                        path.display()
+                    ));
+                }
+                safe.push(part);
+            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(anyhow!(
+                    "unsafe tex bundle path `{}`: must be relative and stay inside extraction dir",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if safe.as_os_str().is_empty() {
+        return Err(anyhow!("unsafe tex bundle path: empty path"));
+    }
+    Ok(safe)
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +281,8 @@ fn write_bundle(tmp: &TempDir, files: &HashMap<String, String>) -> Result<Bundle
     let tex_dir = tmp.path().join("src");
     std::fs::create_dir_all(&tex_dir).context("create tex_dir")?;
     for (rel, contents) in files {
-        let target = tex_dir.join(rel);
+        let safe_rel = validate_tex_bundle_path(Path::new(rel))?;
+        let target = tex_dir.join(safe_rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -382,11 +457,12 @@ async fn run_pandoc_tex(tex_dir: &Path, main_name: &str, timeout: Duration) -> R
     let out = run_cmd_capture(
         Command::new(pandoc_bin())
             .current_dir(tex_dir)
-            .arg(main_name)
             .arg("--from=latex")
             .arg("--to=markdown")
             .arg("--mathjax")
-            .arg("--shift-heading-level-by=1"),
+            .arg("--shift-heading-level-by=1")
+            .arg("--")
+            .arg(main_name),
         timeout,
         "pandoc(tex→md)",
     )
@@ -1133,6 +1209,32 @@ mod tests {
         Bytes::from(gz_buf)
     }
 
+    fn make_targz_owned(files: &[(String, String)]) -> Bytes {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            for (name, contents) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(name).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, contents.as_bytes()).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        let mut gz_buf = Vec::new();
+        {
+            let mut enc = GzEncoder::new(&mut gz_buf, Compression::default());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap();
+        }
+        Bytes::from(gz_buf)
+    }
+
     #[test]
     fn extract_main_tex_source_prefers_documentclass_file() {
         let bundle = make_targz(&[
@@ -1160,6 +1262,56 @@ mod tests {
         ]);
         let files = unpack(&bundle).expect("unpack");
         assert!(files.contains_key("main.bbl"));
+    }
+
+    #[test]
+    fn unpack_rejects_option_like_tar_path() {
+        let bundle = make_targz(&[
+            (
+                "main.tex",
+                "\\documentclass{article}\n\\begin{document}\nBody\n\\end{document}\n",
+            ),
+            ("--extract-media=evil.tex", "\\documentclass{article}\n"),
+        ]);
+
+        match unpack(&bundle) {
+            Ok(_) => panic!("option-like tar path should be rejected"),
+            Err(err) => assert!(format!("{err:#}").contains("unsafe tex bundle path")),
+        }
+    }
+
+    #[test]
+    fn unpack_rejects_too_many_text_entries() {
+        let mut files = vec![(
+            "main.tex".to_string(),
+            "\\documentclass{article}\n\\begin{document}\nBody\n\\end{document}\n".to_string(),
+        )];
+        for idx in 0..TEX_BUNDLE_MAX_TEXT_FILES {
+            files.push((format!("refs/ref-{idx}.bib"), "@article{x,title={X}}\n".to_string()));
+        }
+        let bundle = make_targz_owned(&files);
+
+        match unpack(&bundle) {
+            Ok(_) => panic!("too many bundle text entries should be rejected"),
+            Err(err) => assert!(format!("{err:#}").contains("too many tex bundle text files")),
+        }
+    }
+
+    #[test]
+    fn unpack_rejects_oversized_text_entry() {
+        let oversized = "x".repeat(TEX_BUNDLE_MAX_TEXT_FILE_BYTES + 1);
+        let bundle = make_targz_owned(&[
+            (
+                "main.tex".to_string(),
+                "\\documentclass{article}\n\\begin{document}\nBody\n\\end{document}\n".to_string(),
+            ),
+            ("refs.bib".to_string(), oversized),
+        ]);
+
+        match unpack(&bundle) {
+            Ok(_) => panic!("oversized bundle text entry should be rejected"),
+            Err(err) => assert!(format!("{err:#}").contains("tex bundle file too large")),
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

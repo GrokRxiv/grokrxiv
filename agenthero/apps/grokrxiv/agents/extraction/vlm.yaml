@@ -3,10 +3,10 @@ kind: extractor
 role: "Stage 3: extract paper structure from a PDF when no TeX source is available."
 provider: gemini
 model: gemini-2.5-pro
-fallback_models:
-  - claude-opus-4-7
 runner: cli
+execution_mode: tool_loop
 prompt_template: prompts/extraction/vlm.md
+input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/extraction/vlm.schema.json
 tools:
   - read_pdf_page

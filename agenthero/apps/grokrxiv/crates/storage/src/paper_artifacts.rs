@@ -205,7 +205,7 @@ impl PaperArtifacts {
 
         // ===== Tier 1 write + commit =====
         self.git.write_paper_artifacts(&arxiv_id, git_files)?;
-        let sha = self.git.commit_and_push(&arxiv_id, stages).ok();
+        let sha = Some(self.git.commit_and_push(&arxiv_id, stages)?);
 
         // ===== Tier 2 uploads, routed per bucket =====
         if let Some(storage) = &self.storage {

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use git2::{
@@ -14,7 +14,7 @@ use git2::{
     RemoteCallbacks, Repository, Signature,
 };
 use serde_json::Value;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Tier-1 git-backed artifact store.
 pub struct GitArtifactStore {
@@ -112,12 +112,14 @@ impl GitArtifactStore {
         arxiv_id: &str,
         files: HashMap<String, Vec<u8>>,
     ) -> Result<()> {
+        validate_artifact_arxiv_id(arxiv_id)?;
         let paper_dir = self.repo_path.join("papers").join(arxiv_id);
         fs::create_dir_all(&paper_dir)
             .with_context(|| format!("creating {}", paper_dir.display()))?;
 
         for (rel_path, bytes) in &files {
-            let full = paper_dir.join(rel_path);
+            let safe_rel = validate_artifact_rel_path(rel_path)?;
+            let full = paper_dir.join(&safe_rel);
             if let Some(parent) = full.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -166,6 +168,7 @@ impl GitArtifactStore {
     /// Stage `papers/<arxiv_id>/*`, commit with a conventional message, and
     /// push if `remote` is configured. Returns the new commit SHA.
     pub fn commit_and_push(&self, arxiv_id: &str, stages: &[&str]) -> Result<String> {
+        validate_artifact_arxiv_id(arxiv_id)?;
         let repo = Repository::open(&self.repo_path)?;
         let sig = signature(&repo)?;
         let mut index = repo.index()?;
@@ -208,14 +211,67 @@ impl GitArtifactStore {
                 callbacks.credentials(default_credentials);
                 push_opts.remote_callbacks(callbacks);
             }
-            match remote.push(&["refs/heads/main:refs/heads/main"], Some(&mut push_opts)) {
-                Ok(()) => info!(%sha, %url, "pushed grokrxiv-data"),
-                Err(e) => warn!(%sha, %url, error = %e, "push failed; commit retained locally"),
-            }
+            remote
+                .push(&["refs/heads/main:refs/heads/main"], Some(&mut push_opts))
+                .with_context(|| {
+                    format!("push grokrxiv-data commit {sha} to configured remote {url}")
+                })?;
+            info!(%sha, %url, "pushed grokrxiv-data");
         }
 
         Ok(sha)
     }
+}
+
+fn validate_artifact_arxiv_id(arxiv_id: &str) -> Result<()> {
+    if arxiv_id.is_empty()
+        || arxiv_id.starts_with('.')
+        || arxiv_id.contains("..")
+        || arxiv_id.contains('/')
+        || arxiv_id.contains('\\')
+        || !arxiv_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Err(anyhow!(
+            "unsafe arxiv id `{arxiv_id}` for git artifact path"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_rel_path(rel_path: &str) -> Result<PathBuf> {
+    let path = Path::new(rel_path);
+    if rel_path.is_empty() {
+        return Err(anyhow!("unsafe artifact path `{rel_path}`: empty path"));
+    }
+
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                if part == ".git" {
+                    return Err(anyhow!(
+                        "unsafe artifact path `{rel_path}`: .git component is not allowed"
+                    ));
+                }
+                safe.push(part);
+            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(anyhow!(
+                    "unsafe artifact path `{rel_path}`: must be relative and stay inside paper directory"
+                ));
+            }
+        }
+    }
+
+    if safe.as_os_str().is_empty() {
+        return Err(anyhow!("unsafe artifact path `{rel_path}`: empty path"));
+    }
+    Ok(safe)
 }
 
 fn signature(repo: &Repository) -> Result<Signature<'static>> {
@@ -365,6 +421,53 @@ mod tests {
         files.insert("metadata.json".to_string(), b"{}".to_vec());
         let err = store.write_paper_artifacts("XX", files).unwrap_err();
         assert!(format!("{err:#}").contains("validation failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn write_paper_artifacts_rejects_unsafe_arxiv_id() -> Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().to_path_buf();
+        let store = GitArtifactStore::open_or_clone(path.clone(), None)?;
+
+        let mut files = HashMap::new();
+        files.insert("body.md".to_string(), b"# escaped\n".to_vec());
+        let err = store
+            .write_paper_artifacts("../escaped", files)
+            .expect_err("unsafe arxiv id should be rejected");
+
+        assert!(format!("{err:#}").contains("unsafe arxiv id"));
+        assert!(!path.join("escaped/body.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_paper_artifacts_rejects_escaping_relative_path() -> Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().to_path_buf();
+        let store = GitArtifactStore::open_or_clone(path.clone(), None)?;
+
+        let mut files = HashMap::new();
+        files.insert("../outside.md".to_string(), b"# escaped\n".to_vec());
+        let err = store
+            .write_paper_artifacts("2605.00403", files)
+            .expect_err("escaping rel path should be rejected");
+
+        assert!(format!("{err:#}").contains("unsafe artifact path"));
+        assert!(!path.join("papers/outside.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn commit_and_push_rejects_unsafe_arxiv_id() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = GitArtifactStore::open_or_clone(dir.path().to_path_buf(), None)?;
+
+        let err = store
+            .commit_and_push("../escaped", &["review"])
+            .expect_err("unsafe arxiv id should be rejected before staging");
+
+        assert!(format!("{err:#}").contains("unsafe arxiv id"));
         Ok(())
     }
 }

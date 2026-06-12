@@ -167,6 +167,29 @@ fn latex_omits_disclaimer_and_balanced_braces() {
 }
 
 #[test]
+fn latex_escapes_agent_json_instead_of_using_raw_verbatim() {
+    let (meta, paper, _) = fixture();
+    let agents = vec![AgentRecord {
+        role: "malicious".to_string(),
+        model: "test".into(),
+        output: json!({
+            "payload": "\\end{verbatim}\n\\input{/tmp/evil}\n\\begin{verbatim}"
+        }),
+        verifier: VerifierResult {
+            status: VerifierStatus::Warn,
+            notes: json!({}),
+        },
+    }];
+
+    let tex = render_latex(&meta, &paper, &agents);
+
+    assert!(!tex.contains("\\begin{verbatim}"));
+    assert!(!tex.contains("\\end{verbatim}"));
+    assert!(!tex.contains("\\input{/tmp/evil}"));
+    assert!(tex.contains("\\textbackslash{}input\\{/tmp/evil\\}"));
+}
+
+#[test]
 fn disclaimer_lives_on_the_web_legal_page() {
     // Companion to the negative renderer tests. We don't try to load Next.js
     // here — we just verify the disclaimer text is present in the `/legal`

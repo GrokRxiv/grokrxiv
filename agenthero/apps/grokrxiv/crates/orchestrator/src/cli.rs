@@ -2521,7 +2521,7 @@ async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
         let config = super::Config::from_env();
         let state = super::AppState::from_config(config).await?;
         let opts = crate::ingest_pipeline::IngestOptions::from_env();
-        let repo_root = data_repo_root();
+        let repo_root = data_repo_root()?;
         let mut outputs = Vec::with_capacity(arxiv_ids.len());
         let mut failures = Vec::new();
 
@@ -2618,11 +2618,14 @@ async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
     }
 }
 
-fn data_repo_root() -> PathBuf {
+fn data_repo_root() -> anyhow::Result<PathBuf> {
     std::env::var("GROKRXIV_DATA_REPO_PATH")
-        .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "GROKRXIV_DATA_REPO_PATH is required; point it at the grokrxiv-data Git repo"
+            )
+        })
 }
 
 #[cfg(feature = "grokrxiv-storage")]
@@ -3837,7 +3840,7 @@ enum ResolvedSource {
     /// arXiv id (already normalised).
     Arxiv(String),
     /// Local file path. Kind is best-guess from the extension.
-    LocalFile(std::path::PathBuf, SourceType),
+    LocalFile(std::path::PathBuf, SourceType, bool),
     /// Git repository source. Corpus expansion can attach an explicit
     /// manuscript path and group id per resolved paper.
     GitRepo {
@@ -4029,7 +4032,7 @@ async fn resolve_source(
             uuid::Uuid::new_v4().simple()
         ));
         tokio::fs::write(&path, &buf).await?;
-        return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
+        return Ok(vec![ResolvedSource::LocalFile(path, kind, true)]);
     }
     if matches!(type_hint, Some(SourceType::Git)) {
         return Ok(vec![ResolvedSource::GitRepo {
@@ -4044,7 +4047,7 @@ async fn resolve_source(
     let path = std::path::PathBuf::from(source);
     if path.is_file() {
         let kind = type_hint.unwrap_or_else(|| guess_local_kind(&path));
-        return Ok(vec![ResolvedSource::LocalFile(path, kind)]);
+        return Ok(vec![ResolvedSource::LocalFile(path, kind, false)]);
     }
     if looks_like_git_source(source) {
         return Ok(vec![ResolvedSource::GitRepo {
@@ -4089,10 +4092,11 @@ async fn review_source(
             .iter()
             .map(|s| match s {
                 ResolvedSource::Arxiv(id) => serde_json::json!({"kind": "arxiv", "id": id}),
-                ResolvedSource::LocalFile(p, k) => serde_json::json!({
+                ResolvedSource::LocalFile(p, k, cleanup_after_use) => serde_json::json!({
                     "kind": "local",
                     "path": p.display().to_string(),
                     "type": format!("{k:?}"),
+                    "cleanup_after_use": cleanup_after_use,
                 }),
                 ResolvedSource::GitRepo {
                     repo,
@@ -4226,6 +4230,7 @@ async fn review_resolved_sources(
     options: &ReviewSourceOptions,
     json: bool,
 ) -> anyhow::Result<()> {
+    let _cleanup = LocalSourceCleanup::new(resolved);
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
@@ -4273,7 +4278,7 @@ async fn review_resolved_sources(
                 }
                 results.push(envelope);
             }
-            ResolvedSource::LocalFile(path, kind) => {
+            ResolvedSource::LocalFile(path, kind, _) => {
                 let spec = grokrxiv_ingest::ReviewSourceSpec::LocalFile {
                     path: path.clone(),
                     format: local_source_format(*kind),
@@ -4371,6 +4376,42 @@ async fn review_resolved_sources(
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
+struct LocalSourceCleanup {
+    paths: Vec<PathBuf>,
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+impl LocalSourceCleanup {
+    fn new(resolved: &[ResolvedSource]) -> Self {
+        let paths = resolved
+            .iter()
+            .filter_map(|source| match source {
+                ResolvedSource::LocalFile(path, _, true) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        Self { paths }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+impl Drop for LocalSourceCleanup {
+    fn drop(&mut self) {
+        for path in self.paths.drain(..) {
+            if let Err(err) = std::fs::remove_file(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        path = %path.display(),
+                        err = %err,
+                        "failed to remove stdin review temp file"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
 struct SupervisorShutdownOnDrop(super::supervisor::Supervisor);
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -4383,7 +4424,7 @@ impl Drop for SupervisorShutdownOnDrop {
 fn resolved_source_label(source: &ResolvedSource) -> String {
     match source {
         ResolvedSource::Arxiv(id) => id.clone(),
-        ResolvedSource::LocalFile(path, _) => path.display().to_string(),
+        ResolvedSource::LocalFile(path, _, _) => path.display().to_string(),
         ResolvedSource::GitRepo {
             repo, paper_path, ..
         } => paper_path
@@ -9414,6 +9455,37 @@ mod tests {
     use super::*;
     use crate::source_display::source_display_ref;
     use clap::{CommandFactory, Parser};
+    use std::sync::{Mutex, MutexGuard};
+
+    static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn clear(key: &'static str) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn bare_agenthero_prints_help_instead_of_serving() {
@@ -9466,6 +9538,19 @@ mod tests {
                 "did not expect `{hidden}` in default help:\n{help}"
             );
         }
+    }
+
+    #[test]
+    fn data_repo_root_requires_explicit_env() {
+        let _env = EnvVarGuard::clear("GROKRXIV_DATA_REPO_PATH");
+        let err = data_repo_root().expect_err("missing data repo path should fail");
+        assert!(err.to_string().contains("GROKRXIV_DATA_REPO_PATH is required"));
+
+        std::env::set_var("GROKRXIV_DATA_REPO_PATH", "/tmp/grokrxiv-data");
+        assert_eq!(
+            data_repo_root().expect("configured data repo path"),
+            PathBuf::from("/tmp/grokrxiv-data")
+        );
     }
 
     #[test]

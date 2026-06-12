@@ -48,7 +48,7 @@ pub(super) async fn run_item(
     let outcome = match item.kind {
         JobKind::Ingest => run_ingest(state, item, supervisor_tx).await,
         JobKind::Review => run_review(state, item).await,
-        JobKind::Render => Err(anyhow::anyhow!("render: not implemented in M1")),
+        JobKind::Render => run_render(state, item).await,
         JobKind::Publish => super::publish::run_publish(state, item).await,
         JobKind::Preview => Err(anyhow::anyhow!("preview is handled synchronously")),
     };
@@ -240,6 +240,23 @@ async fn run_ingest(
 async fn run_review(_state: &AppState, _item: &WorkItem) -> anyhow::Result<()> {
     Err(anyhow::anyhow!(
         "run_review requires --features full (grokrxiv-ingest)"
+    ))
+}
+
+#[cfg(feature = "grokrxiv-render")]
+async fn run_render(state: &AppState, item: &WorkItem) -> anyhow::Result<()> {
+    let review_id = item
+        .ref_id
+        .ok_or_else(|| anyhow::anyhow!("run_render: ref_id (review id) required"))?;
+    super::rendering::render_to_disk(state, review_id).await?;
+    tracing::info!(%review_id, "render job complete");
+    Ok(())
+}
+
+#[cfg(not(feature = "grokrxiv-render"))]
+async fn run_render(_state: &AppState, _item: &WorkItem) -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "run_render requires --features full (grokrxiv-render)"
     ))
 }
 

@@ -86,11 +86,8 @@ pub fn render_latex(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentReco
             crate::role_slug(&agent.role),
             latex_escape(&agent.model)
         ));
-        out.push_str("\\begin{verbatim}\n");
-        out.push_str(
-            &serde_json::to_string_pretty(&agent.output).unwrap_or_else(|_| "{}".to_string()),
-        );
-        out.push_str("\n\\end{verbatim}\n\n");
+        let json = serde_json::to_string_pretty(&agent.output).unwrap_or_else(|_| "{}".to_string());
+        latex_code_block(&mut out, &json);
     }
 
     out.push_str("\\section*{Corrections}\n");
@@ -143,6 +140,15 @@ fn bullet_section(out: &mut String, title: &str, items: &[String]) {
         out.push('\n');
     }
     out.push_str("\\end{itemize}\n\n");
+}
+
+fn latex_code_block(out: &mut String, text: &str) {
+    out.push_str("\\begin{quote}\\small\\ttfamily\\raggedright\n");
+    for line in text.lines() {
+        out.push_str(&latex_escape(line));
+        out.push_str("\\\\\n");
+    }
+    out.push_str("\\end{quote}\n\n");
 }
 
 fn recommendation_label(r: Recommendation) -> &'static str {

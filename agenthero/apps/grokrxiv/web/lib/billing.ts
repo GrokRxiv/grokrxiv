@@ -68,10 +68,15 @@ export function planForPriceId(priceId: string | null | undefined): PaidPlanId |
 export function normalizeStripeStatus(
   status: string,
 ): "active" | "trialing" | "past_due" | "canceled" {
-  if (status === "active" || status === "trialing" || status === "canceled") {
-    return status;
+  switch (status) {
+    case "active":
+    case "trialing":
+    case "past_due":
+    case "canceled":
+      return status;
+    default:
+      return "canceled";
   }
-  return status === "past_due" ? "past_due" : "past_due";
 }
 
 export function unixToIso(value: number | null | undefined): string | null {

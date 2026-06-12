@@ -11,7 +11,7 @@ use tracing::debug;
 
 pub struct SupabaseStorage {
     pub url: String,
-    pub service_role_key: String,
+    service_role_key: String,
     client: Client,
 }
 

@@ -831,8 +831,17 @@ fn check_extraction_agent_yaml_with(report: &mut DoctorReport, config: &Extracti
             return CheckResult::skipped(format!("{} not found", candidate.display()));
         }
         match std::fs::read_to_string(&candidate) {
-            Ok(text) => match serde_yaml::from_str::<serde_yaml::Value>(&text) {
-                Ok(_) => CheckResult::ok(format!("{} parses", candidate.display())),
+            Ok(text) => match serde_yaml::from_str::<crate::agents::config::AgentConfig>(&text) {
+                Ok(agent_config) => {
+                    match crate::agents::config::validate_agent_config_detail(
+                        role,
+                        &agenthero_dag_runtime::AgentKind::Extractor,
+                        &agent_config,
+                    ) {
+                        Ok(()) => CheckResult::ok(format!("{} parses and validates", candidate.display())),
+                        Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
+                    }
+                }
                 Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
             },
             Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
@@ -1008,8 +1017,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let extraction = tmp.path().join("extraction");
         std::fs::create_dir_all(&extraction).unwrap();
-        for role in ["vlm", "macros", "equations", "theorems", "citations"] {
-            std::fs::write(extraction.join(format!("{role}.yaml")), "provider: cli\n").unwrap();
+        for (role, schema) in [
+            ("vlm", "vlm"),
+            ("macros", "macros"),
+            ("equations", "equations"),
+            ("theorems", "theorems"),
+            ("citations", "citations"),
+        ] {
+            std::fs::write(
+                extraction.join(format!("{role}.yaml")),
+                format!(
+                    r#"
+kind: extractor
+provider: gemini
+model: gemini-2.5-flash
+runner: cli
+execution_mode: tool_loop
+prompt_template: prompts/extraction/{role}.md
+input_schema: schemas/paper_extract.schema.json
+output_schema: schemas/extraction/{schema}.schema.json
+tools: [submit]
+max_iters: 1
+max_cost_usd: 0.01
+"#
+                ),
+            )
+            .unwrap();
         }
 
         let config = ExtractionAgentConfig {

@@ -290,10 +290,15 @@ pub async fn prepare_git_repo_source_with_corpus(
     field: Option<String>,
     corpus_id: Option<String>,
 ) -> Result<PreparedReviewSource> {
+    validate_git_repo_source(repo)?;
+    if let Some(rev) = rev {
+        validate_git_revision(rev)?;
+    }
+
     let tmp = TempDir::new().context("create temp dir for git source")?;
     let checkout = tmp.path().join("repo");
 
-    run_git(&["clone", "--quiet", repo, path_str(&checkout)?], None)
+    run_git(&["clone", "--quiet", "--", repo, path_str(&checkout)?], None)
         .await
         .with_context(|| format!("clone git source {repo}"))?;
     if let Some(rev) = rev {
@@ -356,9 +361,14 @@ pub async fn scan_git_repo_corpus(
     rev: Option<&str>,
     options: &CorpusScanOptions,
 ) -> Result<Vec<CorpusManuscriptCandidate>> {
+    validate_git_repo_source(repo)?;
+    if let Some(rev) = rev {
+        validate_git_revision(rev)?;
+    }
+
     let tmp = TempDir::new().context("create temp dir for git corpus scan")?;
     let checkout = tmp.path().join("repo");
-    run_git(&["clone", "--quiet", repo, path_str(&checkout)?], None)
+    run_git(&["clone", "--quiet", "--", repo, path_str(&checkout)?], None)
         .await
         .with_context(|| format!("clone git corpus source {repo}"))?;
     if let Some(rev) = rev {
@@ -861,6 +871,51 @@ async fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn validate_git_repo_source(repo: &str) -> Result<()> {
+    let trimmed = repo.trim();
+    let local_allowed = std::env::var("GROKRXIV_ALLOW_LOCAL_GIT_SOURCES")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+
+    let allowed_remote = trimmed.starts_with("https://")
+        || trimmed.starts_with("ssh://")
+        || (trimmed.starts_with("git@") && trimmed.contains(':'));
+    let allowed_local = local_allowed
+        && !trimmed.contains("://")
+        && !trimmed.starts_with('-')
+        && Path::new(trimmed).components().next().is_some();
+
+    if repo != trimmed
+        || trimmed.is_empty()
+        || trimmed.starts_with('-')
+        || trimmed.contains(char::is_whitespace)
+        || trimmed.contains('\0')
+        || !(allowed_remote || allowed_local)
+    {
+        bail!("unsupported git repository source `{repo}`; use https://, ssh://, or git@host:path remotes");
+    }
+    Ok(())
+}
+
+fn validate_git_revision(rev: &str) -> Result<()> {
+    if rev.is_empty()
+        || rev.starts_with('-')
+        || rev.starts_with('/')
+        || rev.ends_with('/')
+        || rev.contains("..")
+        || rev.contains("//")
+        || rev.contains("@{")
+        || rev.contains('\\')
+        || rev.contains('\0')
+        || !rev
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+    {
+        bail!("unsafe git revision `{rev}`");
+    }
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -896,6 +951,39 @@ mod tests {
     fn rejects_unsupported_local_formats() {
         let err = LocalSourceFormat::from_path(Path::new("paper.docx")).unwrap_err();
         assert!(err.to_string().contains("only .pdf and .tex"));
+    }
+
+    #[test]
+    fn git_repo_validation_rejects_unsafe_schemes_and_options() {
+        for repo in [
+            "git://example.com/paper.git",
+            "file:///tmp/paper.git",
+            "--upload-pack=/tmp/evil",
+        ] {
+            let err = validate_git_repo_source(repo)
+                .expect_err("unsafe git repository source should be rejected");
+            assert!(err.to_string().contains("unsupported git repository source"));
+        }
+
+        validate_git_repo_source("https://github.com/example/paper.git")
+            .expect("https git source should be allowed");
+        validate_git_repo_source("ssh://git@github.com/example/paper.git")
+            .expect("ssh git source should be allowed");
+        validate_git_repo_source("git@github.com:example/paper.git")
+            .expect("scp-like ssh git source should be allowed");
+    }
+
+    #[test]
+    fn git_revision_validation_rejects_option_like_revision() {
+        for rev in ["--orphan", "-b", "feature/../main", "main -- file"] {
+            let err = validate_git_revision(rev)
+                .expect_err("unsafe git revision should be rejected");
+            assert!(err.to_string().contains("unsafe git revision"));
+        }
+
+        validate_git_revision("main").expect("branch name should be allowed");
+        validate_git_revision("feature/review-loop").expect("branch path should be allowed");
+        validate_git_revision("v1.2.3").expect("tag name should be allowed");
     }
 
     #[test]

@@ -7,6 +7,9 @@ provider: gemini
 # Flash works reliably for the lookup-heavy citation enrichment loop.
 model: gemini-2.5-flash
 runner: cli
+execution_mode: tool_loop
+prompt_template: prompts/extraction/citations.md
+input_schema: schemas/paper_extract.schema.json
 output_schema: schemas/extraction/citations.schema.json
 tools:
   - list_citation_sites

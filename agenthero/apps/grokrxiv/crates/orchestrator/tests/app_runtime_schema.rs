@@ -89,6 +89,44 @@ fn app_runtime_recovery_migration_adds_attempt_and_expired_lease_support() {
 }
 
 #[test]
+fn app_runtime_rls_migration_locks_down_generic_tables() {
+    let root = repo_root();
+    let sql = std::fs::read_to_string(
+        root.join("agenthero/migrations/20260612000001_runtime_tables_rls.sql"),
+    )
+    .expect("runtime RLS migration should exist");
+    let supabase_sql = std::fs::read_to_string(
+        root.join("supabase/migrations/20260612000001_runtime_tables_rls.sql"),
+    )
+    .expect("supabase runtime RLS migration should exist");
+    assert_eq!(
+        sql, supabase_sql,
+        "platform and supabase runtime RLS migrations must stay identical"
+    );
+
+    for table in [
+        "app_runs",
+        "dag_runs",
+        "dag_run_nodes",
+        "dag_artifacts",
+        "dag_events",
+        "worker_nodes",
+        "worker_leases",
+        "agent_output_cache",
+    ] {
+        assert!(
+            sql.contains(&format!("alter table if exists {table} enable row level security")),
+            "runtime RLS migration must enable RLS for `{table}`"
+        );
+        assert!(
+            sql.contains(&format!("drop policy if exists {table}_service_all on {table}")),
+            "runtime RLS migration must create a service-role policy for `{table}`"
+        );
+    }
+    assert!(sql.contains("from anon, authenticated"));
+}
+
+#[test]
 fn grokrxiv_projection_migration_owns_grokrxiv_tables() {
     let root = repo_root();
     let sql = std::fs::read_to_string(
@@ -122,6 +160,41 @@ fn grokrxiv_projection_migration_owns_grokrxiv_tables() {
             "migration must contain `{required}`"
         );
     }
+}
+
+#[test]
+fn grokrxiv_private_runtime_rls_migration_locks_down_projection_tables() {
+    let root = repo_root();
+    let sql = std::fs::read_to_string(root.join(
+        "agenthero/apps/grokrxiv/migrations/20260612000001_grokrxiv_private_runtime_rls.sql",
+    ))
+    .expect("GrokRxiv private runtime RLS migration should exist");
+    let supabase_sql = std::fs::read_to_string(
+        root.join("supabase/migrations/20260612000001_grokrxiv_private_runtime_rls.sql"),
+    )
+    .expect("supabase GrokRxiv private runtime RLS migration should exist");
+    assert_eq!(
+        sql, supabase_sql,
+        "app and supabase GrokRxiv private runtime RLS migrations must stay identical"
+    );
+
+    for table in [
+        "grokrxiv_sources",
+        "grokrxiv_reviews",
+        "grokrxiv_moderation_queue",
+        "review_inputs",
+        "review_cache",
+    ] {
+        assert!(
+            sql.contains(&format!("alter table if exists {table} enable row level security")),
+            "GrokRxiv RLS migration must enable RLS for `{table}`"
+        );
+        assert!(
+            sql.contains(&format!("drop policy if exists {table}_service_all on {table}")),
+            "GrokRxiv RLS migration must create a service-role policy for `{table}`"
+        );
+    }
+    assert!(sql.contains("from anon, authenticated"));
 }
 
 #[test]
