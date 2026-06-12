@@ -1533,11 +1533,11 @@ mod tests {
 
     #[test]
     fn app_run_adapter_input_carries_status_and_debug_flags() {
-        let input = app_run_adapter_input("grokrxiv", "review", "review-loop", true, true);
+        let input = app_run_adapter_input("demo", "run", "demo-dag", true, true);
 
-        assert_eq!(input.values["app"], json!("grokrxiv"));
-        assert_eq!(input.values["action"], json!("review"));
-        assert_eq!(input.values["dag_type"], json!("review-loop"));
+        assert_eq!(input.values["app"], json!("demo"));
+        assert_eq!(input.values["action"], json!("run"));
+        assert_eq!(input.values["dag_type"], json!("demo-dag"));
         assert_eq!(input.values["stream_stderr"], json!(true));
         assert_eq!(input.values["debug_logs"], json!(true));
     }

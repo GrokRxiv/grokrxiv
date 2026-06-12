@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use agenthero_agent_runtime::{AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL};
 use agenthero_dag_executor::{DagExecutionReport, DagIo};
+use agenthero_dag_runtime::DagManifest;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
@@ -60,6 +61,8 @@ pub struct AppActionDescriptor {
 /// YAML product app manifest loaded from `agenthero/apps/<app>/app.yaml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AppManifest {
+    /// App manifest schema version. Version 1 is the current contract.
+    pub version: u32,
     /// Product app slug used by `agh app run <app> ...`.
     pub slug: String,
     /// Human-readable app label.
@@ -327,12 +330,19 @@ fn load_app_manifest(path: &Path) -> anyhow::Result<AppManifest> {
         .map_err(|err| anyhow::anyhow!("read app manifest {}: {err}", path.display()))?;
     let manifest: AppManifest = serde_yaml::from_str(&text)
         .map_err(|err| anyhow::anyhow!("parse app manifest {}: {err}", path.display()))?;
-    validate_app_manifest(&manifest)
+    let app_root = path.parent().unwrap_or_else(|| Path::new("."));
+    validate_app_manifest(&manifest, app_root)
         .map_err(|err| anyhow::anyhow!("validate app manifest {}: {err}", path.display()))?;
     Ok(manifest)
 }
 
-fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
+fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Result<()> {
+    if manifest.version != 1 {
+        anyhow::bail!(
+            "unsupported app manifest version `{}`; expected `1`",
+            manifest.version
+        );
+    }
     if manifest.slug.trim().is_empty() {
         anyhow::bail!("slug is required");
     }
@@ -359,6 +369,27 @@ fn validate_app_manifest(manifest: &AppManifest) -> anyhow::Result<()> {
         }
         if action.dag_type.trim().is_empty() {
             anyhow::bail!("action `{}` dag_type is required", action.id);
+        }
+        let dag_path = app_root
+            .join("dags")
+            .join(format!("{}.yaml", action.dag_type));
+        if !dag_path.is_file() {
+            anyhow::bail!(
+                "action `{}` references missing DAG manifest {}",
+                action.id,
+                dag_path.display()
+            );
+        }
+        let dag_manifest = DagManifest::from_path(&dag_path)
+            .map_err(|err| anyhow::anyhow!("load DAG manifest {}: {err}", dag_path.display()))?;
+        if dag_manifest.id.as_str() != action.dag_type {
+            anyhow::bail!(
+                "action `{}` dag_type `{}` does not match DAG manifest id `{}` in {}",
+                action.id,
+                action.dag_type,
+                dag_manifest.id,
+                dag_path.display()
+            );
         }
         let mut option_names = BTreeSet::new();
         for option in &action.options {

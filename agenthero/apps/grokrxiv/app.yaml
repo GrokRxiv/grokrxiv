@@ -1,3 +1,4 @@
+version: 1
 slug: grokrxiv
 label: GrokRxiv
 description: Research ingest, extraction, review, revision, validation, and publish DAG app.

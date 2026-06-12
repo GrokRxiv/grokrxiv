@@ -1,3 +1,4 @@
+version: 1
 slug: c2rust
 label: C2Rust
 description: C to Rust migration DAG app.

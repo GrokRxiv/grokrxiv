@@ -97,6 +97,7 @@ fn registry_contains_grokrxiv_chain_and_c2rust_apps() {
             "paper-publish".to_string(),
             "paper-review".to_string(),
             "paper-revise".to_string(),
+            "review-loop".to_string(),
         ]
     );
 }
@@ -113,6 +114,64 @@ fn broken_app_manifest_bubbles_from_registry_helpers() {
     assert!(
         err.to_string().contains("parse app manifest"),
         "expected parse error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_manifest_requires_version() {
+    let root = TempRoot::new("missing-app-version");
+    std::fs::create_dir_all(root.path().join("demo")).unwrap();
+    std::fs::write(
+        root.path().join("demo/app.yaml"),
+        r#"slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+actions:
+  - id: run
+    command: [run]
+    dag_type: demo
+"#,
+    )
+    .unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("app manifests must declare version");
+    assert!(
+        err.to_string().contains("version"),
+        "expected version error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_action_dag_type_must_reference_existing_manifest() {
+    let root = TempRoot::new("missing-action-dag");
+    let app = root.path().join("demo");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("app.yaml"),
+        r#"version: 1
+slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+actions:
+  - id: run
+    command: [run]
+    dag_type: missing-dag
+"#,
+    )
+    .unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("action dag_type must resolve during app discovery");
+    assert!(
+        err.to_string().contains("missing DAG manifest"),
+        "expected missing manifest error, got {err:#}"
     );
 }
 
@@ -349,6 +408,7 @@ fn root_workspace_only_contains_platform_crates() {
     assert_eq!(
         members,
         vec![
+            "crates/app-sdk",
             "crates/dag-runtime",
             "crates/dag-executor",
             "crates/agent-runtime",
@@ -385,6 +445,7 @@ fn top_level_crates_directory_is_platform_only() {
         crates,
         vec![
             "agent-runtime",
+            "app-sdk",
             "dag-executor",
             "dag-runtime",
             "llm-adapter",
@@ -428,7 +489,7 @@ fn app_manifest_resolves_action_command_paths() {
     )
     .expect("review action resolves");
     assert_eq!(review.id, "review");
-    assert_eq!(review.dag_type, "paper-review");
+    assert_eq!(review.dag_type, "review-loop");
     assert_eq!(review.args, vec!["2605.17307"]);
 
     let citations = agenthero_orchestrator::dag_apps::resolve_app_action_args(
@@ -726,7 +787,8 @@ fn write_app_manifest(
     std::fs::write(
         app.join("app.yaml"),
         format!(
-            r#"slug: {slug}
+            r#"version: 1
+slug: {slug}
 label: {slug}
 adapter:
   kind: process
@@ -735,6 +797,21 @@ adapter:
   - id: {action}
     command: [{action}]
     dag_type: {dag_type}
+"#
+        ),
+    )
+    .unwrap();
+    write_dag_manifest(root, slug, dag_type);
+}
+
+fn write_dag_manifest(root: &std::path::Path, slug: &str, dag_type: &str) {
+    let dags = root.join(slug).join("dags");
+    std::fs::create_dir_all(&dags).unwrap();
+    std::fs::write(
+        dags.join(format!("{dag_type}.yaml")),
+        format!(
+            r#"id: {dag_type}
+version: 1
 "#
         ),
     )
