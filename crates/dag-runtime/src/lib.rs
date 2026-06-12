@@ -118,6 +118,7 @@ pub enum DagNodeKind {
     Tool,
     Artifact,
     DagCall,
+    Loop,
 }
 
 impl fmt::Display for DagNodeKind {
@@ -134,6 +135,7 @@ impl fmt::Display for DagNodeKind {
             Self::Tool => "tool",
             Self::Artifact => "artifact",
             Self::DagCall => "dag_call",
+            Self::Loop => "loop",
         };
         f.write_str(s)
     }
@@ -178,6 +180,17 @@ pub struct DagGate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagLoop {
+    pub max_rounds: u32,
+    #[serde(default = "default_loop_continue_key")]
+    pub continue_key: String,
+}
+
+fn default_loop_continue_key() -> String {
+    "loop_continue".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagNode {
     pub id: String,
     pub kind: DagNodeKind,
@@ -197,6 +210,8 @@ pub struct DagNode {
     pub feeds_meta: bool,
     #[serde(default)]
     pub gate: Option<DagGate>,
+    #[serde(default, rename = "loop")]
+    pub loop_policy: Option<DagLoop>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +358,14 @@ impl DagManifest {
                     }
                 }
             }
+            if node.kind == DagNodeKind::Loop {
+                let Some(loop_policy) = &node.loop_policy else {
+                    return Err(DagError::LoopNodeMissingPolicy(node.id.clone()));
+                };
+                if loop_policy.max_rounds == 0 {
+                    return Err(DagError::LoopNodeInvalidMaxRounds(node.id.clone()));
+                }
+            }
         }
 
         for edge in &self.edges {
@@ -487,6 +510,10 @@ pub enum DagError {
     GateNodeMissingPolicy(String),
     #[error("gate node `{0}` has invalid min_usable; value must be >= 1")]
     GateNodeInvalidMinUsable(String),
+    #[error("loop node `{0}` must define a bounded loop policy")]
+    LoopNodeMissingPolicy(String),
+    #[error("loop node `{0}` has invalid max_rounds; value must be >= 1")]
+    LoopNodeInvalidMaxRounds(String),
     #[error("agent kind `{kind}` for role `{role}` is not accepted by DAG `{dag}`")]
     KindNotAccepted {
         dag: String,

@@ -95,8 +95,10 @@ nodes:
       - review_loop/haskell/SemanticModel.hs
     required: true
   - id: haskell_review_fix_code
-    kind: tool
+    kind: loop
     tool: review_fix_code
+    loop:
+      max_rounds: 3
     inputs:
       - review_loop/semantic_model.json
       - review_loop/haskell/SemanticModel.hs
@@ -113,8 +115,10 @@ nodes:
     outputs: [review_loop/proof_obligations.json]
     required: true
   - id: lean_review_fix_code
-    kind: tool
+    kind: loop
     tool: review_fix_code
+    loop:
+      max_rounds: 3
     inputs: [review_loop/proof_obligations.json]
     outputs:
       - review_loop/lean/GrokRxiv/Proofs.lean
@@ -143,8 +147,10 @@ nodes:
       - review_loop/fixed/review.pdf
     required: true
   - id: pr_review_fix_code
-    kind: tool
+    kind: loop
     tool: review_fix_code
+    loop:
+      max_rounds: 3
     inputs:
       - review_loop/pr_fixes.json
       - review_loop/fixed/review.tex

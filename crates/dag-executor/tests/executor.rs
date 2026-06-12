@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use agenthero_dag_executor::{
     ArtifactRef, DagExecutor, DagIo, NodeExecutionContext, NodeExecutionResult, NodeHandler,
+    LOOP_ROUND_INPUT,
 };
 use agenthero_dag_runtime::{DagManifest, DagNodeStatus};
 use async_trait::async_trait;
@@ -57,6 +58,52 @@ impl NodeHandler for RecordingHandler {
                 "seen_inputs": ctx.inputs.values.keys().cloned().collect::<Vec<_>>()
             }),
         ))
+    }
+}
+
+#[derive(Clone, Default)]
+struct LoopingHandler {
+    rounds: Arc<Mutex<Vec<u64>>>,
+    stop_after_round: Option<u64>,
+}
+
+impl LoopingHandler {
+    fn stop_after(round: u64) -> Self {
+        Self {
+            rounds: Arc::default(),
+            stop_after_round: Some(round),
+        }
+    }
+
+    fn never_stop() -> Self {
+        Self {
+            rounds: Arc::default(),
+            stop_after_round: None,
+        }
+    }
+
+    fn rounds(&self) -> Vec<u64> {
+        self.rounds.lock().expect("rounds lock").clone()
+    }
+}
+
+#[async_trait]
+impl NodeHandler for LoopingHandler {
+    async fn execute_node(
+        &self,
+        ctx: NodeExecutionContext<'_>,
+    ) -> anyhow::Result<NodeExecutionResult> {
+        let round = ctx.inputs.values[LOOP_ROUND_INPUT]
+            .as_u64()
+            .expect("loop round input is numeric");
+        self.rounds.lock().expect("rounds lock").push(round);
+        let continue_loop = self
+            .stop_after_round
+            .map(|stop_after| round < stop_after)
+            .unwrap_or(true);
+        Ok(NodeExecutionResult::ok()
+            .with_value("last_round", json!(round))
+            .with_value("loop_continue", json!(continue_loop)))
     }
 }
 
@@ -270,4 +317,81 @@ nodes:
     assert_eq!(report.status, DagNodeStatus::Ok);
     assert_eq!(handler.calls(), vec!["call_child"]);
     assert_eq!(report.nodes[0].kind, "dag_call");
+}
+
+#[tokio::test]
+async fn loop_node_records_each_round_and_stops_when_handler_clears_continue() {
+    let manifest = manifest(
+        r#"
+id: parent
+version: 1
+accepts: []
+tools:
+  - id: repair_tool
+    executor: rust
+nodes:
+  - id: repair
+    kind: loop
+    tool: repair_tool
+    loop:
+      max_rounds: 3
+    required: true
+"#,
+    );
+    let handler = LoopingHandler::stop_after(2);
+
+    let report = DagExecutor::new(handler.clone())
+        .execute(&manifest, DagIo::default())
+        .await
+        .expect("dag report is returned");
+
+    assert_eq!(report.status, DagNodeStatus::Ok);
+    assert_eq!(handler.rounds(), vec![1, 2]);
+    assert_eq!(
+        report
+            .nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["repair#round-1", "repair#round-2", "repair"]
+    );
+    assert_eq!(report.node_status("repair"), Some(DagNodeStatus::Ok));
+    assert_eq!(report.outputs.values["last_round"], json!(2));
+}
+
+#[tokio::test]
+async fn required_loop_node_fails_when_max_rounds_are_exhausted() {
+    let manifest = manifest(
+        r#"
+id: parent
+version: 1
+accepts: []
+tools:
+  - id: repair_tool
+    executor: rust
+nodes:
+  - id: repair
+    kind: loop
+    tool: repair_tool
+    loop:
+      max_rounds: 2
+    required: true
+"#,
+    );
+    let handler = LoopingHandler::never_stop();
+
+    let report = DagExecutor::new(handler.clone())
+        .execute(&manifest, DagIo::default())
+        .await
+        .expect("dag report is returned");
+
+    assert_eq!(report.status, DagNodeStatus::Failed);
+    assert_eq!(handler.rounds(), vec![1, 2]);
+    assert_eq!(report.node_status("repair"), Some(DagNodeStatus::Failed));
+    let final_report = report.nodes.last().expect("final loop report");
+    assert!(final_report
+        .error
+        .as_ref()
+        .expect("max round error")
+        .contains("max_rounds"));
 }

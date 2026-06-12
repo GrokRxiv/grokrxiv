@@ -12,6 +12,13 @@ use agenthero_dag_runtime::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Input value key containing the current 1-based round for a `loop` node.
+pub const LOOP_ROUND_INPUT: &str = "loop_round";
+/// Input value key containing the declared max round count for a `loop` node.
+pub const LOOP_MAX_ROUNDS_INPUT: &str = "loop_max_rounds";
+/// Input value key containing the manifest node id for a `loop` node.
+pub const LOOP_NODE_ID_INPUT: &str = "loop_node_id";
+
 /// Reference to an artifact stored outside the executor's JSON value map.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRef {
@@ -225,6 +232,33 @@ where
                     continue;
                 }
 
+                if node.kind == DagNodeKind::Loop {
+                    let started = Instant::now();
+                    let snapshot = outputs.clone();
+                    let (status, warning, error, produced, mut round_reports) =
+                        self.execute_loop_node(manifest, node, &snapshot).await;
+                    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+                    if let Some(produced) = produced {
+                        outputs.merge(produced);
+                    }
+
+                    statuses.insert(node.id.clone(), status);
+                    reports.append(&mut round_reports);
+                    reports.push(DagNodeReport {
+                        node_id: node.id.clone(),
+                        kind: node.kind.to_string(),
+                        status,
+                        executor: node_executor_label(node),
+                        inputs: node.inputs.clone(),
+                        outputs: node.outputs.clone(),
+                        warning,
+                        error,
+                        latency_ms: Some(latency_ms),
+                    });
+                    continue;
+                }
+
                 let started = Instant::now();
                 let snapshot = outputs.clone();
                 let node_result = if node.kind == DagNodeKind::Gate {
@@ -284,6 +318,201 @@ where
             nodes: reports,
             outputs,
         })
+    }
+
+    async fn execute_loop_node(
+        &self,
+        manifest: &DagManifest,
+        node: &DagNode,
+        inputs: &DagIo,
+    ) -> (
+        DagNodeStatus,
+        Option<String>,
+        Option<String>,
+        Option<DagIo>,
+        Vec<DagNodeReport>,
+    ) {
+        let Some(policy) = node.loop_policy.as_ref() else {
+            return (
+                DagNodeStatus::Failed,
+                None,
+                Some(format!("loop node `{}` has no loop policy", node.id)),
+                None,
+                Vec::new(),
+            );
+        };
+
+        let mut visible_inputs = inputs.clone();
+        let mut combined_outputs = DagIo::default();
+        let mut round_reports = Vec::new();
+        let mut saw_degraded = false;
+
+        for round in 1..=policy.max_rounds {
+            let mut round_inputs = visible_inputs.clone();
+            round_inputs
+                .values
+                .insert(LOOP_ROUND_INPUT.to_string(), serde_json::json!(round));
+            round_inputs.values.insert(
+                LOOP_MAX_ROUNDS_INPUT.to_string(),
+                serde_json::json!(policy.max_rounds),
+            );
+            round_inputs
+                .values
+                .insert(LOOP_NODE_ID_INPUT.to_string(), serde_json::json!(node.id));
+
+            let started = Instant::now();
+            let node_result = self
+                .handler
+                .execute_node(NodeExecutionContext {
+                    manifest,
+                    node,
+                    inputs: &round_inputs,
+                })
+                .await;
+            let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+            match node_result {
+                Ok(result) => {
+                    let status = normalize_success_status(result.status);
+                    saw_degraded |= status == DagNodeStatus::Degraded;
+                    let continue_requested = result
+                        .outputs
+                        .values
+                        .get(&policy.continue_key)
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let warning = result.warning.clone();
+                    let produced = result.outputs;
+
+                    if matches!(status, DagNodeStatus::Ok | DagNodeStatus::Degraded) {
+                        visible_inputs.merge(produced.clone());
+                        combined_outputs.merge(produced);
+                    }
+
+                    round_reports.push(loop_round_report(
+                        node,
+                        round,
+                        status,
+                        warning.clone(),
+                        None,
+                        latency_ms,
+                    ));
+
+                    if status == DagNodeStatus::Failed {
+                        return (
+                            DagNodeStatus::Failed,
+                            warning,
+                            Some(format!("loop node `{}` failed in round {round}", node.id)),
+                            Some(combined_outputs),
+                            round_reports,
+                        );
+                    }
+
+                    if !continue_requested {
+                        let final_status = if saw_degraded {
+                            DagNodeStatus::Degraded
+                        } else {
+                            DagNodeStatus::Ok
+                        };
+                        return (
+                            final_status,
+                            warning,
+                            None,
+                            Some(combined_outputs),
+                            round_reports,
+                        );
+                    }
+
+                    if round == policy.max_rounds {
+                        let message = format!(
+                            "loop node `{}` exhausted max_rounds={} while `{}` remained true",
+                            node.id, policy.max_rounds, policy.continue_key
+                        );
+                        let status = if node.required {
+                            DagNodeStatus::Failed
+                        } else {
+                            DagNodeStatus::Degraded
+                        };
+                        return (
+                            status,
+                            (!node.required).then_some(message.clone()),
+                            node.required.then_some(message),
+                            Some(combined_outputs),
+                            round_reports,
+                        );
+                    }
+                }
+                Err(err) if node.required => {
+                    let error = format!("{err:#}");
+                    round_reports.push(loop_round_report(
+                        node,
+                        round,
+                        DagNodeStatus::Failed,
+                        None,
+                        Some(error.clone()),
+                        latency_ms,
+                    ));
+                    return (
+                        DagNodeStatus::Failed,
+                        None,
+                        Some(error),
+                        Some(combined_outputs),
+                        round_reports,
+                    );
+                }
+                Err(err) => {
+                    let warning = format!("{err:#}");
+                    round_reports.push(loop_round_report(
+                        node,
+                        round,
+                        DagNodeStatus::Degraded,
+                        Some(warning.clone()),
+                        None,
+                        latency_ms,
+                    ));
+                    return (
+                        DagNodeStatus::Degraded,
+                        Some(warning),
+                        None,
+                        Some(combined_outputs),
+                        round_reports,
+                    );
+                }
+            }
+        }
+
+        (
+            if saw_degraded {
+                DagNodeStatus::Degraded
+            } else {
+                DagNodeStatus::Ok
+            },
+            None,
+            None,
+            Some(combined_outputs),
+            round_reports,
+        )
+    }
+}
+
+fn loop_round_report(
+    node: &DagNode,
+    round: u32,
+    status: DagNodeStatus,
+    warning: Option<String>,
+    error: Option<String>,
+    latency_ms: u64,
+) -> DagNodeReport {
+    DagNodeReport {
+        node_id: format!("{}#round-{round}", node.id),
+        kind: node.kind.to_string(),
+        status,
+        executor: node_executor_label(node),
+        inputs: node.inputs.clone(),
+        outputs: node.outputs.clone(),
+        warning,
+        error,
+        latency_ms: Some(latency_ms),
     }
 }
 
@@ -369,6 +598,11 @@ fn node_executor_label(node: &DagNode) -> Option<String> {
             node.role.as_ref().map(ToString::to_string)
         }
         DagNodeKind::DagCall => node.dag_type.clone(),
+        DagNodeKind::Loop => node
+            .tool
+            .clone()
+            .or_else(|| node.role.as_ref().map(ToString::to_string))
+            .or_else(|| node.dag_type.clone()),
         _ => None,
     }
 }

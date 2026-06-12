@@ -237,6 +237,72 @@ edges:
 }
 
 #[test]
+fn loads_bounded_loop_node_policy() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: review-loop
+version: 1
+accepts: [verifier]
+tools:
+  - id: review_fix_code
+    executor: rust
+nodes:
+  - id: haskell_review_fix_code
+    kind: loop
+    tool: review_fix_code
+    loop:
+      max_rounds: 3
+      continue_key: review_loop/continue
+    required: true
+"#,
+    )
+    .unwrap();
+
+    let node = &manifest.nodes[0];
+    assert_eq!(node.kind, DagNodeKind::Loop);
+    let policy = node.loop_policy.as_ref().expect("loop policy loads");
+    assert_eq!(policy.max_rounds, 3);
+    assert_eq!(policy.continue_key, "review_loop/continue");
+}
+
+#[test]
+fn rejects_loop_node_without_bounded_policy() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: []
+nodes:
+  - id: hidden_loop
+    kind: loop
+"#,
+    )
+    .expect_err("loop nodes must declare bounds");
+
+    assert!(err.to_string().contains("loop"));
+    assert!(err.to_string().contains("policy"));
+}
+
+#[test]
+fn rejects_loop_node_with_zero_max_rounds() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: []
+nodes:
+  - id: hidden_loop
+    kind: loop
+    loop:
+      max_rounds: 0
+"#,
+    )
+    .expect_err("loop nodes must have a nonzero bound");
+
+    assert!(err.to_string().contains("max_rounds"));
+}
+
+#[test]
 fn rejects_tool_node_without_tool_reference() {
     let err = DagManifest::from_str(
         r#"

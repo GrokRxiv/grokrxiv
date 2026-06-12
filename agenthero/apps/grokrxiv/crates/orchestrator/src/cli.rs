@@ -1886,6 +1886,7 @@ fn add_agent_to_dag(
         required: false,
         feeds_meta: false,
         gate: None,
+        loop_policy: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -1997,6 +1998,7 @@ fn add_tool_to_dag(
         required: true,
         feeds_meta: false,
         gate: None,
+        loop_policy: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {

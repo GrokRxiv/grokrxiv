@@ -276,6 +276,31 @@ fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
         );
     }
 
+    for loop_id in [
+        "haskell_review_fix_code",
+        "lean_review_fix_code",
+        "pr_review_fix_code",
+    ] {
+        let node = nodes
+            .iter()
+            .find(|node| node.get("id").and_then(|id| id.as_str()) == Some(loop_id))
+            .unwrap_or_else(|| panic!("{loop_id} node"));
+        assert_eq!(
+            node.get("kind").and_then(|value| value.as_str()),
+            Some("loop")
+        );
+        assert_eq!(
+            node.get("tool").and_then(|value| value.as_str()),
+            Some("review_fix_code")
+        );
+        assert_eq!(
+            node.get("loop")
+                .and_then(|value| value.get("max_rounds"))
+                .and_then(|value| value.as_u64()),
+            Some(3)
+        );
+    }
+
     let citation = nodes
         .iter()
         .find(|node| node.get("id").and_then(|id| id.as_str()) == Some("citation_validation"))

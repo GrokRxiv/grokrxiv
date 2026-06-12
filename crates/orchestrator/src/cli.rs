@@ -1077,6 +1077,7 @@ fn add_agent_to_dag(
         required: false,
         feeds_meta: false,
         gate: None,
+        loop_policy: None,
     });
     push_edges(&mut manifest, role_id, after, before);
     manifest.validate()?;
@@ -1162,6 +1163,7 @@ fn add_tool_to_dag(
         required: true,
         feeds_meta: false,
         gate: None,
+        loop_policy: None,
     });
     push_edges(&mut manifest, tool_id, after, before);
     manifest.validate()?;
