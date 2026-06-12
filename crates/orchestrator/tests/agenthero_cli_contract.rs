@@ -212,6 +212,54 @@ fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
 }
 
 #[test]
+fn app_show_json_surfaces_agentapp_contracts() {
+    let output = agh(&["--json", "app", "show", "c2rust"]);
+    assert!(
+        output.status.success(),
+        "agh app show failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let app: Value = serde_json::from_slice(&output.stdout).expect("parse app show json");
+
+    assert_eq!(
+        app["contracts"]["state_schemas"],
+        serde_json::json!(["state/run_state.schema.json"])
+    );
+    assert_eq!(app["contracts"]["tools"], serde_json::json!("tools.yaml"));
+    assert_eq!(
+        app["contracts"]["evals"],
+        serde_json::json!(["evals/smoke.yaml"])
+    );
+}
+
+#[test]
+fn app_eval_command_parses_and_lists_app_owned_evals() {
+    let cli = Cli::try_parse_from(["agh", "app", "eval", "c2rust", "smoke"])
+        .expect("app eval command should parse");
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Eval { app, eval_id } => {
+                assert_eq!(app, "c2rust");
+                assert_eq!(eval_id.as_deref(), Some("smoke"));
+            }
+            other => panic!("expected App::Eval command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+
+    let output = agh(&["--json", "app", "eval", "c2rust"]);
+    assert!(
+        output.status.success(),
+        "agh app eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("parse app eval json");
+    assert_eq!(result["app"], "c2rust");
+    assert_eq!(result["evals"][0]["id"], "smoke");
+    assert_eq!(result["evals"][0]["path"], "evals/smoke.yaml");
+}
+
+#[test]
 fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
     let path = workspace_root()
         .join("agenthero")

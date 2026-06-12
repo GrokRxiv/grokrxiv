@@ -41,6 +41,22 @@ pub struct RegisteredAppDescriptor {
     pub actions: Vec<AppActionDescriptor>,
     /// Deployment targets exposed by this app.
     pub deployments: Vec<AppDeployment>,
+    /// App-owned contracts discovered under the app root.
+    pub contracts: AppContractsDescriptor,
+}
+
+/// App-owned AgentApp contract files discovered under `agenthero/apps/<app>/`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AppContractsDescriptor {
+    /// JSON Schema files under `state/`.
+    pub state_schemas: Vec<String>,
+    /// Optional app-level tool registry contract.
+    #[serde(default)]
+    pub tools: Option<String>,
+    /// YAML policy contracts under `policies/`.
+    pub policies: Vec<String>,
+    /// YAML eval suite contracts under `evals/`.
+    pub evals: Vec<String>,
 }
 
 /// Metadata for one app action.
@@ -219,13 +235,15 @@ pub struct ResolvedAppAction {
 
 /// Return all installed product app descriptors.
 pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
-    Ok(load_app_manifests()?
-        .into_iter()
-        .map(|manifest| RegisteredAppDescriptor {
+    let mut apps = Vec::new();
+    for manifest in load_app_manifests()? {
+        let contracts = app_contracts(&manifest.slug)?;
+        apps.push(RegisteredAppDescriptor {
             id: manifest.slug,
             label: manifest.label,
             description: manifest.description,
             deployments: manifest.deployments,
+            contracts,
             actions: manifest
                 .actions
                 .into_iter()
@@ -238,8 +256,9 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
                     retry: action.retry,
                 })
                 .collect(),
-        })
-        .collect())
+        });
+    }
+    Ok(apps)
 }
 
 /// Return all installed product app ids in deterministic order.
@@ -366,7 +385,135 @@ fn load_app_manifest(path: &Path) -> anyhow::Result<AppManifest> {
     let app_root = path.parent().unwrap_or_else(|| Path::new("."));
     validate_app_manifest(&manifest, app_root)
         .map_err(|err| anyhow::anyhow!("validate app manifest {}: {err}", path.display()))?;
+    validate_app_contracts(app_root)
+        .map_err(|err| anyhow::anyhow!("validate app contracts {}: {err}", app_root.display()))?;
     Ok(manifest)
+}
+
+/// Return app-owned AgentApp contract files discovered under one app root.
+pub fn app_contracts(app_id: &str) -> anyhow::Result<AppContractsDescriptor> {
+    app_contracts_for_root(&app_root(app_id))
+}
+
+fn app_contracts_for_root(app_root: &Path) -> anyhow::Result<AppContractsDescriptor> {
+    Ok(AppContractsDescriptor {
+        state_schemas: collect_contract_files(app_root, "state", "schema.json")?,
+        tools: app_root
+            .join("tools.yaml")
+            .is_file()
+            .then(|| "tools.yaml".to_string()),
+        policies: collect_contract_files(app_root, "policies", "yaml")?,
+        evals: collect_contract_files(app_root, "evals", "yaml")?,
+    })
+}
+
+fn collect_contract_files(
+    app_root: &Path,
+    directory: &str,
+    extension_suffix: &str,
+) -> anyhow::Result<Vec<String>> {
+    let dir = app_root.join(directory);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|err| anyhow::anyhow!("read contract dir {}: {err}", dir.display()))?
+    {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.ends_with(extension_suffix) {
+            files.push(format!("{directory}/{name}"));
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn validate_app_contracts(app_root: &Path) -> anyhow::Result<()> {
+    validate_state_contracts(app_root)?;
+    validate_tools_contract(app_root)?;
+    validate_yaml_contract_dir(app_root, "policies")?;
+    validate_yaml_contract_dir(app_root, "evals")?;
+    Ok(())
+}
+
+fn validate_state_contracts(app_root: &Path) -> anyhow::Result<()> {
+    for rel in collect_contract_files(app_root, "state", "schema.json")? {
+        let path = app_root.join(&rel);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| anyhow::anyhow!("read {}: {err}", path.display()))?;
+        let parsed: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|err| anyhow::anyhow!("parse {} as JSON schema: {err}", path.display()))?;
+        if !parsed.is_object() {
+            anyhow::bail!("state schema {} must be a JSON object", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn validate_tools_contract(app_root: &Path) -> anyhow::Result<()> {
+    let path = app_root.join("tools.yaml");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| anyhow::anyhow!("read {}: {err}", path.display()))?;
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&text)
+        .map_err(|err| anyhow::anyhow!("parse {}: {err}", path.display()))?;
+    let tools = parsed
+        .get("tools")
+        .and_then(serde_yaml::Value::as_sequence)
+        .ok_or_else(|| anyhow::anyhow!("tools.yaml must declare a `tools` list"))?;
+    let allowed = ["read", "write", "external", "network", "none"];
+    let mut ids = BTreeSet::new();
+    for tool in tools {
+        let id = tool
+            .get("id")
+            .and_then(serde_yaml::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("tools.yaml tool id is required"))?;
+        if id.trim().is_empty() {
+            anyhow::bail!("tools.yaml tool id is required");
+        }
+        if !ids.insert(id.to_string()) {
+            anyhow::bail!("duplicate tools.yaml tool id `{id}`");
+        }
+        if let Some(permissions) = tool.get("permissions") {
+            let permissions = permissions.as_sequence().ok_or_else(|| {
+                anyhow::anyhow!("tools.yaml tool `{id}` permissions must be a list")
+            })?;
+            for permission in permissions {
+                let permission = permission.as_str().ok_or_else(|| {
+                    anyhow::anyhow!("tools.yaml tool `{id}` permission must be a string")
+                })?;
+                if !allowed.contains(&permission) {
+                    anyhow::bail!(
+                        "unknown tool permission `{permission}` in tools.yaml tool `{id}`"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_yaml_contract_dir(app_root: &Path, directory: &str) -> anyhow::Result<()> {
+    for rel in collect_contract_files(app_root, directory, "yaml")? {
+        let path = app_root.join(&rel);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| anyhow::anyhow!("read {}: {err}", path.display()))?;
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&text)
+            .map_err(|err| anyhow::anyhow!("parse {}: {err}", path.display()))?;
+        if !parsed.is_mapping() {
+            anyhow::bail!("{} must be a YAML mapping", path.display());
+        }
+    }
+    Ok(())
 }
 
 fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Result<()> {

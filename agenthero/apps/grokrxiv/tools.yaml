@@ -1,0 +1,18 @@
+version: 1
+tools:
+  - id: paper_review
+    permissions: [read, write, external, network]
+    idempotent: false
+  - id: citation_validation
+    permissions: [read, write, external, network]
+    idempotent: false
+  - id: review_loop.review_fix_code
+    permissions: [read, write, external]
+    idempotent: true
+  - id: review_loop.policy_gate
+    permissions: [read]
+    idempotent: true
+  - id: publisher.open_review_pr
+    permissions: [read, write, external, network]
+    idempotent: false
+    compensation: publisher.close_review_pr

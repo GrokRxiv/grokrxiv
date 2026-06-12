@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use agenthero_dag_executor::{
     ArtifactRef, DagExecutor, DagIo, NodeExecutionContext, NodeExecutionResult, NodeHandler,
-    LOOP_ROUND_INPUT,
+    LOOP_ROUND_INPUT, MAP_INDEX_INPUT,
 };
 use agenthero_dag_runtime::{DagManifest, DagNodeStatus};
 use async_trait::async_trait;
@@ -14,6 +14,33 @@ struct RecordingHandler {
     calls: Arc<Mutex<Vec<String>>>,
     fail_nodes: Arc<BTreeSet<String>>,
     degrade_nodes: Arc<BTreeSet<String>>,
+}
+
+#[derive(Clone, Default)]
+struct MapRecordingHandler {
+    seen: Arc<Mutex<Vec<(u64, serde_json::Value)>>>,
+}
+
+impl MapRecordingHandler {
+    fn seen(&self) -> Vec<(u64, serde_json::Value)> {
+        self.seen.lock().expect("seen lock").clone()
+    }
+}
+
+#[async_trait]
+impl NodeHandler for MapRecordingHandler {
+    async fn execute_node(
+        &self,
+        ctx: NodeExecutionContext<'_>,
+    ) -> anyhow::Result<NodeExecutionResult> {
+        let index = ctx.inputs.values[MAP_INDEX_INPUT]
+            .as_u64()
+            .expect("map index is numeric");
+        let item = ctx.inputs.values["item"].clone();
+        self.seen.lock().expect("seen lock").push((index, item));
+        Ok(NodeExecutionResult::ok()
+            .with_value(format!("item_{index}"), json!({"processed": index})))
+    }
 }
 
 impl RecordingHandler {
@@ -291,6 +318,157 @@ edges:
     assert_eq!(report.status, DagNodeStatus::Degraded);
     assert_eq!(handler.calls(), vec!["a", "b", "c", "after_gate"]);
     assert_eq!(report.node_status("quorum"), Some(DagNodeStatus::Ok));
+}
+
+#[tokio::test]
+async fn branch_node_skips_unselected_direct_dependents() {
+    let manifest = manifest(
+        r#"
+id: branchy
+version: 1
+accepts: []
+nodes:
+  - id: decide
+    kind: branch
+    branch:
+      decision_key: route
+      cases:
+        publish: [publish]
+        repair: [repair]
+      default: [repair]
+  - id: publish
+    kind: artifact
+    required: true
+  - id: repair
+    kind: artifact
+    required: true
+edges:
+  - from: decide
+    to: [publish, repair]
+"#,
+    );
+    let mut input = DagIo::default();
+    input.values.insert("route".to_string(), json!("publish"));
+    let handler = RecordingHandler::default();
+
+    let report = DagExecutor::new(handler.clone())
+        .execute(&manifest, input)
+        .await
+        .expect("dag runs");
+
+    assert_eq!(report.status, DagNodeStatus::Ok);
+    assert_eq!(handler.calls(), vec!["publish"]);
+    assert_eq!(report.node_status("decide"), Some(DagNodeStatus::Ok));
+    assert_eq!(report.node_status("publish"), Some(DagNodeStatus::Ok));
+    assert_eq!(report.node_status("repair"), Some(DagNodeStatus::Skipped));
+    assert_eq!(
+        report.outputs.values["decide"]["selected"],
+        json!(["publish"])
+    );
+    let decide_report = report
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "decide")
+        .expect("branch report");
+    assert_eq!(decide_report.trace["decision"], json!("publish"));
+    assert_eq!(decide_report.trace["selected"], json!(["publish"]));
+}
+
+#[tokio::test]
+async fn map_node_runs_handler_once_per_input_item_with_bounds() {
+    let manifest = manifest(
+        r#"
+id: fanout
+version: 1
+accepts: []
+nodes:
+  - id: process_items
+    kind: map
+    map:
+      items_key: items
+      item_key: item
+      index_key: item_index
+      max_items: 3
+"#,
+    );
+    let mut input = DagIo::default();
+    input.values.insert("items".to_string(), json!(["a", "b"]));
+    let handler = MapRecordingHandler::default();
+
+    let report = DagExecutor::new(handler.clone())
+        .execute(&manifest, input)
+        .await
+        .expect("dag runs");
+
+    assert_eq!(report.status, DagNodeStatus::Ok);
+    assert_eq!(handler.seen(), vec![(0, json!("a")), (1, json!("b"))]);
+    assert_eq!(report.node_status("process_items"), Some(DagNodeStatus::Ok));
+    assert_eq!(
+        report
+            .nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "process_items#item-0",
+            "process_items#item-1",
+            "process_items"
+        ]
+    );
+    assert_eq!(report.nodes[0].trace["map_index"], json!(0));
+    assert_eq!(report.nodes[1].trace["map_index"], json!(1));
+    assert_eq!(report.outputs.values["item_1"], json!({"processed": 1}));
+}
+
+#[tokio::test]
+async fn approval_node_pauses_until_declared_key_is_true() {
+    let manifest = manifest(
+        r#"
+id: approval
+version: 1
+accepts: []
+nodes:
+  - id: human_review
+    kind: approval
+    approval:
+      approved_key: approved
+  - id: publish
+    kind: artifact
+    required: true
+edges:
+  - from: human_review
+    to: publish
+"#,
+    );
+    let handler = RecordingHandler::default();
+
+    let paused = DagExecutor::new(handler.clone())
+        .execute(&manifest, DagIo::default())
+        .await
+        .expect("paused report is returned");
+    assert_eq!(paused.status, DagNodeStatus::AwaitingApproval);
+    assert_eq!(
+        paused.node_status("human_review"),
+        Some(DagNodeStatus::AwaitingApproval)
+    );
+    assert_eq!(handler.calls(), Vec::<String>::new());
+
+    let mut approved_input = DagIo::default();
+    approved_input
+        .values
+        .insert("approved".to_string(), json!(true));
+    let approved = DagExecutor::new(handler.clone())
+        .execute(&manifest, approved_input)
+        .await
+        .expect("approved dag runs");
+
+    assert_eq!(approved.status, DagNodeStatus::Ok);
+    assert_eq!(
+        approved.node_status("human_review"),
+        Some(DagNodeStatus::Ok)
+    );
+    assert_eq!(approved.node_status("publish"), Some(DagNodeStatus::Ok));
+    assert_eq!(handler.calls(), vec!["publish"]);
 }
 
 #[tokio::test]

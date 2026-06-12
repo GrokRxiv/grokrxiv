@@ -103,6 +103,13 @@ pub enum AppCommand {
         /// Installed app id.
         app: String,
     },
+    /// List or select app-owned eval suites.
+    Eval {
+        /// Installed app id.
+        app: String,
+        /// Optional eval suite id.
+        eval_id: Option<String>,
+    },
     /// Run one installed app action. With no action, prints that app's action catalog.
     Run {
         /// Installed app id.
@@ -326,6 +333,7 @@ async fn app_command(
     match command {
         AppCommand::List => app_list(json),
         AppCommand::Show { app } => app_show(&app, json),
+        AppCommand::Eval { app, eval_id } => app_eval(&app, eval_id.as_deref(), json),
         AppCommand::Run { app, args } => {
             let manifest = crate::dag_apps::load_app_manifest_by_slug(&app)?;
             if args.is_empty() {
@@ -601,6 +609,27 @@ fn app_show_manifest(app: &crate::dag_apps::AppManifest, json: bool) -> anyhow::
                 }
             }
         }
+        let contracts = crate::dag_apps::app_contracts(&app.slug).unwrap_or_default();
+        if !contracts.state_schemas.is_empty()
+            || contracts.tools.is_some()
+            || !contracts.policies.is_empty()
+            || !contracts.evals.is_empty()
+        {
+            println!();
+            anstream::println!("{HELP_HEADER}Contracts:{HELP_HEADER:#}");
+            for schema in contracts.state_schemas {
+                anstream::println!("  {HELP_LITERAL}state{HELP_LITERAL:#} {schema}");
+            }
+            if let Some(tools) = contracts.tools {
+                anstream::println!("  {HELP_LITERAL}tools{HELP_LITERAL:#} {tools}");
+            }
+            for policy in contracts.policies {
+                anstream::println!("  {HELP_LITERAL}policy{HELP_LITERAL:#} {policy}");
+            }
+            for eval in contracts.evals {
+                anstream::println!("  {HELP_LITERAL}eval{HELP_LITERAL:#} {eval}");
+            }
+        }
         println!();
         anstream::println!(
             "{HELP_MUTED}See `agh app run {} <command> --help` for command arguments and options.{HELP_MUTED:#}",
@@ -616,6 +645,7 @@ fn app_catalog_json(app: &crate::dag_apps::AppManifest) -> serde_json::Value {
         "label": app.label,
         "description": app.description,
         "deployments": app.deployments,
+        "contracts": crate::dag_apps::app_contracts(&app.slug).unwrap_or_default(),
         "actions": app.actions.iter().map(|action| json!({
             "id": action.id,
             "command": action.command,
@@ -624,6 +654,84 @@ fn app_catalog_json(app: &crate::dag_apps::AppManifest) -> serde_json::Value {
             "options": action.options,
         })).collect::<Vec<_>>(),
     })
+}
+
+fn app_eval(app_id: &str, eval_id: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let _manifest = crate::dag_apps::load_app_manifest_by_slug(app_id)?;
+    let contracts = crate::dag_apps::app_contracts(app_id)?;
+    let mut evals = Vec::new();
+    for rel in contracts.evals {
+        let path = crate::dag_apps::app_root(app_id).join(&rel);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("read eval contract {}", path.display()))?;
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&text)
+            .with_context(|| format!("parse eval contract {}", path.display()))?;
+        let id = parsed
+            .get("id")
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("eval")
+                    .to_string()
+            });
+        if eval_id.is_some_and(|wanted| wanted != id) {
+            continue;
+        }
+        let description = parsed
+            .get("description")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        evals.push(json!({
+            "id": id,
+            "path": rel,
+            "description": description,
+            "status": "defined",
+        }));
+    }
+    if let Some(eval_id) = eval_id {
+        if evals.is_empty() {
+            anyhow::bail!("app `{app_id}` has no eval `{eval_id}`");
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "app": app_id,
+                "evals": evals,
+            }))?
+        );
+    } else if evals.is_empty() {
+        println!("No evals declared for app `{app_id}`.");
+    } else {
+        anstream::println!("{HELP_LITERAL}{app_id}{HELP_LITERAL:#} evals");
+        for eval in evals {
+            let id = eval
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let path = eval
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let description = eval
+                .get("description")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if description.is_empty() {
+                anstream::println!(
+                    "  {HELP_LITERAL}{id}{HELP_LITERAL:#} {HELP_MUTED}{path}{HELP_MUTED:#}"
+                );
+            } else {
+                anstream::println!("  {HELP_LITERAL}{id}{HELP_LITERAL:#} {HELP_MUTED}{path}{HELP_MUTED:#} {description}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn print_app_action_help(
@@ -1078,6 +1186,9 @@ fn add_agent_to_dag(
         feeds_meta: false,
         gate: None,
         loop_policy: None,
+        branch: None,
+        map: None,
+        approval: None,
     });
     push_edges(&mut manifest, role_id, after, before);
     manifest.validate()?;
@@ -1164,6 +1275,9 @@ fn add_tool_to_dag(
         feeds_meta: false,
         gate: None,
         loop_policy: None,
+        branch: None,
+        map: None,
+        approval: None,
     });
     push_edges(&mut manifest, tool_id, after, before);
     manifest.validate()?;

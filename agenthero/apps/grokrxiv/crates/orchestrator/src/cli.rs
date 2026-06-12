@@ -1889,6 +1889,9 @@ fn add_agent_to_dag(
         feeds_meta: false,
         gate: None,
         loop_policy: None,
+        branch: None,
+        map: None,
+        approval: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -2001,6 +2004,9 @@ fn add_tool_to_dag(
         feeds_meta: false,
         gate: None,
         loop_policy: None,
+        branch: None,
+        map: None,
+        approval: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {

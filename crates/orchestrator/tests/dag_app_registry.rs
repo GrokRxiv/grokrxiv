@@ -527,6 +527,65 @@ fn app_action_descriptors_expose_retry_policy() {
 }
 
 #[test]
+fn app_descriptors_surface_agentapp_contract_files() {
+    let _guard = EnvGuard::clear_apps_root();
+
+    let c2rust = agenthero_orchestrator::dag_apps::registered_app("c2rust")
+        .expect("c2rust app descriptor loads")
+        .expect("c2rust app descriptor");
+    assert!(
+        c2rust
+            .contracts
+            .state_schemas
+            .contains(&"state/run_state.schema.json".to_string()),
+        "c2rust must expose its StateSchema contract"
+    );
+    assert_eq!(c2rust.contracts.tools.as_deref(), Some("tools.yaml"));
+    assert!(
+        c2rust
+            .contracts
+            .evals
+            .contains(&"evals/smoke.yaml".to_string()),
+        "c2rust must expose its eval contract"
+    );
+
+    let grokrxiv = agenthero_orchestrator::dag_apps::registered_app("grokrxiv")
+        .expect("GrokRxiv app descriptor loads")
+        .expect("GrokRxiv app descriptor");
+    assert!(
+        grokrxiv
+            .contracts
+            .policies
+            .contains(&"policies/release_tiers.yaml".to_string()),
+        "GrokRxiv release tiers must remain app-owned and discoverable"
+    );
+    assert_eq!(grokrxiv.contracts.tools.as_deref(), Some("tools.yaml"));
+}
+
+#[test]
+fn app_contract_validation_rejects_unknown_tool_permissions() {
+    let root = TempRoot::new("bad-tools-contract");
+    write_app_manifest(root.path(), "demo", "demo", "run", "/bin/true", &[]);
+    std::fs::write(
+        root.path().join("demo/tools.yaml"),
+        r#"version: 1
+tools:
+  - id: demo_tool
+    permissions: [read, sudo]
+"#,
+    )
+    .unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("unknown tool permissions must fail app discovery");
+    assert!(
+        err.to_string().contains("unknown tool permission `sudo`"),
+        "expected tools.yaml permission error, got {err:#}"
+    );
+}
+
+#[test]
 fn every_registered_app_has_a_valid_manifest() {
     let _guard = EnvGuard::clear_apps_root();
     for app in

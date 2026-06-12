@@ -266,6 +266,112 @@ nodes:
 }
 
 #[test]
+fn loads_branch_map_and_approval_node_policies() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: agentapp
+version: 1
+accepts: []
+nodes:
+  - id: decide
+    kind: branch
+    branch:
+      decision_key: route
+      cases:
+        publish: [publish]
+        repair: [repair]
+      default: [repair]
+  - id: publish
+    kind: artifact
+  - id: repair
+    kind: artifact
+  - id: fanout
+    kind: map
+    map:
+      items_key: items
+      item_key: item
+      index_key: item_index
+      max_items: 4
+  - id: human_gate
+    kind: approval
+    approval:
+      approved_key: approved
+edges:
+  - from: decide
+    to: [publish, repair]
+  - from: publish
+    to: fanout
+  - from: fanout
+    to: human_gate
+"#,
+    )
+    .unwrap();
+
+    let decide = manifest
+        .nodes
+        .iter()
+        .find(|node| node.id == "decide")
+        .expect("branch node");
+    assert_eq!(decide.kind, DagNodeKind::Branch);
+    let branch = decide.branch.as_ref().expect("branch policy");
+    assert_eq!(branch.decision_key, "route");
+    assert_eq!(branch.cases["publish"], vec!["publish".to_string()]);
+    assert_eq!(branch.default, vec!["repair".to_string()]);
+
+    let fanout = manifest
+        .nodes
+        .iter()
+        .find(|node| node.id == "fanout")
+        .expect("map node");
+    assert_eq!(fanout.kind, DagNodeKind::Map);
+    let map = fanout.map.as_ref().expect("map policy");
+    assert_eq!(map.items_key, "items");
+    assert_eq!(map.item_key, "item");
+    assert_eq!(map.index_key, "item_index");
+    assert_eq!(map.max_items, 4);
+
+    let approval = manifest
+        .nodes
+        .iter()
+        .find(|node| node.id == "human_gate")
+        .expect("approval node");
+    assert_eq!(approval.kind, DagNodeKind::Approval);
+    assert_eq!(
+        approval
+            .approval
+            .as_ref()
+            .expect("approval policy")
+            .approved_key,
+        "approved"
+    );
+}
+
+#[test]
+fn rejects_dynamic_nodes_without_required_policies() {
+    for (kind, expected) in [
+        ("branch", "branch"),
+        ("map", "map"),
+        ("approval", "approval"),
+    ] {
+        let err = DagManifest::from_str(&format!(
+            r#"
+id: bad
+version: 1
+accepts: []
+nodes:
+  - id: dynamic
+    kind: {kind}
+"#,
+        ))
+        .expect_err("dynamic nodes require policies");
+        assert!(
+            err.to_string().contains(expected),
+            "{kind}: expected {expected} policy error, got {err:#}"
+        );
+    }
+}
+
+#[test]
 fn rejects_loop_node_without_bounded_policy() {
     let err = DagManifest::from_str(
         r#"

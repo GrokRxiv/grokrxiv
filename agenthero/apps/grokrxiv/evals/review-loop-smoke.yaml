@@ -1,0 +1,11 @@
+version: 1
+id: review-loop-smoke
+description: Dry-run smoke eval for the GrokRxiv review-loop product path.
+fixtures:
+  - id: arxiv-2606-00799
+    input:
+      source: https://arxiv.org/abs/2606.00799
+      loop: true
+scorers:
+  - id: review-loop-report-present
+    threshold: 1.0

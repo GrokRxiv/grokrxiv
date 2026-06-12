@@ -529,6 +529,7 @@ async fn persist_dag_report(
             "inputs": node.inputs,
             "outputs": node.outputs,
             "warning": node.warning,
+            "trace": node.trace,
         }))
         .bind(node.error.as_deref())
         .bind(node.latency_ms.map(|value| {
@@ -563,6 +564,7 @@ fn report_state(report: &DagExecutionReport) -> &'static str {
         DagNodeStatus::Ok => "done",
         DagNodeStatus::Degraded | DagNodeStatus::Skipped => "partial",
         DagNodeStatus::Pending | DagNodeStatus::Running => "running",
+        DagNodeStatus::AwaitingApproval => "awaiting_approval",
         DagNodeStatus::Failed => "failed",
     }
 }
@@ -571,6 +573,7 @@ fn node_state(status: DagNodeStatus) -> &'static str {
     match status {
         DagNodeStatus::Pending => "queued",
         DagNodeStatus::Running => "running",
+        DagNodeStatus::AwaitingApproval => "awaiting_approval",
         DagNodeStatus::Ok => "ok",
         DagNodeStatus::Degraded => "degraded",
         DagNodeStatus::Failed => "failed",

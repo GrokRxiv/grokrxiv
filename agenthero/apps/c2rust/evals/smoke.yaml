@@ -1,0 +1,10 @@
+version: 1
+id: smoke
+description: Minimal C2Rust app contract smoke eval.
+fixtures:
+  - id: hello-c
+    input:
+      source: tests/fixtures/hello.c
+scorers:
+  - id: dag-completes
+    threshold: 1.0

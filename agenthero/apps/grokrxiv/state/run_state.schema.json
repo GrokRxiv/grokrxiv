@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenthero.apps.grokrxiv.state.run_state",
+  "title": "GrokRxiv Run State",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "source": {
+      "type": "string"
+    },
+    "review_id": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "object"
+    }
+  }
+}

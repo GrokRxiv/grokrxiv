@@ -1,0 +1,14 @@
+version: 1
+tools:
+  - id: ast_extract
+    permissions: [read]
+    idempotent: true
+  - id: idiom_translate
+    permissions: [read, write]
+    idempotent: true
+  - id: compile_check
+    permissions: [read]
+    idempotent: true
+  - id: lint_pass
+    permissions: [read]
+    idempotent: true

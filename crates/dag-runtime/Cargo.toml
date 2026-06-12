@@ -9,6 +9,7 @@ description = "Data-driven DAG manifest loading and validation for AgentHero DAG
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 

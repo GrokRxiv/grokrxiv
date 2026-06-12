@@ -1,6 +1,6 @@
 //! Data-driven DAG manifest loading and validation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -119,6 +119,9 @@ pub enum DagNodeKind {
     Artifact,
     DagCall,
     Loop,
+    Branch,
+    Map,
+    Approval,
 }
 
 impl fmt::Display for DagNodeKind {
@@ -136,6 +139,9 @@ impl fmt::Display for DagNodeKind {
             Self::Artifact => "artifact",
             Self::DagCall => "dag_call",
             Self::Loop => "loop",
+            Self::Branch => "branch",
+            Self::Map => "map",
+            Self::Approval => "approval",
         };
         f.write_str(s)
     }
@@ -191,6 +197,38 @@ fn default_loop_continue_key() -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagBranch {
+    pub decision_key: String,
+    #[serde(default)]
+    pub cases: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub default: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagMap {
+    pub items_key: String,
+    #[serde(default = "default_map_item_key")]
+    pub item_key: String,
+    #[serde(default = "default_map_index_key")]
+    pub index_key: String,
+    pub max_items: u32,
+}
+
+fn default_map_item_key() -> String {
+    "map_item".to_string()
+}
+
+fn default_map_index_key() -> String {
+    "map_index".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagApproval {
+    pub approved_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagNode {
     pub id: String,
     pub kind: DagNodeKind,
@@ -212,6 +250,12 @@ pub struct DagNode {
     pub gate: Option<DagGate>,
     #[serde(default, rename = "loop")]
     pub loop_policy: Option<DagLoop>,
+    #[serde(default)]
+    pub branch: Option<DagBranch>,
+    #[serde(default)]
+    pub map: Option<DagMap>,
+    #[serde(default)]
+    pub approval: Option<DagApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +410,44 @@ impl DagManifest {
                     return Err(DagError::LoopNodeInvalidMaxRounds(node.id.clone()));
                 }
             }
+            if node.kind == DagNodeKind::Branch {
+                let Some(branch) = &node.branch else {
+                    return Err(DagError::BranchNodeMissingPolicy(node.id.clone()));
+                };
+                if branch.decision_key.trim().is_empty() {
+                    return Err(DagError::BranchNodeInvalidPolicy(node.id.clone()));
+                }
+                if branch.cases.is_empty() && branch.default.is_empty() {
+                    return Err(DagError::BranchNodeInvalidPolicy(node.id.clone()));
+                }
+                if branch
+                    .cases
+                    .iter()
+                    .any(|(case, targets)| case.trim().is_empty() || targets.is_empty())
+                {
+                    return Err(DagError::BranchNodeInvalidPolicy(node.id.clone()));
+                }
+            }
+            if node.kind == DagNodeKind::Map {
+                let Some(map_policy) = &node.map else {
+                    return Err(DagError::MapNodeMissingPolicy(node.id.clone()));
+                };
+                if map_policy.items_key.trim().is_empty()
+                    || map_policy.item_key.trim().is_empty()
+                    || map_policy.index_key.trim().is_empty()
+                    || map_policy.max_items == 0
+                {
+                    return Err(DagError::MapNodeInvalidPolicy(node.id.clone()));
+                }
+            }
+            if node.kind == DagNodeKind::Approval {
+                let Some(approval) = &node.approval else {
+                    return Err(DagError::ApprovalNodeMissingPolicy(node.id.clone()));
+                };
+                if approval.approved_key.trim().is_empty() {
+                    return Err(DagError::ApprovalNodeInvalidPolicy(node.id.clone()));
+                }
+            }
         }
 
         for edge in &self.edges {
@@ -381,6 +463,13 @@ impl DagManifest {
                 for source in &gate.sources {
                     if !node_ids.contains(source) {
                         return Err(DagError::MissingNode(source.clone()));
+                    }
+                }
+            }
+            if let Some(branch) = &node.branch {
+                for target in branch.cases.values().flatten().chain(branch.default.iter()) {
+                    if !node_ids.contains(target) {
+                        return Err(DagError::MissingNode(target.clone()));
                     }
                 }
             }
@@ -471,6 +560,8 @@ pub struct DagNodeReport {
     pub error: Option<String>,
     #[serde(default)]
     pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub trace: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +569,7 @@ pub struct DagNodeReport {
 pub enum DagNodeStatus {
     Pending,
     Running,
+    AwaitingApproval,
     Ok,
     Degraded,
     Failed,
@@ -514,6 +606,18 @@ pub enum DagError {
     LoopNodeMissingPolicy(String),
     #[error("loop node `{0}` has invalid max_rounds; value must be >= 1")]
     LoopNodeInvalidMaxRounds(String),
+    #[error("branch node `{0}` must define a branch policy")]
+    BranchNodeMissingPolicy(String),
+    #[error("branch node `{0}` has an invalid branch policy")]
+    BranchNodeInvalidPolicy(String),
+    #[error("map node `{0}` must define a map policy")]
+    MapNodeMissingPolicy(String),
+    #[error("map node `{0}` has an invalid map policy")]
+    MapNodeInvalidPolicy(String),
+    #[error("approval node `{0}` must define an approval policy")]
+    ApprovalNodeMissingPolicy(String),
+    #[error("approval node `{0}` has an invalid approval policy")]
+    ApprovalNodeInvalidPolicy(String),
     #[error("agent kind `{kind}` for role `{role}` is not accepted by DAG `{dag}`")]
     KindNotAccepted {
         dag: String,
