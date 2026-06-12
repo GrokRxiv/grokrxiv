@@ -4784,6 +4784,13 @@ async fn run_review_fix_code_loop(
         let round_source_path = round_dir.join(task.filename);
         let _ = write_review_loop_code_file(&round_source_path, &code).await;
 
+        let semantic_issues = validate_review_loop_generated_code(&task, &code, &base_artifact);
+        let semantic_validation = serde_json::json!({
+            "status": if semantic_issues.is_empty() { "pass" } else { "fail" },
+            "issues": semantic_issues,
+        });
+        let _ = write_loop_json(&round_dir.join("semantic_validation.json"), &semantic_validation).await;
+
         let forbidden = forbidden_terms_in_code(&code, &task.forbidden_terms);
         let compile_run = if forbidden.is_empty() {
             let compile_args = task
@@ -4821,6 +4828,7 @@ async fn run_review_fix_code_loop(
             "attempt": attempt,
             "code": code,
             "compile": compile_value,
+            "semantic_validation": semantic_validation,
             "forbidden_terms": forbidden,
             "base": base_artifact,
             "harness": harness.as_json(),
@@ -4854,8 +4862,9 @@ async fn run_review_fix_code_loop(
         let _ = write_loop_json(&round_dir.join("codex_review.json"), &review_output).await;
 
         let compile_pass = compile_run.status == "pass" && forbidden.is_empty();
+        let semantic_pass = semantic_validation["status"] == "pass";
         let review_pass = code_review_passed(&review_output);
-        let attempt_status = if compile_pass && review_pass {
+        let attempt_status = if compile_pass && semantic_pass && review_pass {
             "pass"
         } else {
             "fail"
@@ -4872,6 +4881,7 @@ async fn run_review_fix_code_loop(
             "harness": harness.as_json(),
             "git": git_evidence,
             "generation": generation_run.output,
+            "semantic_validation": semantic_validation,
             "compile": compile_run,
             "codex_review": review_output,
         }));
@@ -5245,6 +5255,15 @@ fn review_fix_loop_summary(results: &serde_json::Value) -> String {
             return truncate(error, 260);
         }
         if let Some(issue) = attempt
+            .get("semantic_validation")
+            .and_then(|validation| validation.get("issues"))
+            .and_then(|issues| issues.as_array())
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue.as_str())
+        {
+            return truncate(issue, 260);
+        }
+        if let Some(issue) = attempt
             .get("codex_review")
             .and_then(|review| review.get("issues"))
             .and_then(|issues| issues.as_array())
@@ -5365,15 +5384,27 @@ async fn run_review_loop_for_review(
 
     let haskell_dir = artifact_dir.join("haskell");
     tokio::fs::create_dir_all(&haskell_dir).await?;
-    let claim_count = claims_value
-        .get("claims")
-        .and_then(|v| v.as_array())
+    let semantic_ir = build_review_loop_semantic_ir(review_id, &claims_value, &knowledge_graph);
+    write_loop_json(&artifact_dir.join("semantic_ir.json"), &semantic_ir).await?;
+    let theorem_candidate_count = semantic_ir["theorem_candidates"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let definition_count = semantic_ir["definitions"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let assumption_count = semantic_ir["assumptions"]
+        .as_array()
         .map(Vec::len)
         .unwrap_or(0);
     let semantic_model = serde_json::json!({
+        "schema_version": "1.0.0",
         "review_id": review_id,
-        "claim_count": claim_count,
-        "categories": semantic_categories(&claims_value),
+        "semantic_ir": "review_loop/semantic_ir.json",
+        "theorem_candidate_count": theorem_candidate_count,
+        "definition_count": definition_count,
+        "assumption_count": assumption_count,
         "haskell_module": "review_loop/haskell/SemanticModel.hs",
         "author_role": "haskell_semantic_author",
         "reviewer_role": "haskell_code_reviewer",
@@ -5389,6 +5420,7 @@ async fn run_review_loop_for_review(
         VerifierStatus::Pass,
         serde_json::json!({
             "artifacts": [
+                "review_loop/semantic_ir.json",
                 "review_loop/semantic_model.json",
                 "review_loop/haskell/SemanticModel.hs"
             ]
@@ -5400,7 +5432,7 @@ async fn run_review_loop_for_review(
         true,
         "review_loop/semantic_model.json",
         debug_output,
-        "semantic task ready for Claude/Codex code loop",
+        &format!("theorem_candidates={theorem_candidate_count} definitions={definition_count} assumptions={assumption_count}"),
     );
 
     let haskell_results = run_review_fix_code_loop(
@@ -5421,16 +5453,19 @@ async fn run_review_loop_for_review(
         },
         serde_json::json!({
             "review_id": review_id,
-            "task": "Generate a Haskell semantic model from GrokRxiv paper-review claims.",
+            "task": "Generate a theorem-level Haskell semantic IR model from GrokRxiv paper-derived evidence.",
             "requirements": [
                 "Create module SemanticModel.",
                 "Use only pure Haskell definitions.",
-                "Represent paper-derived claims and review categories from the supplied JSON.",
-                "Include claimCount :: Int and publisherReadyLowerBound :: Bool.",
+                "Define SourceSpan, Assumption, Definition, TheoremCandidate, and FormalizationTarget types.",
+                "Represent paper-derived theorem candidates, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir.",
+                "Do not model this as review roles, category counts, claimCount, or publisherReadyLowerBound.",
+                "Include validation functions that fail when theorem candidates lack source spans or formalization targets.",
                 "The file must compile with ghc -fno-code SemanticModel.hs."
             ],
             "claims": claims_value,
             "knowledge_graph": knowledge_graph,
+            "semantic_ir": semantic_ir,
             "semantic_model": semantic_model,
         }),
         &haskell_dir,
@@ -5463,17 +5498,8 @@ async fn run_review_loop_for_review(
         &review_fix_loop_summary(&haskell_results),
     );
 
-    let proof_obligations = serde_json::json!({
-        "review_id": review_id,
-        "source": "review_loop/semantic_model.json",
-        "obligations": [
-            {
-                "id": "claim_count_nonnegative",
-                "statement": format!("0 <= {claim_count}"),
-                "severity": "blocking"
-            }
-        ]
-    });
+    let proof_obligations =
+        build_review_loop_proof_obligations(review_id, &semantic_ir, &haskell_results);
     write_loop_json(
         &artifact_dir.join("proof_obligations.json"),
         &proof_obligations,
@@ -5494,7 +5520,13 @@ async fn run_review_loop_for_review(
         true,
         "review_loop/proof_obligations.json",
         debug_output,
-        "generated proof obligations",
+        &format!(
+            "theorem_obligations={}",
+            proof_obligations["obligations"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
+        ),
     );
 
     let lean_dir = artifact_dir.join("lean");
@@ -5518,14 +5550,17 @@ async fn run_review_loop_for_review(
         },
         serde_json::json!({
             "review_id": review_id,
-            "task": "Generate Lean proofs for GrokRxiv proof obligations.",
+            "task": "Formalize and prove GrokRxiv theorem-level proof obligations in Lean.",
             "requirements": [
                 "Write the complete file GrokRxiv/Proofs.lean.",
                 "Do not use sorry, admit, or axiom.",
                 "The file must verify with lean GrokRxiv/Proofs.lean.",
-                "Keep proofs tied to the supplied Haskell semantic model and obligations."
+                "For every theorem_formalization obligation, declare the exact lean_declaration name.",
+                "Do not prove claim counts, review statuses, or metadata in place of the theorem obligation.",
+                "If a theorem cannot be formalized honestly, emit code that fails review rather than masking the gap."
             ],
             "proof_obligations": proof_obligations,
+            "semantic_ir": semantic_ir,
             "semantic_model": semantic_model,
             "haskell_results": haskell_results,
         }),
@@ -5557,6 +5592,38 @@ async fn run_review_loop_for_review(
         "review_loop/lean/results.json",
         debug_output,
         &review_fix_loop_summary(&lean_results),
+    );
+    let theorem_map = build_review_loop_theorem_map(&proof_obligations, &lean_results);
+    write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
+    write_loop_json(&lean_dir.join("verification_report.json"), &theorem_map).await?;
+    let semantic_adequacy = build_review_loop_semantic_adequacy(&semantic_ir, &theorem_map);
+    write_loop_json(&artifact_dir.join("semantic_adequacy.json"), &semantic_adequacy).await?;
+    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass";
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "semantic_adequacy_checker",
+        semantic_adequacy.clone(),
+        if semantic_adequacy_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/semantic_adequacy.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "semantic_adequacy_checker",
+        semantic_adequacy_pass,
+        "review_loop/semantic_adequacy.json",
+        debug_output,
+        semantic_adequacy["verdicts"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("verdict"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("no theorem adequacy verdicts"),
     );
 
     let citation_summary = citation_verifier_summary(pool, review_id).await;
@@ -5698,8 +5765,18 @@ async fn run_review_loop_for_review(
     if !haskell_pass {
         blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
     }
+    if theorem_candidate_count == 0 {
+        blocking_issues.push(
+            "Semantic IR did not extract theorem candidates for Lean formalization.".to_string(),
+        );
+    }
     if !lean_pass {
         blocking_issues.push("Lean proof obligations did not verify cleanly.".to_string());
+    }
+    if !semantic_adequacy_pass {
+        blocking_issues.push(
+            "Semantic adequacy check found unproved or overclaimed theorem statements.".to_string(),
+        );
     }
     if citation_report["status"] == "fail" {
         blocking_issues.push("Citation-validation evidence failed deterministic policy.".to_string());
@@ -5714,7 +5791,8 @@ async fn run_review_loop_for_review(
         "publisher_ready": publisher_ready,
         "score_thresholds": {
             "haskell_compile": "pass",
-            "lean_verify": "pass",
+            "lean_theorem_formalization": "proved",
+            "semantic_adequacy": "all_theorem_claims_match_proved_lean_declarations",
             "citation_validation": "pass_or_warn",
             "pr_artifacts": "fixed_tex_and_pdf_present",
             "publication_gate": "pass"
@@ -5724,8 +5802,21 @@ async fn run_review_loop_for_review(
             "publication_gate": format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
             "haskell": if haskell_pass { "pass" } else { "fail" },
             "lean": if lean_pass { "pass" } else { "fail" },
+            "semantic_adequacy": semantic_adequacy["status"],
             "citation_validation": citation_report["status"],
             "pr_fixer": pr_fixes["status"],
+        },
+        "publishability_vector": {
+            "formal": if lean_pass { "proved" } else { "failed" },
+            "semantic_adequacy": semantic_adequacy["status"],
+            "citation": citation_report["status"],
+            "reproducibility": "not_run",
+            "integrity": if haskell_pass { "pass" } else { "fail" },
+            "safety": if pr_fixer_pass { "pass" } else { "fail" },
+        },
+        "release_tier": {
+            "tier": if publisher_ready { "formally_verified" } else { "in_review" },
+            "lifecycle_state": if publisher_ready { "published" } else { "needs_update" },
         }
     });
     write_loop_json(&artifact_dir.join("policy_gate.json"), &policy_gate).await?;
@@ -5768,16 +5859,25 @@ async fn run_review_loop_for_review(
         "artifact_paths": {
             "claims": "review_loop/claims.json",
             "knowledge_graph": "review_loop/knowledge_graph.json",
+            "semantic_ir": "review_loop/semantic_ir.json",
             "semantic_model": "review_loop/semantic_model.json",
             "haskell": "review_loop/haskell/results.json",
             "haskell_harness": "review_loop/haskell/harness.json",
             "lean": "review_loop/lean/results.json",
             "lean_harness": "review_loop/lean/harness.json",
+            "lean_theorem_map": "review_loop/lean/theorem_map.json",
+            "lean_verification_report": "review_loop/lean/verification_report.json",
+            "semantic_adequacy": "review_loop/semantic_adequacy.json",
+            "proof_obligations": "review_loop/proof_obligations.json",
             "citation_validation": "review_loop/citation_validation_report.json",
             "pr_fixes": "review_loop/pr_fixes.json",
             "pr_harness": "review_loop/fixed/harness.json",
             "policy_gate": "review_loop/policy_gate.json",
         },
+        "theorem_formalization": theorem_map,
+        "semantic_adequacy": semantic_adequacy,
+        "publishability_vector": policy_gate["publishability_vector"],
+        "release_tier": policy_gate["release_tier"],
         "pr_evidence": pr_fixes,
         "publish_decision": {
             "publisher_ready": publisher_ready,
@@ -5985,19 +6085,430 @@ fn build_review_loop_knowledge_graph(claims_value: &serde_json::Value) -> serde_
     })
 }
 
-fn semantic_categories(claims_value: &serde_json::Value) -> serde_json::Value {
-    let mut counts = serde_json::Map::new();
-    if let Some(claims) = claims_value.get("claims").and_then(|v| v.as_array()) {
-        for claim in claims {
-            let role = claim
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let count = counts.get(role).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
-            counts.insert(role.to_string(), serde_json::json!(count));
+fn build_review_loop_semantic_ir(
+    review_id: Uuid,
+    claims_value: &serde_json::Value,
+    knowledge_graph: &serde_json::Value,
+) -> serde_json::Value {
+    let claims = claims_value
+        .get("claims")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut theorem_candidates = Vec::new();
+    let mut definitions = Vec::new();
+    let mut assumptions = Vec::new();
+    let mut limitations = Vec::new();
+
+    for claim in claims {
+        let id = claim_id(&claim);
+        let role = claim
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let text = claim_text(&claim);
+        if text.trim().is_empty() || is_review_metadata_only(&text) {
+            continue;
+        }
+        let lower = text.to_ascii_lowercase();
+        let source_span = serde_json::json!({
+            "artifact": "review_loop/claims.json",
+            "claim_id": id,
+            "role": role,
+            "text_excerpt": truncate(&text, 260),
+        });
+        if looks_like_assumption(&lower) {
+            assumptions.push(serde_json::json!({
+                "id": format!("assumption_{id}"),
+                "statement": text,
+                "source_claim_id": id,
+                "source_span": source_span,
+            }));
+        } else if looks_like_definition(&lower) {
+            definitions.push(serde_json::json!({
+                "id": format!("definition_{id}"),
+                "statement": text,
+                "source_claim_id": id,
+                "source_span": source_span,
+            }));
+        } else if looks_like_theorem_candidate(&lower) {
+            let theorem_id = format!("theorem_{id}");
+            theorem_candidates.push(serde_json::json!({
+                "id": theorem_id,
+                "kind": "theorem",
+                "statement": text,
+                "source_claim_id": id,
+                "source_span": source_span,
+                "dependencies": [],
+                "formalization_target": {
+                    "lean_declaration": format!("{}_formalized", lean_identifier(&theorem_id)),
+                    "expected_shape": "theorem",
+                    "proof_policy": "closed_proof_no_sorry_admit_axiom"
+                }
+            }));
+        } else if role.contains("technical") || role.contains("meta") {
+            limitations.push(serde_json::json!({
+                "id": format!("gap_{id}"),
+                "statement": text,
+                "source_claim_id": id,
+                "source_span": source_span,
+                "severity": if lower.contains("unverifiable") || lower.contains("missing") {
+                    "blocking"
+                } else {
+                    "review"
+                },
+            }));
         }
     }
-    serde_json::Value::Object(counts)
+
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "source": "review_loop/claims.json",
+        "formalization_policy": {
+            "requires_theorem_level_lean": true,
+            "reject_metadata_only_models": true,
+            "reject_review_role_histograms": true,
+            "forbidden_lean_terms": ["sorry", "admit", "axiom"]
+        },
+        "definitions": definitions,
+        "assumptions": assumptions,
+        "theorem_candidates": theorem_candidates,
+        "limitations": limitations,
+        "knowledge_graph_summary": {
+            "nodes": knowledge_graph["nodes"].as_array().map(Vec::len).unwrap_or(0),
+            "edges": knowledge_graph["edges"].as_array().map(Vec::len).unwrap_or(0)
+        }
+    })
+}
+
+fn claim_id(claim: &serde_json::Value) -> String {
+    claim
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claim")
+        .to_string()
+}
+
+fn claim_text(claim: &serde_json::Value) -> String {
+    claim
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn is_review_metadata_only(text: &str) -> bool {
+    let normalized = text.trim().to_ascii_lowercase().replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "major_revision" | "minor_revision" | "accept" | "reject" | "prior_art" | "builds_on"
+            | "significant" | "questionable"
+    )
+}
+
+fn looks_like_assumption(lower: &str) -> bool {
+    lower.contains("assumes")
+        || lower.contains("assume ")
+        || lower.contains("assuming")
+        || lower.contains("under the assumption")
+        || lower.contains("condition")
+        || lower.contains("requires")
+}
+
+fn looks_like_definition(lower: &str) -> bool {
+    lower.contains("definition")
+        || lower.contains("defines")
+        || lower.contains("defined as")
+        || lower.contains("structure")
+}
+
+fn looks_like_theorem_candidate(lower: &str) -> bool {
+    lower.contains("theorem")
+        || lower.contains("lemma")
+        || lower.contains("proves")
+        || lower.contains("prove ")
+        || lower.contains("result")
+        || lower.contains("unique")
+        || lower.contains("equivalence")
+        || lower.contains("classification")
+        || lower.contains("extends")
+        || lower.contains("extension")
+}
+
+fn lean_identifier(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn build_review_loop_proof_obligations(
+    review_id: Uuid,
+    semantic_ir: &serde_json::Value,
+    haskell_results: &serde_json::Value,
+) -> serde_json::Value {
+    let theorem_candidates = semantic_ir
+        .get("theorem_candidates")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut obligations = Vec::new();
+    for theorem in theorem_candidates {
+        let theorem_id = theorem
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("theorem");
+        let lean_declaration = theorem
+            .get("formalization_target")
+            .and_then(|target| target.get("lean_declaration"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{}_formalized", lean_identifier(theorem_id)));
+        obligations.push(serde_json::json!({
+            "id": format!("formalize_{theorem_id}"),
+            "kind": "theorem_formalization",
+            "statement": theorem.get("statement").cloned().unwrap_or_else(|| serde_json::json!("")),
+            "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "source_span": theorem.get("source_span").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "lean_declaration": lean_declaration,
+            "severity": "blocking",
+            "expected_proof": "closed Lean theorem proof with no sorry, admit, or unapproved axiom",
+        }));
+    }
+    if obligations.is_empty() {
+        obligations.push(serde_json::json!({
+            "id": "semantic_gap_no_theorem_candidates",
+            "kind": "semantic_gap",
+            "statement": "No paper-derived theorem candidates were extracted for Lean formalization.",
+            "lean_declaration": null,
+            "severity": "blocking",
+        }));
+    }
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "source": "review_loop/semantic_ir.json",
+        "haskell_status": haskell_results.get("status").cloned().unwrap_or_else(|| serde_json::json!("unknown")),
+        "obligations": obligations,
+    })
+}
+
+fn build_review_loop_theorem_map(
+    proof_obligations: &serde_json::Value,
+    lean_results: &serde_json::Value,
+) -> serde_json::Value {
+    let lean_pass = lean_results.get("status").and_then(|v| v.as_str()) == Some("pass");
+    let obligations = proof_obligations
+        .get("obligations")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let entries = obligations
+        .into_iter()
+        .map(|obligation| {
+            let kind = obligation
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let status = if kind == "theorem_formalization" && lean_pass {
+                "PROVED"
+            } else if kind == "semantic_gap" {
+                "SEMANTIC_GAP"
+            } else {
+                "FAILED"
+            };
+            serde_json::json!({
+                "obligation_id": obligation.get("id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "kind": kind,
+                "source_claim_id": obligation.get("source_claim_id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "source_span": obligation.get("source_span").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "lean_declaration": obligation.get("lean_declaration").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "status": status,
+                "statement": obligation.get("statement").cloned().unwrap_or_else(|| serde_json::json!("")),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "source": "review_loop/proof_obligations.json",
+        "lean_results": "review_loop/lean/results.json",
+        "status": if lean_pass { "PROVED" } else { "FAILED" },
+        "entries": entries,
+    })
+}
+
+fn build_review_loop_semantic_adequacy(
+    semantic_ir: &serde_json::Value,
+    theorem_map: &serde_json::Value,
+) -> serde_json::Value {
+    let theorem_candidates = semantic_ir
+        .get("theorem_candidates")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let theorem_entries = theorem_map
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut verdicts = Vec::new();
+    for theorem in theorem_candidates {
+        let source_claim_id = theorem
+            .get("source_claim_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let matching_entry = theorem_entries.iter().find(|entry| {
+            entry
+                .get("source_claim_id")
+                .and_then(|v| v.as_str())
+                == Some(source_claim_id)
+        });
+        let proof_status = matching_entry
+            .and_then(|entry| entry.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("FAILED");
+        let verdict = if proof_status == "PROVED" {
+            "MATCHES"
+        } else {
+            "OVERCLAIMED"
+        };
+        verdicts.push(serde_json::json!({
+            "claim_id": source_claim_id,
+            "theorem_id": theorem.get("id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "lean_declaration": matching_entry
+                .and_then(|entry| entry.get("lean_declaration").cloned())
+                .unwrap_or_else(|| serde_json::json!(null)),
+            "proof_status": proof_status,
+            "verdict": verdict,
+            "statement": theorem.get("statement").cloned().unwrap_or_else(|| serde_json::json!("")),
+        }));
+    }
+    let pass = !verdicts.is_empty()
+        && verdicts
+            .iter()
+            .all(|verdict| verdict.get("verdict").and_then(|v| v.as_str()) == Some("MATCHES"));
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "source": "review_loop/semantic_ir.json",
+        "theorem_map": "review_loop/lean/theorem_map.json",
+        "status": if pass { "pass" } else { "fail" },
+        "verdicts": verdicts,
+    })
+}
+
+fn validate_review_loop_generated_code(
+    task: &ReviewFixCodeTask,
+    code: &str,
+    base_artifact: &serde_json::Value,
+) -> Vec<String> {
+    match task.target_id {
+        "haskell" => validate_haskell_semantic_model_code(
+            code,
+            base_artifact
+                .get("semantic_ir")
+                .unwrap_or(&serde_json::Value::Null),
+        ),
+        "lean" => validate_lean_proof_code(
+            code,
+            base_artifact
+                .get("proof_obligations")
+                .unwrap_or(&serde_json::Value::Null),
+        ),
+        _ => Vec::new(),
+    }
+}
+
+fn validate_haskell_semantic_model_code(
+    code: &str,
+    semantic_ir: &serde_json::Value,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    if code.contains("data ReviewRole")
+        || code.contains("categoryCounts")
+        || code.contains("publisherReadyLowerBound")
+    {
+        issues.push(
+            "Generated Haskell looks like a review-claim inventory; encode paper theorem semantics instead."
+                .to_string(),
+        );
+    }
+    if !code.contains("TheoremCandidate") {
+        issues.push("SemanticModel.hs must define a TheoremCandidate type.".to_string());
+    }
+    if !(code.contains("SourceSpan") || code.contains("sourceSpan")) {
+        issues.push("SemanticModel.hs must preserve source spans for theorem evidence.".to_string());
+    }
+    if !(code.contains("Assumption") || code.contains("assumptions")) {
+        issues.push("SemanticModel.hs must model theorem assumptions.".to_string());
+    }
+    let theorem_candidates = semantic_ir
+        .get("theorem_candidates")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if theorem_candidates.is_empty() {
+        issues.push("Semantic IR has no theorem candidates to encode.".to_string());
+    }
+    for theorem in theorem_candidates {
+        if let Some(id) = theorem.get("id").and_then(|v| v.as_str()) {
+            if !code.contains(id) {
+                issues.push(format!(
+                    "SemanticModel.hs must include theorem candidate id {id}."
+                ));
+            }
+        }
+    }
+    issues
+}
+
+fn validate_lean_proof_code(code: &str, obligations: &serde_json::Value) -> Vec<String> {
+    let mut issues = Vec::new();
+    let lower = code.to_ascii_lowercase();
+    for forbidden in ["sorry", "admit", "axiom"] {
+        if lower.contains(forbidden) {
+            issues.push(format!("Lean proof uses forbidden term {forbidden}."));
+        }
+    }
+    let obligation_items = obligations
+        .get("obligations")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let theorem_obligations = obligation_items
+        .iter()
+        .filter(|item| item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization"))
+        .collect::<Vec<_>>();
+    if theorem_obligations.is_empty() {
+        issues.push("Lean obligations contain no theorem formalization targets.".to_string());
+    }
+    for obligation in theorem_obligations {
+        if let Some(decl) = obligation.get("lean_declaration").and_then(|v| v.as_str()) {
+            let theorem_decl = format!("theorem {decl}");
+            let lemma_decl = format!("lemma {decl}");
+            if !code.contains(&theorem_decl) && !code.contains(&lemma_decl) {
+                issues.push(format!(
+                    "Lean proof is metadata-only or missing theorem declaration {decl}."
+                ));
+            }
+        }
+    }
+    if lower.contains("claimcount") || lower.contains("claim_count") {
+        issues.push("Lean proof is metadata-only; claim counts are not theorem formalization.".to_string());
+    }
+    issues
 }
 
 fn emit_review_loop_node_debug(
@@ -6311,7 +6822,10 @@ async fn append_review_loop_pr_files(
         "policy_gate.json",
         "claims.json",
         "knowledge_graph.json",
+        "semantic_ir.json",
         "semantic_model.json",
+        "proof_obligations.json",
+        "semantic_adequacy.json",
         "citation_validation_report.json",
         "pr_fixes.json",
         "haskell/GROKRXIV_HARNESS.md",
@@ -6324,6 +6838,8 @@ async fn append_review_loop_pr_files(
         "lean/harness_task_input.json",
         "lean/GrokRxiv/Proofs.lean",
         "lean/results.json",
+        "lean/theorem_map.json",
+        "lean/verification_report.json",
         "fixed/GROKRXIV_HARNESS.md",
         "fixed/harness.json",
         "fixed/harness_task_input.json",
@@ -10299,6 +10815,161 @@ mod tests {
             .trim()
             .len()
             >= 7);
+    }
+
+    #[test]
+    fn review_loop_semantic_ir_extracts_theorem_targets_not_review_histograms() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let claims = serde_json::json!({
+            "review_id": review_id,
+            "claims": [
+                {
+                    "id": "claim_1",
+                    "role": "summary",
+                    "text": "The paper proves that a compatible torsion-free affine connection is unique up to projective equivalence in the Galilei case.",
+                    "verifier_status": "pass"
+                },
+                {
+                    "id": "claim_2",
+                    "role": "technical_correctness",
+                    "text": "The theorem assumes a degenerate conformal metric and an observer field.",
+                    "verifier_status": "warn"
+                },
+                {
+                    "id": "claim_3",
+                    "role": "meta_reviewer",
+                    "text": "major_revision",
+                    "verifier_status": "pass"
+                }
+            ]
+        });
+        let knowledge_graph = build_review_loop_knowledge_graph(&claims);
+
+        let semantic_ir = build_review_loop_semantic_ir(review_id, &claims, &knowledge_graph);
+        let theorem_candidates = semantic_ir["theorem_candidates"]
+            .as_array()
+            .expect("theorem candidates");
+
+        assert_eq!(semantic_ir["schema_version"], "1.0.0");
+        assert!(!theorem_candidates.is_empty());
+        assert_eq!(theorem_candidates[0]["kind"], "theorem");
+        assert_eq!(theorem_candidates[0]["source_claim_id"], "claim_1");
+        assert_eq!(theorem_candidates[0]["source_span"]["artifact"], "review_loop/claims.json");
+        assert!(semantic_ir.get("categories").is_none());
+    }
+
+    #[test]
+    fn review_loop_haskell_validator_rejects_claim_inventory_module() {
+        let semantic_ir = serde_json::json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_claim_1",
+                    "kind": "theorem",
+                    "statement": "A compatible torsion-free affine connection is unique up to projective equivalence.",
+                    "source_claim_id": "claim_1",
+                    "source_span": {"artifact": "review_loop/claims.json", "claim_id": "claim_1"}
+                }
+            ]
+        });
+        let claim_inventory_module = r#"
+module SemanticModel where
+data ReviewRole = Citation | MetaReviewer | Novelty | Summary | TechnicalCorrectness deriving (Eq, Show)
+data VerifierStatus = Pass | Warn | Fail deriving (Eq, Show)
+claimCount :: Int
+claimCount = 43
+categoryCounts :: [(ReviewRole, Int)]
+categoryCounts = [(Citation, 12)]
+publisherReadyLowerBound :: Bool
+publisherReadyLowerBound = claimCount == 43
+"#;
+
+        let issues = validate_haskell_semantic_model_code(claim_inventory_module, &semantic_ir);
+
+        assert!(issues.iter().any(|issue| issue.contains("TheoremCandidate")));
+        assert!(issues.iter().any(|issue| issue.contains("source spans")));
+        assert!(issues.iter().any(|issue| issue.contains("claim inventory")));
+    }
+
+    #[test]
+    fn review_loop_proof_obligations_are_theorem_formalization_targets() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let semantic_ir = serde_json::json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_claim_1",
+                    "kind": "theorem",
+                    "statement": "A compatible torsion-free affine connection is unique up to projective equivalence.",
+                    "source_claim_id": "claim_1",
+                    "formalization_target": {
+                        "lean_declaration": "theorem_claim_1_formalized",
+                        "expected_shape": "theorem"
+                    }
+                }
+            ]
+        });
+
+        let obligations = build_review_loop_proof_obligations(
+            review_id,
+            &semantic_ir,
+            &serde_json::json!({"status": "pass"}),
+        );
+        let obligation_items = obligations["obligations"].as_array().expect("obligations");
+
+        assert_eq!(obligations["source"], "review_loop/semantic_ir.json");
+        assert_eq!(obligation_items[0]["kind"], "theorem_formalization");
+        assert_eq!(obligation_items[0]["lean_declaration"], "theorem_claim_1_formalized");
+        assert!(obligation_items
+            .iter()
+            .all(|item| item["id"] != "claim_count_nonnegative"));
+    }
+
+    #[test]
+    fn review_loop_lean_validator_rejects_metadata_only_proofs() {
+        let obligations = serde_json::json!({
+            "obligations": [
+                {
+                    "id": "formalize_theorem_claim_1",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "theorem_claim_1_formalized",
+                    "statement": "A compatible torsion-free affine connection is unique up to projective equivalence."
+                }
+            ]
+        });
+        let metadata_only = r#"
+namespace GrokRxiv
+def claimCount : Nat := 43
+theorem claimCount_nonnegative : 0 <= claimCount := by
+  simp [claimCount]
+end GrokRxiv
+"#;
+
+        let issues = validate_lean_proof_code(metadata_only, &obligations);
+
+        assert!(issues.iter().any(|issue| issue.contains("theorem_claim_1_formalized")));
+        assert!(issues.iter().any(|issue| issue.contains("metadata-only")));
+    }
+
+    #[test]
+    fn review_loop_contract_files_define_formalization_policy_surface() {
+        let claim_graph = include_str!("../../../schemas/claim_graph.schema.json");
+        let semantic_ir = include_str!("../../../schemas/semantic_ir.schema.json");
+        let lean_verification = include_str!("../../../schemas/lean_verification.schema.json");
+        let research_bundle = include_str!("../../../schemas/research_bundle.schema.json");
+        let review_score = include_str!("../../../schemas/review_score.schema.json");
+        let release_tiers = include_str!("../../../policies/release_tiers.yaml");
+        let repair_policy = include_str!("../../../policies/repair_policy.yaml");
+
+        assert!(claim_graph.contains("claim_kind"));
+        assert!(claim_graph.contains("supports"));
+        assert!(semantic_ir.contains("theorem_candidates"));
+        assert!(semantic_ir.contains("formalization_target"));
+        assert!(lean_verification.contains("USES_UNAPPROVED_AXIOM"));
+        assert!(research_bundle.contains("code_artifacts"));
+        assert!(review_score.contains("semantic_adequacy"));
+        assert!(release_tiers.contains("formally_verified"));
+        assert!(repair_policy.contains("requires_escalation"));
     }
 
     #[test]

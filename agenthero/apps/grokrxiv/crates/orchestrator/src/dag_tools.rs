@@ -105,6 +105,11 @@ const RUST_TOOL_HANDLERS: &[RustToolDescriptor] = &[
         description: "Generate Lean proof obligations from semantic-model evidence.",
     },
     RustToolDescriptor {
+        handler: "review_loop::semantic_adequacy_checker",
+        module: "review_loop",
+        description: "Compare theorem claims against proved Lean declarations to detect overclaims.",
+    },
+    RustToolDescriptor {
         handler: "review_loop::pr_fixer",
         module: "review_loop",
         description: "Create corrected PR artifacts in an isolated artifact worktree.",

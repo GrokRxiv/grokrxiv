@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/research_bundle.schema.json",
+  "title": "GrokRxiv ResearchBundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "primary_source", "paper_artifacts", "code_artifacts", "dataset_artifacts"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "primary_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_type", "locator"],
+      "properties": {
+        "source_type": { "type": "string", "enum": ["arxiv", "url", "git", "local"] },
+        "locator": { "type": "string", "minLength": 1 }
+      }
+    },
+    "paper_artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "code_artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "dataset_artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "digest": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

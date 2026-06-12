@@ -50,6 +50,10 @@ tools:
     executor: rust
     handler: review_loop::proof_obligation_generator
     timeout_secs: 60
+  - id: semantic_adequacy_checker
+    executor: rust
+    handler: review_loop::semantic_adequacy_checker
+    timeout_secs: 60
   - id: pr_fixer
     executor: rust
     handler: review_loop::pr_fixer
@@ -91,6 +95,7 @@ nodes:
       - review_loop/claims.json
       - review_loop/knowledge_graph.json
     outputs:
+      - review_loop/semantic_ir.json
       - review_loop/semantic_model.json
       - review_loop/haskell/SemanticModel.hs
     required: true
@@ -110,6 +115,7 @@ nodes:
     kind: tool
     tool: proof_obligation_generator
     inputs:
+      - review_loop/semantic_ir.json
       - review_loop/semantic_model.json
       - review_loop/haskell/results.json
     outputs: [review_loop/proof_obligations.json]
@@ -124,6 +130,17 @@ nodes:
       - review_loop/lean/GrokRxiv/Proofs.lean
       - review_loop/lean/results.json
       - review_loop/lean/fix_rounds.json
+      - review_loop/lean/theorem_map.json
+      - review_loop/lean/verification_report.json
+    required: true
+  - id: semantic_adequacy_checker
+    kind: tool
+    tool: semantic_adequacy_checker
+    inputs:
+      - review_loop/semantic_ir.json
+      - review_loop/proof_obligations.json
+      - review_loop/lean/theorem_map.json
+    outputs: [review_loop/semantic_adequacy.json]
     required: true
   - id: citation_validation
     kind: dag_call
@@ -141,6 +158,7 @@ nodes:
       - review_loop/claims.json
       - citation_validation_report.json
       - review_loop/lean/results.json
+      - review_loop/semantic_adequacy.json
     outputs:
       - review_loop/pr_fixes.json
       - review_loop/fixed/review.tex
@@ -164,6 +182,7 @@ nodes:
     inputs:
       - review_loop/haskell/results.json
       - review_loop/lean/results.json
+      - review_loop/semantic_adequacy.json
       - citation_validation_report.json
       - review_loop/pr_review/results.json
     outputs: [review_loop/policy_gate.json]
@@ -174,9 +193,12 @@ nodes:
     inputs:
       - review_loop/claims.json
       - review_loop/knowledge_graph.json
+      - review_loop/semantic_ir.json
       - review_loop/semantic_model.json
       - review_loop/haskell/results.json
       - review_loop/lean/results.json
+      - review_loop/lean/theorem_map.json
+      - review_loop/semantic_adequacy.json
       - citation_validation_report.json
       - review_loop/pr_fixes.json
       - review_loop/policy_gate.json
@@ -201,17 +223,20 @@ edges:
     to: proof_obligation_generator
   - from: proof_obligation_generator
     to: lean_review_fix_code
+  - from: lean_review_fix_code
+    to: semantic_adequacy_checker
   - from: paper_review
     to: citation_validation
   - from:
       - citation_validation
-      - lean_review_fix_code
+      - semantic_adequacy_checker
     to: pr_fixer
   - from: pr_fixer
     to: pr_review_fix_code
   - from:
       - haskell_review_fix_code
       - lean_review_fix_code
+      - semantic_adequacy_checker
       - citation_validation
       - pr_review_fix_code
     to: policy_gate

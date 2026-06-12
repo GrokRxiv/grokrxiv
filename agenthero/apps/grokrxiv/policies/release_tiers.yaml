@@ -1,0 +1,28 @@
+schema_version: 1.0.0
+tiers:
+  formally_verified:
+    lifecycle_state: published
+    requires:
+      formal: proved
+      semantic_adequacy: pass
+      citation: pass_or_warn
+      reproducibility: pass_or_warn_or_not_run
+      integrity: pass
+      safety: pass
+  evidence_reviewed:
+    lifecycle_state: in_review
+    requires:
+      semantic_adequacy: pass_or_warn
+      citation: pass_or_warn
+  needs_update:
+    lifecycle_state: needs_update
+    requires:
+      blocking_issues: present
+  quarantined:
+    lifecycle_state: quarantined
+    requires:
+      integrity: fail
+  retracted:
+    lifecycle_state: retracted
+    requires:
+      upstream_evidence: retracted

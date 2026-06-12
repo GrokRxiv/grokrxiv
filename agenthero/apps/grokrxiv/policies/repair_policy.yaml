@@ -1,0 +1,12 @@
+schema_version: 1.0.0
+safe_fix:
+  - latex_formatting
+  - broken_internal_link
+  - missing_generated_pdf
+  - bibliography_rendering
+requires_escalation:
+  - theorem_overclaimed
+  - lean_formalization_failed
+  - citation_contradicts_claim
+  - reproducibility_runner_failed
+  - unsafe_code_or_data_access

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/review_score.schema.json",
+  "title": "GrokRxiv Publishability Vector",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "formal", "semantic_adequacy", "citation", "reproducibility", "integrity", "safety"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "formal": { "type": "string", "enum": ["proved", "conditional", "failed", "not_run"] },
+    "semantic_adequacy": { "type": "string", "enum": ["pass", "warn", "fail", "not_run"] },
+    "citation": { "type": "string", "enum": ["pass", "warn", "fail", "not_run"] },
+    "reproducibility": { "type": "string", "enum": ["pass", "warn", "fail", "not_run"] },
+    "integrity": { "type": "string", "enum": ["pass", "warn", "fail", "not_run"] },
+    "safety": { "type": "string", "enum": ["pass", "warn", "fail", "not_run"] }
+  }
+}

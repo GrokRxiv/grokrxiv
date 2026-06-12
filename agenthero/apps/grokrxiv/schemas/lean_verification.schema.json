@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/lean_verification.schema.json",
+  "title": "GrokRxiv Lean Verification Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "entries"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "status": {
+      "type": "string",
+      "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["obligation_id", "lean_declaration", "status"],
+        "properties": {
+          "obligation_id": { "type": ["string", "null"] },
+          "kind": { "type": "string" },
+          "source_claim_id": { "type": ["string", "null"] },
+          "source_span": { "type": ["object", "null"], "additionalProperties": true },
+          "lean_declaration": { "type": ["string", "null"] },
+          "status": {
+            "type": "string",
+            "enum": ["PROVED", "USES_SORRY", "USES_UNAPPROVED_AXIOM", "SEMANTIC_GAP", "CONDITIONALLY_PROVED", "FAILED"]
+          },
+          "statement": { "type": "string" },
+          "diagnostics": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

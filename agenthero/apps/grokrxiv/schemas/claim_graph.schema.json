@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/claim_graph.schema.json",
+  "title": "GrokRxiv Claim Graph",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "claims", "edges"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "claim_kind", "centrality", "text", "source_span"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "claim_kind": {
+            "type": "string",
+            "enum": ["definition", "assumption", "theorem", "lemma", "method", "citation", "limitation", "result", "review_judgment"]
+          },
+          "centrality": {
+            "type": "string",
+            "enum": ["central", "supporting", "background", "incidental"]
+          },
+          "text": { "type": "string", "minLength": 1 },
+          "source_span": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifact", "locator", "excerpt"],
+            "properties": {
+              "artifact": { "type": "string", "minLength": 1 },
+              "locator": { "type": "string", "minLength": 1 },
+              "excerpt": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "relation"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "relation": {
+            "type": "string",
+            "enum": ["supports", "contradicts", "depends_on", "formalizes", "cites", "hallucinated", "overclaims"]
+          }
+        }
+      }
+    }
+  }
+}

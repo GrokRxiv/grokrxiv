@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/semantic_ir.schema.json",
+  "title": "GrokRxiv Theorem-Level Semantic IR",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "source", "definitions", "assumptions", "theorem_candidates", "limitations"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "review_id": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "minLength": 1 },
+    "formalization_policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requires_theorem_level_lean": { "type": "boolean" },
+        "reject_metadata_only_models": { "type": "boolean" },
+        "reject_review_role_histograms": { "type": "boolean" },
+        "forbidden_lean_terms": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "definitions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
+    "assumptions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
+    "theorem_candidates": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/semantic_item" },
+          {
+            "type": "object",
+            "required": ["formalization_target"],
+            "properties": {
+              "formalization_target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["lean_declaration", "expected_shape", "proof_policy"],
+                "properties": {
+                  "lean_declaration": { "type": "string", "minLength": 1 },
+                  "expected_shape": { "type": "string", "enum": ["theorem", "lemma"] },
+                  "proof_policy": { "type": "string", "const": "closed_proof_no_sorry_admit_axiom" }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "limitations": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
+    "knowledge_graph_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": { "type": "integer", "minimum": 0 },
+        "edges": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "semantic_item": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "statement", "source_claim_id", "source_span"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string" },
+        "statement": { "type": "string", "minLength": 1 },
+        "source_claim_id": { "type": "string", "minLength": 1 },
+        "source_span": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["artifact", "claim_id"],
+          "properties": {
+            "artifact": { "type": "string", "minLength": 1 },
+            "claim_id": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}
