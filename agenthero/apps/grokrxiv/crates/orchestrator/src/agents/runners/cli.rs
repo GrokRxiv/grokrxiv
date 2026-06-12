@@ -247,6 +247,7 @@ impl CliRunner {
 
         // 4. Extract and validate JSON. On parse OR schema-validation failure,
         //    one-shot corrective retry.
+        let mut raw_output_for_audit = raw_stdout.clone();
         let extracted = extract_json_text(&spec.provider, &raw_stdout);
         let parsed = match parse_and_validate(&extracted, spec.schema.as_ref()) {
             Ok(v) => v,
@@ -275,7 +276,10 @@ impl CliRunner {
                 cleanup_schema_path(&built2.schema_path);
                 let extracted2 = extract_json_text(&spec.provider, &raw2);
                 match parse_and_validate(&extracted2, spec.schema.as_ref()) {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        raw_output_for_audit = raw2;
+                        v
+                    }
                     Err(second_err) => {
                         return Err(anyhow::anyhow!(
                             "CliRunner parse/validate failure after corrective retry for role {role}: first={first_err}; retry={second_err}",
@@ -293,6 +297,7 @@ impl CliRunner {
             runner: AgentRunnerKind::Cli,
             model: spec.model.clone(),
             output: parsed,
+            raw_output: Some(raw_output_for_audit),
             tokens_in: None,
             tokens_out: None,
             latency_ms,

@@ -2,5 +2,121 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GrokRxiv Review Loop Code Task Input",
   "type": "object",
-  "additionalProperties": true
+  "additionalProperties": false,
+  "required": [
+    "phase",
+    "target",
+    "language",
+    "filename",
+    "attempt",
+    "max_attempts",
+    "base",
+    "harness"
+  ],
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": ["generate", "review"]
+    },
+    "target": {
+      "type": "string",
+      "enum": ["haskell", "lean", "pr"]
+    },
+    "language": {
+      "type": "string",
+      "enum": ["haskell", "lean", "latex"]
+    },
+    "filename": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "base": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "previous_code": {
+      "type": ["string", "null"]
+    },
+    "previous_compile": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "previous_codex_review": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "code": {
+      "type": "string"
+    },
+    "compile": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "semantic_validation": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "forbidden_terms": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "branch"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": { "const": "generate" }
+        },
+        "required": ["phase"]
+      },
+      "then": {
+        "required": [
+          "previous_code",
+          "previous_compile",
+          "previous_codex_review"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": { "const": "review" }
+        },
+        "required": ["phase"]
+      },
+      "then": {
+        "required": [
+          "code",
+          "compile",
+          "semantic_validation",
+          "forbidden_terms"
+        ]
+      }
+    }
+  ]
 }

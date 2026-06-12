@@ -127,6 +127,7 @@ impl AgentRunner for ApiRunner {
             );
         }
 
+        let mut raw_output_for_audit = resp.text.clone();
         let (output, usage) = match parse_and_validate(&resp.text, schema.as_ref()) {
             Ok(v) => (v, resp.usage),
             Err(first_err) => {
@@ -162,7 +163,10 @@ impl AgentRunner for ApiRunner {
                     );
                 }
                 match parse_and_validate(&retry.text, schema.as_ref()) {
-                    Ok(v) => (v, retry.usage),
+                    Ok(v) => {
+                        raw_output_for_audit = retry.text.clone();
+                        (v, retry.usage)
+                    }
                     Err(e) => {
                         warn!(
                             provider = %spec.provider,
@@ -193,6 +197,7 @@ impl AgentRunner for ApiRunner {
             runner: AgentRunnerKind::Api,
             model: spec.model.clone(),
             output,
+            raw_output: Some(raw_output_for_audit),
             verifier_status: None,
             verifier_notes: None,
             tokens_in: Some(usage.tokens_in as i32),

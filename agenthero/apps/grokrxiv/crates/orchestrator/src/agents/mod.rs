@@ -92,6 +92,7 @@ mod tests {
             runner: AgentRunnerKind::Api,
             model: spec.model.clone(),
             output: json!({ "tldr": "ok" }),
+            raw_output: Some(r#"{ "tldr": "ok" }"#.to_string()),
             verifier_status: None,
             verifier_notes: None,
             tokens_in: Some(42),
