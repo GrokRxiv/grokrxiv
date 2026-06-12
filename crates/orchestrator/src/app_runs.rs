@@ -40,6 +40,22 @@ pub struct StoredAppRunInput {
     /// Whether the adapter should emit JSON-oriented output.
     #[serde(default = "default_json")]
     pub json: bool,
+    /// Scheduler retry policy captured when the run was queued.
+    #[serde(default)]
+    pub retry: StoredAppRunRetry,
+}
+
+/// Stored retry policy for one app run.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct StoredAppRunRetry {
+    /// Maximum worker attempts before auto-retry stops.
+    pub max_attempts: i32,
+}
+
+impl Default for StoredAppRunRetry {
+    fn default() -> Self {
+        Self { max_attempts: 2 }
+    }
 }
 
 /// App-run row returned by list/detail APIs.
@@ -127,8 +143,8 @@ pub struct LeaseRecoverySummary {
 
 /// Decide how to handle an expired lease for a run that has already started
 /// `attempt` worker attempts.
-pub fn expired_lease_decision(attempt: i32) -> ExpiredLeaseDecision {
-    if attempt < 2 {
+pub fn expired_lease_decision(attempt: i32, max_attempts: i32) -> ExpiredLeaseDecision {
+    if attempt < max_attempts.max(1) {
         ExpiredLeaseDecision::Requeue
     } else {
         ExpiredLeaseDecision::SystemFailed
@@ -146,11 +162,15 @@ pub async fn insert_queued(
     action_id: &str,
     request: AppRunRequest,
 ) -> anyhow::Result<Uuid> {
+    let retry_policy = crate::dag_apps::app_action_retry_policy(app_id, action_id)?;
     let input = serde_json::to_value(StoredAppRunInput {
         args: request.args,
         input: request.input,
         dry_run: request.dry_run,
         json: request.json,
+        retry: StoredAppRunRetry {
+            max_attempts: retry_policy.max_attempts,
+        },
     })?;
     let id = sqlx::query_scalar::<_, Uuid>(
         "insert into app_runs (app_id, action_id, state, input) \
@@ -167,7 +187,7 @@ pub async fn insert_queued(
         "info",
         "app_run.queued",
         Some("app run queued"),
-        json!({}),
+        json!({ "retry": { "max_attempts": retry_policy.max_attempts } }),
     )
     .await?;
     Ok(id)
@@ -193,7 +213,8 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
     let row = sqlx::query(
         "select id, app_id, action_id, input, attempt \
          from app_runs \
-         where state = 'queued' and attempt < 2 \
+         where state = 'queued' \
+           and attempt < coalesce((input #>> '{retry,max_attempts}')::int, 2) \
          order by created_at asc \
          for update skip locked \
          limit 1",
@@ -239,8 +260,9 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
 
 /// Recover app runs whose worker lease expired while still marked running.
 ///
-/// Runs are requeued once; after the second expired attempt they become
-/// `system_failed` and remain retryable by explicit operator action.
+/// Runs are requeued until the stored action retry budget is exhausted; after
+/// that they become `system_failed` and remain retryable by explicit operator
+/// action.
 pub async fn recover_expired_leases(pool: &PgPool) -> anyhow::Result<LeaseRecoverySummary> {
     let requeued_rows = sqlx::query(
         "with expired as ( \
@@ -250,7 +272,7 @@ pub async fn recover_expired_leases(pool: &PgPool) -> anyhow::Result<LeaseRecove
              and wl.state = 'leased' \
              and wl.leased_until < now() \
              and ar.state = 'running' \
-             and ar.attempt < 2 \
+             and ar.attempt < coalesce((ar.input #>> '{retry,max_attempts}')::int, 2) \
            returning wl.app_run_id \
          ) \
          update app_runs ar set state = 'queued', recovered_at = now(), \
@@ -273,7 +295,7 @@ pub async fn recover_expired_leases(pool: &PgPool) -> anyhow::Result<LeaseRecove
              and wl.state = 'leased' \
              and wl.leased_until < now() \
              and ar.state = 'running' \
-             and ar.attempt >= 2 \
+             and ar.attempt >= coalesce((ar.input #>> '{retry,max_attempts}')::int, 2) \
            returning wl.app_run_id \
          ) \
          update app_runs ar set state = 'system_failed', finished_at = coalesce(finished_at, now()), \
@@ -561,14 +583,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expired_lease_recovery_requeues_once_then_fails() {
-        assert_eq!(expired_lease_decision(1), ExpiredLeaseDecision::Requeue);
+    fn expired_lease_recovery_uses_action_retry_budget() {
+        assert_eq!(expired_lease_decision(1, 3), ExpiredLeaseDecision::Requeue);
+        assert_eq!(expired_lease_decision(2, 3), ExpiredLeaseDecision::Requeue);
         assert_eq!(
-            expired_lease_decision(2),
+            expired_lease_decision(3, 3),
             ExpiredLeaseDecision::SystemFailed
         );
         assert_eq!(
-            expired_lease_decision(3),
+            expired_lease_decision(4, 3),
             ExpiredLeaseDecision::SystemFailed
         );
     }

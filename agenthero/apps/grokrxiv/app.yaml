@@ -89,6 +89,8 @@ actions:
     command: [review]
     dag_type: review-loop
     description: Run the research review DAG and optional semantic/proof/citation loop for a paper source.
+    retry:
+      max_attempts: 2
     options:
       - name: source
         kind: positional

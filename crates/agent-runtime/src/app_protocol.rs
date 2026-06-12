@@ -2,6 +2,7 @@
 
 use agenthero_dag_executor::{DagExecutionReport, DagIo};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Current stdin/stdout protocol version for process-backed DAG app adapters.
 pub const APP_ADAPTER_PROTOCOL: &str = "agenthero.app.v1";
@@ -29,6 +30,9 @@ pub struct AppAdapterRequest {
     /// Whether the caller requested a plan-only dry run.
     #[serde(default)]
     pub dry_run: bool,
+    /// Stable key adapters use to deduplicate retried external side effects.
+    #[serde(default)]
+    pub idempotency_key: String,
 }
 
 impl AppAdapterRequest {
@@ -42,17 +46,58 @@ impl AppAdapterRequest {
         json: bool,
         dry_run: bool,
     ) -> Self {
+        let app = app.into();
+        let action = action.into();
+        let dag_type = dag_type.into();
+        let idempotency_key =
+            default_idempotency_key(&app, &action, &dag_type, &args, &input, json, dry_run);
         Self {
             protocol: APP_ADAPTER_PROTOCOL.to_string(),
-            app: app.into(),
-            action: action.into(),
-            dag_type: dag_type.into(),
+            app,
+            action,
+            dag_type,
             args,
             input,
             json,
             dry_run,
+            idempotency_key,
         }
     }
+
+    /// Override the deterministic payload-derived key with a durable scheduler key.
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = key.into();
+        self
+    }
+}
+
+fn default_idempotency_key(
+    app: &str,
+    action: &str,
+    dag_type: &str,
+    args: &[String],
+    input: &DagIo,
+    json: bool,
+    dry_run: bool,
+) -> String {
+    let payload = serde_json::json!({
+        "protocol": APP_ADAPTER_PROTOCOL,
+        "app": app,
+        "action": action,
+        "dag_type": dag_type,
+        "args": args,
+        "input": input,
+        "json": json,
+        "dry_run": dry_run,
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    format!("{APP_ADAPTER_PROTOCOL}:{hex}")
 }
 
 /// Response returned by a process-backed DAG app adapter.
@@ -106,5 +151,64 @@ impl AppAdapterResponse {
             output: None,
             error: Some(error.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_request_builds_stable_idempotency_key() {
+        let request = AppAdapterRequest::new(
+            "demo",
+            "run",
+            "demo-dag",
+            vec!["input.c".to_string()],
+            DagIo::default(),
+            true,
+            false,
+        );
+        let same_request = AppAdapterRequest::new(
+            "demo",
+            "run",
+            "demo-dag",
+            vec!["input.c".to_string()],
+            DagIo::default(),
+            true,
+            false,
+        );
+        let different_request = AppAdapterRequest::new(
+            "demo",
+            "run",
+            "demo-dag",
+            vec!["other.c".to_string()],
+            DagIo::default(),
+            true,
+            false,
+        );
+
+        assert!(!request.idempotency_key.is_empty());
+        assert_eq!(request.idempotency_key, same_request.idempotency_key);
+        assert_ne!(request.idempotency_key, different_request.idempotency_key);
+    }
+
+    #[test]
+    fn adapter_request_can_use_scheduler_idempotency_key() {
+        let request = AppAdapterRequest::new(
+            "demo",
+            "run",
+            "demo-dag",
+            Vec::new(),
+            DagIo::default(),
+            true,
+            false,
+        )
+        .with_idempotency_key("app-run:11111111-1111-1111-1111-111111111111");
+
+        assert_eq!(
+            request.idempotency_key,
+            "app-run:11111111-1111-1111-1111-111111111111"
+        );
     }
 }

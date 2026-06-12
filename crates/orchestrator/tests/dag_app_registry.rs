@@ -269,6 +269,12 @@ printf '%s' '{{"protocol":"agenthero.app.v1","app":"alpha","action":"run","dag_t
         serde_json::from_str(&std::fs::read_to_string(capture).unwrap()).unwrap();
     assert_eq!(request["args"], json!(["--flag", "value"]));
     assert_eq!(request["dry_run"], json!(true));
+    assert!(
+        request["idempotency_key"]
+            .as_str()
+            .is_some_and(|key| !key.is_empty()),
+        "adapter request must carry idempotency_key"
+    );
     assert_eq!(request["input"]["values"]["seed"], json!(true));
     assert!(
         request["input"]["values"].get("args").is_none(),
@@ -507,6 +513,16 @@ fn app_manifest_resolves_action_command_paths() {
     )
     .expect_err("unknown nested app action must fail");
     assert!(err.to_string().contains("unknown app action"));
+}
+
+#[test]
+fn app_action_descriptors_expose_retry_policy() {
+    let _guard = EnvGuard::clear_apps_root();
+    let review = agenthero_orchestrator::dag_apps::registered_app_action("grokrxiv", "review")
+        .expect("registered action loads")
+        .expect("review action");
+
+    assert_eq!(review.retry.max_attempts, 2);
 }
 
 #[test]

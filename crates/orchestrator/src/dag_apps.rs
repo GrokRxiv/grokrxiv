@@ -56,6 +56,8 @@ pub struct AppActionDescriptor {
     pub description: String,
     /// Action-specific positional and flag metadata.
     pub options: Vec<AppActionOption>,
+    /// Scheduler retry policy for this action.
+    pub retry: AppActionRetryPolicy,
 }
 
 /// YAML product app manifest loaded from `agenthero/apps/<app>/app.yaml`.
@@ -148,6 +150,22 @@ pub struct AppManifestAction {
     /// Human/LLM-readable argument contract for this action.
     #[serde(default)]
     pub options: Vec<AppActionOption>,
+    /// Scheduler retry policy for this action.
+    #[serde(default)]
+    pub retry: AppActionRetryPolicy,
+}
+
+/// Scheduler retry policy declared per app action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AppActionRetryPolicy {
+    /// Maximum worker attempts before the scheduler stops auto-retrying.
+    pub max_attempts: i32,
+}
+
+impl Default for AppActionRetryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 2 }
+    }
 }
 
 /// Metadata for one app action positional argument or flag.
@@ -217,6 +235,7 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
                     dag_type: action.dag_type,
                     description: action.description,
                     options: action.options,
+                    retry: action.retry,
                 })
                 .collect(),
         })
@@ -259,6 +278,20 @@ pub fn app_action_binding(app_id: &str, action_id: &str) -> anyhow::Result<AppAc
         dag_type: action.dag_type.clone(),
         description: action.description.clone(),
     })
+}
+
+/// Return the scheduler retry policy for one app action.
+pub fn app_action_retry_policy(
+    app_id: &str,
+    action_id: &str,
+) -> anyhow::Result<AppActionRetryPolicy> {
+    let manifest = load_app_manifest_by_slug(app_id)?;
+    let action = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown app action `{app_id} {action_id}`"))?;
+    Ok(action.retry)
 }
 
 /// Resolve raw app-run args against the app manifest command paths.
@@ -369,6 +402,12 @@ fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Res
         }
         if action.dag_type.trim().is_empty() {
             anyhow::bail!("action `{}` dag_type is required", action.id);
+        }
+        if action.retry.max_attempts < 1 {
+            anyhow::bail!(
+                "action `{}` retry.max_attempts must be greater than zero",
+                action.id
+            );
         }
         let dag_path = app_root
             .join("dags")
@@ -508,6 +547,30 @@ pub async fn run_app_action(
     run_app_action_with_manifest(&manifest, action_id, args, input, json, dry_run, false).await
 }
 
+/// Run an action with a caller-supplied idempotency key for durable retries.
+pub async fn run_app_action_with_idempotency_key(
+    app_id: &str,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+    idempotency_key: String,
+) -> anyhow::Result<AppAdapterResponse> {
+    let manifest = load_app_manifest_by_slug(app_id)?;
+    run_app_action_with_manifest_and_key(
+        &manifest,
+        action_id,
+        args,
+        input,
+        json,
+        dry_run,
+        false,
+        Some(idempotency_key),
+    )
+    .await
+}
+
 /// Run an action through an already loaded app manifest.
 pub async fn run_app_action_with_manifest(
     manifest: &AppManifest,
@@ -517,6 +580,29 @@ pub async fn run_app_action_with_manifest(
     json: bool,
     dry_run: bool,
     stream_stderr: bool,
+) -> anyhow::Result<AppAdapterResponse> {
+    run_app_action_with_manifest_and_key(
+        manifest,
+        action_id,
+        args,
+        input,
+        json,
+        dry_run,
+        stream_stderr,
+        None,
+    )
+    .await
+}
+
+async fn run_app_action_with_manifest_and_key(
+    manifest: &AppManifest,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+    stream_stderr: bool,
+    idempotency_key: Option<String>,
 ) -> anyhow::Result<AppAdapterResponse> {
     let action = manifest
         .actions
@@ -532,6 +618,10 @@ pub async fn run_app_action_with_manifest(
         json,
         dry_run,
     );
+    let request = match idempotency_key {
+        Some(key) => request.with_idempotency_key(key),
+        None => request,
+    };
     run_adapter_process(&manifest, &request, stream_stderr).await
 }
 
