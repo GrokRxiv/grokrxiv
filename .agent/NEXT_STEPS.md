@@ -16,9 +16,9 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Current worker state:
-- Branch `p0-033-tier-r-after-target-scope`
-- Base commit `2a6352d`
+Current coordinator state:
+- Branch `grokrxiv-local-corpus-harness`
+- P0-033 worker `p0-033-tier-r-after-target-scope` fast-forward merged at `9daf888`
 - P0-033 affected Tier R rerun completed as review `4bd37a7a-9452-476b-911d-9d75cfc37c51`
 - Raw run directory: `agenthero/apps/grokrxiv/evals/results/20260613T130722Z/regression-pr54-weyl/`
 - Artifact root: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/4bd37a7a-9452-476b-911d-9d75cfc37c51/review_loop/`
@@ -36,7 +36,7 @@ P0-033 evidence:
 - Semantic adequacy is `OVERCLAIMED`
 
 Session 34 task:
-1. Confirm this P0-033 checkpoint commit exists:
+1. Confirm the P0-033 integration checkpoint is present and clean:
    `git log --oneline -3`
    `git status --short --branch`
 2. Create or continue a local worker for one defect only:

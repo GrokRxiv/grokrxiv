@@ -1,14 +1,14 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T13:31:34Z
+Updated: 2026-06-13T13:35:08Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 33 affected Tier R rerun complete; checkpoint state update in progress.
-- Branch/worktree: worker branch `p0-033-tier-r-after-target-scope` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-033-tier-r-after-target-scope`; coordinator branch `grokrxiv-local-corpus-harness` remains at `/Users/mlong/Documents/Development/grokrxiv`.
-- Branch base commit: `2a6352d`; current checkpoint commit: pending P0-033 state-only commit.
+- Session type: P0 session 33 integration complete; P0-033 affected Tier R rerun checkpoint fast-forward merged and coordinator checks passed.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-033-tier-r-after-target-scope` fast-forward merged.
+- Branch base commit: `2a6352d`; merged worker checkpoint commit: `9daf888`; current integration state update: this commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
@@ -79,6 +79,7 @@ Updated: 2026-06-13T13:31:34Z
 - P0-032 semantic target scoping, 2026-06-13T13:00Z: worker branch `p0-032-haskell-target-scope` diagnosed the P0-031 target explosion. Prior artifact `semantic_ir.json` for review `667842d3-71e0-4fe9-950a-1518db105049` had 913 theorem candidates: 903 from `equations.json` and 10 from `theorem_graph.json`. Added red-first fixture `semantic_ir_keeps_extracted_equations_as_context_not_lean_targets`, then fixed `build_semantic_ir_from_paper_math` so extracted equations are preserved in `supporting_equations` and not emitted as required Lean targets. Updated `semantic_ir.schema.json` and the app-runtime contract-file test to include `supporting_equations`. Verification passed: focused red test then pass, full `grokrxiv-review-loop` lib tests 13/13, app-runtime contract test, app workspace check, PATH `grokrxiv-app` install, and installed safe dry-run. No affected Tier R rerun yet.
 - P0-032 coordinator verification, 2026-06-13T13:05Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `2c64ac8`, then reran coordinator-side checks. Review-loop crate tests passed 13/13; app-runtime contract-file test passed; app workspace check passed; `git diff --check` passed; worktree was clean before this state-only update. No full corpus-green claim or phase tag.
 - P0-033 affected Tier R safe rerun, 2026-06-13T13:31Z: worker branch `p0-033-tier-r-after-target-scope` reran `regression-pr54-weyl` through the wrapped local CLI as review `4bd37a7a-9452-476b-911d-9d75cfc37c51`. Product exit status was 0; external actions stayed disabled; `pr_url=null`; extraction/math-source signal was preserved (`theorem_nodes=41`, `equations=903`, `theorem_candidates=10`); P0-032 target scoping held (`theorem_candidate_sources=[theorem_graph.json:10]`, `supporting_equations=[equations.json:903]`); citation remained within Tier R threshold (`checked=53`, `unverified=1`, `unresolved=0`, `transient_unknown=0`). Overall deterministic status remains red because Haskell round 2 compiled but was rejected for tautological raw propositions (`PRaw` renders as `True` and `paperTheoremClaim` uses empty binders/assumptions); proof obligations and Lean are blocked with `NOT_PROVED`/`SEMANTIC_GAP`; semantic adequacy is `OVERCLAIMED`; policy stays non-publisher-ready. No full corpus-green claim or phase tag.
+- P0-033 coordinator verification, 2026-06-13T13:35Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `9daf888`, then ran `git diff --check` and `git status --short`; both passed with a clean worktree before this integration state update. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
