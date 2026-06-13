@@ -12451,6 +12451,112 @@ mod tests {
     }
 
     #[test]
+    fn corpus_arxiv_versions_and_toolchains_are_pinned() {
+        let corpus: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus.yaml parses");
+        let entries = corpus
+            .get("entries")
+            .and_then(|value| value.as_sequence())
+            .expect("corpus entries");
+        let mut unpinned = Vec::new();
+        for entry in entries {
+            let source = entry.get("source").and_then(|value| value.as_str());
+            if !source.is_some_and(|value| value.starts_with("arxiv:")) {
+                continue;
+            }
+            let id = entry
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<missing-id>");
+            let version = entry.get("version").and_then(|value| value.as_str());
+            match version {
+                Some(value) if value.starts_with('v') && value[1..].parse::<u64>().is_ok() => {}
+                Some(value) => unpinned.push(format!("{id}={value}")),
+                None => unpinned.push(format!("{id}=<missing>")),
+            }
+        }
+        assert!(
+            unpinned.is_empty(),
+            "arXiv corpus entries must pin concrete versions: {}",
+            unpinned.join(", ")
+        );
+
+        let lock_path = crate::dag_apps::app_root("grokrxiv").join("evals/toolchain.lock.yaml");
+        assert!(
+            lock_path.is_file(),
+            "missing eval toolchain lock at {}",
+            lock_path.display()
+        );
+        let lock: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&lock_path).expect("read eval toolchain lock"),
+        )
+        .expect("toolchain.lock.yaml parses");
+
+        assert_eq!(lock["version"].as_i64(), Some(1));
+        assert_eq!(lock["toolchains"]["ghc"]["version"].as_str(), Some("9.14.1"));
+        assert_eq!(
+            lock["toolchains"]["lean"]["version"].as_str(),
+            Some("4.30.0")
+        );
+        assert_eq!(
+            lock["toolchains"]["lean"]["commit"].as_str(),
+            Some("d024af099ca4bf2c86f649261ebf59565dc8c622")
+        );
+        assert_eq!(
+            lock["toolchains"]["lake"]["version"].as_str(),
+            Some("5.0.0-src+d024af0")
+        );
+        assert_eq!(
+            lock["toolchains"]["lake"]["lean_version"].as_str(),
+            Some("4.30.0")
+        );
+        assert_eq!(
+            lock["toolchains"]["mathlib"]["source"].as_str(),
+            Some("https://github.com/leanprover-community/mathlib4.git")
+        );
+        assert_eq!(
+            lock["toolchains"]["mathlib"]["rev"].as_str(),
+            Some("c5ea00351c28e24afc9f0f84379aa41082b1188f")
+        );
+        assert_eq!(
+            lock["toolchains"]["mathlib"]["tag"].as_str(),
+            Some("v4.30.0")
+        );
+
+        let app_root = crate::dag_apps::app_root("grokrxiv");
+        let lean_toolchain_path = app_root.join(
+            lock["toolchains"]["lean"]["toolchain_file"]
+                .as_str()
+                .expect("lean toolchain_file"),
+        );
+        let lakefile_path = app_root.join(
+            lock["toolchains"]["lake"]["lakefile"]
+                .as_str()
+                .expect("lakefile path"),
+        );
+        let lake_manifest_path = app_root.join(
+            lock["toolchains"]["mathlib"]["manifest"]
+                .as_str()
+                .expect("mathlib manifest path"),
+        );
+        let lean_toolchain =
+            std::fs::read_to_string(&lean_toolchain_path).expect("read eval lean-toolchain");
+        let lakefile = std::fs::read_to_string(&lakefile_path).expect("read eval lakefile");
+        let lake_manifest =
+            std::fs::read_to_string(&lake_manifest_path).expect("read eval lake manifest");
+        assert_eq!(lean_toolchain.trim(), "leanprover/lean4:v4.30.0");
+        assert!(
+            lakefile.contains("c5ea00351c28e24afc9f0f84379aa41082b1188f"),
+            "eval lakefile must pin the locked mathlib revision"
+        );
+        assert!(
+            lake_manifest.contains("\"rev\": \"c5ea00351c28e24afc9f0f84379aa41082b1188f\""),
+            "eval lake manifest must resolve the locked mathlib revision"
+        );
+    }
+
+    #[test]
     fn review_loop_n5_does_not_halt_tier_a_proved() {
         let corpus_context = ReviewLoopCorpusContext {
             id: "bertrand-elementary".to_string(),

@@ -841,6 +841,51 @@ Residual:
 - Full synthetic review sweeps were not run in this shard; future corpus sweeps must check the actual expected blocks.
 - Tier R remains red on Haskell/Lean/semantic adequacy from the latest affected run; no full corpus-green claim and no phase tag.
 
+## P0-023: Toolchain And Corpus Versions Were Not Pinned
+
+ID: P0-023
+Corpus entries: all arXiv-backed corpus entries
+Runner: `cli`
+Command: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_arxiv_versions_and_toolchains_are_pinned --lib`
+Exit code: 101 before fix, 0 after fix.
+finish_reason: targeted fixture failed first on unpinned versions, then passed after repo pins and lock files were added.
+Bucket: F3 toolchain
+NEVER-event: none.
+Symptom: six arXiv entries still used `version: pin_on_first_run`, and there was no app-owned lock for GHC, Lean, Lake, or mathlib. This made corpus content and independent Haskell/Lean checks vulnerable to revision/toolchain drift.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/corpus.yaml`
+- `agenthero/apps/grokrxiv/evals/toolchain.lock.yaml`
+- `agenthero/apps/grokrxiv/evals/lean/lean-toolchain`
+- `agenthero/apps/grokrxiv/evals/lean/lakefile.lean`
+- `agenthero/apps/grokrxiv/evals/lean/lake-manifest.json`
+Artifact paths: none; no review run was started in this shard.
+Root cause: P0 had a corpus rule to pin versions on first run, but no mechanical fixture enforced it and no eval-owned toolchain lock existed.
+Owning code:
+- `agenthero/apps/grokrxiv/evals/corpus.yaml`
+- `agenthero/apps/grokrxiv/evals/toolchain.lock.yaml`
+- `agenthero/apps/grokrxiv/evals/lean/`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Fix:
+1. Added `corpus_arxiv_versions_and_toolchains_are_pinned`, which rejects `pin_on_first_run`, requires concrete `vN` arXiv versions, and verifies the eval toolchain lock plus Lean/Lake/mathlib files.
+2. Pinned arXiv entries from the arXiv API: `2407.07620v5`, `2503.07625v2`, `1605.09223v1`, `2311.05762v2`, `1710.10701v1`, and `2606.00799v1`.
+3. Added `evals/toolchain.lock.yaml` for required GHC 9.14.1, Lean 4.30.0 commit `d024af099ca4bf2c86f649261ebf59565dc8c622`, Lake `5.0.0-src+d024af0`, and mathlib v4.30.0 commit `c5ea00351c28e24afc9f0f84379aa41082b1188f`.
+4. Added a pinned eval Lean project under `evals/lean/`; `lake env lean --version` resolved the project and generated `lake-manifest.json` with the locked mathlib revision.
+Evidence:
+- Red fixture failed before implementation with `arXiv corpus entries must pin concrete versions: bertrand-elementary=pin_on_first_run, zeta3-irrationality=pin_on_first_run, capset-ellenberg-gijswijt=pin_on_first_run, pfr-marton=pin_on_first_run, majorana-quantized=pin_on_first_run, regression-pr54-weyl=pin_on_first_run`.
+- arXiv API returned current versions: `2606.00799v1`, `2311.05762v2`, `1605.09223v1`, `1710.10701v1`, `2407.07620v5`, and `2503.07625v2`.
+- `git ls-remote --tags https://github.com/leanprover-community/mathlib4.git refs/tags/v4.30.0` returned `c5ea00351c28e24afc9f0f84379aa41082b1188f`.
+- Green fixture: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_arxiv_versions_and_toolchains_are_pinned --lib`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib`: pass, 6 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop`: pass, 13 tests.
+- `cd agenthero/apps/grokrxiv/evals/lean && lake env lean --version`: pass, Lean 4.30.0.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21 tests.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
+Residual:
+- Local shell F3 remains: `ghc --numeric-version` returns `8.4.2` because `/usr/local/bin/ghc` precedes Homebrew/ghcup; `/opt/homebrew/bin/ghc --numeric-version` returns the pinned `9.14.1`. Do not claim preflight or phase-exit green until the actual runner PATH resolves `ghc` to 9.14.1 or an approved runner environment is recorded.
+- No full corpus sweep, synthetic review sweep, API runner sweep, baseline tag, or phase-green claim.
+
 ## Finding Template
 
 Use one dossier per defect.

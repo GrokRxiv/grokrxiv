@@ -190,6 +190,18 @@
 | 2026-06-13T08:38:14Z | `ac27acb` | `p0-022-synthetic-corpus` | `agh --json --dry-run app run grokrxiv review evals/synthetic/false-theorem/paper.tex --loop --debug --no-external-actions` | pass, product status 0; nested app output reported `kind=local`, `type=Tex`, `external=false`, no pipeline work started | chat transcript |
 | 2026-06-13T08:38:14Z | `ac27acb` | `p0-022-synthetic-corpus` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
 | 2026-06-13T08:38:14Z | `ac27acb` | `p0-022-synthetic-corpus` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_arxiv_versions_and_toolchains_are_pinned --lib` | expected fail before fix: six arXiv entries still used `version: pin_on_first_run` | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `git ls-remote --tags https://github.com/leanprover-community/mathlib4.git refs/tags/v4.30.0` | pass, returned mathlib commit `c5ea00351c28e24afc9f0f84379aa41082b1188f` | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `curl -fsSL https://export.arxiv.org/api/query?id_list=2407.07620,2503.07625,1605.09223,2311.05762,1710.10701,2606.00799` | pass, resolved `2407.07620v5`, `2503.07625v2`, `1605.09223v1`, `2311.05762v2`, `1710.10701v1`, `2606.00799v1` | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_arxiv_versions_and_toolchains_are_pinned --lib` | pass after fix, 1 test | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib` | pass, 6 tests | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop` | pass, 13 tests | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cd agenthero/apps/grokrxiv/evals/lean && lake env lean --version` | pass, resolved pinned Lake project and printed Lean 4.30.0 | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `ghc --numeric-version; /opt/homebrew/bin/ghc --numeric-version; lake --version; lean --version` | F3 environment drift: PATH `ghc` returned `8.4.2`; Homebrew GHC returned pinned `9.14.1`; Lake and Lean matched pins | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
+| 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
 
 ## Logging Rule
 

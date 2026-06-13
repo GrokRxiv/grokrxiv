@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T08:38:14Z
+Updated: 2026-06-13T08:48:49Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 21, P0-022 Tier E/F/G synthetic corpus authoring.
-- Branch/worktree: worker branch `p0-022-synthetic-corpus` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-022-synthetic-corpus`; coordinator branch `grokrxiv-local-corpus-harness` was fast-forwarded to P0-021 before this branch was created.
-- Branch base commit: `ac27acb`; current checkpoint commit: this checkpoint commit.
+- Session type: P0 session 22, P0-023 toolchain and corpus pinning.
+- Branch/worktree: worker branch `p0-023-toolchain-corpus-pins` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-023-toolchain-corpus-pins`; coordinator branch `grokrxiv-local-corpus-harness` was fast-forwarded to P0-022 before this branch was created.
+- Branch base commit: `0730743`; current checkpoint commit: this checkpoint commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: next queue item is toolchain and corpus pinning (`lake`, Lean/mathlib, `ghc`, and `pin_on_first_run` arXiv versions). P0-022 is fixed on this worker branch: Tier E/F/G corpus entries now point at live app-relative TeX manuscripts under `evals/synthetic/`, no longer carry `status: to_author`, parse through the ingest crate, and resolve through installed `agh --json --dry-run app run grokrxiv review ... --loop --debug --no-external-actions` as local `Tex` sources with external actions disabled. No full synthetic review sweep was run in this shard. No full corpus green claim or phase tag.
+- In-flight defect: P0-023 repo pins are fixed on this worker branch. All arXiv corpus entries now use concrete versions; `evals/toolchain.lock.yaml` records the required GHC 9.14.1, Lean 4.30.0, Lake 5.0.0-src+d024af0, and mathlib v4.30.0 commit `c5ea00351c28e24afc9f0f84379aa41082b1188f`; `evals/lean/` contains the pinned Lean/Lake manifest. Local F3 remains: the current shell resolves `ghc` to `/usr/local/bin/ghc` 8.4.2 before `/opt/homebrew/bin/ghc` 9.14.1. Do not claim phase-exit preflight green until PATH `ghc --numeric-version` resolves to 9.14.1 or the harness has an explicit approved runner environment. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

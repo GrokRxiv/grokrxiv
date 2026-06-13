@@ -1,0 +1,49 @@
+version: 1
+app: grokrxiv
+scope: golden-corpus-preflight
+recorded_at: "2026-06-13T08:35:00Z"
+toolchains:
+  ghc:
+    version: "9.14.1"
+    command: "ghc"
+    independent_check: "ghc --numeric-version"
+    install_notes: "Corpus sweeps require PATH ghc to resolve to 9.14.1 before independent Haskell re-verification."
+    local_observations:
+      - command: "/opt/homebrew/bin/ghc --numeric-version"
+        version: "9.14.1"
+        status: matches_pin
+      - command: "/usr/local/bin/ghc --numeric-version"
+        version: "8.4.2"
+        status: path_drift
+  lean:
+    version: "4.30.0"
+    commit: "d024af099ca4bf2c86f649261ebf59565dc8c622"
+    command: "lean"
+    independent_check: "lean --version"
+    toolchain_file: "evals/lean/lean-toolchain"
+  lake:
+    version: "5.0.0-src+d024af0"
+    lean_version: "4.30.0"
+    command: "lake"
+    independent_check: "lake --version"
+    lakefile: "evals/lean/lakefile.lean"
+  mathlib:
+    source: "https://github.com/leanprover-community/mathlib4.git"
+    tag: "v4.30.0"
+    rev: "c5ea00351c28e24afc9f0f84379aa41082b1188f"
+    resolution_command: "git ls-remote --tags https://github.com/leanprover-community/mathlib4.git refs/tags/v4.30.0"
+    lakefile: "evals/lean/lakefile.lean"
+    manifest: "evals/lean/lake-manifest.json"
+arxiv_versions:
+  source: "https://export.arxiv.org/api/query"
+  resolved_at: "2026-06-13T08:35:00Z"
+  entries:
+    bertrand-elementary: "2407.07620v5"
+    zeta3-irrationality: "2503.07625v2"
+    capset-ellenberg-gijswijt: "1605.09223v1"
+    pfr-marton: "2311.05762v2"
+    majorana-quantized: "1710.10701v1"
+    regression-pr54-weyl: "2606.00799v1"
+notes:
+  - "This lock records the expected corpus preflight toolchain. It does not claim the current shell PATH is clean."
+  - "The current local shell resolved /usr/local/bin/ghc 8.4.2 before /opt/homebrew/bin/ghc 9.14.1; track that as F3 environment drift before phase exit."

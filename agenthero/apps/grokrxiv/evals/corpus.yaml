@@ -40,7 +40,7 @@ entries:
   # ---- Tier A: must pass end-to-end --------------------------------------
   - id: bertrand-elementary
     source: arxiv:2407.07620
-    version: pin_on_first_run   # v4 at corpus creation
+    version: v5
     tier: A
     ground_truth: "Main theorem already in Mathlib.NumberTheory.Bertrand"
     expected:
@@ -57,7 +57,7 @@ entries:
 
   - id: zeta3-irrationality
     source: arxiv:2503.07625
-    version: pin_on_first_run   # v2 at corpus creation
+    version: v2
     tier: A   # demote to B if corpus mathlib lacks the result; record here
     ground_truth: "Authors published complete Lean 4 proof (GitHub)"
     expected:
@@ -69,7 +69,7 @@ entries:
   # ---- Tier B: must transcribe faithfully (proof may not auto-close) -----
   - id: capset-ellenberg-gijswijt
     source: arxiv:1605.09223
-    version: pin_on_first_run
+    version: v1
     tier: B
     ground_truth: "Canonical Lean formalization exists: arXiv:1907.01449 (lean-forward e-g)"
     fidelity_reference: "https://lean-forward.github.io/e-g/"
@@ -82,7 +82,7 @@ entries:
 
   - id: pfr-marton
     source: arxiv:2311.05762
-    version: pin_on_first_run
+    version: v2
     tier: B
     ground_truth: "Formalized in Lean 4: github.com/teorth/pfr"
     fidelity_reference: "https://teorth.github.io/pfr/"
@@ -123,7 +123,7 @@ entries:
 
   - id: majorana-quantized
     source: arxiv:1710.10701
-    version: pin_on_first_run
+    version: v1
     tier: D
     ground_truth: "Nature 2018, RETRACTED by Nature 2021. arXiv page shows NO retraction notice."
     expected:
@@ -166,7 +166,7 @@ entries:
   # ---- Tier R: regressions from production --------------------------------
   - id: regression-pr54-weyl
     source: arxiv:2606.00799
-    version: pin_on_first_run
+    version: v1
     tier: R
     ground_truth: "grokrxiv-reviews PR #54 / review 53c9f4e1: pipeline reviewed an
                    empty body (sections[]=[]), citation specialist timed out, 8
