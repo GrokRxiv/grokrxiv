@@ -2808,6 +2808,88 @@ fn read_review_text(repo_root: &Path, rel: &str, label: &str) -> anyhow::Result<
 }
 
 #[cfg(feature = "grokrxiv-storage")]
+#[derive(Debug)]
+struct ReviewLoopPaperMathSourceFiles {
+    artifact_sources: Vec<String>,
+    body: serde_json::Value,
+    equations: serde_json::Value,
+    theorem_graph: serde_json::Value,
+    semantic_ast: serde_json::Value,
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn load_review_loop_paper_math_source_files(
+    repo_root: &Path,
+    review_input_path: &Path,
+) -> anyhow::Result<ReviewLoopPaperMathSourceFiles> {
+    let bytes = std::fs::read(review_input_path)
+        .with_context(|| format!("read review_input.json at {}", review_input_path.display()))?;
+    let review_input: grokrxiv_storage::ReviewInput = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse review_input.json at {}", review_input_path.display()))?;
+
+    let sections_doc = read_review_json(repo_root, &review_input.sections, "sections.json")?;
+    let body_text = read_review_text(repo_root, &review_input.body_markdown, "body.md")?;
+    let equations = read_review_json(repo_root, &review_input.equations, "equations.json")?;
+    let theorem_graph =
+        read_review_json(repo_root, &review_input.theorem_graph, "theorem_graph.json")?;
+
+    let mut artifact_sources = vec![
+        format!("review_input:{}", review_input_path.display()),
+        "sections.json".to_string(),
+        "body.md".to_string(),
+        "equations.json".to_string(),
+        "theorem_graph.json".to_string(),
+    ];
+    let mut semantic_ast = serde_json::Value::Null;
+    if let Some(uri) = review_input.semantic_ast_uri.as_deref() {
+        if !uri.starts_with("supabase://") {
+            semantic_ast = read_review_json(repo_root, uri, "semantic_ast.json")?;
+            artifact_sources.push("semantic_ast.json".to_string());
+        }
+    }
+
+    Ok(ReviewLoopPaperMathSourceFiles {
+        artifact_sources,
+        body: serde_json::json!({
+            "artifact": "body.md",
+            "text": body_text,
+            "sections": sections_doc
+                .get("sections")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        }),
+        equations,
+        theorem_graph,
+        semantic_ast,
+    })
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn load_review_loop_paper_math_sources_from_data_repo_cache(
+    repo_root: &Path,
+    arxiv_id: &str,
+) -> anyhow::Result<Option<ReviewLoopPaperMathSourceFiles>> {
+    let base_id = strip_arxiv_version(arxiv_id).to_string();
+    let mut candidates = vec![base_id];
+    if candidates.first().map(String::as_str) != Some(arxiv_id) {
+        candidates.push(arxiv_id.to_string());
+    }
+
+    for candidate in candidates {
+        let review_input_path = repo_root
+            .join("papers")
+            .join(candidate)
+            .join("review_input.json");
+        if review_input_path.exists() {
+            return load_review_loop_paper_math_source_files(repo_root, &review_input_path)
+                .map(Some);
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(feature = "grokrxiv-storage")]
 fn review_artifact_path(repo_root: &Path, rel: &str, label: &str) -> anyhow::Result<PathBuf> {
     if rel.starts_with("supabase://") {
         anyhow::bail!(
@@ -4558,76 +4640,72 @@ async fn load_review_loop_paper_math_sources(
     }
 
     #[cfg(feature = "grokrxiv-storage")]
-    if let Some(assets) = crate::db::read_paper_assets(pool, paper_id).await? {
-        if matches!(assets.extraction_status, crate::db::ExtractionStatus::Ready) {
-            match (assets.git_path.as_deref(), data_repo_root()) {
-                (Some(git_path), Ok(repo_root)) => {
-                    let review_input_path = repo_root.join(git_path).join("review_input.json");
-                    match std::fs::read(&review_input_path) {
-                        Ok(bytes) => match serde_json::from_slice::<grokrxiv_storage::ReviewInput>(&bytes) {
-                            Ok(review_input) => {
-                                artifact_sources.push(format!(
-                                    "review_input:{}",
+    {
+        let mut loaded_tier1_sources = false;
+        let mut repo_root_for_fallback = None;
+
+        match data_repo_root() {
+            Ok(repo_root) => {
+                repo_root_for_fallback = Some(repo_root.clone());
+                if let Some(assets) = crate::db::read_paper_assets(pool, paper_id).await? {
+                    if matches!(assets.extraction_status, crate::db::ExtractionStatus::Ready) {
+                        if let Some(git_path) = assets.git_path.as_deref() {
+                            let review_input_path =
+                                repo_root.join(git_path).join("review_input.json");
+                            match load_review_loop_paper_math_source_files(
+                                &repo_root,
+                                &review_input_path,
+                            ) {
+                                Ok(files) => {
+                                    artifact_sources.extend(files.artifact_sources);
+                                    body = files.body;
+                                    equations = files.equations;
+                                    theorem_graph = files.theorem_graph;
+                                    semantic_ast = files.semantic_ast;
+                                    loaded_tier1_sources = true;
+                                }
+                                Err(err) => warnings.push(format!(
+                                    "review_input.json not loaded at {}: {err:#}",
                                     review_input_path.display()
-                                ));
-                                match read_review_text(&repo_root, &review_input.body_markdown, "body.md") {
-                                    Ok(body_text) => {
-                                        body = serde_json::json!({
-                                            "artifact": "body.md",
-                                            "text": body_text,
-                                            "sections": body
-                                                .get("sections")
-                                                .cloned()
-                                                .unwrap_or_else(|| serde_json::json!([])),
-                                        });
-                                    }
-                                    Err(err) => warnings.push(format!("body.md not loaded: {err:#}")),
-                                }
-                                match read_review_json(&repo_root, &review_input.equations, "equations.json") {
-                                    Ok(doc) => {
-                                        equations = doc;
-                                        artifact_sources.push("equations.json".to_string());
-                                    }
-                                    Err(err) => warnings.push(format!("equations.json not loaded: {err:#}")),
-                                }
-                                match read_review_json(
-                                    &repo_root,
-                                    &review_input.theorem_graph,
-                                    "theorem_graph.json",
-                                ) {
-                                    Ok(doc) => {
-                                        theorem_graph = doc;
-                                        artifact_sources.push("theorem_graph.json".to_string());
-                                    }
-                                    Err(err) => warnings.push(format!("theorem_graph.json not loaded: {err:#}")),
-                                }
-                                if let Some(uri) = review_input.semantic_ast_uri.as_deref() {
-                                    if !uri.starts_with("supabase://") {
-                                        match read_review_json(&repo_root, uri, "semantic_ast.json") {
-                                            Ok(doc) => {
-                                                semantic_ast = doc;
-                                                artifact_sources.push("semantic_ast.json".to_string());
-                                            }
-                                            Err(err) => warnings.push(format!("semantic_ast.json not loaded: {err:#}")),
-                                        }
-                                    }
-                                }
+                                )),
                             }
-                            Err(err) => warnings.push(format!(
-                                "review_input.json parse failed at {}: {err}",
-                                review_input_path.display()
-                            )),
-                        },
-                        Err(err) => warnings.push(format!(
-                            "review_input.json not loaded at {}: {err}",
-                            review_input_path.display()
-                        )),
+                        } else {
+                            warnings.push("paper_assets ready but git_path is missing".to_string());
+                        }
                     }
                 }
-                (None, _) => warnings.push("paper_assets ready but git_path is missing".to_string()),
-                (_, Err(err)) => warnings.push(format!("GROKRXIV_DATA_REPO_PATH unavailable: {err:#}")),
             }
+            Err(err) => warnings.push(format!("GROKRXIV_DATA_REPO_PATH unavailable: {err:#}")),
+        }
+
+        if !loaded_tier1_sources {
+            if let Some(repo_root) = repo_root_for_fallback.as_deref() {
+                match crate::db::load_paper_review_seed(pool, paper_id).await {
+                    Ok(seed) => match load_review_loop_paper_math_sources_from_data_repo_cache(
+                        repo_root,
+                        &seed.arxiv_id,
+                    ) {
+                        Ok(Some(files)) => {
+                            artifact_sources.extend(files.artifact_sources);
+                            body = files.body;
+                            equations = files.equations;
+                            theorem_graph = files.theorem_graph;
+                            semantic_ast = files.semantic_ast;
                         }
+                        Ok(None) => warnings.push(format!(
+                            "data repo cache has no review_input.json for {}",
+                            seed.arxiv_id
+                        )),
+                        Err(err) => warnings.push(format!(
+                            "data repo cache review_input.json not loaded: {err:#}"
+                        )),
+                    },
+                    Err(err) => warnings.push(format!(
+                        "paper seed not loaded for data repo cache fallback: {err:#}"
+                    )),
+                }
+            }
+        }
     }
 
     Ok(serde_json::json!({
@@ -12556,6 +12634,98 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             .failures
             .iter()
             .any(|msg| msg.contains("citation contexts")));
+    }
+
+    #[cfg(feature = "grokrxiv-storage")]
+    #[test]
+    fn paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready() {
+        let repo = tempfile::tempdir().unwrap();
+        let arxiv_id = "2606.00799";
+        let rel = |file: &str| format!("papers/{arxiv_id}/{file}");
+        let paper_dir = repo.path().join("papers").join(arxiv_id);
+        std::fs::create_dir_all(&paper_dir).unwrap();
+        std::fs::write(
+            paper_dir.join("review_input.json"),
+            serde_json::to_vec(&grokrxiv_storage::ReviewInput {
+                schema_version: "1".into(),
+                arxiv_id: arxiv_id.into(),
+                metadata: rel("metadata.json"),
+                body_markdown: rel("body.md"),
+                sections: rel("sections.json"),
+                equations: rel("equations.json"),
+                references: rel("references.json"),
+                theorem_graph: rel("theorem_graph.json"),
+                extraction_report: rel("extraction_report.json"),
+                pdf_uri: None,
+                source_uri: None,
+                semantic_ast_uri: None,
+                vlm_raw_uri: None,
+                embeddings_uri: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("metadata.json"),
+            r#"{"title":"Weyl-type test","abstract":"A real abstract.","authors":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("body.md"),
+            "## Main\n\n\\begin{theorem} Let x=x. \\end{theorem}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("sections.json"),
+            r#"{"sections":[{"heading":"Main","body_markdown":"A theorem section."}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("equations.json"),
+            r#"{"equations":[{"id":"eq1","canonical_tex":"x=x"},{"id":"eq2","canonical_tex":"y=y"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("theorem_graph.json"),
+            r#"{"nodes":[{"id":"thm-main","kind":"theorem","statement":"Let x=x."}]}"#,
+        )
+        .unwrap();
+        std::fs::write(paper_dir.join("references.json"), r#"{"citations":[]}"#).unwrap();
+        std::fs::write(paper_dir.join("extraction_report.json"), r#"{"stages":[]}"#).unwrap();
+
+        let files =
+            load_review_loop_paper_math_sources_from_data_repo_cache(repo.path(), "2606.00799v1")
+                .unwrap()
+                .expect("cache should load by base arxiv id");
+
+        assert_eq!(
+            files
+                .body
+                .get("sections")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            files
+                .equations
+                .get("equations")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            files
+                .theorem_graph
+                .get("nodes")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert!(files
+            .artifact_sources
+            .iter()
+            .any(|source| source.contains("review_input:")));
     }
 
     #[test]

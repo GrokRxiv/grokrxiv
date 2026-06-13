@@ -278,6 +278,7 @@ Status: fixed locally for Crossref production retraction metadata, 2026-06-13T01
 Evidence:
 - `doi_crossref_retraction_metadata_marks_gate_failed` first failed with verifier `Pass`, entry `status="resolved"`, and `source="crossref"`.
 - DOI lookup now parses Crossref JSON and detects `update-to`, `updated-by`, relation keys containing `retract`, and `RETRACTED:` titles.
+
 - Retracted entries produce `status="retracted"`, `exists=false`, `source="crossref_retraction"`, retained DOI/URL, and explicit reason evidence including retraction DOI/source/record id when present.
 - The verifier gate fails on any retracted entry and includes a top-level `retracted[]` list in notes.
 - Deterministic citation-validation reports preserve `source="crossref_retraction"`, retain evidence strings, and report retracted resolver results as `needs_remediation`.
@@ -646,14 +647,14 @@ Residual:
 
 ID: P0-020
 Corpus entry: `regression-pr54-weyl`
-Review id: `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3`
+Review id: `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3` before fix; `aa69e733-3f72-44e0-af25-136c2b5012b7` after fix
 Runner: `cli`
 Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
 Exit code: 0
 finish_reason: product command completed with review-loop `deterministic_status=fail`
 Bucket: F1 contract/artifact wiring
 NEVER-event: related to N1/Tier R extraction completeness, but review did not proceed on an empty body.
-Symptom: the persisted paper extraction cache has recovered theorem/equation artifacts, but the review-loop math source artifact drops them. Current cache evidence for `2606.00799`: `body.md` 117,247 bytes, `sections.json` 8 sections, `equations.json` 903 entries, `theorem_graph.json` 41 nodes. The affected review-loop artifact `paper_math_sources.json` recorded `theorem_graph.nodes=[]` with `reason="not_loaded"` and only three equations, while stderr summarized `theorem_nodes=0 equations=0 sources=1`.
+Symptom: the persisted paper extraction cache has recovered theorem/equation artifacts, but the review-loop math source artifact drops them. Current cache evidence for `2606.00799`: `body.md` 117,247 bytes, `sections.json` 8 sections, `equations.json` 903 entries, `theorem_graph.json` 41 nodes. The affected review-loop artifact `paper_math_sources.json` recorded empty equation/theorem sources with `reason="not_loaded"`, while stderr summarized `theorem_nodes=0 equations=0 sources=1`.
 Raw evidence paths:
 - `agenthero/apps/grokrxiv/evals/results/20260613T045516Z/regression-pr54-weyl/run.log`
 - `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/body.md`
@@ -661,14 +662,31 @@ Raw evidence paths:
 - `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/theorem_graph.json`
 Artifact paths:
 - `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3/review_loop/paper_math_sources.json`
-Root cause: not yet diagnosed. Likely review-loop collector/input wiring is reading only review input/body snippets or not resolving persisted `equations.json` and `theorem_graph.json` artifact paths from the extraction cache.
-Owning code: review-loop paper math source collector in the GrokRxiv app runtime / review-loop crate; inspect before patching.
-Fix plan:
-1. Add a failing fixture where persisted extraction artifacts include non-empty equations and theorem graph, and `paper_math_source_collector` must preserve them in `paper_math_sources.json`.
-2. Fix collector/input path resolution so review-loop math sources load the same artifacts proven by P0-007.
-3. Re-run the affected Tier R entry and require the review-loop artifact to carry non-empty theorem/equation sources.
+Root cause: `paper_math_source_collector` only loaded equation/theorem artifacts through `paper_assets` when the DB asset pointer was `ready`. The prior no-cache extraction materialized valid Tier-1 files, then failed later on the configured data-repo remote push, leaving `paper_assets` non-ready. The collector therefore loaded only the latest `review_inputs.artifact` sections and skipped disk artifacts.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Fix:
+1. Added a failing fixture where persisted extraction artifacts include non-empty equations and theorem graph, and `paper_math_source_collector` must preserve them from the data-repo cache even when the DB asset pointer is not ready.
+2. Added `load_review_loop_paper_math_source_files` and `load_review_loop_paper_math_sources_from_data_repo_cache`.
+3. Updated the collector to fall back to `GROKRXIV_DATA_REPO_PATH/papers/<base-arxiv-id>/review_input.json` and load `sections.json`, `body.md`, `equations.json`, and `theorem_graph.json` from the same persisted bundle when `paper_assets` is absent or non-ready.
+4. Re-ran the affected Tier R entry and confirmed `paper_math_sources.json` carries non-empty theorem/equation sources.
 Attempts: 1 live affected run after P0-004f exposed this gap.
 Escalation status: none.
+
+## P0-020 Resolution
+
+Status: fixed locally, 2026-06-13T06:09Z.
+Evidence:
+- Red fixture: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready -- --nocapture` failed before implementation with missing `load_review_loop_paper_math_sources_from_data_repo_cache`.
+- Green fixture: same command passed after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_ -- --nocapture`: pass, 12 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 276 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- PATH installs for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`: pass with existing locked yanked-zip warning only.
+- Affected run `agenthero/apps/grokrxiv/evals/results/20260613T053725Z/regression-pr54-weyl/run.log`: product exit 0; review `aa69e733-3f72-44e0-af25-136c2b5012b7`; external actions disabled; `pr_url=null`; `paper_math_source_collector [OK] ... theorem_nodes=41 equations=903 sources=6 warnings=0`.
+Residual:
+- Overall run still fails Haskell typed-IR/Lean blocking, P0-005 PR fixer timeout, and policy gate recommendation semantics. P0-005 is the next queue item.
 
 ## P0-016 Review-Loop Triage After Guardrail Fixes
 

@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T05:25:03Z
+Updated: 2026-06-13T06:09:05Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 17, P0-004 citation reliability fix/affected reruns after P0-018.
+- Session type: P0 session 18, P0-020 paper math source artifact preservation fix.
 - Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-015-grounded-resolver` was fast-forward merged.
-- Branch base commit: `3aca5f9`; current checkpoint commit: this checkpoint commit.
+- Branch base commit: `5445ce4`; current checkpoint commit: this checkpoint commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-020 review-loop math-source artifact loss. P0-004 citation reliability is now citation-green for Tier R on local CLI: after P0-004f, affected review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3` produced non-empty `review_loop/citation_validation_report.json` with `checked=53`, `unverified=2`, `unresolved=0`, and `transient_unknown=0`, satisfying `citation_needs_review <= 2`. P0-004f fixed the live zbMATH contract by using `_search?search_string=...`, parsing object-shaped title payloads, and preserving `zbmath_url`; the red fixture failed first with `status 404 Not Found`, then passed. No full corpus green claim yet: the same affected run still has review-loop deterministic status `fail` due to Haskell typed-IR/semantic-validation failure, PR fixer timeout, policy gate requiring `accept`, and a P0 extraction-to-review-loop sourcing gap where the persisted paper cache has `body.md` 117,247 bytes, `equations.json` 903 entries, and `theorem_graph.json` 41 nodes, but `review_loop/paper_math_sources.json` recorded zero theorem nodes and only three equations.
+- In-flight defect: P0-005 PR fixer timeout is next. P0-020 is fixed locally: affected review `aa69e733-3f72-44e0-af25-136c2b5012b7` produced `review_loop/paper_math_sources.json` with `body_sections=8`, `body_chars=117245`, `equations=903`, `theorem_nodes=41`, `warnings=0`, and no `not_loaded` reasons. P0-004 citation reliability remained green in the same affected run with `checked=53`, `unverified=2`, `unresolved=0`, and `transient_unknown=0`. No full corpus green claim yet: the affected run still has deterministic status `fail` due to Haskell typed-IR/Lean blocking (P2 unless narrowed), PR fixer timeout (P0-005), and policy gate requiring `accept` while Tier R only requires an honest recommendation.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -59,6 +59,7 @@ Updated: 2026-06-13T05:25:03Z
 - P0-004f zbMATH search contract fix, 2026-06-13T04:55Z: added red fixture `zbmath_search_string_resolves_object_title_results`; it failed before implementation with `status 404 Not Found`, then passed after the verifier switched default zbMATH to `_search`, sent `search_string`, parsed object-shaped `title.title`, and preserved `zbmath_url`. `grokrxiv-verifier` full suite passed with 37 tests, app-runtime citation tests passed with 21 tests, app workspace check passed, `git diff --check` passed, and PATH `grokrxiv-app`/`agenthero-dag-app-grokrxiv` were reinstalled.
 - P0-020 affected Tier R safe rerun, 2026-06-13T04:55Z: product command exited 0 as review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3`, external actions stayed disabled, and `pr_url=null`. Citation now satisfies Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`; remaining residues are both March references. Overall review-loop deterministic status is still `fail` on Haskell typed-IR/semantic-validation, PR fixer timeout, policy gate, and P0-020 math-source artifact loss. No full corpus green claim or phase tag.
 - P0-004f checkpoint structural verification, 2026-06-13T05:25Z: `cargo test -p agenthero-orchestrator --test dag_app_registry` passed 21/21 and `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` passed 24/24.
+- P0-020 review-loop math-source preservation, 2026-06-13T06:09Z: added red fixture `paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready`; it failed before implementation because the fallback entry point did not exist, then passed after the collector learned to load Tier-1 `review_input.json` from `GROKRXIV_DATA_REPO_PATH/papers/<base-arxiv-id>/` when `paper_assets` is absent or non-ready. `review_loop` tests passed 12/12, full app-runtime lib suite passed 276/276 serially, app workspace check passed, structural tests passed 45/45, `git diff --check` passed, and PATH `grokrxiv-app`/`agenthero-dag-app-grokrxiv` were reinstalled. Affected safe run `20260613T053725Z` completed as review `aa69e733-3f72-44e0-af25-136c2b5012b7`: product exit 0, external actions disabled, `pr_url=null`, paper math sources preserved (`8` sections, `117245` chars, `903` equations, `41` theorem nodes), citation still green (`unverified=2`), and overall loop still red on Haskell typed-IR/Lean, P0-005 PR fixer timeout, and policy recommendation semantics. The local shell capture wrapper exited 1 after product completion because `status` is a readonly zsh variable; `run.log` `.output.status=0` is the product result.
 
 ## Coordinator Rules
 
