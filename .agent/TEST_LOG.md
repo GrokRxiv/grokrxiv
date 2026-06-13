@@ -64,6 +64,13 @@
 | 2026-06-13T00:59:37Z | `61c1004` | `p0-008-specialist-artifacts` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime gate -- --nocapture` | pass, 11 tests | chat transcript |
 | 2026-06-13T00:59:37Z | `61c1004` | `p0-008-specialist-artifacts` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` | pass, 263 tests | chat transcript |
 | 2026-06-13T00:59:37Z | `61c1004` | `p0-008-specialist-artifacts` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_gate_blocks_meta_when_required_roles_are_missing -- --nocapture` | expected fail before implementation, compile error `SpecialistGate::evaluate_required_roles` missing | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_gate_blocks_meta_when_required_roles_are_missing -- --nocapture` | pass after fix, 1 test | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime gate -- --nocapture` | pass, 12 tests | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_failure -- --nocapture` | pass, 3 tests | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` | pass, 264 tests | chat transcript |
 
 ## Logging Rule
 

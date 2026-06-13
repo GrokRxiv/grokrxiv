@@ -244,6 +244,50 @@ Residual:
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint because it invokes the full multi-agent loop rather than cheaply isolating the N2 failure path.
 - Tier R still needs a safe `--no-external-actions` review-loop run to verify `paper_review: all_specialists_complete`, citation partial-result emission, and `needs_review <= 2`.
 
+## P0-009: Policy Gate Could Infer Completeness From Partial Specialist Rows
+
+ID: P0-009
+Corpus entry: `regression-pr54-weyl` / NEVER-event `N3_gate_on_incomplete_inputs`
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixture reproduced missing required-role gate API before implementation
+Bucket: F1 contract
+NEVER-event: N3_gate_on_incomplete_inputs
+Symptom: `load_specialist_gate_for_review` reconstructed the publication gate from rows present in `review_agents` and set `expected_total = statuses.len()`. If only three specialist rows existed and all passed, the policy gate could treat the review as complete enough for meta/policy even though two DAG-declared specialist artifacts were absent.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/review_gate.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/db.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor/review_flow.rs`
+Root cause:
+- The gate aggregate accepted an `expected_total` supplied by callers without a required-role list.
+- The DB reconstruction path derived the expected total from persisted rows instead of from the `paper-review` DAG's `feeds_meta` specialist roles.
+- The live supervisor already had the manifest role list but still passed only statuses plus a scalar total into the aggregate.
+Fix plan:
+1. Add a failing fixture asserting missing required roles block `meta_can_run` and appear in `blocked_roles`.
+2. Add a required-role specialist gate evaluator that expands missing roles to `None`, preserves required role order, and blocks meta/publication when any required role is absent.
+3. Use the required-role evaluator in the live review DAG.
+4. Use `dag_feeds_meta_roles("paper-review")` in `load_specialist_gate_for_review` so persisted policy checks cannot shrink `expected_total`.
+Attempts: 1
+Escalation status: none.
+
+## P0-009 Resolution
+
+Status: fixed locally for gate input completeness, 2026-06-13T01:08Z.
+Evidence:
+- Added `SpecialistGate::evaluate_required_roles` in `agenthero/apps/grokrxiv/crates/orchestrator/src/review_gate.rs`.
+- `run_review_dag_inner_with_context` now evaluates specialist verifier statuses against `review_dag.specialist_roles`.
+- `load_specialist_gate_for_review` now loads the DAG-declared `paper-review` `feeds_meta` roles and uses them as the expected role set.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_gate_blocks_meta_when_required_roles_are_missing -- --nocapture`: expected compile fail before implementation, then pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime gate -- --nocapture`: pass, 12 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_failure -- --nocapture`: pass, 3 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture`: pass, 264 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- The extraction-completeness flag is enforced before review row creation by P0-003 but is not yet persisted as a first-class policy-gate input. Track this as residual N3 hardening if a later persisted policy path needs to prove extraction-completeness provenance independently.
+- No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004

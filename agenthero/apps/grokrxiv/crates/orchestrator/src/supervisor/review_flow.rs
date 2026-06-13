@@ -548,10 +548,7 @@ edges: []
             .failures
             .iter()
             .any(|msg| msg.contains("body sections")));
-        assert!(gate
-            .failures
-            .iter()
-            .any(|msg| msg.contains("body text")));
+        assert!(gate.failures.iter().any(|msg| msg.contains("body text")));
     }
 
     #[test]
@@ -683,7 +680,6 @@ pub(super) async fn run_review_dag_inner_with_context(
     // executable specialist set comes from the DAG manifest instead of the old
     // canonical Rust topology.
     let specialist_roles = review_dag.specialist_roles.clone();
-    let specialist_total = specialist_roles.len();
     let min_specialist_quorum = review_dag.min_specialist_quorum;
 
     let review_concurrency = specialist_review_concurrency_limit(&specialist_roles);
@@ -992,10 +988,10 @@ pub(super) async fn run_review_dag_inner_with_context(
 
     // The review gate decides whether the specialist set is usable for
     // meta-review synthesis.
-    let specialist_gate = crate::review_gate::SpecialistGate::evaluate(
+    let specialist_gate = crate::review_gate::SpecialistGate::evaluate_required_roles(
+        &specialist_roles,
         &specialist_verifier_status,
         min_specialist_quorum,
-        specialist_total,
     );
     let revision_source_hint = revision_target_source_path_hint(pool, paper_id, &extract_arc).await;
     if !specialist_gate.meta_can_run {

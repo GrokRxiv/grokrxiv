@@ -13,6 +13,8 @@ use uuid::Uuid;
 use crate::agents::AgentRunnerKind;
 use grokrxiv_schemas::{JobKind, JobState, PaperExtract, ReviewStatus, VerifierStatus};
 
+const PAPER_REVIEW_DAG_ID: &str = "paper-review";
+
 /// Insert a new row into `jobs` and return its id.
 pub async fn create_job(pool: &PgPool, kind: JobKind, ref_id: Option<Uuid>) -> sqlx::Result<Uuid> {
     let kind_str = serde_plain(&kind);
@@ -215,11 +217,21 @@ pub(crate) async fn load_specialist_gate_for_review(
             )
         })
         .collect();
-    let expected_total = statuses.len();
-    Ok(crate::review_gate::SpecialistGate::evaluate(
+    let required_roles =
+        crate::agents::config::dag_feeds_meta_roles(PAPER_REVIEW_DAG_ID).map_err(|err| {
+            sqlx::Error::Protocol(format!(
+                "load `{PAPER_REVIEW_DAG_ID}` specialist roles: {err:#}"
+            ))
+        })?;
+    if required_roles.is_empty() {
+        return Err(sqlx::Error::Protocol(format!(
+            "`{PAPER_REVIEW_DAG_ID}` declares no feeds_meta specialist roles"
+        )));
+    }
+    Ok(crate::review_gate::SpecialistGate::evaluate_required_roles(
+        &required_roles,
         &statuses,
-        3usize.min(expected_total),
-        expected_total,
+        3usize.min(required_roles.len()),
     ))
 }
 

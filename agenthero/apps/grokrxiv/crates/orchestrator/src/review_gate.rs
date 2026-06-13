@@ -66,6 +66,35 @@ impl SpecialistGate {
         }
     }
 
+    /// Evaluate statuses against the DAG-declared specialist role set.
+    pub(crate) fn evaluate_required_roles(
+        required_roles: &[String],
+        statuses: &[(String, Option<VerifierStatus>)],
+        min_usable: usize,
+    ) -> Self {
+        if required_roles.is_empty() {
+            return Self::evaluate(statuses, min_usable, statuses.len());
+        }
+
+        let complete_statuses: Vec<(String, Option<VerifierStatus>)> = required_roles
+            .iter()
+            .map(|required_role| {
+                let status = statuses
+                    .iter()
+                    .find(|(role, _)| role == required_role)
+                    .and_then(|(_, status)| *status);
+                (required_role.clone(), status)
+            })
+            .collect();
+        let mut gate = Self::evaluate(&complete_statuses, min_usable, required_roles.len());
+        let all_required_present = required_roles
+            .iter()
+            .all(|required_role| statuses.iter().any(|(role, _)| role == required_role));
+        gate.meta_can_run = gate.meta_can_run && all_required_present;
+        gate.publishable_without_force = gate.publishable_without_force && all_required_present;
+        gate
+    }
+
     #[cfg(test)]
     pub(crate) fn all_pass_for_test() -> Self {
         Self {
@@ -174,6 +203,36 @@ mod tests {
         );
         assert_eq!(gate.warning_roles, vec!["technical_correctness"]);
         assert_eq!(gate.blocked_roles, vec!["reproducibility", "citation"]);
+    }
+
+    #[test]
+    fn specialist_gate_blocks_meta_when_required_roles_are_missing() {
+        let required_roles = vec![
+            "summary".to_string(),
+            "technical_correctness".to_string(),
+            "novelty".to_string(),
+            "reproducibility".to_string(),
+            "citation".to_string(),
+        ];
+        let statuses = vec![
+            ("summary".to_string(), Some(VerifierStatus::Pass)),
+            (
+                "technical_correctness".to_string(),
+                Some(VerifierStatus::Pass),
+            ),
+            ("novelty".to_string(), Some(VerifierStatus::Pass)),
+        ];
+
+        let gate = SpecialistGate::evaluate_required_roles(&required_roles, &statuses, 3);
+
+        assert!(!gate.meta_can_run);
+        assert!(!gate.publishable_without_force);
+        assert_eq!(
+            gate.usable_roles,
+            vec!["summary", "technical_correctness", "novelty"]
+        );
+        assert_eq!(gate.blocked_roles, vec!["reproducibility", "citation"]);
+        assert_eq!(gate.expected_total, 5);
     }
 
     #[test]

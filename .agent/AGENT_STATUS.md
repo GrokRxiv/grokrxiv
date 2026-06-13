@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T00:59:37Z
+Updated: 2026-06-13T01:08:22Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 7, P0-008 explicit specialist-failure artifacts.
-- Branch/worktree: `p0-008-specialist-artifacts` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-008-specialist-artifacts`.
-- Branch base commit: `61c1004`.
+- Session type: P0 session 8, P0-009 gate input completeness.
+- Branch/worktree: `p0-009-gate-input-completeness` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-009-gate-input-completeness`.
+- Branch base commit: `02ea56d`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-008 fixed locally for N2 specialist failure artifacts. Runner failures/timeouts now force `review_agents.verifier_status=fail` and persist `verifier_notes.agent_execution={status,role,reason}` while keeping role outputs schema-valid. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
+- In-flight defect: P0-009 fixed locally for N3 gate input completeness. The specialist gate now evaluates persisted/runtime outputs against DAG-declared `feeds_meta` roles, so missing required specialist artifacts block meta-review and publication instead of shrinking `expected_total`. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -43,6 +43,7 @@ Updated: 2026-06-13T00:59:37Z
 - P0-006 fix, 2026-06-13T00:28Z: TeX bundle parsing now fails closed when Pandoc/LaTeXML produce no Markdown, source-to-body reports `failed` when `body.md` is empty, and extraction audit treats failed stages as failures. No-cache, no-VLM affected extraction regenerated local artifacts with `body.md` 50,697 bytes and 5 sections; command still exits 1 later on configured data-repo SSH push (`unsupported URL protocol`), which is not fixed in this patch.
 - P0-007 fix, 2026-06-13T00:49Z: raw TeX fallback recovers reviewable Markdown from TeX document bodies after converter failure, canonicalizes `\newtheorem` aliases, includes `construction` theorem-like blocks, and reports `source_to_body.tool=raw_tex_markdown_fallback`. Affected extraction for `2606.00799` materialized local artifacts with `body.md` 117,247 bytes, `equations.json` 903 entries, and `theorem_graph.json` 41 nodes. `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-008 fix, 2026-06-13T00:59Z: specialist runner failures now carry an execution-failure marker through review DAG persistence, force verifier status `fail`, and add structured `agent_execution.status=failed`, `role`, and `reason` notes to the rendered agent artifact envelope. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 263 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
+- P0-009 fix, 2026-06-13T01:08Z: specialist gate input completeness now uses DAG-declared required specialist roles for both live review DAG gating and persisted publication-gate reconstruction. Missing required roles are represented as blocked roles and force `meta_can_run=false` even when the persisted usable-row count reaches quorum. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 264 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 
 ## Coordinator Rules
 
