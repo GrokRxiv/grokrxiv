@@ -281,6 +281,10 @@
 | 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
 | 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` | pass, 45 tests after coordinator merge | chat transcript |
 | 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
+| 2026-06-13T11:51:45Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app` from integrated P0-027 code; existing locked yanked-zip warning only | chat transcript |
+| 2026-06-13T11:51:45Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | wrapped `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0; review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`; external actions disabled; deterministic review-loop status failed | `agenthero/apps/grokrxiv/evals/results/20260613T115145Z/regression-pr54-weyl/run.log` |
+| 2026-06-13T11:58:44Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | artifact inspection for review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464` | Tier R fixed invariants held: body chars 117245, theorem nodes 41, equations 903, citation checked 53 with unverified 2/unresolved 0, bundle completeness pass, PR fixer pass, honest recommendation policy pass, Lean `NOT_PROVED`/`SEMANTIC_GAP`; remaining red is empty local runner failure and Haskell cascade | chat transcript |
+| 2026-06-13T11:58:44Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | `claude --version` | pass, exit 0, `2.1.177 (Claude Code)`; does not explain per-role empty exit 1 failures | chat transcript |
 
 ## Logging Rule
 

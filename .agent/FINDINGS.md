@@ -1067,6 +1067,45 @@ Residual:
 - The affected corpus entry still fails overall on semantic adequacy (`OVERCLAIMED`), citation-validation policy, and publication policy. This patch only makes the Lean false-theorem verdict honest and mechanically checkable; it does not claim full Tier G green or Phase 0 green.
 - P2 still owns deterministic typed-IR/Lean statement emission. P0-027 adds the P0 safety contract that failed or blocked proof loops cannot silently omit a machine `NOT_PROVED` verdict.
 
+## P0-028: Tier R Regression Rerun Is Red On Empty Local Runner Failures
+
+ID: P0-028
+Corpus entry: `regression-pr54-weyl`
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product command exited 0; deterministic review-loop status failed.
+finish_reason: narrow Tier R rerun after P0-027 integration; no app-invariant regression on extraction, citation, PR fixer, policy honesty, or Lean `NOT_PROVED`, but local agent runner returned empty failures.
+Bucket: F3 toolchain, with F4 cascade into Haskell/Lean/semantic adequacy.
+NEVER-event: none triggered. External actions were disabled; no N5 `PROVED` occurred.
+Symptom:
+- Review DAG launched five specialists, but `summary` and `technical_correctness` failed with ``claude` exited with Some(1)` and no stderr detail.
+- First `meta_reviewer` attempt also failed through the same runner path before the persisted meta-review became `OK`.
+- `haskell_semantic_author` failed with the same empty `claude` exit path, so `proof_obligation_generator` wrote the semantic-gap skip, Lean emitted `verdict=NOT_PROVED proof_status=SEMANTIC_GAP`, and semantic adequacy reported `OVERCLAIMED`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T115145Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T115145Z/regression-pr54-weyl/exit.status`
+Artifact paths:
+- Review loop artifacts: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3ccf7aa5-ce30-445f-8880-6fb4e15ad464/review_loop/`
+- Haskell runner audit: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3ccf7aa5-ce30-445f-8880-6fb4e15ad464/review_loop/agent_outputs/haskell_review_fix_code/round_1/haskell_semantic_author/`
+Root cause:
+- Not yet diagnosed. The app surfaced explicit per-role failures, not silent loss, and `claude --version` exits 0 locally. The raw Haskell audit has 0-byte stdout and a 63-byte stderr containing only the wrapper message ``claude` exited with Some(1) for role haskell_semantic_author: `.
+Owning code:
+- Likely local agent runner configuration and invocation path. Diagnose before patching.
+Evidence:
+- Product exit status file: `0`.
+- `run.log`: `external_actions_enabled=false`, `pr_url=null`, `review_id=3ccf7aa5-ce30-445f-8880-6fb4e15ad464`.
+- Extraction/math-source signal preserved: `body_chars=117245`, `theorem_nodes=41`, `equations=903`, `warnings=0`.
+- Citation validation passed the Tier R threshold: `status="warn"`, `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`; partial result artifact was non-empty.
+- Bundle completeness passed.
+- PR fixer and PR review passed; fixed PDF exists.
+- Policy recommendation handling stayed honest: `recommendation_policy.status="honest_non_publishing_recommendation"` and the accept-only publication issue did not reappear.
+- Lean result: `status="fail"`, `verdict="NOT_PROVED"`, `proof_status="SEMANTIC_GAP"`, `skip_reason="Haskell mathematical IR generation did not pass; Lean verification is blocked."`
+- Haskell result: `status="fail"`, one attempt, `author_error="`claude` exited with Some(1) for role haskell_semantic_author: "`.
+- `claude --version`: exits 0 and prints `2.1.177 (Claude Code)`.
+Residual:
+- Tier R is not green because `expected.paper_review: all_specialists_complete` is not satisfied and Haskell/Lean remain blocked by the empty local runner failure.
+- Next session should reproduce one failing role invocation from the recorded artifact directory outside the full corpus run, capture the exact command, exit code, stdout, stderr, and environment-sensitive config, and then fix the deterministic runner/config defect if found.
+
 ## Finding Template
 
 Use one dossier per defect.
