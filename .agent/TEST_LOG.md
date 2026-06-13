@@ -315,6 +315,11 @@
 | 2026-06-13T13:00:38Z | `P0-032-worker` | `p0-032-haskell-target-scope` | `git diff --check` | pass after removing unrelated rustfmt churn | chat transcript |
 | 2026-06-13T13:00:38Z | `P0-032-worker` | `p0-032-haskell-target-scope` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced PATH `grokrxiv-app` from P0-031 worker with P0-032 worker; existing locked yanked-zip warning only | chat transcript |
 | 2026-06-13T13:00:38Z | `P0-032-worker` | `p0-032-haskell-target-scope` | `agh --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | pass, product dry-run exit 0; `external_actions.enabled=false`; no pipeline work started | chat transcript |
+| 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-032-haskell-target-scope` | pass, coordinator fast-forwarded from `66fd9ea` to `2c64ac8` | chat transcript |
+| 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_contract_files_define_formalization_policy_surface --lib` | pass after coordinator merge | chat transcript |
+| 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 
