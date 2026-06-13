@@ -114,6 +114,10 @@
 | 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
 | 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 35 tests after worker fast-forward merge | chat transcript |
+| 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests after worker fast-forward merge | chat transcript |
+| 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after worker fast-forward merge | chat transcript |
+| 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass; status output empty after worker fast-forward merge | chat transcript |
 
 ## Logging Rule
 

@@ -1,13 +1,13 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T02:23:15Z
+Updated: 2026-06-13T02:25:04Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 15, P0-015 local Gemini grounded citation resolver.
-- Branch/worktree: worker branch `p0-015-grounded-resolver` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-015-grounded-resolver`.
+- Session type: P0 session 15, P0-015 local Gemini grounded citation resolver, merged back to coordinator.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-015-grounded-resolver` was fast-forward merged.
 - Branch base commit: `e9493e9`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
@@ -51,6 +51,7 @@ Updated: 2026-06-13T02:23:15Z
 - P0-014 progress, 2026-06-13T02:11Z: citation verifier now has a config-gated `gemini_grounded` final provider after Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH residue. It accepts only `verified`/`resolved` grounded responses with a matching title and HTTP URL evidence, emits `status=resolved`, `source=gemini_grounded`, `verified_via=gemini_grounded`, and a URL-evidence reason, and leaves non-evidenced residue as needs-review. Provider requests now send `x-api-key` from `SEMANTIC_SCHOLAR_API_KEY` and `Authorization: Bearer` from `NASA_ADS_API_TOKEN` or `ADS_API_TOKEN` when those local env vars exist. Repo `.env` currently has no grounded resolver URL or provider keys, so no affected Tier R rerun was executed and no corpus-green claim is made. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 33 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
 - P0-014 coordinator verification, 2026-06-13T02:14Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `1230e49`, then reran coordinator-side checks. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 33 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed; `git status --short` had no output. No corpus-green claim or phase tag.
 - P0-015 progress, 2026-06-13T02:23Z: citation verifier now has an app-local Gemini `generateContent` transport for grounded residue when `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` is unset and `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` is configured. The request uses `tools: [{google_search:{}}]`, sends `x-goog-api-key`, parses JSON model output plus `groundingMetadata.groundingChunks[*].web.uri`, and still requires matching title plus HTTP URL evidence before marking `source=gemini_grounded` resolved. `agenthero/apps/grokrxiv/env/.env_review.example` documents the resolver URL and direct-Gemini env knobs. Repo `.env` plus split env files currently have no grounded resolver URL, Gemini API key, Semantic Scholar key, or ADS token, so no affected Tier R rerun was executed and no corpus-green claim is made. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier local_gemini_grounded_api_resolves_residue_with_grounding_metadata -- --nocapture` first failed before implementation with missing constructor, then passed. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 35 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
+- P0-015 coordinator verification, 2026-06-13T02:25Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `90d6123`, then reran coordinator-side checks. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 35 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed; `git status --short` had no output. No corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
