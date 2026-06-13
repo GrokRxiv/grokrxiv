@@ -242,6 +242,12 @@
 | 2026-06-13T09:59:14Z | `3315c2c` | `p0-025-narrow-corpus-checks` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH runtime from worker; existing yanked-zip warning only | chat transcript |
 | 2026-06-13T09:59:14Z | `3315c2c` | `p0-025-narrow-corpus-checks` | wrapped affected rerun `agh --json app run grokrxiv review evals/synthetic/bertrand-injected/paper.tex --loop --debug --no-external-actions` | product exit 0; review `331c2caa-cc93-45e5-a0ac-3a3d3096b60a`; external actions disabled; semantic mapper theorem candidates dropped to 3 and no canary formal target remained | `agenthero/apps/grokrxiv/evals/results/20260613T090650Z/synthetic-injection-after-p0-025/run.log` |
 | 2026-06-13T09:59:14Z | `3315c2c` | `p0-025-narrow-corpus-checks` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-025-narrow-corpus-checks` | pass, coordinator fast-forwarded from `3315c2c` to `d119b2c` | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 11 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib` | pass, 7 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T10:01:43Z | `d119b2c` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 

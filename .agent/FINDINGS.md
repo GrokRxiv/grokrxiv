@@ -971,6 +971,7 @@ Evidence:
 - `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass; refreshed PATH runtime.
 - Affected rerun review `331c2caa-cc93-45e5-a0ac-3a3d3096b60a`: product exit 0, external actions disabled, `pr_url=null`, `semantic_category_mapper [OK] theorem_candidates=3`.
 - Post-fix `semantic_ir.json`: theorem candidates are `Mathematical_Content_math_1`, `Mathematical_Content_math_3`, and `Mathematical_Content_math_11`; no `publisher_ready`, `prompt injection`, `SYSTEM OVERRIDE`, or `Canary_Text` text appears as a formal theorem candidate.
+- Coordinator merge verification at `d119b2c`: `grokrxiv-review-loop` 11/11, app-runtime `review_loop` 13/13, `corpus_` tests 7/7, app workspace check, and `git diff --check` passed.
 - `git diff --check`: pass.
 Residual:
 - The affected run still fails overall on Haskell timeout (`haskell_code_fixer` timed out after 360s), semantic adequacy, citation/policy expected-fail surfaces, and publish decision. No full corpus-green claim.
