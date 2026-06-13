@@ -287,6 +287,7 @@ fn latex_escape(input: &str) -> String {
             '\u{2190}' => out.push_str("\\ensuremath{\\leftarrow}"),
             '\u{21a6}' => out.push_str("\\ensuremath{\\mapsto}"),
             '\u{21d2}' => out.push_str("\\ensuremath{\\Rightarrow}"),
+            '\u{2713}' => out.push_str("\\ensuremath{\\checkmark}"),
             '\u{00b2}' => out.push_str("\\textsuperscript{2}"),
             '\u{00b3}' => out.push_str("\\textsuperscript{3}"),
             '\u{00b9}' => out.push_str("\\textsuperscript{1}"),

@@ -459,3 +459,45 @@ Pass counts:
 Residuals:
 - No full Tier R green claim. The API affected rerun is red on missing API `gemini` provider for novelty plus Lean `NOT_PROVED`/`FAILED` and semantic adequacy `OVERCLAIMED`.
 - Normal CLI affected rerun remains the next acceptance check after local Claude quota reset.
+
+## P0-036 - 2026-06-13T19:18:12Z
+
+Commands passed:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_accepts_compilable_rendered_tex_without_agent --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+```
+
+Red-first evidence:
+- `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` failed before implementation with `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol '✓'`.
+
+Pass counts:
+- Render tests: 10/10.
+- App-runtime `review_loop`: 17/17.
+- Review-loop crate: 15/15.
+- Structural tests: 45/45.
+
+Affected rerun:
+- Result dir: `agenthero/apps/grokrxiv/evals/results/20260613T185957Z/regression-pr54-weyl-after-p0-036-checkmark`.
+- Product command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`.
+- Product exit: `exit.status=0`, `run.log` has `ok=true` and `output.status=0`.
+- Review `752d5258-3821-433e-ae68-7ee8a150a8ad`: external actions disabled, `pr_url=null`, `review_loop.status=pass`, `blocking_issues=[]`.
+- PR fixer: `pr_fixes.status=pass`, fixed PDF present, `compile_review_loop.author_role=deterministic_pr_artifact_compiler`, `compile_review_loop.agent_output_audit_summary.total=0`, first compile attempt exit 0.
+- No raw `✓`, `Unicode character`, or `not set up` strings appeared in generated/fixed TeX or the fixed compile log.
+- Haskell remained green: `haskell_review_fix_code [OK]`, attempts=1.
+- Lean improved on this affected rerun: `status=pass`, `verdict=PROVED`, `proof_status=PROVED`, round 2 compile exit 0.
+- Semantic adequacy improved on this affected rerun: `MATCHES`.
+- Citation remained within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
+- Policy integrity ready with `blocking_issues=[]`; publisher remains disabled/non-ready because the honest recommendation is `major_revision`.
+
+Residuals:
+- No phase tag or full P0 green claim. A full corpus sweep and both-runner exit gate remain pending.

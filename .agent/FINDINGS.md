@@ -32,6 +32,68 @@ Fix plan:
 Attempts: 1
 Escalation status: none.
 
+## P0-036 - PR Artifact Fixer Timeout / Checkmark Escape
+
+ID: P0-036
+Corpus entry: `regression-pr54-weyl`
+Review id before fix: `e97e30a8-08ba-4741-a7f4-d3e4b5ee2a75`
+Review id after fix: `752d5258-3821-433e-ae68-7ee8a150a8ad`
+Runner: local CLI
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected Tier R rerun completed; PR fixer used deterministic compile-first path, not `pr_artifact_fixer`
+Bucket: F1 app-local artifact/rendering contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-035 accepted Haskell/citation but still recorded `pr_artifact_fixer` timeout after 360s.
+- Historical `review_loop/pr_fixes.json` had `status=fail`, issue `CliRunner timed out after 360s for role pr_artifact_fixer`, and no fixed PDF.
+- The PR fixer agent-output audit existed under `review_loop/agent_outputs/pr_fixer/round_1/pr_artifact_fixer`, proving the LLM path was invoked even though P0-005 added a deterministic compile-first path.
+
+Raw evidence paths:
+- Before: `.agent/worktrees/p0-035-haskell-author-timeout/agenthero/apps/grokrxiv/evals/results/20260613T181916Z/regression-pr54-weyl-cli-after-p0-035-truncated-gap/`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T185957Z/regression-pr54-weyl-after-p0-036-checkmark/`
+
+Artifact paths:
+- Before PR fixes: `.agent/worktrees/p0-035-haskell-author-timeout/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/e97e30a8-08ba-4741-a7f4-d3e4b5ee2a75/review_loop/pr_fixes.json`
+- Before compile log: `.agent/worktrees/p0-035-haskell-author-timeout/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/e97e30a8-08ba-4741-a7f4-d3e4b5ee2a75/review_loop/fixed/review.log`
+- After PR fixes: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/752d5258-3821-433e-ae68-7ee8a150a8ad/review_loop/pr_fixes.json`
+- After report: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/752d5258-3821-433e-ae68-7ee8a150a8ad/review_loop/review_loop_report.json`
+
+Root cause:
+- The deterministic compile-first path did run: it copied root `review.tex` into `review_loop/fixed/review.tex` and invoked `latexmk`.
+- PDFLaTeX failed on raw Unicode `✓` in rendered JSON evidence: `Unicode character ✓ (U+2713) not set up for use with LaTeX`.
+- `try_compile_existing_pr_artifact` returns `None` on compile failure, so the runtime fell through to the timeout-prone `pr_artifact_fixer` LLM path. The final failure report emphasized the LLM timeout and did not preserve the deterministic compile failure as the primary root cause.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/render/src/latex.rs`
+- `agenthero/apps/grokrxiv/crates/render/tests/render.rs`
+
+Resolution:
+1. Added red-first render coverage to `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` for raw `✓`.
+2. Mapped `\u{2713}` to `\ensuremath{\checkmark}` in `latex_escape`.
+3. Verified the affected rerun produced no raw `✓` in generated/fixed TeX and no Unicode error in the fixed compile log.
+
+Evidence:
+- Red-first test failed before implementation: `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol '✓'`.
+- After fix, `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture`: pass.
+- Full render tests: pass, 10/10.
+- App-runtime PR fixer fast-path test: pass.
+- App-runtime `review_loop`: pass, 17/17.
+- Review-loop crate: pass, 15/15.
+- App workspace check: pass.
+- Structural tests: pass, 45/45.
+- `git diff --check`: pass.
+- PATH installs: `grokrxiv-app` and `agenthero-dag-app-grokrxiv` replaced prior P0-035 installs with P0-036 builds.
+- Affected rerun `20260613T185957Z/regression-pr54-weyl-after-p0-036-checkmark`: product exit 0, review `752d5258-3821-433e-ae68-7ee8a150a8ad`, external actions disabled, `pr_url=null`, `review_loop.status=pass`, `blocking_issues=[]`, `pr_fixes.status=pass`, fixed PDF present, `compile_review_loop.author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, compile exit 0, Lean `PROVED`, semantic adequacy `MATCHES`, citation `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`, policy integrity ready.
+
+Residual:
+- No full P0 green claim. This was an affected Tier R rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+- Product `gate_verdict` remains `fail` because the honest meta recommendation is `major_revision` and publication is disabled; corpus integrity for the review loop is green (`review_loop.status=pass`, no blocking issues).
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-035c - CLI Acceptance With Truncated-Statement Semantic Gaps
 
 ID: P0-035c
