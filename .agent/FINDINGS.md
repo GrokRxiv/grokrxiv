@@ -1208,6 +1208,44 @@ Residual:
 Attempts: 1
 Escalation status: none. This is the first isolated run after P0-029; do not three-strike escalate yet.
 
+## P0-032: Haskell Semantic Target Explosion From Equation Snippets
+
+ID: P0-032
+Corpus entry: `regression-pr54-weyl`
+Review id: `667842d3-71e0-4fe9-950a-1518db105049`
+Runner: `cli`
+Command: P0-031 safe rerun, then targeted local tests in worker `p0-032-haskell-target-scope`
+Exit code: P0-031 product command exited 0; deterministic review-loop remained red
+finish_reason: Haskell semantic validation rejected attempt 1, then `haskell_code_fixer` timed out after 360s
+Bucket: F1 contract / app-local target selection
+NEVER-event: none; no weakening of expected blocks or never-events
+Symptom: `semantic_category_mapper` emitted 913 required theorem candidates for the Weyl regression paper. Haskell attempt 1 was rejected for missing Lean target declaration `thm_1`, and attempt 2 timed out. Semantic adequacy then produced 913 `OVERCLAIMED` verdicts with empty emitted/verified statements.
+Raw evidence paths:
+- `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-031-tier-r-after-runner/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/667842d3-71e0-4fe9-950a-1518db105049/review_loop/semantic_ir.json`
+- `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-031-tier-r-after-runner/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/667842d3-71e0-4fe9-950a-1518db105049/review_loop/haskell/results.json`
+- `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-031-tier-r-after-runner/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/667842d3-71e0-4fe9-950a-1518db105049/review_loop/haskell/round_1/decisions/haskell_semantic_author.json`
+- `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-031-tier-r-after-runner/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/667842d3-71e0-4fe9-950a-1518db105049/review_loop/haskell/round_2/decisions/haskell_code_fixer.json`
+Root cause:
+- `build_semantic_ir_from_paper_math` promoted every `equations.json` entry into `theorem_candidates` with `formalization_class="formal_math"` and `formalization_target.expected_shape="theorem"`.
+- Downstream Haskell validation, proof obligations, Lean target emission, and semantic adequacy all treat `theorem_candidates` as the mandatory theorem target set.
+- The prior run had 903 candidates from `equations.json` and only 10 from `theorem_graph.json`; many equation snippets were standalone symbols such as `M` and `f`, not theorem-level claims.
+Resolution:
+- Added red-first fixture `semantic_ir_keeps_extracted_equations_as_context_not_lean_targets`; it first failed because `supporting_equations` did not exist.
+- Changed `build_semantic_ir_from_paper_math` to preserve extracted equations as `supporting_equations` with `lean_eligible=false` and reason `equation_extracted_as_supporting_math_not_standalone_theorem_target`.
+- Updated `semantic_ir.schema.json` to declare `supporting_equations` under the closed schema.
+- Updated the app-runtime contract-file test to assert the new schema surface.
+Evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop semantic_ir_keeps_extracted_equations_as_context_not_lean_targets --lib -- --nocapture`: expected fail before fix, then pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib`: pass, 13 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_contract_files_define_formalization_policy_surface --lib`: pass.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, replaced PATH runtime from P0-031 with P0-032.
+- `agh --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`: pass, product dry-run exit 0 and `external_actions.enabled=false`.
+Residual:
+- No affected Tier R rerun has been executed after the fix. Next session must rerun `regression-pr54-weyl` safely and verify `semantic_category_mapper` no longer emits equation snippets as required theorem targets.
+Attempts: 1
+Escalation status: none.
+
 ## Finding Template
 
 Use one dossier per defect.

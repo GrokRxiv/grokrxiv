@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T12:50:08Z
+Updated: 2026-06-13T13:00:38Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 32 integration complete; P0-031 rerun checkpoint merged and coordinator status/diff checks passed.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-031-tier-r-after-runner` fast-forward merged.
-- Branch base commit: `e7ebd4f`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
+- Session type: P0 session 32 worker patch complete; coordinator merge remains pending.
+- Branch/worktree: worker branch `p0-032-haskell-target-scope` in `.agent/worktrees/p0-032-haskell-target-scope`, based on coordinator commit `66fd9ea`.
+- Branch base commit: `66fd9ea`; current checkpoint commit: pending P0-032 worker commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none currently assigned. P0-031 is integrated. The scrubbed-env Claude probe succeeded, and a safe Tier R rerun completed as review `667842d3-71e0-4fe9-950a-1518db105049`. P0-029 fixed the blank runner failure: specialists and meta-review completed, and Haskell attempt 1 produced schema-valid output. The entry remains red because Haskell semantic authoring generated an incomplete formal target set, then `haskell_code_fixer` timed out after 360s on attempt 2. Current next defect is P0-032: diagnose/fix semantic target explosion or Haskell fix-loop scope without raising timeouts. No full corpus green claim or phase tag.
+- In-flight defect: P0-032 fixed in worker, not yet merged. Root cause was app-local overbroad semantic target selection: `build_semantic_ir_from_paper_math` promoted every `equations.json` snippet to `formal_math` theorem candidates, forcing Haskell/Lean to cover 903 non-standalone equation fragments in addition to theorem graph nodes. The fix keeps extracted equations in `supporting_equations` with `lean_eligible=false` and reserves `theorem_candidates` for theorem-like paper sources. Focused review-loop tests, the app-runtime contract test, app workspace check, PATH `grokrxiv-app` install, and installed dry-run passed. No affected Tier R rerun has been executed after this fix yet. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -76,6 +76,7 @@ Updated: 2026-06-13T12:50:08Z
 - P0-029 coordinator verification, 2026-06-13T12:18Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `2e7961b`, then reran coordinator-side runner tests 42/42 and app workspace check; both passed. No full corpus-green claim or phase tag.
 - P0-031 Tier R rerun after runner reset, 2026-06-13T12:48Z: worker branch `p0-031-tier-r-after-runner` confirmed scrubbed-env Claude with a tiny prompt exits 0, refreshed PATH `grokrxiv-app`, recorded wrapper preflight/provenance, and reran `regression-pr54-weyl` safely. Product exit 0 as review `667842d3-71e0-4fe9-950a-1518db105049`; external actions disabled and `pr_url=null`; extraction/math signal preserved (`body_chars=117245`, `sections=8`, `theorem_nodes=41`, `equations=903`, `warnings=0`); citation stayed within Tier R threshold (`checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`); PR fixer and PR review passed; honest recommendation policy stayed fixed. The remaining red is Haskell/semantic-target scope: `semantic_category_mapper` emitted 913 theorem candidates, Haskell attempt 1 was rejected for missing Lean target declarations, attempt 2 timed out after 360s, Lean emitted `NOT_PROVED`/`SEMANTIC_GAP`, and semantic adequacy stayed `OVERCLAIMED`.
 - P0-031 coordinator verification, 2026-06-13T12:50Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `e7ebd4f`, then ran `git diff --check` and `git status --short`; both passed with a clean worktree before this state-only integration update. No full corpus-green claim or phase tag.
+- P0-032 semantic target scoping, 2026-06-13T13:00Z: worker branch `p0-032-haskell-target-scope` diagnosed the P0-031 target explosion. Prior artifact `semantic_ir.json` for review `667842d3-71e0-4fe9-950a-1518db105049` had 913 theorem candidates: 903 from `equations.json` and 10 from `theorem_graph.json`. Added red-first fixture `semantic_ir_keeps_extracted_equations_as_context_not_lean_targets`, then fixed `build_semantic_ir_from_paper_math` so extracted equations are preserved in `supporting_equations` and not emitted as required Lean targets. Updated `semantic_ir.schema.json` and the app-runtime contract-file test to include `supporting_equations`. Verification passed: focused red test then pass, full `grokrxiv-review-loop` lib tests 13/13, app-runtime contract test, app workspace check, PATH `grokrxiv-app` install, and installed safe dry-run. No affected Tier R rerun yet.
 
 ## Coordinator Rules
 

@@ -12830,6 +12830,7 @@ mod tests {
         assert!(claim_graph.contains("claim_kind"));
         assert!(claim_graph.contains("supports"));
         assert!(semantic_ir.contains("theorem_candidates"));
+        assert!(semantic_ir.contains("supporting_equations"));
         assert!(semantic_ir.contains("formalization_target"));
         assert!(lean_verification.contains("USES_UNAPPROVED_AXIOM"));
         assert!(research_bundle.contains("code_artifacts"));

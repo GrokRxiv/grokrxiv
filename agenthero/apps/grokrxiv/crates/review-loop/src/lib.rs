@@ -126,6 +126,7 @@ pub fn build_semantic_ir_from_paper_math(
     let mut theorem_candidates = Vec::new();
     let mut definitions = Vec::new();
     let mut assumptions = Vec::new();
+    let mut supporting_equations = Vec::new();
     let mut limitations = Vec::<serde_json::Value>::new();
     let mut nonformal_review_claims = Vec::new();
 
@@ -234,12 +235,6 @@ pub fn build_semantic_ir_from_paper_math(
     }
 
     for equation in collect_paper_equation_sources(paper_math_sources) {
-        if theorem_candidates
-            .iter()
-            .any(|candidate| candidate["source_claim_id"] == equation.id)
-        {
-            continue;
-        }
         let statement = equation.statement.trim();
         if statement.is_empty() {
             continue;
@@ -261,36 +256,14 @@ pub fn build_semantic_ir_from_paper_math(
             ));
             continue;
         }
-        let lean_declaration = lean_identifier(&equation.id);
-        let theorem_ir = theorem_ir_from_statement(&lean_declaration, statement, &source_span);
-        let transcription_status = if has_unknown_prop(&theorem_ir["conclusion"]) {
-            "partial"
-        } else {
-            "transcribed"
-        };
-        theorem_candidates.push(json!({
-            "id": format!("theorem_{}", lean_declaration),
+        supporting_equations.push(json!({
+            "id": format!("equation_{}", lean_identifier(&equation.id)),
             "kind": "equation",
-            "formalization_class": "formal_math",
             "statement": statement,
             "source_claim_id": equation.id,
             "source_span": source_span,
-            "semantic_category": "equation",
-            "typed_transcription": {
-                "status": transcription_status,
-                "source_text": statement,
-                "math_objects": [],
-                "binders": theorem_ir["binders"].clone(),
-                "assumptions": theorem_ir["assumptions"].clone(),
-                "conclusion": theorem_ir["conclusion"].clone()
-            },
-            "theorem_ir": theorem_ir,
-            "dependencies": equation.depends_on,
-            "formalization_target": {
-                "lean_declaration": lean_declaration,
-                "expected_shape": "theorem",
-                "proof_policy": "closed_proof_no_sorry_admit_axiom"
-            }
+            "lean_eligible": false,
+            "reason": "equation_extracted_as_supporting_math_not_standalone_theorem_target"
         }));
     }
 
@@ -298,7 +271,7 @@ pub fn build_semantic_ir_from_paper_math(
         limitations.push(json!({
             "id": "no_paper_math_transcribed",
             "kind": "semantic_gap",
-            "statement": "No paper-derived theorem or equation sources were transcribed into typed IR.",
+            "statement": "No paper-derived theorem sources were transcribed into typed IR; extracted equations remain supporting context.",
             "source_claim_id": "paper_math_sources",
             "source_span": {
                 "artifact": "paper_math_sources",
@@ -320,11 +293,13 @@ pub fn build_semantic_ir_from_paper_math(
             "forbidden_lean_terms": ["sorry", "admit", "axiom"],
             "canonical_ir_artifact": "review_loop/semantic_ir.json",
             "haskell_is_derived_checked_artifact": true,
-            "lean_statements_are_deterministically_emitted": true
+            "lean_statements_are_deterministically_emitted": true,
+            "extracted_equations_are_supporting_context": true
         },
         "paper_math_sources": paper_math_sources.clone(),
         "definitions": definitions,
         "assumptions": assumptions,
+        "supporting_equations": supporting_equations,
         "theorem_candidates": theorem_candidates,
         "nonformal_review_claims": nonformal_review_claims,
         "limitations": limitations,
@@ -1793,6 +1768,76 @@ end GrokRxiv
         assert_eq!(
             semantic_ir["nonformal_review_claims"][0]["source_claim_id"],
             "claim_review"
+        );
+    }
+
+    #[test]
+    fn semantic_ir_keeps_extracted_equations_as_context_not_lean_targets() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let paper_math = json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": []
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": [
+                    {
+                        "id": "eq-symbol",
+                        "canonical_tex": "M",
+                        "section_id": "sec-1"
+                    },
+                    {
+                        "id": "eq-add-zero",
+                        "canonical_tex": "n + 0 = n",
+                        "section_id": "sec-1"
+                    },
+                    {
+                        "id": "eq-function-name",
+                        "canonical_tex": "f",
+                        "section_id": "sec-1"
+                    }
+                ]
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": [
+                    {
+                        "id": "thm-add-zero",
+                        "type": "theorem",
+                        "statement": "For all n : Nat, n + 0 = n.",
+                        "section_id": "sec-1",
+                        "depends_on": ["eq-add-zero"]
+                    }
+                ]
+            }
+        });
+
+        let semantic_ir = build_semantic_ir_from_paper_math(
+            review_id,
+            &paper_math,
+            &json!({"claims": []}),
+            &json!({"nodes": [], "edges": []}),
+        );
+        let theorem_candidates = semantic_ir["theorem_candidates"].as_array().unwrap();
+        let supporting_equations = semantic_ir["supporting_equations"].as_array().unwrap();
+
+        assert_eq!(theorem_candidates.len(), 1);
+        assert_eq!(
+            theorem_candidates[0]["source_span"]["artifact"],
+            "theorem_graph.json"
+        );
+        assert!(
+            theorem_candidates
+                .iter()
+                .all(|candidate| candidate["source_span"]["artifact"] != "equations.json"),
+            "equation snippets must not become required Lean theorem targets: {theorem_candidates:?}"
+        );
+        assert_eq!(supporting_equations.len(), 3);
+        assert_eq!(supporting_equations[1]["source_claim_id"], "eq-add-zero");
+        assert_eq!(
+            supporting_equations[1]["reason"],
+            "equation_extracted_as_supporting_math_not_standalone_theorem_target"
         );
     }
 

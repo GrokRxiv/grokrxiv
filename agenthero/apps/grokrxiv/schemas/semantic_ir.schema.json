@@ -27,6 +27,23 @@
     },
     "definitions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
     "assumptions": { "type": "array", "items": { "$ref": "#/$defs/semantic_item" } },
+    "supporting_equations": {
+      "type": "array",
+      "description": "Extracted equations retained as paper-math evidence but not promoted to standalone Lean theorem targets.",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/semantic_item" },
+          {
+            "type": "object",
+            "required": ["lean_eligible", "reason"],
+            "properties": {
+              "lean_eligible": { "type": "boolean", "const": false },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        ]
+      }
+    },
     "theorem_candidates": {
       "type": "array",
       "items": {

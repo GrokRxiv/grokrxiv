@@ -4,7 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. P0-032 Haskell semantic target explosion / fixer timeout: `regression-pr54-weyl` now gets past the P0-028 blank runner failure, but `semantic_category_mapper` emits 913 theorem candidates, Haskell attempt 1 is rejected for missing Lean target declarations, and the Haskell fixer times out after 360s on attempt 2. Diagnose whether the P0 bug is overbroad target selection, an impossible P2 typed-IR gap that needs an explicit honest P0 classification, or a bounded app-local fix. Do not raise timeouts or weaken corpus expectations.
+1. P0-033 affected Tier R rerun after semantic target scoping: rerun `regression-pr54-weyl` safely with external actions disabled using the installed P0-032 `grokrxiv-app`. Verify `semantic_category_mapper` no longer emits `equations.json` snippets as required Lean theorem candidates; expected target count should drop from 913 to the theorem-like paper sources instead of 903 extracted equations plus theorem graph nodes. If Haskell/Lean remain red, classify the new top failure from raw artifacts before patching. Do not raise timeouts or weaken corpus expectations.
 
 ## Completed Queue Items
 
@@ -40,6 +40,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-030 coordinator merge verification: fast-forward merged `p0-029-agent-runner-empty-failure` into `grokrxiv-local-corpus-harness` at `2e7961b`, then reran coordinator-side runner tests 42/42, app workspace check, and final `git diff --check`. No full corpus-green claim.
 - P0-031 Tier R rerun after runner reset: confirmed app-equivalent scrubbed-env Claude no longer reported session limit, refreshed PATH `grokrxiv-app`, recorded wrapped preflight/provenance, and reran `regression-pr54-weyl` safely as review `667842d3-71e0-4fe9-950a-1518db105049`. Product exit 0; external actions disabled; `pr_url=null`; extraction/math-source, citation, PR fixer, PR review, and honest recommendation policy stayed fixed. The entry is still red on Haskell/semantic adequacy: `semantic_category_mapper` emitted 913 theorem candidates, Haskell attempt 1 was rejected for missing Lean target declarations, Haskell attempt 2 timed out after 360s, Lean reported `NOT_PROVED` with `SEMANTIC_GAP`, and semantic adequacy stayed `OVERCLAIMED`. No full corpus-green claim.
 - P0-031 coordinator merge verification: fast-forward merged `p0-031-tier-r-after-runner` into `grokrxiv-local-corpus-harness` at `e7ebd4f`, then ran `git diff --check` and `git status --short`; both passed before this state-only integration update. No full corpus-green claim.
+- P0-032 Haskell semantic target scoping: fixed locally by moving extracted `equations.json` snippets out of required `theorem_candidates` and into non-Lean-eligible `supporting_equations`. The red fixture `semantic_ir_keeps_extracted_equations_as_context_not_lean_targets` failed first because `supporting_equations` was missing, then passed. Updated `semantic_ir.schema.json` and the app-runtime contract test. Verification passed: review-loop crate 13/13, app-runtime contract-file test, app workspace check, PATH `grokrxiv-app` install, and installed safe dry-run. No affected Tier R rerun yet.
 
 ## Work Rule
 
