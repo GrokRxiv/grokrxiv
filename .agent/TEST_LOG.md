@@ -90,6 +90,13 @@
 | 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 273 tests | chat transcript |
 | 2026-06-13T01:45:26Z | `17b5308` | `p0-012-citation-waterfall` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier doi_crossref_retraction_metadata_marks_gate_failed -- --nocapture` | expected fail before fix: retracted DOI reported `status=resolved` and verifier `Pass`; pass after fix | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_verifier_summary_surfaces_retracted_entries -- --nocapture` | expected compile fail before summary field; pass after fix | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 31 tests | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 275 tests | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:57:34Z | `2a9adae` | `p0-013-citation-retractions` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 

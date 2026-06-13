@@ -7936,6 +7936,7 @@ struct CitationVerifierSummary {
     coverage_status: Option<String>,
     reason: Option<String>,
     unresolved: u64,
+    retracted: u64,
     unverified: u64,
     unknown: u64,
     malformed: u64,
@@ -7974,10 +7975,11 @@ impl CitationVerifierSummary {
             );
         }
         let mut out = format!(
-            "**Citation verifier:** checked={}, not_resolved={}, needs_review={}, unknown={}, malformed={}, fail_fraction={:.3}.\n\n\
+            "**Citation verifier:** checked={}, not_resolved={}, retracted={}, needs_review={}, unknown={}, malformed={}, fail_fraction={:.3}.\n\n\
              Full evidence is in `{}`.",
             self.checked,
             self.unresolved,
+            self.retracted,
             self.unverified,
             self.unknown,
             self.malformed,
@@ -8108,6 +8110,7 @@ impl CitationEvidenceItem {
             "malformed" => "malformed identifier",
             "transient_unknown" => "temporarily unknown",
             "unverified" => "needs verification",
+            "retracted" => "retracted",
             "resolved" => "verified",
             _ => "needs review",
         }
@@ -8323,10 +8326,15 @@ async fn citation_verifier_summary(
         .flatten()
         .filter_map(CitationEvidenceItem::from_verifier_entry)
         .collect();
-    let (unresolved, unverified, unknown, malformed, unresolved_fraction) =
+    let (unresolved, retracted, unverified, unknown, malformed, unresolved_fraction) =
         if entry_items.is_empty() {
             let unresolved = citation_notes
                 .get("unresolved")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+                .unwrap_or(0);
+            let retracted = citation_notes
+                .get("retracted")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len() as u64)
                 .unwrap_or(0);
@@ -8351,6 +8359,7 @@ async fn citation_verifier_summary(
                 .unwrap_or(0.0);
             (
                 unresolved,
+                retracted,
                 unverified,
                 unknown,
                 malformed,
@@ -8360,6 +8369,10 @@ async fn citation_verifier_summary(
             let unresolved = entry_items
                 .iter()
                 .filter(|entry| entry.effective_status() == "unresolved")
+                .count() as u64;
+            let retracted = entry_items
+                .iter()
+                .filter(|entry| entry.effective_status() == "retracted")
                 .count() as u64;
             let unverified = entry_items
                 .iter()
@@ -8374,7 +8387,7 @@ async fn citation_verifier_summary(
                 .filter(|entry| entry.effective_status() == "malformed")
                 .count() as u64;
             let definitive_total = checked.saturating_sub(unknown).saturating_sub(unverified);
-            let bad = unresolved + malformed;
+            let bad = unresolved + malformed + retracted;
             let unresolved_fraction = if definitive_total == 0 {
                 0.0
             } else {
@@ -8382,6 +8395,7 @@ async fn citation_verifier_summary(
             };
             (
                 unresolved,
+                retracted,
                 unverified,
                 unknown,
                 malformed,
@@ -8393,7 +8407,7 @@ async fn citation_verifier_summary(
         .filter(|entry| {
             matches!(
                 entry.effective_status(),
-                "unresolved" | "unverified" | "transient_unknown" | "malformed"
+                "unresolved" | "retracted" | "unverified" | "transient_unknown" | "malformed"
             )
         })
         .take(8)
@@ -8404,6 +8418,7 @@ async fn citation_verifier_summary(
         coverage_status,
         reason,
         unresolved,
+        retracted,
         unverified,
         unknown,
         malformed,
@@ -12343,6 +12358,39 @@ mod tests {
     }
 
     #[test]
+    fn citation_verifier_summary_surfaces_retracted_entries() {
+        let entry = CitationEvidenceItem::from_verifier_entry(&serde_json::json!({
+            "raw": "majorana2018: title = {Quantized inertia}, year = {2018}, doi = {10.retracted/example}",
+            "status": "retracted",
+            "source": "crossref_retraction",
+            "reason": "updated-by type=retraction doi=10.notice/retraction source=retraction-watch",
+            "doi": "10.retracted/example",
+            "title": "Quantized inertia"
+        }))
+        .expect("retraction evidence item");
+        let summary = CitationVerifierSummary {
+            verifier_status: Some("fail".to_string()),
+            checked: 1,
+            coverage_status: None,
+            reason: None,
+            unresolved: 0,
+            retracted: 1,
+            unverified: 0,
+            unknown: 0,
+            malformed: 0,
+            unresolved_fraction: 1.0,
+            evidence: vec![entry],
+            artifact_hint: "bundle.zip agents/citation.json".to_string(),
+        };
+
+        let text = summary.to_markdown();
+
+        assert!(text.contains("retracted=1"), "{text}");
+        assert!(text.contains("retracted"), "{text}");
+        assert!(text.contains("10.notice/retraction"), "{text}");
+    }
+
+    #[test]
     fn feedback_loop_pr_without_correction_marker_requires_refresh() {
         let stale_body = "\
 Needs revision.
@@ -12555,6 +12603,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
                     .to_string(),
             ),
             unresolved: 0,
+            retracted: 0,
             unverified: 0,
             unknown: 0,
             malformed: 0,

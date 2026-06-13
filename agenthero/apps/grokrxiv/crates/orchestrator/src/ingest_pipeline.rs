@@ -1902,6 +1902,7 @@ fn build_citation_validation_report(references: &Value) -> Value {
                 .unwrap_or_else(|| "crossref".to_string());
             let source = match source.as_str() {
                 "crossref"
+                | "crossref_retraction"
                 | "crossref_bibliographic"
                 | "doi_resolver"
                 | "openalex"
@@ -1979,7 +1980,29 @@ fn build_citation_validation_report(references: &Value) -> Value {
         }
     }
 
-    let status = if graph_warnings.is_empty() {
+    let resolver_needs_remediation = resolver_results.iter().any(|result| {
+        matches!(
+            result.get("status").and_then(Value::as_str),
+            Some("retracted" | "unresolved" | "malformed" | "conflict" | "not_found")
+        )
+    });
+    for result in &resolver_results {
+        if matches!(
+            result.get("status").and_then(Value::as_str),
+            Some("retracted" | "unresolved" | "malformed" | "conflict" | "not_found")
+        ) {
+            remediation_items.push(json!({
+                "key": result.get("key").cloned().unwrap_or(Value::Null),
+                "action": "repair_or_remove_reference",
+                "reason": format!(
+                    "resolver status {} requires remediation",
+                    result.get("status").and_then(Value::as_str).unwrap_or("unknown")
+                ),
+            }));
+        }
+    }
+
+    let status = if graph_warnings.is_empty() && !resolver_needs_remediation {
         "verified"
     } else {
         "needs_remediation"
@@ -3634,6 +3657,54 @@ mod a4_tests {
         assert_eq!(
             report["resolver_results"][1]["resolved_url"],
             "https://zbmath.org/trautman"
+        );
+    }
+
+    #[test]
+    fn citation_validation_report_preserves_retraction_evidence() {
+        let references = json!({
+            "citations": [{
+                "key": "majorana2018",
+                "raw": "@article{majorana2018,title={Quantized Majorana conductance}}",
+                "title": "Quantized Majorana conductance",
+                "authors": ["H. Zhang"],
+                "venue": "Nature",
+                "year": 2018,
+                "doi": "10.retracted/majorana",
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "Evidence"}],
+                "validation": {
+                    "source": "crossref_retraction",
+                    "status": "retracted",
+                    "resolved_doi": "10.retracted/majorana",
+                    "resolved_url": "https://doi.org/10.retracted/majorana",
+                    "evidence": [
+                        "update-to type=retraction doi=10.notice/retraction source=retraction-watch"
+                    ]
+                }
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+        assert!(validator.validate(&report).is_ok(), "{report:#}");
+        assert_eq!(report["status"], "needs_remediation");
+        assert_eq!(
+            report["resolver_results"][0]["source"],
+            "crossref_retraction"
+        );
+        assert_eq!(report["resolver_results"][0]["status"], "retracted");
+        assert_eq!(
+            report["resolver_results"][0]["evidence"][0],
+            "update-to type=retraction doi=10.notice/retraction source=retraction-watch"
         );
     }
 

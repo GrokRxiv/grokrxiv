@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 13: continue local-only P0 from the P0-012 citation-waterfall checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 14: continue local-only P0 from the P0-013 citation-retraction checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -29,24 +29,25 @@ Fixed P0 items so far:
 - P0-010: N4 bundle completeness is fixed locally. Review-loop runs write `review_loop/bundle_completeness.json`, policy blocks on manifest-declared non-terminal artifacts missing without `skip_reason`, citation adjudication has an explicit skip artifact until the real DAG output is wired, and PR attachments are derived from `review-loop.yaml` outputs plus harness sidecars.
 - P0-011: N5 false-proof halt is fixed locally. Review-loop runs match persisted review sources to `evals/corpus.yaml`, halt Tier C/G Lean `PROVED` results before downstream citation/PR-fix work, write `review_loop/never_event_dossier.json`, mark policy/report/publish-decision artifacts halted, and suppress PR side effects for halted loop outcomes.
 - P0-004a: PR-54 classics citation waterfall is fixed locally. Plain references now use Crossref first, then OpenAlex, Semantic Scholar, NASA ADS, INSPIRE-HEP, and zbMATH with bounded per-provider lookups, title normalization/transliteration, cached final status, and per-entry `verified_via` evidence.
+- P0-004b: retraction screening is fixed locally. DOI Crossref lookups now parse production retraction metadata (`update-to`, `updated-by`, relation retraction markers, `RETRACTED:` titles), mark such entries `status="retracted"` with `source="crossref_retraction"`, fail the citation gate, preserve `crossref_retraction` through citation-validation reports as remediation evidence, and surface `retracted=<n>` in CLI citation summaries.
 
-P0-012 validation:
-- New citation fixture first failed before implementation because `CitationVerifier::with_bibliographic_provider_bases` did not exist.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results -- --nocapture`: pass, 1 test.
-- New report-boundary fixture first failed because `citation_validation_report.json` coerced `ads` evidence back to `crossref`.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation_report_preserves_waterfall_resolver_sources -- --nocapture`: pass, 1 test.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 30 tests.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation -- --nocapture`: pass, 3 tests.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 273 tests.
+P0-013 validation:
+- New verifier fixture first failed before implementation because the retracted DOI was treated as `status=resolved` and verifier `Pass`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier doi_crossref_retraction_metadata_marks_gate_failed -- --nocapture`: pass, 1 test.
+- New CLI-summary fixture first failed because `CitationVerifierSummary` had no `retracted` field.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_verifier_summary_surfaces_retracted_entries -- --nocapture`: pass, 1 test.
+- The app-runtime citation run includes `citation_validation_report_preserves_retraction_evidence`, proving report/schema preservation of `crossref_retraction`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 31 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
 - `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
 - `git diff --check`: pass.
 
 Parallel-test note:
 - Full parallel app-runtime lib runs are currently flaky in config/env-heavy tests. In P0-010, two parallel runs failed on different tests (`supervisor::tests::apply_revisions_errors_without_db`, then `state::tests::build_agent_registry_applies_resolved_model_override`), while both tests passed individually and the full suite passed serially. Treat this as residual test-isolation debt, not a P0-010 regression.
 
-Residual: no full affected review-loop rerun was executed after P0-012. Tier R is not green until a safe review-loop run verifies full extraction, all specialists, bundle completeness, citation partial results, and citation `needs_review <= 2`.
+Residual: no full affected review-loop rerun was executed after P0-013. Tier R is not green until a safe review-loop run verifies full extraction, all specialists, bundle completeness, citation partial results, and citation `needs_review <= 2`.
 
-Next queue item: P0-004 residual citation reliability. Add retraction screening and Gemini-grounded fallback/quorum for unresolved residue with URL evidence. Add provider auth/header handling if the local env requires it for ADS/Semantic Scholar. Then run the affected Tier R review command safely:
+Next queue item: P0-004 residual citation reliability. Add Gemini-grounded fallback/quorum for unresolved residue with URL evidence. Add provider auth/header handling if the local env requires it for ADS/Semantic Scholar. Then run the affected Tier R review command safely:
 
 agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions
 

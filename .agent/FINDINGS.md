@@ -244,6 +244,53 @@ Residual:
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint because it invokes the full multi-agent loop rather than cheaply isolating the N2 failure path.
 - Tier R still needs a safe `--no-external-actions` review-loop run to verify `paper_review: all_specialists_complete`, citation partial-result emission, and `needs_review <= 2`.
 
+## P0-004b: Citation Verifier Did Not Screen Crossref Retraction Metadata
+
+ID: P0-004b
+Corpus entry: `majorana-quantized` / Tier D retraction expectation; also part of P0 citation reliability.
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixture reproduced Crossref retraction metadata being treated as a normal resolved DOI before implementation
+Bucket: F1 contract
+NEVER-event: supports Tier D `retraction_detection: flagged_via_external_db`; not a NEVER-event by itself.
+Symptom: DOI lookup used only the Crossref HTTP status. A Crossref `/works/{doi}` response with production retraction metadata would be reported as `status=resolved`, `exists=true`, and verifier `Pass`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/crates/verifier/src/citation.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/ingest_pipeline.rs`
+- `agenthero/apps/grokrxiv/schemas/citation_validation_report.schema.json`
+Root cause:
+- `resolve_doi` called a status-only HTTP helper and never parsed Crossref JSON, so it could not inspect `update-to`, `updated-by`, relation metadata, or a `RETRACTED:` title marker.
+- CLI citation summaries counted unresolved/unverified/unknown/malformed entries only, so a future `retracted` status would not be surfaced in human-facing review evidence.
+Fix plan:
+1. Add a failing DOI fixture whose Crossref body has `update-to` and `updated-by` entries with `type: "retraction"`.
+2. Parse Crossref JSON in DOI resolution and return `status="retracted"` with explicit evidence when production metadata marks the work retracted.
+3. Treat retractions as definitive citation gate failures and prevent arXiv metadata from overriding a retracted DOI.
+4. Preserve `crossref_retraction` through the deterministic citation-validation report schema and mark retracted resolver results as remediation items.
+5. Add CLI summary coverage for `retracted=<n>` and human evidence.
+Attempts: 1
+Escalation status: none.
+
+## P0-004b Resolution
+
+Status: fixed locally for Crossref production retraction metadata, 2026-06-13T01:57Z.
+Evidence:
+- `doi_crossref_retraction_metadata_marks_gate_failed` first failed with verifier `Pass`, entry `status="resolved"`, and `source="crossref"`.
+- DOI lookup now parses Crossref JSON and detects `update-to`, `updated-by`, relation keys containing `retract`, and `RETRACTED:` titles.
+- Retracted entries produce `status="retracted"`, `exists=false`, `source="crossref_retraction"`, retained DOI/URL, and explicit reason evidence including retraction DOI/source/record id when present.
+- The verifier gate fails on any retracted entry and includes a top-level `retracted[]` list in notes.
+- Deterministic citation-validation reports preserve `source="crossref_retraction"`, retain evidence strings, and report retracted resolver results as `needs_remediation`.
+- CLI citation summaries count `retracted=<n>` and include retraction evidence lines instead of hiding them behind generic needs-review text.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 31 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 275 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- No full affected review-loop rerun was executed in this checkpoint.
+- P0-004 residual work remains: Gemini-grounded fallback/quorum for unresolved residue, provider auth/header handling if local env requires it, and the safe Tier R rerun proving citation `needs_review <= 2`.
+
 ## P0-009: Policy Gate Could Infer Completeness From Partial Specialist Rows
 
 ID: P0-009

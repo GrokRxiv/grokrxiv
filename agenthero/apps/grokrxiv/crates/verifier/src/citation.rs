@@ -66,6 +66,7 @@ impl BibliographicProvider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CitationLookupStatus {
     Resolved,
+    Retracted,
     Unresolved,
     Unverified,
     TransientUnknown,
@@ -76,6 +77,7 @@ impl CitationLookupStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Resolved => "resolved",
+            Self::Retracted => "retracted",
             Self::Unresolved => "unresolved",
             Self::Unverified => "unverified",
             Self::TransientUnknown => "transient_unknown",
@@ -86,7 +88,7 @@ impl CitationLookupStatus {
     fn exists_value(self) -> serde_json::Value {
         match self {
             Self::Resolved => serde_json::Value::Bool(true),
-            Self::Unresolved | Self::Malformed => serde_json::Value::Bool(false),
+            Self::Retracted | Self::Unresolved | Self::Malformed => serde_json::Value::Bool(false),
             Self::Unverified | Self::TransientUnknown => serde_json::Value::Null,
         }
     }
@@ -121,6 +123,21 @@ impl CitationLookup {
             status: CitationLookupStatus::Unresolved,
             resolved_doi: None,
             resolved_url: None,
+            source,
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn retracted(
+        source: &'static str,
+        resolved_doi: Option<String>,
+        resolved_url: Option<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: CitationLookupStatus::Retracted,
+            resolved_doi,
+            resolved_url,
             source,
             reason: Some(reason.into()),
         }
@@ -287,25 +304,33 @@ impl CitationVerifier {
         if let Some(v) = self.cache.lock().get(&url).cloned() {
             return v;
         }
-        let lookup = match send_with_retry(http, &url).await {
-            HttpLookup::Ok(body_status) if body_status.is_success() => CitationLookup::resolved(
-                "crossref",
-                Some(doi.to_string()),
-                Some(format!("https://doi.org/{doi}")),
-            ),
-            HttpLookup::Ok(status) if matches!(status.as_u16(), 400 | 404 | 410 | 422) => {
+        let lookup = match send_json_with_retry(http, &url).await {
+            JsonLookup::Ok(body) => {
+                if let Some(reason) = crossref_retraction_evidence(&body) {
+                    CitationLookup::retracted(
+                        "crossref_retraction",
+                        Some(doi.to_string()),
+                        Some(format!("https://doi.org/{doi}")),
+                        reason,
+                    )
+                } else {
+                    CitationLookup::resolved(
+                        "crossref",
+                        Some(doi.to_string()),
+                        Some(format!("https://doi.org/{doi}")),
+                    )
+                }
+            }
+            JsonLookup::Unresolved(reason) => {
                 self.resolve_doi_resolver(
                     http,
                     doi,
-                    format!("crossref status {status}"),
-                    matches!(status.as_u16(), 400 | 422),
+                    format!("crossref {reason}"),
+                    reason.contains("status 400") || reason.contains("status 422"),
                 )
                 .await
             }
-            HttpLookup::Ok(status) => {
-                CitationLookup::unknown("crossref", format!("crossref status {status}"))
-            }
-            HttpLookup::Err(err) => CitationLookup::unknown("crossref", err),
+            JsonLookup::Transient(err) => CitationLookup::unknown("crossref", err),
         };
         if lookup.status != CitationLookupStatus::TransientUnknown {
             self.cache.lock().insert(url, lookup.clone());
@@ -646,6 +671,7 @@ impl Verifier for CitationVerifier {
         // output before persisting.
         let mut total: u32 = 0;
         let mut unresolved: Vec<String> = Vec::new();
+        let mut retracted: Vec<String> = Vec::new();
         let mut unverified: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         let mut malformed: Vec<String> = Vec::new();
@@ -660,7 +686,7 @@ impl Verifier for CitationVerifier {
             }
             if !matches!(
                 lookup.as_ref().map(|l| l.status),
-                Some(CitationLookupStatus::Resolved)
+                Some(CitationLookupStatus::Resolved | CitationLookupStatus::Retracted)
             ) {
                 if let Some(arxiv_id) = &c.arxiv_id {
                     if let Some(arxiv_lookup) = arxiv_resolved.get(arxiv_id).cloned() {
@@ -687,6 +713,7 @@ impl Verifier for CitationVerifier {
                 .unwrap_or_else(|| CitationLookup::unresolved("none", "no resolvable identifier"));
             match lookup.status {
                 CitationLookupStatus::Resolved => {}
+                CitationLookupStatus::Retracted => retracted.push(c.raw.clone()),
                 CitationLookupStatus::Unresolved => unresolved.push(c.raw.clone()),
                 CitationLookupStatus::Unverified => unverified.push(c.raw.clone()),
                 CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
@@ -730,13 +757,15 @@ impl Verifier for CitationVerifier {
         let definitive_total = total
             .saturating_sub(unknown.len() as u32)
             .saturating_sub(unverified.len() as u32);
-        let definitive_bad = unresolved.len() + malformed.len();
+        let definitive_bad = unresolved.len() + malformed.len() + retracted.len();
         let frac = if definitive_total == 0 {
             0.0
         } else {
             definitive_bad as f32 / definitive_total as f32
         };
-        let status = if definitive_bad == 0 && unknown.is_empty() && unverified.is_empty() {
+        let status = if !retracted.is_empty() {
+            VerifierStatus::Fail
+        } else if definitive_bad == 0 && unknown.is_empty() && unverified.is_empty() {
             VerifierStatus::Pass
         } else if frac > FAIL_FRACTION {
             VerifierStatus::Fail
@@ -748,6 +777,7 @@ impl Verifier for CitationVerifier {
             notes: json!({
                 "checked": total,
                 "unresolved": unresolved,
+                "retracted": retracted,
                 "unverified": unverified,
                 "unknown": unknown,
                 "malformed": malformed,
@@ -825,11 +855,102 @@ fn record_bibliographic_attempt(
     reasons.push(format!("{}: {reason}", lookup.source));
     match lookup.status {
         CitationLookupStatus::TransientUnknown => *transient_count += 1,
-        CitationLookupStatus::Unresolved
+        CitationLookupStatus::Retracted
+        | CitationLookupStatus::Unresolved
         | CitationLookupStatus::Unverified
         | CitationLookupStatus::Malformed => *non_transient_count += 1,
         CitationLookupStatus::Resolved => {}
     }
+}
+
+fn crossref_retraction_evidence(body: &serde_json::Value) -> Option<String> {
+    let message = body.get("message").unwrap_or(body);
+    let mut evidence: Vec<String> = Vec::new();
+
+    for field in ["update-to", "updated-by"] {
+        if let Some(items) = message.get(field).and_then(|v| v.as_array()) {
+            for item in items {
+                let update_type = scalar_field(item, "type").unwrap_or_default();
+                let label = scalar_field(item, "label").unwrap_or_default();
+                if update_type.eq_ignore_ascii_case("retraction")
+                    || label.to_ascii_lowercase().contains("retraction")
+                {
+                    evidence.push(format_crossref_retraction_update(field, item));
+                }
+            }
+        }
+    }
+
+    if let Some(relations) = message.get("relation").and_then(|v| v.as_object()) {
+        for (relation, value) in relations {
+            if !relation.to_ascii_lowercase().contains("retract") {
+                continue;
+            }
+            let items: Vec<&serde_json::Value> = value
+                .as_array()
+                .map(|items| items.iter().collect())
+                .unwrap_or_else(|| vec![value]);
+            if items.is_empty() {
+                evidence.push(format!("relation {relation}"));
+            }
+            for item in items {
+                let id = scalar_field(item, "id")
+                    .or_else(|| scalar_field(item, "DOI"))
+                    .or_else(|| scalar_field(item, "doi"));
+                let asserted_by = scalar_field(item, "asserted-by");
+                let mut parts = vec![format!("relation {relation}")];
+                if let Some(id) = id {
+                    parts.push(format!("id={id}"));
+                }
+                if let Some(asserted_by) = asserted_by {
+                    parts.push(format!("asserted_by={asserted_by}"));
+                }
+                evidence.push(parts.join(" "));
+            }
+        }
+    }
+
+    if evidence.is_empty() {
+        let title = message
+            .get("title")
+            .and_then(first_string)
+            .unwrap_or_default();
+        if title
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("retracted:")
+        {
+            evidence.push("title marked RETRACTED".to_string());
+        }
+    }
+
+    (!evidence.is_empty()).then(|| evidence.join("; "))
+}
+
+fn format_crossref_retraction_update(field: &str, item: &serde_json::Value) -> String {
+    let mut parts = vec![format!("{field} type=retraction")];
+    if let Some(doi) = scalar_field(item, "DOI").or_else(|| scalar_field(item, "doi")) {
+        parts.push(format!("doi={doi}"));
+    }
+    if let Some(source) = scalar_field(item, "source") {
+        parts.push(format!("source={source}"));
+    }
+    if let Some(record_id) = scalar_field(item, "record-id") {
+        parts.push(format!("record_id={record_id}"));
+    }
+    parts.join(" ")
+}
+
+fn scalar_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    let value = value.get(key)?;
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|n| n.to_string()))
+        .or_else(|| value.as_u64().map(|n| n.to_string()))
+        .or_else(|| value.as_f64().map(|n| n.to_string()))
 }
 
 fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> String {
@@ -1091,29 +1212,6 @@ fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
             Some(BibliographicHit { title, doi, url })
         })
         .collect()
-}
-
-async fn send_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
-    let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        match http.get(url).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if is_transient_status(status) && attempt == 0 {
-                    last_err = Some(format!("status {status}"));
-                    continue;
-                }
-                return HttpLookup::Ok(status);
-            }
-            Err(err) => {
-                last_err = Some(err.to_string());
-                if attempt == 0 {
-                    continue;
-                }
-            }
-        }
-    }
-    HttpLookup::Err(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
 async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
@@ -1409,7 +1507,12 @@ mod tests {
         // Resolved DOI.
         Mock::given(method("GET"))
             .and(path("/works/10.good/doi"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "DOI": "10.good/doi",
+                    "URL": "https://doi.org/10.good/doi"
+                }
+            })))
             .mount(&server)
             .await;
         // Unresolved DOI.
@@ -1488,6 +1591,59 @@ mod tests {
             r.notes["entries"][0]["resolved_url"],
             "https://doi.org/10.datacite/example"
         );
+    }
+
+    #[tokio::test]
+    async fn doi_crossref_retraction_metadata_marks_gate_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works/10.retracted/example"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "DOI": "10.retracted/example",
+                    "URL": "https://doi.org/10.retracted/example",
+                    "update-to": [{
+                        "DOI": "10.notice/retraction",
+                        "type": "retraction",
+                        "source": "publisher",
+                        "label": "Retraction"
+                    }],
+                    "updated-by": [{
+                        "DOI": "10.retractionwatch/record",
+                        "type": "retraction",
+                        "source": "retraction-watch",
+                        "label": "Retraction",
+                        "record-id": "44124"
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_all_bases_and_doi(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+        );
+        let paper = paper_with(vec![Citation {
+            raw: "Retracted paper".into(),
+            doi: Some("10.retracted/example".into()),
+            arxiv_id: None,
+            title: Some("Retracted paper".into()),
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Fail), "{:?}", r);
+        assert_eq!(r.notes["retracted"].as_array().unwrap().len(), 1);
+        assert_eq!(r.notes["entries"][0]["status"], "retracted");
+        assert_eq!(r.notes["entries"][0]["exists"], false);
+        assert_eq!(r.notes["entries"][0]["source"], "crossref_retraction");
+        let reason = r.notes["entries"][0]["reason"].as_str().unwrap();
+        assert!(reason.contains("10.notice/retraction"), "{reason}");
+        assert!(reason.contains("retraction-watch"), "{reason}");
     }
 
     #[test]
@@ -1787,7 +1943,12 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/works/10.good/doi"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "DOI": "10.good/doi",
+                    "URL": "https://doi.org/10.good/doi"
+                }
+            })))
             .mount(&server)
             .await;
         let v = CitationVerifier::with_bases(format!("{}/works", server.uri()));

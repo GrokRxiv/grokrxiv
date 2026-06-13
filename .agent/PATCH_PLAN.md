@@ -4,7 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Citation Worker: P0-004 residual reliability: add retraction screen, Gemini-grounded fallback with URL evidence/quorum, provider auth/header handling if local env needs it, and affected Tier R rerun proving citation `needs_review <= 2` without wholesale-empty artifacts.
+1. Citation Worker: P0-004 residual reliability: add Gemini-grounded fallback with URL evidence/quorum, provider auth/header handling if local env needs it, and affected Tier R rerun proving citation `needs_review <= 2` without wholesale-empty artifacts.
 2. Coordinator / Verifier Worker: P0-005 PR fixer timeout, deferred until P0-002/P0-003 stop invalid PR-fixer execution and P0-004 proves the citation stage is no longer the first Tier R blocker.
 3. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
 4. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
@@ -21,6 +21,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-010 N4 bundle completeness: fixed locally by writing `review_loop/bundle_completeness.json`, gating policy on manifest-declared non-terminal artifact outputs missing without `skip_reason`, materializing an explicit citation-adjudication skip artifact, and deriving PR attachments from `review-loop.yaml` outputs plus harness sidecars. Targeted N4 tests, serial full app-runtime lib tests, and app workspace check passed; full affected review-loop rerun remains pending.
 - P0-011 N5 false-proof halt: fixed locally by matching review-loop runs to `evals/corpus.yaml` context, halting Tier C/G Lean `PROVED` results before downstream work, writing `never_event_dossier.json`, marking policy/report/publish-decision artifacts halted, and suppressing PR side effects for halted loop outcomes. Targeted review-loop tests, serial full app-runtime lib tests, and app workspace check passed; full affected review-loop rerun remains pending.
 - P0-004a PR-54 classics citation waterfall: fixed locally by adding a deterministic Crossref -> OpenAlex -> Semantic Scholar -> NASA ADS -> INSPIRE-HEP -> zbMATH resolver path for plain references, per-provider timeout/status handling, final per-reference caching, title normalization/transliteration, and `verified_via` evidence. The hermetic classics fixture resolves four of six refs through ADS/zbMATH and leaves exactly two unverified residues. Retraction/Gemini/full affected rerun remain queued under P0-004 residual reliability.
+- P0-004b retraction screening: fixed locally by parsing Crossref production retraction metadata on DOI lookups (`update-to`, `updated-by`, relation retraction markers, and `RETRACTED:` titles), marking such entries `status="retracted"` with `source="crossref_retraction"`, failing the verifier gate, preserving retraction evidence in citation-validation reports as remediation items, and surfacing retraction counts/evidence in CLI citation summaries. Gemini fallback/quorum and the affected Tier R rerun remain queued under P0-004 residual reliability.
 
 ## Work Rule
 

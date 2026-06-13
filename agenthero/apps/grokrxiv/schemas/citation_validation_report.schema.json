@@ -92,6 +92,7 @@
           "type": "string",
           "enum": [
             "crossref",
+            "crossref_retraction",
             "crossref_bibliographic",
             "doi_resolver",
             "openalex",
