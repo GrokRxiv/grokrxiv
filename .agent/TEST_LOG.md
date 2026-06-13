@@ -219,6 +219,17 @@
 | 2026-06-13T09:01:54Z | `bce827a` | `p0-024-ghc-runner-env` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
 | 2026-06-13T09:01:54Z | `bce827a` | `p0-024-ghc-runner-env` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
 | 2026-06-13T09:01:54Z | `bce827a` | `p0-024-ghc-runner-env` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-024-ghc-runner-env` | pass, coordinator fast-forwarded from `bce827a` to `9a4f3c5` | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib` | pass, 7 tests after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version` | pass, `9.14.1` after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `PATH=/usr/local/bin agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version` | pass, `9.14.1` after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lake --version` | pass, Lake `5.0.0-src+d024af0` on Lean `4.30.0` after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lean --version` | pass, Lean `4.30.0` commit `d024af099ca4bf2c86f649261ebf59565dc8c622` after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh doctor` | pass, exit 0 after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests after coordinator merge | chat transcript |
+| 2026-06-13T09:04:36Z | `9a4f3c5` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests after coordinator merge | chat transcript |
 
 ## Logging Rule
 

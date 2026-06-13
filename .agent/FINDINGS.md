@@ -929,6 +929,7 @@ Evidence:
 - `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21 tests.
 - `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
 - `git diff --check`: pass.
+- Coordinator merge verification at `9a4f3c5`: `corpus_` tests 7/7, review-loop tests 13/13, app workspace check, structural tests 45/45, wrapped `agh doctor`, wrapped GHC/Lake/Lean checks, `PATH=/usr/local/bin` wrapped GHC check, and `git diff --check` passed.
 Residual:
 - This fix does not change the user's interactive shell PATH; direct `ghc` may still resolve to `8.4.2` outside the corpus wrapper.
 - Full LOOP preflight, synthetic review sweeps, API runner sweep, full corpus green baseline, and phase tag remain pending.

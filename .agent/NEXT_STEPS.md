@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 25: continue local-only P0 from the P0-024 GHC runner-environment checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 25: continue local-only P0 from the P0-024 GHC runner-environment integration checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -16,19 +16,14 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-P0-024 worker branch `p0-024-ghc-runner-env` adds:
+P0-024 worker branch `p0-024-ghc-runner-env` has been fast-forward merged into coordinator at `9a4f3c5`. It adds:
 - `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env`
 - `agenthero/apps/grokrxiv/evals/bin/ghc`
 - LOOP.md instructions that run preflight, corpus review, and independent Haskell/Lean re-verification through the wrapper.
 - `toolchain.lock.yaml.runner_environment` documenting the wrapper.
 - fixture `corpus_toolchain_env_selects_pinned_ghc_over_stale_path`.
 
-If this branch has not yet been merged into coordinator:
-1. In the worker, run `git status`, stage all files, and commit:
-   `git commit -m "codex checkpoint: P0 - corpus toolchain runner env"`.
-2. In `/Users/mlong/Documents/Development/grokrxiv`, fast-forward merge:
-   `git merge --ff-only p0-024-ghc-runner-env`.
-3. Coordinator-side verification:
+Before changing the next defect, confirm the integrated baseline is still clean if another session may have landed work:
 
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop
@@ -46,7 +41,7 @@ Current state after the worker checks:
 - P0-021 policy gate honest recommendation is green for Tier R on local CLI.
 - P0-022 Tier E/F/G synthetic corpus entries are authored and live at `evals/synthetic/*/paper.tex`.
 - P0-023 corpus/toolchain pins are in repo state.
-- P0-024 makes the corpus runner environment select locked GHC `9.14.1` even when the host PATH exposes stale `/usr/local/bin/ghc` `8.4.2`.
+- P0-024 makes the corpus runner environment select locked GHC `9.14.1` even when the host PATH exposes stale `/usr/local/bin/ghc` `8.4.2`; coordinator-side verification passed the same checks.
 - Latest affected Tier R run remains `20260613T080031Z`, review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
 - No full corpus-green claim and no phase tag.
 
