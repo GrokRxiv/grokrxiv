@@ -641,3 +641,47 @@ Pass counts:
 Residuals:
 - No phase tag or full P0 green claim.
 - P0-041 raw quantifier escape is next before P0-039 Bertrand extraction completeness.
+
+## P0-041 Worker Verification
+
+Time UTC: 2026-06-13T21:54:20Z
+Branch: `p0-041-render-quantifier-escape`
+Commit before checkpoint: pending worker commit
+
+Red-first evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture`
+- Failed before implementation with `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol '∃'`.
+
+Commands passed after mapping U+2203/U+2200:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_accepts_compilable_rendered_tex_without_agent --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Pass counts:
+- Focused render test: 1/1 after red.
+- Render tests: 10/10.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Affected safe rerun:
+- Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+- Raw log: `agenthero/apps/grokrxiv/evals/results/20260613T212629Z/zeta3-after-p0-041-quantifiers/run.log`
+- Product status: `0`
+- Review id: `2f24f79c-a592-4490-926c-a3f093abe1b1`
+- External actions: disabled; `pr_url=null`.
+- Fixed PDF evidence: `review_loop/fixed/review.log` contains `Output written on review.pdf (30 pages, 208404 bytes)`.
+- Unicode evidence: grep found no `Unicode character`, `U+2203`, `U+2200`, raw `∃`, raw `∀`, `LaTeX Error`, or `Fatal error` in fixed TeX/log.
+
+Residuals:
+- No phase tag or full P0 green claim.
+- Citation validation failed deterministic policy after citation specialist timeout: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`.
+- P0-042 is queued because `pr_fixes.json` still records `author_role=pr_artifact_fixer`, two PR-fixer agent outputs, and recovered-on-disk output after a 360s `pr_artifact_fixer` timeout even though first compile passed.

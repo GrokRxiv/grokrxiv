@@ -239,6 +239,65 @@ Evidence:
 Residual:
 - No real corpus rerun yet; continue P0-003 first so the next live run fails at extraction completeness instead of proceeding into downstream review/PR-fix stages.
 
+## P0-041 - PR Render Unicode Quantifier Escape
+
+ID: P0-041
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `f4ae38c0-4902-4545-a697-3fd499595d4a`
+Review id after fix: `2f24f79c-a592-4490-926c-a3f093abe1b1`
+Runner: local CLI
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected rerun completed; raw `∃`/`∀` no longer break rendered/fixed PDFLaTeX artifacts.
+Bucket: F1 app-local artifact/rendering contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-040 fixed raw `ℤ`, but direct scratch compilation of the rendered zeta review then failed on `Unicode character ∃ (U+2203) not set up for use with LaTeX`; the same sentence contained raw `∀`.
+- These raw quantifier glyphs were present in review evidence text and were not mapped by `latex_escape`.
+
+Raw evidence paths:
+- Before: `.agent/worktrees/p0-040-render-integer-symbol-escape/agenthero/apps/grokrxiv/evals/results/20260613T204908Z/zeta3-after-p0-040-integer-symbol/`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T212629Z/zeta3-after-p0-041-quantifiers/`
+
+Artifact paths:
+- After PR fixes: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2f24f79c-a592-4490-926c-a3f093abe1b1/review_loop/pr_fixes.json`
+- After fixed TeX/log/PDF: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2f24f79c-a592-4490-926c-a3f093abe1b1/review_loop/fixed/`
+- After citation validation: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2f24f79c-a592-4490-926c-a3f093abe1b1/review_loop/citation_validation_report.json`
+
+Root cause:
+- Rendered review evidence can include logical quantifier Unicode (`∃`, `∀`) that PDFLaTeX does not accept under the current preamble.
+- `latex_escape` covered many math symbols but omitted U+2203 and U+2200.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/render/src/latex.rs`
+- `agenthero/apps/grokrxiv/crates/render/tests/render.rs`
+
+Resolution:
+1. Added red-first render coverage to `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` for raw `∃` and `∀`.
+2. Mapped `\u{2203}` to `\ensuremath{\exists}` and `\u{2200}` to `\ensuremath{\forall}` in `latex_escape`.
+3. Reinstalled local `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the P0-041 worker before the affected rerun.
+
+Evidence:
+- Red-first test failed before implementation: `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol '∃'`.
+- Focused render test passed after implementation.
+- Full render tests passed 10/10.
+- App-runtime PR fixer fast-path test passed.
+- App-runtime `review_loop` passed 17/17.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs replaced P0-040 binaries with P0-041 worker builds.
+- Affected rerun `20260613T212629Z/zeta3-after-p0-041-quantifiers`: product exit 0, review `2f24f79c-a592-4490-926c-a3f093abe1b1`, external actions disabled, `pr_url=null`, fixed PDF present, `review_loop/fixed/review.log` contains `Output written on review.pdf (30 pages, 208404 bytes)`, and grep found no raw `∃`/`∀`, `U+2203`/`U+2200`, or Unicode/Fatal/LaTeX errors in the fixed TeX/log.
+
+Residual:
+- P0-042: PR deterministic fast-path miss. The rerun's `pr_fixes.json` has `status=pass`, first compile exit 0, and fixed PDF, but still records `compile_review_loop.author_role=pr_artifact_fixer`, `agent_output_audit_summary.total=2`, and recovered-on-disk output after `CliRunner timed out after 360s for role pr_artifact_fixer`. An already-compilable rendered artifact should bypass `pr_artifact_fixer` and `pr_artifact_reviewer` entirely and record `deterministic_pr_artifact_compiler` with zero agent outputs.
+- Citation validation failed deterministic policy after the citation specialist timed out: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`. This is a separate P0 citation/runner surface and not hidden by the render fix.
+- No full P0 green claim. This was an affected single-entry rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-003: N1 Extraction Completeness Gate Did Not Fire
 
 ID: P0-003

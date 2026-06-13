@@ -215,12 +215,12 @@ fn latex_escapes_agent_role_in_section_titles() {
 fn latex_maps_unicode_math_symbols_to_pdftex_safe_commands() {
     let (mut meta, paper, agents) = fixture();
     meta.summary =
-        "Residual freedom D^ρ_μν = f τ_μ δ^ρ_ν; g ∼ e^λ g; −c² τ ⊗ τ + h̃; χ̂; ϕ; ½; A ∘ B; A · B; ž; τ ∈ [τ]; A ∧ B; checked ✓; exp(-c√log x); d_n^3 b_n ∈ ℤ."
+        "Residual freedom D^ρ_μν = f τ_μ δ^ρ_ν; g ∼ e^λ g; −c² τ ⊗ τ + h̃; χ̂; ϕ; ½; A ∘ B; A · B; ž; τ ∈ [τ]; A ∧ B; checked ✓; exp(-c√log x); d_n^3 b_n ∈ ℤ; ∃ c > 0, ∀ x."
             .into();
 
     let tex = render_latex(&meta, &paper, &agents);
 
-    for raw in ['ρ', 'μ', 'ν', 'τ', 'δ', 'λ', 'ϕ', '∼', '−', '²', '½', '⊗', '∘', '·', '∈', '∧', '✓', '√', 'ℤ', '\u{030c}', '\u{0303}', '\u{0302}'] {
+    for raw in ['ρ', 'μ', 'ν', 'τ', 'δ', 'λ', 'ϕ', '∼', '−', '²', '½', '⊗', '∘', '·', '∈', '∧', '✓', '√', 'ℤ', '∃', '∀', '\u{030c}', '\u{0303}', '\u{0302}'] {
         assert!(
             !tex.contains(raw),
             "rendered LaTeX must not contain raw PDFLaTeX-hostile symbol `{raw}`"
@@ -235,6 +235,8 @@ fn latex_maps_unicode_math_symbols_to_pdftex_safe_commands() {
     assert!(tex.contains("\\ensuremath{\\checkmark}"));
     assert!(tex.contains("\\ensuremath{\\surd}"));
     assert!(tex.contains("\\ensuremath{\\mathbb{Z}}"));
+    assert!(tex.contains("\\ensuremath{\\exists}"));
+    assert!(tex.contains("\\ensuremath{\\forall}"));
 }
 
 #[test]

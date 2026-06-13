@@ -277,6 +277,8 @@ fn latex_escape(input: &str) -> String {
             '\u{2218}' => out.push_str("\\ensuremath{\\circ}"),
             '\u{2227}' => out.push_str("\\ensuremath{\\wedge}"),
             '\u{2228}' => out.push_str("\\ensuremath{\\vee}"),
+            '\u{2203}' => out.push_str("\\ensuremath{\\exists}"),
+            '\u{2200}' => out.push_str("\\ensuremath{\\forall}"),
             '\u{2208}' => out.push_str("\\ensuremath{\\in}"),
             '\u{2209}' => out.push_str("\\ensuremath{\\notin}"),
             '\u{2282}' => out.push_str("\\ensuremath{\\subset}"),
