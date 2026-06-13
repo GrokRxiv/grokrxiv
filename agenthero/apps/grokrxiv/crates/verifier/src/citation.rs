@@ -41,7 +41,8 @@ enum BibliographicProviderKind {
     Ads,
     InspireHep,
     ZbMath,
-    GeminiGrounded,
+    GeminiGroundedEndpoint,
+    GeminiGroundedApi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,8 @@ struct BibliographicProvider {
     source: &'static str,
     base_url: String,
     kind: BibliographicProviderKind,
+    model: Option<String>,
+    api_key: Option<String>,
 }
 
 impl BibliographicProvider {
@@ -61,6 +64,22 @@ impl BibliographicProvider {
             source,
             base_url: base_url.into(),
             kind,
+            model: None,
+            api_key: None,
+        }
+    }
+
+    fn new_gemini_grounded_api(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: "gemini_grounded",
+            base_url: base_url.into(),
+            kind: BibliographicProviderKind::GeminiGroundedApi,
+            model: Some(model.into()),
+            api_key: Some(api_key.into()),
         }
     }
 }
@@ -341,7 +360,43 @@ impl CitationVerifier {
             .push(BibliographicProvider::new(
                 "gemini_grounded",
                 grounded_base,
-                BibliographicProviderKind::GeminiGrounded,
+                BibliographicProviderKind::GeminiGroundedEndpoint,
+            ));
+        verifier
+    }
+
+    /// Construct a verifier with deterministic providers plus a final
+    /// app-local Gemini API grounded resolver. This mirrors the production env
+    /// path while keeping tests hermetic via a mock Gemini base URL.
+    pub fn with_bibliographic_and_local_gemini_grounded_provider_bases(
+        crossref_base: impl Into<String>,
+        arxiv_base: impl Into<String>,
+        doi_resolver_base: impl Into<String>,
+        openalex_base: impl Into<String>,
+        semantic_scholar_base: impl Into<String>,
+        ads_base: impl Into<String>,
+        inspire_hep_base: impl Into<String>,
+        zbmath_base: impl Into<String>,
+        gemini_base: impl Into<String>,
+        gemini_model: impl Into<String>,
+        gemini_api_key: impl Into<String>,
+    ) -> Self {
+        let mut verifier = Self::with_bibliographic_provider_bases(
+            crossref_base,
+            arxiv_base,
+            doi_resolver_base,
+            openalex_base,
+            semantic_scholar_base,
+            ads_base,
+            inspire_hep_base,
+            zbmath_base,
+        );
+        verifier
+            .bibliographic_providers
+            .push(BibliographicProvider::new_gemini_grounded_api(
+                gemini_base,
+                gemini_model,
+                gemini_api_key,
             ));
         verifier
     }
@@ -630,18 +685,20 @@ impl CitationVerifier {
         query_text: &str,
     ) -> CitationLookup {
         let url = provider_query_url(provider, query_text);
-        match send_provider_json_with_timeout(http, &url, provider.kind).await {
+        match send_provider_json_with_timeout(http, &url, provider, query_text).await {
             JsonLookup::Ok(v) => {
                 if let Some(hit) = provider_hit_if_title_matches(&v, provider.kind, query_text) {
                     match (provider.kind, hit.url.clone()) {
-                        (BibliographicProviderKind::GeminiGrounded, Some(url)) => {
-                            CitationLookup::resolved_with_reason(
-                                provider.source,
-                                hit.doi,
-                                Some(url.clone()),
-                                format!("grounded URL evidence: {url}"),
-                            )
-                        }
+                        (
+                            BibliographicProviderKind::GeminiGroundedEndpoint
+                            | BibliographicProviderKind::GeminiGroundedApi,
+                            Some(url),
+                        ) => CitationLookup::resolved_with_reason(
+                            provider.source,
+                            hit.doi,
+                            Some(url.clone()),
+                            format!("grounded URL evidence: {url}"),
+                        ),
                         _ => CitationLookup::resolved(provider.source, hit.doi, hit.url),
                     }
                 } else {
@@ -913,11 +970,25 @@ fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
             providers.push(BibliographicProvider::new(
                 "gemini_grounded",
                 base_url.to_string(),
-                BibliographicProviderKind::GeminiGrounded,
+                BibliographicProviderKind::GeminiGroundedEndpoint,
             ));
         }
+    } else if let Some(api_key) = gemini_grounded_api_key() {
+        providers.push(BibliographicProvider::new_gemini_grounded_api(
+            nonblank_env("GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL")
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()),
+            nonblank_env("GROKRXIV_CITATION_GROUNDED_MODEL")
+                .unwrap_or_else(|| "gemini-2.5-pro".to_string()),
+            api_key,
+        ));
     }
     providers
+}
+
+fn gemini_grounded_api_key() -> Option<String> {
+    nonblank_env("GOOGLE_GENERATIVE_AI_API_KEY")
+        .or_else(|| nonblank_env("GEMINI_API_KEY"))
+        .or_else(|| nonblank_env("GOOGLE_API_KEY"))
 }
 
 fn record_bibliographic_attempt(
@@ -1056,8 +1127,19 @@ fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> Str
         BibliographicProviderKind::ZbMath => {
             format!("{}?query={encoded}&results_per_page=5", provider.base_url)
         }
-        BibliographicProviderKind::GeminiGrounded => {
+        BibliographicProviderKind::GeminiGroundedEndpoint => {
             format!("{}?query={encoded}", provider.base_url)
+        }
+        BibliographicProviderKind::GeminiGroundedApi => {
+            let model = provider
+                .model
+                .as_deref()
+                .unwrap_or("gemini-2.5-pro")
+                .trim_start_matches("models/");
+            format!(
+                "{}/v1beta/models/{model}:generateContent",
+                provider.base_url.trim_end_matches('/')
+            )
         }
     }
 }
@@ -1077,7 +1159,8 @@ fn provider_hit_if_title_matches(
         BibliographicProviderKind::Ads => ads_hits(body),
         BibliographicProviderKind::InspireHep => inspire_hep_hits(body),
         BibliographicProviderKind::ZbMath => zbmath_hits(body),
-        BibliographicProviderKind::GeminiGrounded => gemini_grounded_hits(body),
+        BibliographicProviderKind::GeminiGroundedEndpoint
+        | BibliographicProviderKind::GeminiGroundedApi => gemini_grounded_hits(body),
     };
     hits.into_iter()
         .find(|hit| title_matches(query_text, &hit.title))
@@ -1300,8 +1383,8 @@ fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
     grounded_candidate_values(body)
         .into_iter()
         .filter_map(|candidate| {
-            let verdict = string_field(candidate, "verdict")
-                .or_else(|| string_field(candidate, "status"))
+            let verdict = string_field(&candidate, "verdict")
+                .or_else(|| string_field(&candidate, "status"))
                 .unwrap_or_default();
             if !matches!(
                 verdict.to_ascii_lowercase().as_str(),
@@ -1309,10 +1392,10 @@ fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
             ) {
                 return None;
             }
-            let title = string_field(candidate, "title")?;
-            let evidence_url = grounded_evidence_urls(candidate).into_iter().next()?;
-            let doi = string_field(candidate, "resolved_doi")
-                .or_else(|| string_field(candidate, "doi"))
+            let title = string_field(&candidate, "title")?;
+            let evidence_url = grounded_evidence_urls(&candidate).into_iter().next()?;
+            let doi = string_field(&candidate, "resolved_doi")
+                .or_else(|| string_field(&candidate, "doi"))
                 .and_then(|doi| normalize_doi(&doi));
             let url = first_http_string(candidate.get("resolved_url")).or(Some(evidence_url));
             Some(BibliographicHit { title, doi, url })
@@ -1320,13 +1403,88 @@ fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
         .collect()
 }
 
-fn grounded_candidate_values(body: &serde_json::Value) -> Vec<&serde_json::Value> {
-    body.get("candidates")
-        .or_else(|| body.get("results"))
-        .and_then(|value| value.as_array())
-        .filter(|items| !items.is_empty())
-        .map(|items| items.iter().collect())
-        .unwrap_or_else(|| vec![body])
+fn grounded_candidate_values(body: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut candidates = Vec::new();
+    for field in ["candidates", "results"] {
+        if let Some(items) = body.get(field).and_then(|value| value.as_array()) {
+            for item in items {
+                if item.get("content").is_some() || item.get("groundingMetadata").is_some() {
+                    candidates.extend(gemini_api_grounded_candidate_values(item));
+                } else {
+                    candidates.push(item.clone());
+                }
+            }
+        }
+    }
+    if candidates.is_empty() {
+        candidates.push(body.clone());
+    }
+    candidates
+}
+
+fn gemini_api_grounded_candidate_values(candidate: &serde_json::Value) -> Vec<serde_json::Value> {
+    let evidence_urls = gemini_grounding_metadata_urls(candidate);
+    let mut out = Vec::new();
+    if let Some(parts) = candidate
+        .get("content")
+        .and_then(|content| content.get("parts"))
+        .and_then(|parts| parts.as_array())
+    {
+        for text in parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+        {
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) {
+                inject_grounding_evidence_urls(&mut value, &evidence_urls);
+                out.push(value);
+            }
+        }
+    }
+    out
+}
+
+fn gemini_grounding_metadata_urls(candidate: &serde_json::Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(chunks) = candidate
+        .get("groundingMetadata")
+        .and_then(|metadata| metadata.get("groundingChunks"))
+        .and_then(|chunks| chunks.as_array())
+    {
+        for chunk in chunks {
+            collect_http_strings(
+                chunk
+                    .get("web")
+                    .and_then(|web| web.get("uri"))
+                    .or_else(|| chunk.get("retrievedContext").and_then(|ctx| ctx.get("uri"))),
+                &mut urls,
+            );
+        }
+    }
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+fn inject_grounding_evidence_urls(value: &mut serde_json::Value, urls: &[String]) {
+    if urls.is_empty() {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            if !map.contains_key("evidence_urls") {
+                map.insert("evidence_urls".to_string(), json!(urls));
+            }
+            if !map.contains_key("resolved_url") {
+                map.insert("resolved_url".to_string(), json!(urls[0]));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                inject_grounding_evidence_urls(item, urls);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn grounded_evidence_urls(candidate: &serde_json::Value) -> Vec<String> {
@@ -1481,11 +1639,12 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
 async fn send_provider_json_with_timeout(
     http: &reqwest::Client,
     url: &str,
-    kind: BibliographicProviderKind,
+    provider: &BibliographicProvider,
+    query_text: &str,
 ) -> JsonLookup {
     match tokio::time::timeout(
         Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
-        send_provider_json_with_retry(http, url, kind),
+        send_provider_json_with_retry(http, url, provider, query_text),
     )
     .await
     {
@@ -1499,11 +1658,12 @@ async fn send_provider_json_with_timeout(
 async fn send_provider_json_with_retry(
     http: &reqwest::Client,
     url: &str,
-    kind: BibliographicProviderKind,
+    provider: &BibliographicProvider,
+    query_text: &str,
 ) -> JsonLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..2 {
-        let request = apply_provider_headers(http.get(url), kind);
+        let request = provider_request(http, url, provider, query_text);
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
@@ -1534,11 +1694,48 @@ async fn send_provider_json_with_retry(
     JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
+fn provider_request(
+    http: &reqwest::Client,
+    url: &str,
+    provider: &BibliographicProvider,
+    query_text: &str,
+) -> reqwest::RequestBuilder {
+    let request = match provider.kind {
+        BibliographicProviderKind::GeminiGroundedApi => http
+            .post(url)
+            .json(&gemini_grounded_request_body(query_text)),
+        _ => http.get(url),
+    };
+    apply_provider_headers(request, provider)
+}
+
+fn gemini_grounded_request_body(query_text: &str) -> serde_json::Value {
+    json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "text": format!(
+                    "Verify whether this bibliographic reference title exists: {query_text}\n\
+    Return only JSON with fields verdict, title, resolved_doi, resolved_url, evidence_urls, explanation. \
+    Use verdict=verified only when Google Search grounding provides URL evidence for the same title; otherwise use verdict=needs_review."
+                )
+            }]
+        }],
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 1024,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingBudget": 0}
+        }
+    })
+}
+
 fn apply_provider_headers(
     mut request: reqwest::RequestBuilder,
-    kind: BibliographicProviderKind,
+    provider: &BibliographicProvider,
 ) -> reqwest::RequestBuilder {
-    match kind {
+    match provider.kind {
         BibliographicProviderKind::SemanticScholar => {
             if let Some(token) = nonblank_env("SEMANTIC_SCHOLAR_API_KEY") {
                 request = request.header("x-api-key", token);
@@ -1549,6 +1746,16 @@ fn apply_provider_headers(
                 nonblank_env("NASA_ADS_API_TOKEN").or_else(|| nonblank_env("ADS_API_TOKEN"))
             {
                 request = request.header("Authorization", format!("Bearer {token}"));
+            }
+        }
+        BibliographicProviderKind::GeminiGroundedApi => {
+            if let Some(token) = provider
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                request = request.header("x-goog-api-key", token);
             }
         }
         _ => {}
@@ -1716,6 +1923,12 @@ mod tests {
         fn set(key: &'static str, value: &str) -> Self {
             let prior = std::env::var(key).ok();
             std::env::set_var(key, value);
+            Self { key, prior }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let prior = std::env::var(key).ok();
+            std::env::remove_var(key);
             Self { key, prior }
         }
     }
@@ -2375,6 +2588,151 @@ mod tests {
         );
         let reason = r.notes["entries"][0]["reason"].as_str().unwrap();
         assert!(reason.contains("https://archive.org/details/philosophiederra00reic"));
+    }
+
+    #[test]
+    fn default_providers_include_local_gemini_api_when_key_is_configured() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _endpoint = EnvVarGuard::clear("GROKRXIV_CITATION_GROUNDED_RESOLVER_URL");
+        let _key = EnvVarGuard::set("GEMINI_API_KEY", "env-gemini-key");
+        let _base = EnvVarGuard::set(
+            "GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL",
+            "http://gemini.test",
+        );
+        let _model = EnvVarGuard::set("GROKRXIV_CITATION_GROUNDED_MODEL", "gemini-2.5-pro");
+
+        let providers = default_bibliographic_providers();
+
+        let provider = providers
+            .iter()
+            .find(|provider| provider.kind == BibliographicProviderKind::GeminiGroundedApi)
+            .expect("local gemini grounded provider");
+        assert_eq!(provider.source, "gemini_grounded");
+        assert_eq!(provider.base_url, "http://gemini.test");
+        assert_eq!(provider.model.as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(provider.api_key.as_deref(), Some("env-gemini-key"));
+    }
+
+    #[tokio::test]
+    async fn local_gemini_grounded_api_resolves_residue_with_grounding_metadata() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env lock");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ads/v1/search/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "response": {"docs": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/inspire/api/literature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": {"hits": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zbmath/v1/document/_structured_search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1beta/models/gemini-2.5-pro:generateContent"))
+            .and(header("x-goog-api-key", "test-gemini-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": "{\"verdict\":\"verified\",\"title\":\"Philosophie der Raum-Zeit-Lehre\",\"resolved_url\":\"https://archive.org/details/philosophiederra00reic\",\"evidence_urls\":[\"https://archive.org/details/philosophiederra00reic\"]}"
+                        }]
+                    },
+                    "groundingMetadata": {
+                        "webSearchQueries": ["Philosophie der Raum-Zeit-Lehre Reichenbach"],
+                        "groundingChunks": [{
+                            "web": {
+                                "uri": "https://archive.org/details/philosophiederra00reic",
+                                "title": "Philosophie der Raum-Zeit-Lehre"
+                            }
+                        }]
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_and_local_gemini_grounded_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_structured_search", server.uri()),
+            server.uri(),
+            "gemini-2.5-pro",
+            "test-gemini-key",
+        );
+        let paper = paper_with(vec![classic_ref(
+            "reichenbach1928",
+            "Philosophie der Raum-Zeit-Lehre",
+            1928,
+        )]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["source"], "gemini_grounded");
+        assert_eq!(
+            r.notes["entries"][0]["resolved_url"],
+            "https://archive.org/details/philosophiederra00reic"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let gemini_request = requests
+            .iter()
+            .find(|request| request.url.path().contains(":generateContent"))
+            .expect("gemini request");
+        let body: serde_json::Value = serde_json::from_slice(&gemini_request.body).unwrap();
+        assert_eq!(body["tools"][0]["google_search"], json!({}));
     }
 
     #[test]
