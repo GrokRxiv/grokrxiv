@@ -16,9 +16,9 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Current worker state:
-- Branch `p0-034-haskell-prop-fidelity`
-- Base commit `ff0b21b`
+Current coordinator state:
+- Branch `grokrxiv-local-corpus-harness`
+- P0-034 worker `p0-034-haskell-prop-fidelity` fast-forward merged at `212aaaf`
 - P0-034 implemented deterministic Haskell proposition-fidelity validation and prompt/reviewer constraints.
 - No baseline tag, no full corpus-green claim, and no phase tag yet.
 
@@ -35,7 +35,9 @@ P0-034 evidence:
 - Lean stayed `NOT_PROVED`/`SEMANTIC_GAP`; semantic adequacy stayed `OVERCLAIMED`.
 
 Session 35 task:
-1. Commit and merge P0-034 to the coordinator if this worker has not already been integrated.
+1. Confirm the P0-034 integration checkpoint is present and clean:
+   `git log --oneline -3`
+   `git status --short --branch`
 2. Create or continue a local worker for one defect only:
    `git worktree add .agent/worktrees/p0-035-haskell-author-timeout -b p0-035-haskell-author-timeout`
 3. Reproduce the exact Haskell semantic-author invocation from:

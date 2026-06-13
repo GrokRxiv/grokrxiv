@@ -1,14 +1,14 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T14:23:40Z
+Updated: 2026-06-13T14:26:36Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 34 worker checkpoint; P0-034 Haskell proposition-fidelity guard implemented and affected Tier R reruns recorded.
-- Branch/worktree: worker branch `p0-034-haskell-prop-fidelity` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-034-haskell-prop-fidelity`; coordinator branch is `grokrxiv-local-corpus-harness`.
-- Branch base commit: `ff0b21b`.
+- Session type: P0 session 34 integration complete; P0-034 worker checkpoint fast-forward merged and coordinator checks passed.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-034-haskell-prop-fidelity` merged.
+- Branch base commit: `ff0b21b`; merged worker checkpoint commit: `212aaaf`; current integration state update: this commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
@@ -81,6 +81,7 @@ Updated: 2026-06-13T14:23:40Z
 - P0-033 affected Tier R safe rerun, 2026-06-13T13:31Z: worker branch `p0-033-tier-r-after-target-scope` reran `regression-pr54-weyl` through the wrapped local CLI as review `4bd37a7a-9452-476b-911d-9d75cfc37c51`. Product exit status was 0; external actions stayed disabled; `pr_url=null`; extraction/math-source signal was preserved (`theorem_nodes=41`, `equations=903`, `theorem_candidates=10`); P0-032 target scoping held (`theorem_candidate_sources=[theorem_graph.json:10]`, `supporting_equations=[equations.json:903]`); citation remained within Tier R threshold (`checked=53`, `unverified=1`, `unresolved=0`, `transient_unknown=0`). Overall deterministic status remains red because Haskell round 2 compiled but was rejected for tautological raw propositions (`PRaw` renders as `True` and `paperTheoremClaim` uses empty binders/assumptions); proof obligations and Lean are blocked with `NOT_PROVED`/`SEMANTIC_GAP`; semantic adequacy is `OVERCLAIMED`; policy stays non-publisher-ready. No full corpus-green claim or phase tag.
 - P0-033 coordinator verification, 2026-06-13T13:35Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `9daf888`, then ran `git diff --check` and `git status --short`; both passed with a clean worktree before this integration state update. No full corpus-green claim or phase tag.
 - P0-034 Haskell proposition-fidelity guard, 2026-06-13T14:23Z: worker branch `p0-034-haskell-prop-fidelity` added deterministic semantic validation for paper theorem candidates represented as `PRaw` tautologies, and tightened the Haskell author/fixer/reviewer prompts. Red-first fixture `haskell_validator_rejects_raw_theorem_tautologies` failed before implementation and passed after the fix. Verification passed: focused guard test, `grokrxiv-review-loop` 14/14, app workspace check, `git diff --check`, and PATH `grokrxiv-app` install. Affected Tier R rerun `20260613T134041Z` reached Haskell round 2 and no longer contained `PRaw` or `True /- raw` patterns; it failed on missing canonical Lean target declarations. Final affected rerun `20260613T140644Z` completed as review `d146096c-c34d-43d6-b7a2-251fe4919e67`, product exit 0, external actions disabled, target scoping held, citation stayed within threshold, but `haskell_semantic_author` timed out after 360s before writing a module. Queued P0-035. No full corpus-green claim or phase tag.
+- P0-034 coordinator verification, 2026-06-13T14:26Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `212aaaf`, then ran `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` (14/14), `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`, `git diff --check`, and `git status --short --branch`; all passed with a clean worktree before this integration state update. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 

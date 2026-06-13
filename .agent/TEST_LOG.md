@@ -330,6 +330,10 @@
 | 2026-06-13T14:23:40Z | `ff0b21b` | `p0-034-haskell-prop-fidelity` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app`; existing locked yanked-zip warning only | chat transcript |
 | 2026-06-13T14:23:40Z | `ff0b21b` | `p0-034-haskell-prop-fidelity` | wrapped affected rerun `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0 as review `2d695158-7d82-4242-8038-e62a37d3f928`; external actions disabled; Haskell round 2 had no `PRaw`/`True /- raw` hits and failed on missing Lean target declarations; citation checked 53 with unverified 2/unresolved 0/transient_unknown 0 | `agenthero/apps/grokrxiv/evals/results/20260613T134041Z/regression-pr54-weyl/run.log` |
 | 2026-06-13T14:23:40Z | `ff0b21b` | `p0-034-haskell-prop-fidelity` | final wrapped affected rerun after PATH install | product exit 0 as review `d146096c-c34d-43d6-b7a2-251fe4919e67`; external actions disabled; target scoping held with theorem_candidates 10/supporting_equations 903; citation checked 53 with unverified 1; Haskell author timed out after 360s before output, queued as P0-035 | `agenthero/apps/grokrxiv/evals/results/20260613T140644Z/regression-pr54-weyl/run.log` |
+| 2026-06-13T14:26:36Z | `212aaaf` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-034-haskell-prop-fidelity` | pass, coordinator fast-forwarded from `ff0b21b` to `212aaaf` | chat transcript |
+| 2026-06-13T14:26:36Z | `212aaaf` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 14 tests after coordinator merge | chat transcript |
+| 2026-06-13T14:26:36Z | `212aaaf` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T14:26:36Z | `212aaaf` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short --branch` | pass, clean before integration state update | chat transcript |
 
 ## Logging Rule
 
