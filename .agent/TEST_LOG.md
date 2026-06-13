@@ -97,12 +97,12 @@
 | 2026-06-13T01:57:34Z | `8bf3d75` | `p0-013-citation-retractions` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
 | 2026-06-13T01:57:34Z | `8bf3d75` | `p0-013-citation-retractions` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T01:57:34Z | `8bf3d75` | `p0-013-citation-retractions` | `git diff --check` | pass | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier grounded_fallback_resolves_residue_with_url_evidence -- --nocapture` | expected fail before fix: missing `CitationVerifier::with_bibliographic_and_grounded_provider_bases`; pass after fix | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier provider_requests_include_semantic_scholar_and_ads_auth_headers -- --nocapture` | expected fail before fix: Semantic Scholar/ADS mock endpoints returned 404 without required headers; pass after fix | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 33 tests | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
-| 2026-06-13T02:11:15Z | `da4bbe6` | `p0-014-citation-grounded-fallback` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier grounded_fallback_resolves_residue_with_url_evidence -- --nocapture` | expected fail before fix: missing `CitationVerifier::with_bibliographic_and_grounded_provider_bases`; pass after fix | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier provider_requests_include_semantic_scholar_and_ads_auth_headers -- --nocapture` | expected fail before fix: Semantic Scholar/ADS mock endpoints returned 404 without required headers; pass after fix | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 33 tests | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T02:11:15Z | `ee3ee52` | `p0-014-citation-grounded-fallback` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 
