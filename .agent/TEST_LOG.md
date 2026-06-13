@@ -576,3 +576,46 @@ Residuals:
 - P0-038: raw `√` LaTeX escape gap in review rendering.
 - P0-039: Tier A Bertrand extraction completeness failure.
 - No phase tag or full P0 green claim.
+
+## P0-040 PR Render Unicode Integer-Symbol Escape - 2026-06-13T21:16:21Z
+
+Red-first evidence:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture
+```
+
+Before the renderer fix, the test failed with `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol 'ℤ'`.
+
+Commands passed after the fix:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_accepts_compilable_rendered_tex_without_agent --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Focused pass counts:
+- Render tests: 10/10.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Affected rerun:
+- Result dir: `agenthero/apps/grokrxiv/evals/results/20260613T204908Z/zeta3-after-p0-040-integer-symbol`.
+- Product command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`.
+- Product exit: `product_status.txt=0`; JSON output had `ok=true`, `output.status=0`.
+- Review `f4ae38c0-4902-4545-a697-3fd499595d4a`: external actions disabled, `pr_url=null`.
+- Root renderer evidence: no raw `ℤ`, `U+2124`, or `Unicode character ℤ` appears in the fixed review log; `review_loop/fixed/review.log` records `Output written on review.pdf (30 pages, 253461 bytes)`.
+- PR fixer artifact: `pr_fixes.status=pass`; `pr_review_fix_code` passed.
+- Honest remaining red: Lean `status=fail`, `verdict=NOT_PROVED`, `proof_status=USES_SORRY`; semantic adequacy `status=fail` with `OVERCLAIMED`; policy gate failed on proof/adequacy.
+- New renderer residual: direct scratch compile of the original rendered `review.tex` now fails on `Unicode character ∃ (U+2203)` at line 44. Queue P0-041 for `∃`/`∀`; do not claim the zeta entry is green.
+
+Residuals:
+- No phase tag or full P0 green claim.
+- P0-041 quantifier escape runs before P0-039 Bertrand extraction completeness.

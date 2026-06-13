@@ -1672,3 +1672,63 @@ Fix plan:
 2. Map U+221A to a PDFLaTeX-safe symbol in `agenthero/apps/grokrxiv/crates/render/src/latex.rs`.
 3. Run render tests and PR fast-path coverage.
 4. Re-run `zeta3-irrationality` with `--no-external-actions` and confirm compile-first stays deterministic.
+
+## P0-040 - PR Render Unicode Integer-Symbol Escape
+
+ID: P0-040
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `82be001c-ffaf-47d4-820d-da0c7777c178`
+Review id after fix: `f4ae38c0-4902-4545-a697-3fd499595d4a`
+Runner: local CLI
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected rerun completed; raw `ℤ` no longer breaks rendered LaTeX, but the next raw quantifier escape gap now blocks deterministic PR compile-first.
+Bucket: F1 app-local artifact/rendering contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-038 fixed raw `√`, but the affected rerun still failed deterministic PR compile-first on raw Unicode `ℤ`.
+- The P0-038 compile log recorded `Unicode character ℤ (U+2124) not set up for use with LaTeX`.
+
+Raw evidence paths:
+- Before: `.agent/worktrees/p0-038-render-sqrt-escape/agenthero/apps/grokrxiv/evals/results/20260613T201053Z/zeta3-after-p0-038-sqrt/run.log`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T204908Z/zeta3-after-p0-040-integer-symbol/run.log`
+
+Artifact paths:
+- Before compile log: `.agent/worktrees/p0-038-render-sqrt-escape/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/82be001c-ffaf-47d4-820d-da0c7777c178/review_loop/fixed/review.log`
+- After PR fixes: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/f4ae38c0-4902-4545-a697-3fd499595d4a/review_loop/pr_fixes.json`
+- After compile log: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/f4ae38c0-4902-4545-a697-3fd499595d4a/review_loop/fixed/review.log`
+
+Root cause:
+- Rendered review evidence can include set symbols from mathematical text; the renderer did not map U+2124 `ℤ`.
+- PDFLaTeX rejects raw `ℤ` under the current preamble.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/render/src/latex.rs`
+- `agenthero/apps/grokrxiv/crates/render/tests/render.rs`
+
+Resolution:
+1. Added red-first render coverage to `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` for raw `ℤ`.
+2. Mapped `\u{2124}` to `\ensuremath{\mathbb{Z}}` in `latex_escape`.
+3. Reinstalled local `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the P0-040 worker before the affected rerun.
+
+Evidence:
+- Red-first test failed before implementation: `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol 'ℤ'`.
+- Focused render test passed after implementation.
+- Full render tests passed 10/10.
+- App-runtime PR fixer fast-path test passed.
+- App-runtime `review_loop` passed 17/17.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs replaced P0-038 binaries with P0-040 worker builds.
+- Affected rerun `20260613T204908Z/zeta3-after-p0-040-integer-symbol`: product exit 0, review `f4ae38c0-4902-4545-a697-3fd499595d4a`, external actions disabled, `pr_url=null`, no `Unicode character ℤ`, `U+2124`, or raw `ℤ` error in `review_loop/fixed/review.log`; `review.pdf` was written.
+
+Residual:
+- This is not a full `zeta3-irrationality` green claim. The rerun still has honest Lean/semantic adequacy failures (`NOT_PROVED`/`USES_SORRY`, `OVERCLAIMED`) for this paper.
+- The PR path still did not use `deterministic_pr_artifact_compiler`; `pr_fixes.json` records `author_role=pr_artifact_fixer` and recovery from an on-disk artifact after a 360s runner timeout.
+- Direct scratch compilation of the original rendered `review.tex` now fails on raw `∃ (U+2203)` at line 44; the same sentence contains `∀ (U+2200)`. Queue P0-041 before P0-039.
+- No full P0 green claim. This was an affected single-entry rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+
+Attempts: 1
+Escalation status: none.

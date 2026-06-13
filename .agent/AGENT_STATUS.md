@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T20:43:00Z
+Updated: 2026-06-13T21:16:21Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: coordinator after P0-038 fast-forward merge; next worker should start P0-040.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-038-render-sqrt-escape` in `.agent/worktrees/p0-038-render-sqrt-escape`.
+- Session type: P0-040 worker completed; coordinator merge/checkpoint remains next.
+- Branch/worktree: worker branch `p0-040-render-integer-symbol-escape` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-040-render-integer-symbol-escape`; coordinator branch `grokrxiv-local-corpus-harness` remains at `/Users/mlong/Documents/Development/grokrxiv`.
 - Latest merged worker checkpoint: P0-038 at `5a6c068`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-040 render escape gap for raw Unicode integer symbol `ℤ` discovered by the P0-038 affected rerun. P0-038 fixed raw square-root `√` escaping (`\ensuremath{\surd}`) with red-first renderer coverage, full local verification, PATH binary installs, and safe `zeta3-irrationality` rerun. The rerun review `82be001c-ffaf-47d4-820d-da0c7777c178` no longer failed on `√`, but deterministic PR compile-first then failed on `Unicode character ℤ (U+2124)` in `review_loop/fixed/review.log` and fell through to the 360s `pr_artifact_fixer` timeout. Queue P0-040 before resuming the corpus sweep. Separate P0-039 extraction defect remains: `bertrand-elementary` exits 1 at extraction completeness with no body sections and 0 body chars; the N1 gate correctly stopped review, but Tier A expects `full_body`. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-041 render escape gap for raw quantifiers `∃`/likely `∀`, discovered while verifying the P0-040 affected rerun. P0-040 fixed raw Unicode integer symbol `ℤ` escaping (`\ensuremath{\mathbb{Z}}`) with red-first renderer coverage, full local verification, PATH binary installs, and safe `zeta3-irrationality` rerun as review `f4ae38c0-4902-4545-a697-3fd499595d4a`. The rerun no longer contains raw `ℤ`/U+2124 errors and produced a fixed PDF, but the PR stage still fell through to `pr_artifact_fixer` and recovered after timeout; direct scratch compilation of the original rendered `review.tex` now fails on `Unicode character ∃ (U+2203)`. Queue P0-041 before P0-039. Separate P0-039 extraction defect remains: `bertrand-elementary` exits 1 at extraction completeness with no body sections and 0 body chars; the N1 gate correctly stopped review, but Tier A expects `full_body`. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

@@ -2,13 +2,13 @@
 
 Continue exactly from here:
 
-## P0-040 PR Render Unicode Integer-Symbol Escape
+## P0-041 PR Render Unicode Quantifier Escape
 
 Current coordinator:
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- P0-038 worker branch: `p0-038-render-sqrt-escape`
-- Status: P0-038 fixed raw `√` escaping but affected rerun exposed the next same-surface renderer gap, raw `ℤ`.
+- P0-040 worker branch: `p0-040-render-integer-symbol-escape`
+- Status: P0-040 fixed raw `ℤ` escaping but the affected rerun exposed the next same-surface renderer gap, raw quantifier `∃`.
 
 Read first:
 - `agenthero/apps/grokrxiv/evals/corpus.yaml`
@@ -20,19 +20,19 @@ Read first:
 - `.agent/TEST_LOG.md`
 - `agenthero/apps/grokrxiv/evals/results/LEDGER.md`
 
-P0-038 evidence:
-- Worker result root: `.agent/worktrees/p0-038-render-sqrt-escape/agenthero/apps/grokrxiv/evals/results/20260613T201053Z/zeta3-after-p0-038-sqrt`
-- Review id: `82be001c-ffaf-47d4-820d-da0c7777c178`
+P0-040 evidence:
+- Worker result root: `.agent/worktrees/p0-040-render-integer-symbol-escape/agenthero/apps/grokrxiv/evals/results/20260613T204908Z/zeta3-after-p0-040-integer-symbol`
+- Review id: `f4ae38c0-4902-4545-a697-3fd499595d4a`
 - Product exit: `0`
 - External actions: disabled; `pr_url=null`
-- Fixed by P0-038: no `Unicode character √` failure remains in `review_loop/fixed/review.log`.
-- New blocker: `.agent/worktrees/p0-038-render-sqrt-escape/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/82be001c-ffaf-47d4-820d-da0c7777c178/review_loop/fixed/review.log` records `Unicode character ℤ (U+2124) not set up for use with LaTeX` at rendered TeX line 58, followed by no output PDF. `pr_fixes.json` records fallback into `pr_artifact_fixer`, which timed out after 360s.
+- Fixed by P0-040: no `Unicode character ℤ`, `U+2124`, or raw `ℤ` failure remains in `review_loop/fixed/review.log`; fixed `review.pdf` was written.
+- Remaining blocker: direct scratch compilation of the original rendered `review.tex` fails on `Unicode character ∃ (U+2203) not set up for use with LaTeX` at line 44. The same sentence also contains `∀ (U+2200)`, so cover both quantifiers.
 
 Expected next session shape:
-1. Fast-forward merge P0-038 into the coordinator if not already merged.
-2. Start a fresh local worker branch/worktree, for example `p0-040-render-integer-symbol-escape`.
-3. Add red-first renderer coverage for raw `ℤ` in review evidence text.
-4. Implement the minimal PDFLaTeX-safe mapping in `agenthero/apps/grokrxiv/crates/render/src/latex.rs`.
+1. Fast-forward merge P0-040 into the coordinator if not already merged.
+2. Start a fresh local worker branch/worktree, for example `p0-041-render-quantifier-escape`.
+3. Add red-first renderer coverage for raw `∃` and `∀` in review evidence text.
+4. Implement minimal PDFLaTeX-safe mappings in `agenthero/apps/grokrxiv/crates/render/src/latex.rs`.
 5. Run render tests, app-runtime PR fast-path coverage, app workspace check, and structural tests.
 6. Reinstall `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the worker.
 7. Re-run `zeta3-irrationality` safely with `--no-external-actions`.
