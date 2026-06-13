@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 31: decide whether the local runner is usable, then rerun the Tier R regression only if it is. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 32: merge P0-031, then diagnose the Haskell semantic target explosion. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -16,42 +16,52 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Current coordinator state:
-- Branch `grokrxiv-local-corpus-harness`
-- P0-029 worker `p0-029-agent-runner-empty-failure` fast-forward merged at `2e7961b`
-- Coordinator-side runner tests passed 42/42
-- Coordinator-side app workspace check passed
-- State-only integration commit is pending from the current session
+Current worker state:
+- Worker branch `p0-031-tier-r-after-runner`
+- Worker base `ee66046`
+- Worker checkpoint commit is expected to be `codex checkpoint: P0 - tier r rerun after runner reset`
 - No baseline tag, no full corpus-green claim, and no phase tag yet
 
-P0-029 result:
-- The runner no longer drops stdout-only Claude failure details on nonzero exits.
-- `exec_and_capture` now classifies quota/session-limit output from stderr, stdout, or CLI logs.
-- Generic nonzero runner failures now include bounded `stderr=`, `stdout=`, or `log=` detail.
-- The remaining issue is environment state: app-equivalent provider API env scrubbing recently produced Claude stdout with `api_error_status=429` and `You've hit your session limit`.
+P0-031 evidence:
+- Probe directory: `agenthero/apps/grokrxiv/evals/results/20260613T122028Z/p0-031-runner-probe/`
+- Rerun directory: `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/regression-pr54-weyl/`
+- Review ID: `667842d3-71e0-4fe9-950a-1518db105049`
+- Product exit status: `0`
+- External actions disabled; `pr_url=null`
+- Extraction/math-source signal preserved: `body_chars=117245`, `sections=8`, `theorem_nodes=41`, `equations=903`, `warnings=0`
+- Citation validation stayed within Tier R threshold: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`
+- PR fixer and PR review passed
+- Honest recommendation policy stayed fixed
+- Lean emitted `verdict="NOT_PROVED"` and `proof_status="SEMANTIC_GAP"` because Haskell failed
 
-Session 31 task:
-1. Confirm the coordinator state-only integration commit was created:
-   `git log --oneline -3`
+Current red:
+- `semantic_category_mapper` emitted 913 theorem candidates for the Weyl paper.
+- Haskell attempt 1 produced schema-valid output but was rejected: `SemanticModel.hs must include Lean target declaration thm_1`.
+- Haskell attempt 2 timed out after 360s for role `haskell_code_fixer`.
+- Semantic adequacy stayed `OVERCLAIMED` with 913 verdicts and empty emitted/verified statements.
+- Policy/publish decision failed from the Haskell/Lean/semantic adequacy cascade.
+
+Session 32 task:
+1. In the worker, confirm `git diff --check`, `git status --short`, and commit:
+   `git add .`
+   `git commit -m "codex checkpoint: P0 - tier r rerun after runner reset"`
+2. In the coordinator worktree:
+   `cd /Users/mlong/Documents/Development/grokrxiv`
    `git status --short --branch`
-2. Probe scrubbed-env Claude cheaply before any corpus rerun. Use a tiny prompt and the same provider API env scrubbing behavior as the app runner. Capture exit code, stdout, and stderr in `.agent/p0-031-runner-probe/` or the next result directory.
-3. If the probe still reports session limit or quota exhaustion, write an F3 note, append ledger/test-log rows, update NEXT_STEPS with the reset/fallback action, and stop this defect thread. Do not run the corpus.
-4. If the probe succeeds, create a local worker branch for the affected rerun and run:
-   `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
-5. Capture raw output under:
-   `agenthero/apps/grokrxiv/evals/results/<ts>/regression-pr54-weyl/run.log`
-   `agenthero/apps/grokrxiv/evals/results/<ts>/regression-pr54-weyl/exit.status`
-   `agenthero/apps/grokrxiv/evals/results/<ts>/provenance.json`
-6. Check the result against `evals/corpus.yaml` and `evals/LOOP.md`, especially:
-   - no external actions and `pr_url=null`
-   - no N1/N2/N3/N4/N5 NEVER-events
-   - extraction/math-source signal preserved
-   - all specialists complete or explicit failure artifacts
-   - citation partial result non-empty and `needs_review <= 2`
-   - Haskell/Lean/semantic adequacy status is honest and mechanically surfaced
-7. Update `.agent/FINDINGS.md`, `.agent/PATCH_PLAN.md`, `.agent/TEST_LOG.md`, `.agent/NEXT_STEPS.md`, and `agenthero/apps/grokrxiv/evals/results/LEDGER.md`; commit one checkpoint.
+   `git merge --ff-only p0-031-tier-r-after-runner`
+3. Run coordinator verification:
+   `git diff --check`
+   Optional if state-only merge only: no code tests required beyond status/diff.
+4. Commit the coordinator integration update:
+   `codex checkpoint: P0 - tier r rerun after runner reset integration`
+5. Start P0-032 in a fresh worker. Diagnose the target explosion before patching:
+   - Read `review_loop/semantic_model.json`, `semantic_ir.json`, `haskell/results.json`, and the Haskell decisions for review `667842d3-71e0-4fe9-950a-1518db105049`.
+   - Determine why equation targets are included as required Lean declarations and whether P0 should bound target selection or classify this as a P2 typed-IR gap.
+   - If app-local, write a failing fixture first, then fix.
+   - If architectural/P2, write an explicit F2/F4 dossier and keep the corpus red without weakening expectations.
 
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not weaken `expected:` blocks or NEVER-events.
+Do not raise token caps or timeouts without a diagnosed cause.
 Full sweeps only when the patch plan says the phase might be done.
 ```

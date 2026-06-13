@@ -1155,6 +1155,59 @@ Residual:
 Attempts: 1
 Escalation status: none. This is not a three-strike escalation yet; the next thread is a coordinator merge plus either local CLI quota reset/fallback or a Tier R rerun when the runner can execute.
 
+## P0-031: Tier R Rerun After Runner Reset Is Red On Haskell Target Scope
+
+ID: P0-031
+Corpus entry: `regression-pr54-weyl`
+Review id: `667842d3-71e0-4fe9-950a-1518db105049`
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product command exited 0; deterministic review-loop status failed.
+finish_reason: safe affected Tier R rerun after P0-029 runner fix and local Claude session reset.
+Bucket: F4 cascade, likely rooted in F2 formalization scope until diagnosed.
+NEVER-event: none triggered. External actions were disabled, no PR URL was created, and Lean did not report `PROVED`.
+Symptom:
+- The P0-028 blank `claude` exit-1 failures did not recur: specialists completed, meta-review completed, and Haskell attempt 1 emitted schema-valid output.
+- `semantic_category_mapper` emitted 913 theorem candidates for the Weyl paper.
+- Haskell attempt 1 was rejected because `SemanticModel.hs` missed Lean target declarations, starting with `thm_1`.
+- Haskell attempt 2 (`haskell_code_fixer`) timed out after 360s.
+- Haskell failure cascaded to skipped proof obligations, Lean `NOT_PROVED`/`SEMANTIC_GAP`, semantic adequacy `OVERCLAIMED`, policy fail, and publish decision fail.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/preflight-agh-doctor.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/provenance.json`
+- `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/regression-pr54-weyl/exit.status`
+Artifact paths:
+- Review loop root: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/667842d3-71e0-4fe9-950a-1518db105049/review_loop/`
+- Haskell results: `review_loop/haskell/results.json`
+- Haskell attempt 1 decision: `review_loop/agent_outputs/haskell_review_fix_code/round_1/haskell_semantic_author/decision.json`
+- Haskell attempt 2 decision: `review_loop/agent_outputs/haskell_review_fix_code/round_2/haskell_code_fixer/decision.json`
+- Citation validation: `review_loop/citation_validation_report.json`
+- Lean results: `review_loop/lean/results.json`
+- Semantic adequacy: `review_loop/semantic_adequacy.json`
+Root cause:
+- Not fixed in this session. The immediate failure is not quota/auth or a blank runner error; it is the Haskell formalization loop attempting to satisfy a very large target set and timing out during the fixer round. The next defect should determine whether the app is over-selecting formal targets in P0, or whether this is the known P2 typed-IR/deterministic Lean-emission gap that must be classified honestly without blocking P0 integrity gates.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/review-loop/src/lib.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- Haskell/semantic review-loop harness under `agenthero/apps/grokrxiv/crates/orchestrator/src/`
+Evidence:
+- Scrubbed-env Claude probe before rerun: exit 0, stdout JSON `is_error=false`, stderr empty.
+- Wrapped preflight: `agh doctor` exit 0; GHC `9.14.1`; Lean `4.30.0`; Lake `5.0.0-src+d024af0`.
+- Product `exit.status`: `0`.
+- External actions disabled and `pr_url=null`; run log says `external actions disabled; skipped PR [revision_needed]`.
+- Extraction/math-source signal: `body_chars=117245`, `sections=8`, `theorem_nodes=41`, `equations=903`, `warnings=0`.
+- Citation validation: `status=warn`, `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`, and non-empty evidence.
+- `pr_fixer` and `pr_review_fix_code`: both `OK`.
+- Policy recommendation handling: `recommendation_policy.status="honest_non_publishing_recommendation"`.
+- `haskell/results.json`: first attempt rejected with `SemanticModel.hs must include Lean target declaration thm_1`; second attempt rejected with `CliRunner timed out after 360s for role haskell_code_fixer`.
+- `lean/results.json`: `status="fail"`, `verdict="NOT_PROVED"`, `proof_status="SEMANTIC_GAP"`, `skip_reason="Haskell mathematical IR generation did not pass; Lean verification is blocked."`
+- `semantic_adequacy.json`: `status="fail"`, `verdicts_len=913`, sample verdicts `OVERCLAIMED` with empty emitted/verified statements.
+Residual:
+- Tier R is still not green. The next focused session is P0-032: write a failing fixture around the target-selection/Haskell timeout behavior if the fix is app-local; otherwise write an explicit F2/F4 dossier tying this red to P2 without weakening corpus expectations.
+Attempts: 1
+Escalation status: none. This is the first isolated run after P0-029; do not three-strike escalate yet.
+
 ## Finding Template
 
 Use one dossier per defect.

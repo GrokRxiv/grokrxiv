@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T12:18:14Z
+Updated: 2026-06-13T12:48:08Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 30 integration complete; P0-029 worker merged and coordinator checks passed.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-029-agent-runner-empty-failure` fast-forward merged.
-- Branch base commit: `2e7961b`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
+- Session type: P0 session 31 worker complete; Tier R rerun after runner reset completed and current red was reclassified.
+- Branch/worktree: worker branch `p0-031-tier-r-after-runner` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-031-tier-r-after-runner`; coordinator branch `grokrxiv-local-corpus-harness` remains in `/Users/mlong/Documents/Development/grokrxiv`.
+- Branch base commit: `ee66046`; current checkpoint commit: pending P0-031 worker checkpoint commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none currently assigned. P0-029 is integrated. The empty local `claude` exit-1 failure was diagnosed as a scrubbed-env Claude session-limit response written to stdout with empty stderr. The runner now classifies stdout/stderr/CLI-log quota signals on nonzero exits and includes bounded stdout/stderr detail for generic failures. Local Claude without `ANTHROPIC_API_KEY` recently reported `api_error_status=429` and `You've hit your session limit`; wait for reset or configure an explicit CLI quota fallback before the next Tier R rerun. No full corpus green claim or phase tag.
+- In-flight defect: P0-031 worker ready for coordinator merge. The scrubbed-env Claude probe succeeded, and a safe Tier R rerun completed as review `667842d3-71e0-4fe9-950a-1518db105049`. P0-029 fixed the blank runner failure: specialists and meta-review completed, and Haskell attempt 1 produced schema-valid output. The entry remains red because Haskell semantic authoring generated an incomplete formal target set, then `haskell_code_fixer` timed out after 360s on attempt 2. Current next defect is P0-032: diagnose/fix semantic target explosion or Haskell fix-loop scope without raising timeouts. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -74,6 +74,7 @@ Updated: 2026-06-13T12:18:14Z
 - P0-028 coordinator verification, 2026-06-13T12:00Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `d9059d7`, then ran `git diff --check` and `git status --short`; both passed with a clean worktree before this state-only integration update. No full corpus-green claim or phase tag.
 - P0-029 local agent-runner empty failure, 2026-06-13T12:13Z: worker branch `p0-029-agent-runner-empty-failure` reproduced the environment difference. With shell `ANTHROPIC_API_KEY`, the exact Haskell harness command succeeded; with app-equivalent provider API env scrubbing, a tiny Claude prompt exited 1 with a structured stdout JSON containing `api_error_status=429` and `You've hit your session limit`, while stderr was empty. Added a red-first fake-CLI regression test and fixed `exec_and_capture` to classify nonzero stdout quota/session-limit output and include stdout details in generic nonzero failures. Runner tests passed 42/42, app workspace check passed, `git diff --check` passed, and PATH `grokrxiv-app` was reinstalled and dry-run tested.
 - P0-029 coordinator verification, 2026-06-13T12:18Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `2e7961b`, then reran coordinator-side runner tests 42/42 and app workspace check; both passed. No full corpus-green claim or phase tag.
+- P0-031 Tier R rerun after runner reset, 2026-06-13T12:48Z: worker branch `p0-031-tier-r-after-runner` confirmed scrubbed-env Claude with a tiny prompt exits 0, refreshed PATH `grokrxiv-app`, recorded wrapper preflight/provenance, and reran `regression-pr54-weyl` safely. Product exit 0 as review `667842d3-71e0-4fe9-950a-1518db105049`; external actions disabled and `pr_url=null`; extraction/math signal preserved (`body_chars=117245`, `sections=8`, `theorem_nodes=41`, `equations=903`, `warnings=0`); citation stayed within Tier R threshold (`checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`); PR fixer and PR review passed; honest recommendation policy stayed fixed. The remaining red is Haskell/semantic-target scope: `semantic_category_mapper` emitted 913 theorem candidates, Haskell attempt 1 was rejected for missing Lean target declarations, attempt 2 timed out after 360s, Lean emitted `NOT_PROVED`/`SEMANTIC_GAP`, and semantic adequacy stayed `OVERCLAIMED`.
 
 ## Coordinator Rules
 

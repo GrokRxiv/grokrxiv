@@ -299,6 +299,11 @@
 | 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture` | pass, 42 runner tests after coordinator merge | chat transcript |
 | 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
 | 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass before state-only integration commit | chat transcript |
+| 2026-06-13T12:20:28Z | `ee66046` | `grokrxiv-local-corpus-harness` | app-equivalent scrubbed-env Claude probe | pass, exit 0; stdout JSON `is_error=false`, `api_error_status=null`, result `{"ok":true}`; stderr empty | `agenthero/apps/grokrxiv/evals/results/20260613T122028Z/p0-031-runner-probe/` |
+| 2026-06-13T12:22:32Z | `ee66046` | `p0-031-tier-r-after-runner` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app` from P0-031 worker; existing locked yanked-zip warning only | chat transcript |
+| 2026-06-13T12:22:32Z | `ee66046` | `p0-031-tier-r-after-runner` | wrapped preflight `agh doctor` plus GHC/Lake/Lean provenance | pass, doctor exit 0; GHC `9.14.1`, Lean `4.30.0`, Lake `5.0.0-src+d024af0` | `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/` |
+| 2026-06-13T12:48:08Z | `ee66046` | `p0-031-tier-r-after-runner` | wrapped `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0; review `667842d3-71e0-4fe9-950a-1518db105049`; deterministic review-loop fail; no external actions, `pr_url=null` | `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/regression-pr54-weyl/run.log` |
+| 2026-06-13T12:48:08Z | `ee66046` | `p0-031-tier-r-after-runner` | artifact checks for review `667842d3-71e0-4fe9-950a-1518db105049` | fixed invariants held: body chars 117245, sections 8, theorem nodes 41, equations 903, citation checked 53/unverified 2/unresolved 0/transient_unknown 0, PR fixer pass, PR review pass, honest recommendation policy pass; remaining red Haskell fixer timeout and semantic adequacy overclaimed | chat transcript |
 
 ## Logging Rule
 
