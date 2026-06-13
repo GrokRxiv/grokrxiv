@@ -79,6 +79,10 @@
 | 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 267 tests | chat transcript |
 | 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_n5_halts_tier_c_when_lean_reports_proved -- --nocapture` | expected fail before implementation, compile error `ReviewLoopCorpusContext` / `review_loop_n5_false_proof_halt` missing; pass after fix | chat transcript |
+| 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_ -- --nocapture` | pass, 12 tests | chat transcript |
+| 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 272 tests | chat transcript |
 
 ## Logging Rule
 

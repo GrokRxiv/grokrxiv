@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T01:21:31Z
+Updated: 2026-06-13T01:34:33Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 9, P0-010 bundle completeness.
-- Branch/worktree: `p0-010-bundle-completeness` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-010-bundle-completeness`.
-- Branch base commit: `e85d1ff`.
+- Session type: P0 session 10, P0-011 false-proof halt.
+- Branch/worktree: `p0-011-false-proof-halt` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-011-false-proof-halt`.
+- Branch base commit: `ad932e4`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-010 fixed locally for N4 bundle completeness. Review-loop runs now produce `review_loop/bundle_completeness.json`, check manifest-declared non-terminal artifact outputs before policy, require missing outputs to have explicit skip reasons, and attach manifest outputs dynamically in PR bundles. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
+- In-flight defect: P0-011 fixed locally for N5 false-proof halt. Review-loop runs now load matching `evals/corpus.yaml` context for persisted review sources, halt immediately when Tier C/G corpus entries report Lean `PROVED`, write `review_loop/never_event_dossier.json`, mark policy/report/publish-decision artifacts as halted, and suppress downstream PR side effects even when external actions are otherwise enabled. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -45,6 +45,7 @@ Updated: 2026-06-13T01:21:31Z
 - P0-008 fix, 2026-06-13T00:59Z: specialist runner failures now carry an execution-failure marker through review DAG persistence, force verifier status `fail`, and add structured `agent_execution.status=failed`, `role`, and `reason` notes to the rendered agent artifact envelope. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 263 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-009 fix, 2026-06-13T01:08Z: specialist gate input completeness now uses DAG-declared required specialist roles for both live review DAG gating and persisted publication-gate reconstruction. Missing required roles are represented as blocked roles and force `meta_can_run=false` even when the persisted usable-row count reaches quorum. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 264 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-010 fix, 2026-06-13T01:21Z: review-loop bundle completeness now checks manifest-declared artifact outputs, writes `bundle_completeness.json`, records explicit skips for currently unwired citation adjudication and missing PR PDFs, gates policy on unskipped missing outputs, and builds PR attachments from the manifest output list plus harness evidence. Targeted N4 tests passed, serial full app-runtime lib tests passed, and app workspace check passed. Parallel full lib runs exposed pre-existing config/env test isolation flakes; the failing tests passed individually and in the serial full run.
+- P0-011 fix, 2026-06-13T01:34Z: N5 false-proof halt now checks corpus Tier C/G context before downstream review-loop work. Lean `PROVED` on `blum-pvnp`/synthetic false-theorem-style entries produces a halt dossier, halted policy/report artifacts, and no PR side effect. Targeted review-loop tests passed, serial full app-runtime lib tests passed, and app workspace check passed.
 
 ## Coordinator Rules
 

@@ -3895,6 +3895,13 @@ struct ReviewLoopStage {
     required: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ReviewLoopCorpusContext {
+    id: String,
+    tier: String,
+    source: String,
+}
+
 fn review_loop_stage_plan() -> anyhow::Result<Vec<ReviewLoopStage>> {
     let manifest_path = agent_config::dag_manifest_path("review-loop");
     let manifest = DagManifest::from_path(&manifest_path)
@@ -4742,6 +4749,38 @@ fn review_pr_dispatch_skipped_by_policy(
     }
 }
 
+fn review_pr_dispatch_skipped_for_loop_halt() -> ReviewPrDispatchOutcome {
+    ReviewPrDispatchOutcome {
+        pr_url: None,
+        gate_verdict: crate::review_gate::GateVerdict::Fail,
+        recommendation: "human_escalation_required".to_string(),
+        kind: ReviewPrDispatchKind::RevisionNeeded,
+        external_actions_enabled: false,
+    }
+}
+
+fn review_loop_external_actions_allowed(
+    external_actions_enabled: bool,
+    loop_outcome: Option<&ReviewLoopOutcome>,
+) -> bool {
+    external_actions_enabled && !loop_outcome.is_some_and(review_loop_outcome_halted)
+}
+
+fn review_loop_outcome_halted(outcome: &ReviewLoopOutcome) -> bool {
+    outcome.halted
+        || outcome.deterministic_status == "halted"
+        || outcome
+            .report
+            .get("halted")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        || outcome
+            .report
+            .get("halted_by_never_event")
+            .and_then(|value| value.as_str())
+            .is_some()
+}
+
 fn review_pr_dispatch_cli_summary(pr: &ReviewPrDispatchOutcome) -> String {
     match pr.pr_url.as_deref() {
         Some(pr_url) => format!("pr_url={pr_url}"),
@@ -4766,6 +4805,7 @@ fn review_result_envelope_with_loop(
                 "dag_type": "review-loop",
                 "status": loop_outcome.deterministic_status,
                 "publisher_ready": loop_outcome.publisher_ready,
+                "halted": loop_outcome.halted,
                 "blocking_issues": loop_outcome.blocking_issues,
                 "artifact_dir": loop_outcome.artifact_dir,
                 "report_path": loop_outcome.report_path,
@@ -4779,10 +4819,235 @@ fn review_result_envelope_with_loop(
 struct ReviewLoopOutcome {
     publisher_ready: bool,
     deterministic_status: String,
+    halted: bool,
     blocking_issues: Vec<String>,
     artifact_dir: String,
     report_path: String,
     report: serde_json::Value,
+}
+
+fn review_loop_corpus_contexts_from_yaml(
+    corpus_yaml: &str,
+) -> anyhow::Result<Vec<ReviewLoopCorpusContext>> {
+    let corpus: serde_yaml::Value =
+        serde_yaml::from_str(corpus_yaml).context("parse GrokRxiv golden corpus")?;
+    let entries = corpus
+        .get("entries")
+        .and_then(|value| value.as_sequence())
+        .ok_or_else(|| anyhow::anyhow!("corpus.yaml missing entries[]"))?;
+    let mut contexts = Vec::new();
+    for entry in entries {
+        let id = entry
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("corpus entry missing id"))?;
+        let tier = entry
+            .get("tier")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("corpus entry `{id}` missing tier"))?;
+        let source = entry
+            .get("source")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("corpus entry `{id}` missing source"))?;
+        contexts.push(ReviewLoopCorpusContext {
+            id: id.to_string(),
+            tier: tier.to_string(),
+            source: source.to_string(),
+        });
+    }
+    Ok(contexts)
+}
+
+fn review_loop_n5_false_proof_halt(
+    corpus_context: &ReviewLoopCorpusContext,
+    theorem_map: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if !matches!(corpus_context.tier.as_str(), "C" | "G") {
+        return None;
+    }
+
+    let proved_entries = theorem_map
+        .get("entries")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry.get("kind").and_then(|value| value.as_str())
+                == Some("theorem_formalization")
+                && entry.get("status").and_then(|value| value.as_str()) == Some("PROVED")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let top_status = theorem_map
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("UNKNOWN");
+    if top_status != "PROVED" && proved_entries.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "schema_version": "1.0.0",
+        "status": "halted",
+        "never_event": "N5_fake_proof",
+        "action": "halt_and_escalate",
+        "reason": "Lean reported PROVED for a Tier C/G flawed or false claim. Halt the corpus loop and escalate to a human reviewer.",
+        "corpus": {
+            "id": corpus_context.id,
+            "tier": corpus_context.tier,
+            "source": corpus_context.source,
+        },
+        "lean_verdict": "PROVED",
+        "theorem_map_status": top_status,
+        "proved_entries": proved_entries,
+        "evidence": {
+            "theorem_map": "review_loop/lean/theorem_map.json",
+            "lean_results": "review_loop/lean/results.json",
+            "semantic_adequacy": "review_loop/semantic_adequacy.json",
+        },
+        "operator_instruction": "Stop the loop. Do not continue fixing autonomously. Attach this dossier and the Lean artifacts to the escalation."
+    }))
+}
+
+fn normalized_corpus_source(value: &str) -> String {
+    let mut text = value.trim().trim_start_matches("./").replace('\\', "/");
+    while text.contains("//") && !text.starts_with("http://") && !text.starts_with("https://") {
+        text = text.replace("//", "/");
+    }
+    let lower = text.to_ascii_lowercase();
+    let source = lower
+        .strip_prefix("https://arxiv.org/abs/")
+        .or_else(|| lower.strip_prefix("http://arxiv.org/abs/"))
+        .or_else(|| lower.strip_prefix("arxiv.org/abs/"))
+        .map(|id| format!("arxiv:{id}"))
+        .unwrap_or(lower);
+    if let Some(id) = source.strip_prefix("arxiv:") {
+        return format!("arxiv:{}", strip_arxiv_version(id));
+    }
+    source
+}
+
+fn strip_arxiv_version(id: &str) -> &str {
+    let Some((base, suffix)) = id.rsplit_once('v') else {
+        return id;
+    };
+    if suffix.chars().all(|ch| ch.is_ascii_digit()) && parse_arxiv_source(base).is_some() {
+        base
+    } else {
+        id
+    }
+}
+
+fn source_matches_corpus_entry(candidate: &str, corpus_source: &str) -> bool {
+    let candidate = normalized_corpus_source(candidate);
+    let expected = normalized_corpus_source(corpus_source);
+    candidate == expected
+        || expected
+            .strip_suffix('/')
+            .is_some_and(|prefix| candidate.starts_with(&format!("{prefix}/")))
+}
+
+fn add_review_loop_source_candidate(candidates: &mut BTreeSet<String>, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    candidates.insert(value.to_string());
+    let path = Path::new(value);
+    if let Some(path_text) = path.to_str() {
+        if let Ok(app_root) = crate::dag_apps::app_root("grokrxiv").canonicalize() {
+            if let Ok(stripped) = path.strip_prefix(&app_root) {
+                if let Some(rel) = stripped.to_str() {
+                    candidates.insert(rel.replace('\\', "/"));
+                    if let Some(parent) = stripped.parent().and_then(|parent| parent.to_str()) {
+                        candidates.insert(format!("{}/", parent.replace('\\', "/")));
+                    }
+                }
+            }
+        }
+        if path_text.starts_with("file://") {
+            add_review_loop_source_candidate(candidates, Some(&path_text[7..]));
+        }
+    }
+}
+
+fn review_loop_corpus_context_for_candidates(
+    contexts: &[ReviewLoopCorpusContext],
+    candidates: &BTreeSet<String>,
+) -> Option<ReviewLoopCorpusContext> {
+    contexts.iter().find_map(|context| {
+        candidates
+            .iter()
+            .any(|candidate| source_matches_corpus_entry(candidate, &context.source))
+            .then(|| context.clone())
+    })
+}
+
+async fn load_review_loop_corpus_context(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+) -> anyhow::Result<Option<ReviewLoopCorpusContext>> {
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select coalesce(source_kind, 'arxiv'), arxiv_id, source_id, source_uri, source_metadata \
+         from papers where id = $1",
+    )
+    .bind(paper_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_kind, arxiv_id, source_id, source_uri, source_metadata)) = row else {
+        return Ok(None);
+    };
+
+    let mut candidates = BTreeSet::new();
+    if source_kind == "arxiv" {
+        add_review_loop_source_candidate(&mut candidates, Some(&format!("arxiv:{arxiv_id}")));
+    }
+    add_review_loop_source_candidate(&mut candidates, Some(&arxiv_id));
+    add_review_loop_source_candidate(&mut candidates, source_id.as_deref());
+    add_review_loop_source_candidate(&mut candidates, source_uri.as_deref());
+    add_review_loop_source_candidate(
+        &mut candidates,
+        source_metadata
+            .get("display_label")
+            .and_then(|value| value.as_str()),
+    );
+    add_review_loop_source_candidate(
+        &mut candidates,
+        source_metadata
+            .get("canonical_uri")
+            .and_then(|value| value.as_str()),
+    );
+    let adapter = source_metadata
+        .get("adapter")
+        .unwrap_or(&serde_json::Value::Null);
+    add_review_loop_source_candidate(
+        &mut candidates,
+        adapter.get("path").and_then(|value| value.as_str()),
+    );
+    add_review_loop_source_candidate(
+        &mut candidates,
+        adapter.get("paper_path").and_then(|value| value.as_str()),
+    );
+
+    let corpus_path = crate::dag_apps::app_root("grokrxiv")
+        .join("evals")
+        .join("corpus.yaml");
+    let corpus_yaml = match tokio::fs::read_to_string(&corpus_path).await {
+        Ok(body) => body,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", corpus_path.display())),
+    };
+    let contexts = review_loop_corpus_contexts_from_yaml(&corpus_yaml)?;
+    Ok(review_loop_corpus_context_for_candidates(
+        &contexts,
+        &candidates,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -6355,6 +6620,23 @@ async fn run_review_loop_for_review(
             .unwrap_or("no theorem adequacy verdicts"),
     );
 
+    if let Some(corpus_context) = load_review_loop_corpus_context(pool, paper_id).await? {
+        if let Some(dossier) = review_loop_n5_false_proof_halt(&corpus_context, &theorem_map) {
+            return halt_review_loop_for_n5(
+                pool,
+                review_id,
+                &stages,
+                &artifact_dir,
+                dossier,
+                theorem_map,
+                semantic_adequacy,
+                lean_results,
+                debug_output,
+            )
+            .await;
+        }
+    }
+
     let citation_summary = citation_verifier_summary(pool, review_id).await;
     let citation_report = serde_json::json!({
         "stage": "citation_validation",
@@ -6768,6 +7050,7 @@ async fn run_review_loop_for_review(
     let outcome = ReviewLoopOutcome {
         publisher_ready,
         deterministic_status,
+        halted: false,
         blocking_issues: policy_gate["blocking_issues"]
             .as_array()
             .map(|items| {
@@ -6795,6 +7078,175 @@ async fn run_review_loop_for_review(
             cli_status::StatusMark::Fail
         },
         &format!("deterministic_status={}", outcome.deterministic_status),
+    );
+    Ok(outcome)
+}
+
+async fn halt_review_loop_for_n5(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    stages: &[ReviewLoopStage],
+    artifact_dir: &Path,
+    dossier: serde_json::Value,
+    theorem_map: serde_json::Value,
+    semantic_adequacy: serde_json::Value,
+    lean_results: serde_json::Value,
+    debug_output: bool,
+) -> anyhow::Result<ReviewLoopOutcome> {
+    use grokrxiv_schemas::VerifierStatus;
+
+    write_loop_json(&artifact_dir.join("never_event_dossier.json"), &dossier).await?;
+    let blocking_issue = dossier
+        .get("reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("N5 fake proof never-event triggered.")
+        .to_string();
+    let policy_gate = serde_json::json!({
+        "deterministic_status": "halted",
+        "publisher_ready": false,
+        "halted": true,
+        "halted_by_never_event": "N5_fake_proof",
+        "never_events": [dossier.clone()],
+        "blocking_issues": [blocking_issue.clone()],
+        "component_status": {
+            "lean": "false_proof_halt",
+            "semantic_adequacy": semantic_adequacy["status"],
+            "citation_validation": "not_run",
+            "pr_fixer": "not_run",
+        },
+        "publishability_vector": {
+            "formal": "false_proof_halt",
+            "semantic_adequacy": semantic_adequacy["status"],
+            "citation": "not_run",
+            "reproducibility": "not_run",
+            "integrity": "halted",
+            "safety": "halted",
+        },
+        "release_tier": {
+            "tier": "in_review",
+            "lifecycle_state": "human_escalation_required",
+        }
+    });
+    write_loop_json(&artifact_dir.join("policy_gate.json"), &policy_gate).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        stages,
+        "policy_gate",
+        policy_gate.clone(),
+        VerifierStatus::Fail,
+        serde_json::json!({
+            "artifact_path": "review_loop/policy_gate.json",
+            "never_event_dossier": "review_loop/never_event_dossier.json"
+        }),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "policy_gate",
+        false,
+        "review_loop/policy_gate.json",
+        debug_output,
+        "N5 fake proof halt; human escalation required",
+    );
+
+    let publish_decision = serde_json::json!({
+        "publisher_ready": false,
+        "action": "human_escalation_required",
+        "auto_publish": false,
+        "halted_by_never_event": "N5_fake_proof",
+    });
+    write_loop_json(
+        &artifact_dir.join("publish_decision.json"),
+        &publish_decision,
+    )
+    .await?;
+
+    let report = serde_json::json!({
+        "review_id": review_id,
+        "dag_type": "review-loop",
+        "deterministic_status": "halted",
+        "publisher_ready": false,
+        "halted": true,
+        "halted_by_never_event": "N5_fake_proof",
+        "never_events": [dossier],
+        "blocking_issues": policy_gate["blocking_issues"],
+        "artifact_paths": {
+            "lean": "review_loop/lean/results.json",
+            "lean_theorem_map": "review_loop/lean/theorem_map.json",
+            "lean_verification_report": "review_loop/lean/verification_report.json",
+            "semantic_adequacy": "review_loop/semantic_adequacy.json",
+            "policy_gate": "review_loop/policy_gate.json",
+            "never_event_dossier": "review_loop/never_event_dossier.json",
+            "publish_decision": "review_loop/publish_decision.json",
+        },
+        "fix_attempts": {
+            "lean": lean_results["attempts"],
+        },
+        "theorem_formalization": theorem_map,
+        "semantic_adequacy": semantic_adequacy,
+        "publishability_vector": policy_gate["publishability_vector"],
+        "release_tier": policy_gate["release_tier"],
+        "publish_decision": publish_decision,
+    });
+    write_loop_json(&artifact_dir.join("review_loop_report.json"), &report).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        stages,
+        "review_loop_report",
+        report.clone(),
+        VerifierStatus::Fail,
+        serde_json::json!({
+            "artifact_path": "review_loop/review_loop_report.json",
+            "never_event_dossier": "review_loop/never_event_dossier.json"
+        }),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "review_loop_report",
+        false,
+        "review_loop/review_loop_report.json",
+        debug_output,
+        "N5 halt report persisted",
+    );
+
+    record_review_loop_node(
+        pool,
+        review_id,
+        stages,
+        "publish_decision",
+        publish_decision,
+        VerifierStatus::Fail,
+        serde_json::json!({"artifact_path": "review_loop/publish_decision.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "publish_decision",
+        false,
+        "review_loop/publish_decision.json",
+        debug_output,
+        "human escalation required; no publishing action allowed",
+    );
+
+    let outcome = ReviewLoopOutcome {
+        publisher_ready: false,
+        deterministic_status: "halted".to_string(),
+        halted: true,
+        blocking_issues: vec![blocking_issue],
+        artifact_dir: artifact_dir.display().to_string(),
+        report_path: artifact_dir
+            .join("review_loop_report.json")
+            .display()
+            .to_string(),
+        report,
+    };
+    apply_review_loop_meta_summary(pool, review_id, &outcome).await?;
+    crate::cli_status::emit_stage(
+        6,
+        6,
+        "Review loop",
+        cli_status::StatusMark::Fail,
+        "deterministic_status=halted never_event=N5_fake_proof",
     );
     Ok(outcome)
 }
@@ -7365,6 +7817,7 @@ async fn apply_review_loop_meta_summary(
         serde_json::json!({
             "deterministic_status": outcome.deterministic_status,
             "publisher_ready": outcome.publisher_ready,
+            "halted": outcome.halted,
             "blocking_issues": outcome.blocking_issues,
             "artifact_dir": outcome.artifact_dir,
             "report_path": outcome.report_path,
@@ -8009,7 +8462,15 @@ async fn open_review_pr_after_optional_loop(
     } else {
         None
     };
-    if !external_actions_enabled {
+    if !review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref()) {
+        if loop_outcome.as_ref().is_some_and(review_loop_outcome_halted) {
+            let outcome = review_pr_dispatch_skipped_for_loop_halt();
+            crate::cli_status::emit(format!(
+                "review {review_id}: review-loop halted; skipped PR [{}]",
+                outcome.kind.as_str()
+            ));
+            return Ok((outcome, loop_outcome));
+        }
         let pool = state
             .db
             .as_ref()
@@ -11506,6 +11967,115 @@ mod tests {
                 .map(String::as_str),
             Some("fixed review.pdf was not produced")
         );
+    }
+
+    #[test]
+    fn review_loop_n5_halts_tier_c_when_lean_reports_proved() {
+        let corpus_context = ReviewLoopCorpusContext {
+            id: "blum-pvnp".to_string(),
+            tier: "C".to_string(),
+            source: "arxiv:1708.03486".to_string(),
+        };
+        let theorem_map = serde_json::json!({
+            "status": "PROVED",
+            "entries": [
+                {
+                    "obligation_id": "theorem_1",
+                    "kind": "theorem_formalization",
+                    "status": "PROVED",
+                    "statement": "P = NP"
+                }
+            ]
+        });
+
+        let dossier = review_loop_n5_false_proof_halt(&corpus_context, &theorem_map)
+            .expect("Tier C PROVED must trigger N5");
+
+        assert_eq!(dossier["never_event"], "N5_fake_proof");
+        assert_eq!(dossier["action"], "halt_and_escalate");
+        assert_eq!(dossier["corpus"]["id"], "blum-pvnp");
+        assert_eq!(dossier["corpus"]["tier"], "C");
+        assert_eq!(dossier["lean_verdict"], "PROVED");
+        assert!(dossier["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Lean reported PROVED for a Tier C/G flawed or false claim"));
+    }
+
+    #[test]
+    fn review_loop_corpus_context_matches_arxiv_source_with_version() {
+        let contexts =
+            review_loop_corpus_contexts_from_yaml(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus contexts parse");
+        let mut candidates = BTreeSet::new();
+        add_review_loop_source_candidate(
+            &mut candidates,
+            Some("https://arxiv.org/abs/1708.03486v2"),
+        );
+
+        let context = review_loop_corpus_context_for_candidates(&contexts, &candidates)
+            .expect("Blum P vs NP corpus context");
+
+        assert_eq!(context.id, "blum-pvnp");
+        assert_eq!(context.tier, "C");
+    }
+
+    #[test]
+    fn review_loop_corpus_context_matches_synthetic_false_theorem_path() {
+        let contexts =
+            review_loop_corpus_contexts_from_yaml(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus contexts parse");
+        let false_theorem_path = crate::dag_apps::app_root("grokrxiv")
+            .join("evals")
+            .join("synthetic")
+            .join("false-theorem")
+            .join("paper.tex");
+        let mut candidates = BTreeSet::new();
+        add_review_loop_source_candidate(
+            &mut candidates,
+            Some(&format!("file://{}", false_theorem_path.display())),
+        );
+
+        let context = review_loop_corpus_context_for_candidates(&contexts, &candidates)
+            .expect("synthetic false theorem corpus context");
+
+        assert_eq!(context.id, "synthetic-false-theorem");
+        assert_eq!(context.tier, "G");
+    }
+
+    #[test]
+    fn review_loop_n5_does_not_halt_tier_a_proved() {
+        let corpus_context = ReviewLoopCorpusContext {
+            id: "bertrand-elementary".to_string(),
+            tier: "A".to_string(),
+            source: "arxiv:2407.07620".to_string(),
+        };
+        let theorem_map = serde_json::json!({
+            "status": "PROVED",
+            "entries": [
+                {
+                    "kind": "theorem_formalization",
+                    "status": "PROVED"
+                }
+            ]
+        });
+
+        assert!(review_loop_n5_false_proof_halt(&corpus_context, &theorem_map).is_none());
+    }
+
+    #[test]
+    fn review_loop_halt_disables_external_actions() {
+        let outcome = ReviewLoopOutcome {
+            publisher_ready: false,
+            deterministic_status: "fail".to_string(),
+            halted: true,
+            blocking_issues: vec!["N5 fake proof never-event triggered.".to_string()],
+            artifact_dir: "/tmp/review_loop".to_string(),
+            report_path: "/tmp/review_loop/review_loop_report.json".to_string(),
+            report: serde_json::json!({}),
+        };
+
+        assert!(!review_loop_external_actions_allowed(true, Some(&outcome)));
     }
 
     #[tokio::test]

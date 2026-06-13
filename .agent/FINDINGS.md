@@ -334,6 +334,51 @@ Residual:
 - Parallel `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` is flaky in config/env-heavy tests unrelated to P0-010. In this session, `supervisor::tests::apply_revisions_errors_without_db` and then `state::tests::build_agent_registry_applies_resolved_model_override` failed in separate parallel full runs, but each passed individually and the full lib suite passed serially.
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint.
 
+## P0-011: N5 False-Proof Halt Was Not Enforced In The Review Loop
+
+ID: P0-011
+Corpus entry: `blum-pvnp` / `synthetic-false-theorem`
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixture reproduced missing N5 detector before implementation
+Bucket: F1 contract
+NEVER-event: N5_fake_proof
+Symptom: the review-loop Lean result path could mark theorem formalization `PROVED` and continue into citation/PR-fix/publish-decision stages without checking whether the run source is a Tier C/G flawed or false corpus entry.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/corpus.yaml`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Root cause:
+- `run_review_loop_for_review` built `theorem_map` and `semantic_adequacy` but had no golden-corpus context loader.
+- `ReviewLoopOutcome` did not carry halted state into the app-run envelope/meta summary.
+- `open_review_pr_after_optional_loop` only honored the operator `--no-external-actions` flag and did not suppress PR side effects when the loop halted on an integrity never-event.
+Fix plan:
+1. Add a failing fixture asserting Tier C Lean `PROVED` produces an N5 halt dossier.
+2. Parse `evals/corpus.yaml` into minimal review-loop corpus context and match persisted review source metadata against corpus `source:` values, including arXiv versions and app-relative synthetic paths.
+3. Detect Tier C/G theorem-map `PROVED` immediately after Lean/semantic adequacy and before citation/PR-fixer stages.
+4. Write `review_loop/never_event_dossier.json`, halted `policy_gate.json`, halted `review_loop_report.json`, and a non-publishing `publish_decision.json`.
+5. Suppress downstream PR side effects for halted loop outcomes even when external actions are enabled.
+Attempts: 1
+Escalation status: none.
+
+## P0-011 Resolution
+
+Status: fixed locally for N5 false-proof halt, 2026-06-13T01:34Z.
+Evidence:
+- Added `ReviewLoopCorpusContext` parsing from `agenthero/apps/grokrxiv/evals/corpus.yaml`.
+- The corpus matcher handles `https://arxiv.org/abs/<id>vN` against `arxiv:<id>` and app-relative synthetic paths such as `evals/synthetic/false-theorem/`.
+- `review_loop_n5_false_proof_halt` emits a structured dossier with `never_event=N5_fake_proof`, `action=halt_and_escalate`, corpus id/tier/source, Lean verdict, proved entries, and artifact pointers.
+- `run_review_loop_for_review` now returns early after `semantic_adequacy` when N5 fires, before citation validation, PR fixer, or publishing decisions can continue.
+- Halted loop outcomes carry `halted=true` into the result envelope and meta summary.
+- `open_review_pr_after_optional_loop` now returns a skipped non-side-effect dispatch outcome for halted loops even if external actions were requested.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_ -- --nocapture`: pass, 12 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 272 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- No full affected review-loop rerun was executed in this checkpoint because Tier G synthetic source is still `to_author` and Tier C full review-loop execution is a full multi-agent run.
+- N5 is now a runtime halt for matched corpus sources; later `agh app eval` work should move this from review-command source matching into first-class eval-run metadata.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004
