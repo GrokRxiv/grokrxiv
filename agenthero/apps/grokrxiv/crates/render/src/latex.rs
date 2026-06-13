@@ -280,6 +280,7 @@ fn latex_escape(input: &str) -> String {
             '\u{2209}' => out.push_str("\\ensuremath{\\notin}"),
             '\u{2282}' => out.push_str("\\ensuremath{\\subset}"),
             '\u{2286}' => out.push_str("\\ensuremath{\\subseteq}"),
+            '\u{221a}' => out.push_str("\\ensuremath{\\surd}"),
             '\u{221e}' => out.push_str("\\ensuremath{\\infty}"),
             '\u{2202}' => out.push_str("\\ensuremath{\\partial}"),
             '\u{2207}' => out.push_str("\\ensuremath{\\nabla}"),

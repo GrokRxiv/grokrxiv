@@ -94,6 +94,65 @@ Residual:
 Attempts: 1
 Escalation status: none.
 
+## P0-038 - PR Render Unicode Sqrt Escape
+
+ID: P0-038
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `bd8df0ab-3698-42c2-8f69-f7de7620cfee`
+Review id after fix: `82be001c-ffaf-47d4-820d-da0c7777c178`
+Runner: local CLI
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected rerun completed; raw `√` no longer breaks deterministic PR compile-first, but a new raw `ℤ` render escape gap now blocks the same compile-first path.
+Bucket: F1 app-local artifact/rendering contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-037 first full CLI sweep reached `zeta3-irrationality`, then deterministic PR compile-first failed on raw Unicode `√` in rendered TeX and fell into the slow `pr_artifact_fixer` LLM path.
+- The P0-038 rerun no longer reports `Unicode character √`, proving the focused escape is fixed.
+
+Raw evidence paths:
+- Before: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T201053Z/zeta3-after-p0-038-sqrt/run.log`
+
+Artifact paths:
+- Before compile log: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/bd8df0ab-3698-42c2-8f69-f7de7620cfee/review_loop/fixed/review.log`
+- After PR fixes: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/82be001c-ffaf-47d4-820d-da0c7777c178/review_loop/pr_fixes.json`
+- After compile log: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/82be001c-ffaf-47d4-820d-da0c7777c178/review_loop/fixed/review.log`
+
+Root cause:
+- Rendered review evidence can include Unicode math glyphs that PDFLaTeX does not accept under the current preamble.
+- The renderer already escaped many math glyphs and P0-036 added `✓`; it did not include U+221A `√`.
+- `try_compile_existing_pr_artifact` returns `None` on compile failure, so the runtime falls through to the timeout-prone `pr_artifact_fixer` LLM path.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/render/src/latex.rs`
+- `agenthero/apps/grokrxiv/crates/render/tests/render.rs`
+
+Resolution:
+1. Added red-first render coverage to `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` for raw `√`.
+2. Mapped `\u{221a}` to `\ensuremath{\surd}` in `latex_escape`.
+3. Reinstalled local `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the P0-038 worker before the affected rerun.
+
+Evidence:
+- Red-first test failed before implementation: `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol '√'`.
+- Focused render test passed after implementation.
+- Full render tests passed 10/10.
+- App-runtime PR fixer fast-path test passed.
+- App-runtime `review_loop` passed 17/17.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs replaced P0-036 binaries with P0-038 worker builds.
+- Affected rerun `20260613T201053Z/zeta3-after-p0-038-sqrt`: product exit 0, review `82be001c-ffaf-47d4-820d-da0c7777c178`, external actions disabled, `pr_url=null`, no `Unicode character √` in `review_loop/fixed/review.log`.
+
+Residual:
+- Queue P0-040: the same affected rerun exposed the next deterministic renderer gap, `Unicode character ℤ (U+2124)` at rendered TeX line 58. Because compile-first failed on `ℤ`, the runtime again fell through to `pr_artifact_fixer`, which timed out after 360s. Do not claim `zeta3-irrationality` is green until P0-040 is fixed and rerun.
+- No full P0 green claim. This was an affected single-entry rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-035c - CLI Acceptance With Truncated-Statement Semantic Gaps
 
 ID: P0-035c
