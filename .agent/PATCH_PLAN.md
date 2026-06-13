@@ -4,10 +4,9 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Coordinator / Verifier Worker: P0-005 PR fixer timeout is confirmed on valid extraction/review inputs by reviews `83675683-633c-44a4-b9c6-0569eee2ddeb`, `9dc53304-6085-4d3b-8009-293ebeebf686`, `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3`, and `aa69e733-3f72-44e0-af25-136c2b5012b7`; work it now that P0-020 preserves complete review-loop math-source artifacts.
-2. Policy Gate Worker: add a focused Tier R fixture for `expected.recommendation: honest`. Current `policy_gate` requires `accept`, but the corpus entry explicitly leaves the verdict unpinned and asserts integrity gates.
-3. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
-4. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
+1. Policy Gate Worker: add a focused Tier R fixture for `expected.recommendation: honest`. Current `policy_gate` requires `accept`, but the corpus entry explicitly leaves the verdict unpinned and asserts integrity gates.
+2. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
+3. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
 
 ## Completed Queue Items
 
@@ -30,6 +29,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-004f zbMATH search contract: fixed locally by switching production zbMATH from `_structured_search?query=...` to `_search?search_string=...`, parsing object-shaped `title.title`, and preserving `zbmath_url`. The red fixture `zbmath_search_string_resolves_object_title_results` failed first with `status 404 Not Found`, then passed. Full verifier tests, app-runtime citation tests, app workspace check, PATH installs, and the affected Tier R rerun passed the citation expectation with `unverified=2`.
 - P0-004 live citation reliability: citation-specific Tier R expectation is now green on local CLI. Review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3` emitted non-empty partial citation results with `checked=53`, `unverified=2`, `unresolved=0`, and `transient_unknown=0`; remaining residues are both March references. No full corpus-green claim.
 - P0-020 math-source artifact preservation: fixed locally by adding a Tier-1 review-input fallback for `paper_math_source_collector` when `paper_assets` is absent or non-ready after a late extraction persistence failure. The red fixture `paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready` failed first because the fallback entry point did not exist, then passed. Affected review `aa69e733-3f72-44e0-af25-136c2b5012b7` preserved complete math-source signal with `body_sections=8`, `body_chars=117245`, `equations=903`, `theorem_nodes=41`, and `warnings=0`. Citation remained green with `unverified=2`. No full corpus-green claim.
+- P0-005 PR fixer timeout: fixed locally by adding a deterministic compile-first fast path for already-rendered `review.tex` and by hardening LaTeX rendering for escaped role slugs plus PDFLaTeX-hostile math Unicode. The PR fixer now writes `status=pass`, `compile_review_loop.status=pass`, and zero agent outputs when the rendered artifact compiles without model repair. Affected review `c0f0e300-2654-4e85-b26c-a50d530e24f0` produced `review_loop/fixed/review.tex`, `review_loop/fixed/review.pdf`, and passed `pr_review_fix_code`. No full corpus-green claim.
 
 ## Work Rule
 

@@ -7584,6 +7584,19 @@ async fn run_review_loop_pr_fixer(
     let fixed_tex = fixed_dir.join("review.tex");
     let source_tex_body = tokio::fs::read_to_string(&source_tex).await.ok();
     let (compile_program, compile_args) = latex_compile_command();
+    if let Some(report) = try_compile_existing_pr_artifact(
+        &source_tex,
+        &fixed_tex,
+        &fixed_dir,
+        compile_program,
+        &compile_args,
+        120,
+    )
+    .await?
+    {
+        write_loop_json(&artifact_dir.join("pr_fixes.json"), &report).await?;
+        return Ok(report);
+    }
     let compile_command = std::iter::once(compile_program)
         .chain(compile_args.iter().map(String::as_str))
         .collect::<Vec<_>>()
@@ -7642,6 +7655,86 @@ async fn run_review_loop_pr_fixer(
     });
     write_loop_json(&artifact_dir.join("pr_fixes.json"), &report).await?;
     Ok(report)
+}
+
+async fn try_compile_existing_pr_artifact(
+    source_tex: &Path,
+    fixed_tex: &Path,
+    fixed_dir: &Path,
+    compile_program: &str,
+    compile_args: &[String],
+    compile_timeout_secs: u64,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    if !source_tex.is_file() {
+        return Ok(None);
+    }
+    tokio::fs::create_dir_all(fixed_dir)
+        .await
+        .with_context(|| format!("create fixed PR artifact dir {}", fixed_dir.display()))?;
+    let pdf_path = fixed_dir.join("review.pdf");
+    let _ = tokio::fs::remove_file(&pdf_path).await;
+    tokio::fs::copy(source_tex, fixed_tex)
+        .await
+        .with_context(|| {
+            format!(
+                "copy rendered review tex {} to {}",
+                source_tex.display(),
+                fixed_tex.display()
+            )
+        })?;
+
+    let compile_args = compile_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let compile_run = run_loop_command(
+        compile_program,
+        &compile_args,
+        fixed_dir,
+        std::time::Duration::from_secs(compile_timeout_secs),
+    )
+    .await;
+    if compile_run.status != "pass" || !pdf_path.is_file() {
+        return Ok(None);
+    }
+    let compile_value =
+        serde_json::to_value(&compile_run).unwrap_or_else(|_| serde_json::json!({}));
+    let compile_loop = serde_json::json!({
+        "stage": "pr_review_fix_code",
+        "target": "pr",
+        "language": "latex",
+        "filename": "review.tex",
+        "author_role": "deterministic_pr_artifact_compiler",
+        "reviewer_role": "deterministic_pr_artifact_compiler",
+        "fixer_role": "deterministic_pr_artifact_compiler",
+        "compile_timeout_secs": compile_timeout_secs,
+        "max_attempts": 0,
+        "attempts": [{
+            "attempt": 0,
+            "status": "pass",
+            "source_path": source_tex.display().to_string(),
+            "final_path": fixed_tex.display().to_string(),
+            "compile": compile_value,
+        }],
+        "agent_output_audit_summary": {
+            "total": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "by_role": {}
+        },
+        "status": "pass",
+        "final_path": fixed_tex.display().to_string(),
+        "harness": {
+            "path": fixed_dir.display().to_string(),
+            "branch": null
+        },
+    });
+    Ok(Some(serde_json::json!({
+        "stage": "pr_fixer",
+        "status": "pass",
+        "artifact_worktree": fixed_dir.display().to_string(),
+        "fixed_tex": "review_loop/fixed/review.tex",
+        "fixed_pdf": "review_loop/fixed/review.pdf",
+        "compile_review_loop": compile_loop,
+        "issues": [],
+    })))
 }
 
 fn latex_compile_command() -> (&'static str, Vec<String>) {
@@ -12060,6 +12153,62 @@ mod tests {
                 .map(String::as_str),
             Some("fixed review.pdf was not produced")
         );
+    }
+
+    #[tokio::test]
+    async fn pr_fixer_accepts_compilable_rendered_tex_without_agent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-pr-fast-path-")
+            .tempdir()
+            .expect("tempdir");
+        let source_tex = tempdir.path().join("source-review.tex");
+        let fixed_dir = tempdir.path().join("fixed");
+        let fixed_tex = fixed_dir.join("review.tex");
+        let fake_latex = tempdir.path().join("fake-latex.sh");
+
+        tokio::fs::write(
+            &source_tex,
+            "\\documentclass{article}\\begin{document}ok\\end{document}\n",
+        )
+        .await
+        .expect("source tex");
+        tokio::fs::write(
+            &fake_latex,
+            "#!/bin/sh\nset -eu\ncp review.tex review.pdf\n",
+        )
+        .await
+        .expect("fake latex");
+        let mut perms = std::fs::metadata(&fake_latex)
+            .expect("fake latex metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_latex, perms).expect("chmod fake latex");
+
+        let report = try_compile_existing_pr_artifact(
+            &source_tex,
+            &fixed_tex,
+            &fixed_dir,
+            fake_latex.to_str().expect("script path utf8"),
+            &[],
+            5,
+        )
+        .await
+        .expect("compile fast path")
+        .expect("compilable source should produce a PR fixer report");
+
+        assert_eq!(report["status"].as_str(), Some("pass"));
+        assert_eq!(
+            report["compile_review_loop"]["agent_output_audit_summary"]["total"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            report["compile_review_loop"]["attempts"][0]["compile"]["status"].as_str(),
+            Some("pass")
+        );
+        assert!(fixed_tex.is_file());
+        assert!(fixed_dir.join("review.pdf").is_file());
     }
 
     #[test]

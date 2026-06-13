@@ -734,6 +734,32 @@ Fix plan: do not tune timeouts yet; fix P0-002 and P0-003 first, then rerun if P
 Attempts: 1
 Escalation status: no longer purely deferred; P0-016 confirmed the same timeout on review `83675683-633c-44a4-b9c6-0569eee2ddeb` after extraction, specialists, bundle completeness, and citation partial-result emission were all present. Still work it after P0-004 citation residue is either green or formally blocked by missing local provider credentials.
 
+## P0-005 Resolution
+
+Status: fixed locally, 2026-06-13T07:50Z.
+Root cause:
+- The rendered `review.tex` had deterministic LaTeX defects before PR fixing: unescaped role slugs such as `meta_reviewer` in section titles and raw PDFLaTeX-hostile Unicode math/combining marks from review text.
+- `run_review_loop_pr_fixer` always invoked the `pr_artifact_fixer` agent even when the already-rendered artifact could be compiled deterministically, which fed a large repair prompt and timed out after 360 seconds.
+- During verification, installing `agh` and the GrokRxiv adapter alone was insufficient because the adapter launches the app runtime binary `grokrxiv-app`; all three PATH binaries must be refreshed after runtime changes.
+Fix:
+1. Escaped agent role slugs in LaTeX section titles.
+2. Added PDFLaTeX-safe mappings for Greek letters, common math symbols, superscripts, dashes, and combining marks observed in live review artifacts.
+3. Added `try_compile_existing_pr_artifact`: the PR fixer first copies rendered `review.tex` to `review_loop/fixed/review.tex`, runs the configured LaTeX compiler with a bounded 120-second timeout, and writes a pass `pr_fixes.json` with zero agent outputs when `review.pdf` is produced.
+4. Preserved the existing agent repair path for missing or non-compilable rendered TeX.
+Evidence:
+- Red fixture `latex_escapes_agent_role_in_section_titles` failed before implementation because raw underscores in `meta_reviewer` were emitted in LaTeX section titles, then passed after escaping.
+- Red fixture `pr_fixer_accepts_compilable_rendered_tex_without_agent` failed before implementation because the compile-first helper did not exist, then passed.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render`: pass, 10 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_accepts_compilable_rendered_tex_without_agent --lib`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop`: pass, 12 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- PATH installs passed for `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app`.
+- Affected safe run `agenthero/apps/grokrxiv/evals/results/20260613T072256Z/regression-pr54-weyl/run.log`: product exit 0; review `c0f0e300-2654-4e85-b26c-a50d530e24f0`; external actions disabled; `pr_url=null`; `pr_fixer [OK]`; `pr_review_fix_code [OK]`.
+- `review_loop/pr_fixes.json` for review `c0f0e300-2654-4e85-b26c-a50d530e24f0` reports `status=pass`, `fixed_tex=review_loop/fixed/review.tex`, `fixed_pdf=review_loop/fixed/review.pdf`, `compile_review_loop.status=pass`, `author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, and first compile attempt `exit_code=0`.
+Residual:
+- Overall affected run still fails Lean proof-author timeout, semantic adequacy `OVERCLAIMED`, and policy gate requiring `accept` despite Tier R `expected.recommendation: honest`.
+- No full corpus-green claim and no phase tag.
+
 ## Finding Template
 
 Use one dossier per defect.

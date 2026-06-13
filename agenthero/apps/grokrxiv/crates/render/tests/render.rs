@@ -190,6 +190,51 @@ fn latex_escapes_agent_json_instead_of_using_raw_verbatim() {
 }
 
 #[test]
+fn latex_escapes_agent_role_in_section_titles() {
+    let (meta, paper, _) = fixture();
+    let agents = vec![AgentRecord {
+        role: "meta_reviewer".to_string(),
+        model: "claude_sonnet_4_6".into(),
+        output: json!({"summary": "ok"}),
+        verifier: VerifierResult {
+            status: VerifierStatus::Pass,
+            notes: json!({}),
+        },
+    }];
+
+    let tex = render_latex(&meta, &paper, &agents);
+
+    assert!(tex.contains("\\subsection*{meta\\_reviewer (\\texttt{claude\\_sonnet\\_4\\_6})}"));
+    assert!(
+        !tex.contains("\\subsection*{meta_reviewer"),
+        "raw underscores in section titles break LaTeX compilation"
+    );
+}
+
+#[test]
+fn latex_maps_unicode_math_symbols_to_pdftex_safe_commands() {
+    let (mut meta, paper, agents) = fixture();
+    meta.summary =
+        "Residual freedom D^ρ_μν = f τ_μ δ^ρ_ν; g ∼ e^λ g; −c² τ ⊗ τ + h̃; χ̂; ϕ; ½; A ∘ B; A · B; ž; τ ∈ [τ]; A ∧ B."
+            .into();
+
+    let tex = render_latex(&meta, &paper, &agents);
+
+    for raw in ['ρ', 'μ', 'ν', 'τ', 'δ', 'λ', 'ϕ', '∼', '−', '²', '½', '⊗', '∘', '·', '∈', '∧', '\u{030c}', '\u{0303}', '\u{0302}'] {
+        assert!(
+            !tex.contains(raw),
+            "rendered LaTeX must not contain raw PDFLaTeX-hostile symbol `{raw}`"
+        );
+    }
+    assert!(tex.contains("\\ensuremath{\\rho}"));
+    assert!(tex.contains("\\ensuremath{\\varphi}"));
+    assert!(tex.contains("\\ensuremath{\\otimes}"));
+    assert!(tex.contains("\\ensuremath{\\circ}"));
+    assert!(tex.contains("\\ensuremath{\\frac{1}{2}}"));
+    assert!(tex.contains("\\textsuperscript{2}"));
+}
+
+#[test]
 fn disclaimer_lives_on_the_web_legal_page() {
     // Companion to the negative renderer tests. We don't try to load Next.js
     // here — we just verify the disclaimer text is present in the `/legal`

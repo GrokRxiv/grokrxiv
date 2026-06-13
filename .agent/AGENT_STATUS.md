@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T06:09:05Z
+Updated: 2026-06-13T07:50:31Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 18, P0-020 paper math source artifact preservation fix.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-015-grounded-resolver` was fast-forward merged.
-- Branch base commit: `5445ce4`; current checkpoint commit: this checkpoint commit.
+- Session type: P0 session 19, P0-005 PR fixer timeout fix.
+- Branch/worktree: worker branch `p0-005-pr-fixer-timeout` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-005-pr-fixer-timeout`; coordinator branch remains `grokrxiv-local-corpus-harness`.
+- Branch base commit: `6bf1025`; current checkpoint commit: this checkpoint commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-005 PR fixer timeout is next. P0-020 is fixed locally: affected review `aa69e733-3f72-44e0-af25-136c2b5012b7` produced `review_loop/paper_math_sources.json` with `body_sections=8`, `body_chars=117245`, `equations=903`, `theorem_nodes=41`, `warnings=0`, and no `not_loaded` reasons. P0-004 citation reliability remained green in the same affected run with `checked=53`, `unverified=2`, `unresolved=0`, and `transient_unknown=0`. No full corpus green claim yet: the affected run still has deterministic status `fail` due to Haskell typed-IR/Lean blocking (P2 unless narrowed), PR fixer timeout (P0-005), and policy gate requiring `accept` while Tier R only requires an honest recommendation.
+- In-flight defect: next queue item is the policy gate Tier R recommendation semantics. P0-005 is fixed on this worker branch: affected review `c0f0e300-2654-4e85-b26c-a50d530e24f0` produced `review_loop/pr_fixes.json` with `status=pass`, `compile_review_loop.status=pass`, `author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, and fixed artifacts `review_loop/fixed/review.tex` plus `review_loop/fixed/review.pdf`. `pr_review_fix_code` also passed. P0-020 remains green in this affected run with `paper_math_source_collector [OK] theorem_nodes=41 equations=903 sources=6 warnings=0`; P0-004 citation reliability remains green with `checked=53`, `unverified=2`, `unresolved=0`, and non-empty partial results. No full corpus green claim yet: the affected run still has deterministic status `fail` due to Lean proof-author timeout, semantic adequacy `OVERCLAIMED`, and policy gate requiring `accept` while Tier R only requires an honest recommendation.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -60,6 +60,7 @@ Updated: 2026-06-13T06:09:05Z
 - P0-020 affected Tier R safe rerun, 2026-06-13T04:55Z: product command exited 0 as review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3`, external actions stayed disabled, and `pr_url=null`. Citation now satisfies Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`; remaining residues are both March references. Overall review-loop deterministic status is still `fail` on Haskell typed-IR/semantic-validation, PR fixer timeout, policy gate, and P0-020 math-source artifact loss. No full corpus green claim or phase tag.
 - P0-004f checkpoint structural verification, 2026-06-13T05:25Z: `cargo test -p agenthero-orchestrator --test dag_app_registry` passed 21/21 and `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` passed 24/24.
 - P0-020 review-loop math-source preservation, 2026-06-13T06:09Z: added red fixture `paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready`; it failed before implementation because the fallback entry point did not exist, then passed after the collector learned to load Tier-1 `review_input.json` from `GROKRXIV_DATA_REPO_PATH/papers/<base-arxiv-id>/` when `paper_assets` is absent or non-ready. `review_loop` tests passed 12/12, full app-runtime lib suite passed 276/276 serially, app workspace check passed, structural tests passed 45/45, `git diff --check` passed, and PATH `grokrxiv-app`/`agenthero-dag-app-grokrxiv` were reinstalled. Affected safe run `20260613T053725Z` completed as review `aa69e733-3f72-44e0-af25-136c2b5012b7`: product exit 0, external actions disabled, `pr_url=null`, paper math sources preserved (`8` sections, `117245` chars, `903` equations, `41` theorem nodes), citation still green (`unverified=2`), and overall loop still red on Haskell typed-IR/Lean, P0-005 PR fixer timeout, and policy recommendation semantics. The local shell capture wrapper exited 1 after product completion because `status` is a readonly zsh variable; `run.log` `.output.status=0` is the product result.
+- P0-005 PR fixer fast path, 2026-06-13T07:50Z: rendered LaTeX now escapes agent role slugs and PDFLaTeX-hostile math Unicode, and the PR fixer first deterministically copies and compiles an already-rendered `review.tex` before invoking the `pr_artifact_fixer` model. The fast path writes the same `pr_fixes.json` contract with zero agent outputs when compile succeeds. Tests passed: `grokrxiv-render --test render` 10/10, focused app-runtime PR fixer test, `review_loop` tests 12/12, and app workspace check. PATH binaries `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app` were reinstalled. Affected safe run `20260613T072256Z` completed as review `c0f0e300-2654-4e85-b26c-a50d530e24f0`: product exit 0, external actions disabled, `pr_url=null`, `pr_fixer [OK]`, `pr_review_fix_code [OK]`, fixed PDF present. Overall loop remains red on Lean timeout, semantic adequacy, and policy recommendation semantics. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
