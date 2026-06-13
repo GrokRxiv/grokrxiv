@@ -1559,3 +1559,57 @@ Residual:
 - Scrubbed CLI probes before and after this fix still exit 1 with stdout JSON `api_error_status=429`, reset `11:20am (America/Costa_Rica)`, so a normal CLI affected rerun remains pending before strict coordinator merge if CLI-runner evidence is required.
 Attempts: 1
 Escalation status: none.
+## P0-037 - First Full Local CLI Sweep Attempt
+
+Status: queued follow-up fixes.
+Bucket: F1/F3 audit findings.
+Runner: local CLI.
+Worker sweep root: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z`.
+
+### Finding A: `bertrand-elementary` Extraction Completeness Failure
+
+Symptom:
+- Entry: `bertrand-elementary`.
+- Source: `https://arxiv.org/abs/2407.07620v5`.
+- Product exit: 1.
+- Raw log: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/bertrand-elementary/run.log`.
+- Error: extraction completeness failed with `no body sections` and `body text is too small for review context (0 chars)`.
+
+Classification:
+- F1/F2 candidate under extraction/body completeness.
+- N1 itself did not fire late: the gate correctly stopped review before specialist/meta/policy verdicts. The defect is that Tier A expected `full_body`, but extraction produced no reviewable body.
+
+Root-cause evidence so far:
+- The command reached VLM extraction and then reported `using pandoc_enabled local extraction`.
+- No review id was created for this entry in the run log.
+- Needs a separate extraction worker to inspect source staging and generated extraction artifacts for `2407.07620v5`.
+
+Fix plan:
+1. Reproduce in a focused worker with extraction-only or safe review command.
+2. Capture source/PDF/TeX staging artifacts and converter logs.
+3. Add a failing extraction fixture that asserts this arXiv source produces nonempty sections/body.
+4. Fix the owning extraction path without weakening N1.
+
+### Finding B: `zeta3-irrationality` PR Compile-First Fails On Raw Square Root
+
+Symptom:
+- Entry: `zeta3-irrationality`.
+- Source: `https://arxiv.org/abs/2503.07625v2`.
+- Review id: `bd8df0ab-3698-42c2-8f69-f7de7620cfee`.
+- Raw run log: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/zeta3-irrationality/run.log`.
+- Compile log: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/bd8df0ab-3698-42c2-8f69-f7de7620cfee/review_loop/fixed/review.log`.
+- Error: `LaTeX Error: Unicode character √ (U+221A) not set up for use with LaTeX.`
+- Context: line 46 contains review evidence text with `exp(-c√log x)`.
+
+Classification:
+- F1 deterministic artifact/render contract defect.
+
+Root cause:
+- Renderer escape coverage added in P0-036 mapped `✓` but not `√`.
+- Deterministic PR compile-first copied rendered `review.tex`, ran PDFLaTeX, failed on raw `√`, and fell into the slow LLM PR artifact fixer path.
+
+Fix plan:
+1. Add red-first render coverage that raw `√` does not survive `render_latex`.
+2. Map U+221A to a PDFLaTeX-safe symbol in `agenthero/apps/grokrxiv/crates/render/src/latex.rs`.
+3. Run render tests and PR fast-path coverage.
+4. Re-run `zeta3-irrationality` with `--no-external-actions` and confirm compile-first stays deterministic.

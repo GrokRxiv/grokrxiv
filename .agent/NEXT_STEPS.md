@@ -2,13 +2,13 @@
 
 Continue exactly from here:
 
-## P0-037 First Full Local CLI Corpus Sweep
+## P0-038 PR Render Unicode Sqrt Escape
 
 Current coordinator:
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- P0-036 merged checkpoint: `5152bf3`
-- Status: P0-036 is merged and coordinator-side verification passed. No phase tag exists and no full P0 green claim has been made.
+- P0-037 worker checkpoint: pending merge from `p0-037-full-cli-sweep`
+- Status: P0-037 audit exposed two reds and no phase tag exists.
 
 Read first:
 - `agenthero/apps/grokrxiv/evals/corpus.yaml`
@@ -20,26 +20,21 @@ Read first:
 - `.agent/TEST_LOG.md`
 - `agenthero/apps/grokrxiv/evals/results/LEDGER.md`
 
-P0-036 evidence:
-- Result dir: `agenthero/apps/grokrxiv/evals/results/20260613T185957Z/regression-pr54-weyl-after-p0-036-checkmark`.
-- Review id: `752d5258-3821-433e-ae68-7ee8a150a8ad`.
-- Product exit: `exit.status=0`, `run.log` has `ok=true` and `output.status=0`.
-- External actions disabled, `pr_url=null`.
-- `review_loop.status=pass`, `blocking_issues=[]`.
-- `pr_fixes.status=pass`, `fixed_pdf=review_loop/fixed/review.pdf`, `compile_review_loop.author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, compile exit 0.
-- Haskell stayed green in one attempt.
-- Lean reached `PROVED` on the affected Tier R rerun.
-- Semantic adequacy reached `MATCHES`.
-- Citation stayed within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
-- Policy integrity ready; publisher remains disabled/non-ready because the honest recommendation is `major_revision`.
+P0-037 evidence:
+- Worker sweep root: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z`.
+- Preflight: wrapped `agh doctor`, `agh --version`, `ghc --version`, `lake --version`, and `lean --version` all exited 0.
+- Structural baseline: `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` passed 45/45 in worker.
+- `bertrand-elementary`: exit 1 at extraction completeness; `run.log` records `no body sections` and `body text is too small for review context (0 chars)`. No review proceeded.
+- `zeta3-irrationality`: review `bd8df0ab-3698-42c2-8f69-f7de7620cfee` reached PR artifact fixing; worker artifact log `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/bd8df0ab-3698-42c2-8f69-f7de7620cfee/review_loop/fixed/review.log` records `Unicode character √ (U+221A) not set up for use with LaTeX` at rendered TeX line 46. Coordinator aborted this entry before the LLM PR fixer could mask the deterministic compile-first failure.
 
 Expected next session shape:
-1. Start a fresh local worker branch/worktree, for example `p0-037-full-cli-sweep`.
-2. Run LOOP preflight with `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env`.
-3. Run all corpus entries locally with `--no-external-actions`.
-4. Triage every red into F1-F5 with raw evidence and artifact paths.
-5. Do not weaken `expected:` blocks or NEVER-events.
-6. Do not tag P0 green unless the formal exit gate is met: two consecutive full-corpus sweeps, both runners, zero NEVER-events, phase expectations passing, and structural tests green.
+1. Commit/merge P0-037 audit state if not already merged.
+2. Start a fresh local worker branch/worktree, for example `p0-038-render-sqrt-escape`.
+3. Add red-first renderer coverage for raw `√` in review evidence text.
+4. Implement the minimal PDFLaTeX-safe mapping in `agenthero/apps/grokrxiv/crates/render/src/latex.rs`.
+5. Run render tests, app-runtime PR fast-path coverage, app workspace check, and structural tests.
+6. Re-run `zeta3-irrationality` safely with `--no-external-actions`.
+7. Keep P0-039 Bertrand extraction failure queued separately; do not tag P0 green.
 
 Guardrails:
 - Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.

@@ -524,3 +524,40 @@ Pass counts:
 
 Residuals:
 - No phase tag or full P0 green claim. P0-037 must run the first full local CLI corpus sweep from `evals/LOOP.md` against `evals/corpus.yaml`.
+
+## P0-037 First Full Local CLI Sweep Attempt - 2026-06-13T20:01:13Z
+
+Commands and evidence:
+
+```bash
+git worktree add .agent/worktrees/p0-037-full-cli-sweep -b p0-037-full-cli-sweep HEAD
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh doctor
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --version
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --version
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lake --version
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lean --version
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review <source> --loop --debug --no-external-actions
+```
+
+Preflight:
+- Worker result root: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z`.
+- `agh doctor`: exit 0.
+- `agh --version`: `agh 0.1.0`, exit 0.
+- `ghc --version`: `9.14.1`, exit 0.
+- `lake --version`: `5.0.0-src+d024af0`, Lean `4.30.0`, exit 0.
+- `lean --version`: `4.30.0`, exit 0.
+- Contract hashes recorded in `preflight/contract-sha256.txt`.
+
+Structural baseline:
+- `agenthero_cli_contract`: 24/24.
+- `dag_app_registry`: 21/21.
+
+Sweep evidence:
+- `bertrand-elementary`: result dir `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/bertrand-elementary`; exit status 1; `run.log` records extraction completeness failure with `no body sections` and `body text is too small for review context (0 chars)`.
+- `zeta3-irrationality`: result dir `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/zeta3-irrationality`; review id `bd8df0ab-3698-42c2-8f69-f7de7620cfee`; coordinator aborted after deterministic PR compile-first exposed raw `√` in rendered TeX. Evidence path: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/bd8df0ab-3698-42c2-8f69-f7de7620cfee/review_loop/fixed/review.log`.
+
+Residuals:
+- P0-038: raw `√` LaTeX escape gap in review rendering.
+- P0-039: Tier A Bertrand extraction completeness failure.
+- No phase tag or full P0 green claim.
