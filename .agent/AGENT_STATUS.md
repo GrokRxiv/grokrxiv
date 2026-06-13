@@ -1,14 +1,14 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T21:16:21Z
+Updated: 2026-06-13T21:28:00Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0-040 worker completed; coordinator merge/checkpoint remains next.
-- Branch/worktree: worker branch `p0-040-render-integer-symbol-escape` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-040-render-integer-symbol-escape`; coordinator branch `grokrxiv-local-corpus-harness` remains at `/Users/mlong/Documents/Development/grokrxiv`.
-- Latest merged worker checkpoint: P0-038 at `5a6c068`.
+- Session type: coordinator after P0-040 fast-forward merge; next worker should start P0-041.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-040-render-integer-symbol-escape` in `.agent/worktrees/p0-040-render-integer-symbol-escape`.
+- Latest merged worker checkpoint: P0-040 at `8500352`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
@@ -89,6 +89,7 @@ Updated: 2026-06-13T21:16:21Z
 - P0-036 PR artifact fixer timeout, 2026-06-13T19:18Z: worker branch `p0-036-pr-fixer-timeout` traced the P0-035 timeout to a PDFLaTeX escape gap. The deterministic compile-first PR path copied rendered `review.tex` and failed on raw Unicode `✓`; because the helper returns `None` on compile failure, the runtime fell through to `pr_artifact_fixer`, which timed out after 360s. Added red-first render coverage for `✓` and mapped it to `\ensuremath{\checkmark}`. Verification passed: focused render test red then green, full render tests 10/10, app-runtime `pr_fixer_accepts_compilable_rendered_tex_without_agent`, app-runtime `review_loop` 17/17, review-loop crate 15/15, app workspace check, `git diff --check`, PATH installs for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`, and structural tests 45/45. Affected CLI rerun `20260613T185957Z/regression-pr54-weyl-after-p0-036-checkmark` completed as review `752d5258-3821-433e-ae68-7ee8a150a8ad`: product exit 0, external actions disabled, `pr_url=null`, `review_loop.status=pass`, `blocking_issues=[]`, `pr_fixes.status=pass`, `author_role=deterministic_pr_artifact_compiler`, zero PR-fixer agent outputs, fixed PDF present, Lean `PROVED`, semantic adequacy `MATCHES`, citation `checked=53/unverified=2/unresolved=0/transient_unknown=0`, and policy integrity ready. No full-corpus/both-runner green claim or phase tag.
 - P0-036 coordinator verification, 2026-06-13T19:23Z: fast-forward merged `p0-036-pr-fixer-timeout` into `grokrxiv-local-corpus-harness` at `5152bf3`. Coordinator-side verification passed: render tests 10/10, app-runtime `review_loop` tests 17/17, review-loop crate tests 15/15, app workspace check, structural tests 45/45, and `git diff --check`. No full corpus-green claim or phase tag. Next queued item is P0-037 first full local CLI corpus sweep.
 - P0-037 first full local CLI sweep attempt, 2026-06-13T20:01Z: worker branch `p0-037-full-cli-sweep` created a fresh local worktree at `e70c678`, reran structural baseline 45/45, and ran LOOP preflight under worker result root `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/` with wrapped `agh doctor`, `agh --version`, GHC 9.14.1, Lake 5.0.0-src+d024af0, and Lean 4.30.0 all exit 0. The sweep was not green and was intentionally stopped after new concrete defects were captured. `bertrand-elementary` exited 1 at extraction completeness (`no body sections`, `0 chars`), with no review proceeding. `zeta3-irrationality` progressed through review, Haskell after two attempts, Lean `NOT_PROVED`, citation warn/OK, then PR compile-first failed on raw `√` in `review_loop/fixed/review.log`; coordinator aborted the entry before the slow LLM PR fixer could mask the root cause. No phase tag.
+- P0-040 coordinator verification, 2026-06-13T21:28Z: fast-forward merged `p0-040-render-integer-symbol-escape` into `grokrxiv-local-corpus-harness` at `8500352`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-041 raw quantifier escape before P0-039 Bertrand extraction.
 
 ## Coordinator Rules
 
