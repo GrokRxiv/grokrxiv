@@ -109,11 +109,11 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
     let raw_main = std::fs::read_to_string(&main_path)
         .with_context(|| format!("read main tex {main_path:?}"))?;
 
-    let (markdown, semantic_ast) = run_conversion(&tmp, &layout).await;
+    let (markdown, semantic_ast) = run_conversion(&tmp, &layout).await?;
 
     let title = extract_title(&markdown, &raw_main);
     let abstract_text = extract_abstract(&markdown, &raw_main);
-    let sections = extract_md_sections(&markdown);
+    let sections = reviewable_sections_from_markdown(&markdown)?;
     let bibliography = collect_bibliography(&raw_main, &files);
 
     Ok(TexExtract {
@@ -361,20 +361,30 @@ fn subprocess_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> (String, Option<Value>) {
+async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> Result<(String, Option<Value>)> {
     let timeout = subprocess_timeout();
     let xml_path = tmp.path().join("paper.xml");
     let html_path = tmp.path().join("paper.html");
     let media_path = tmp.path().join("media");
 
+    let mut pandoc_error: Option<String> = None;
     let pandoc_markdown = match run_pandoc_tex(&layout.tex_dir, &layout.main_name, timeout).await {
-        Ok(md) => md,
+        Ok(md) if !md.trim().is_empty() => md,
+        Ok(_) => {
+            let msg = "pandoc(tex→md) produced empty markdown".to_string();
+            warn!(error = %msg, "pandoc TeX conversion produced no body");
+            pandoc_error = Some(msg);
+            String::new()
+        }
         Err(e) => {
-            warn!(error = %e, "pandoc TeX conversion failed; returning empty markdown unless LaTeXML succeeds");
+            let msg = format!("{e:#}");
+            warn!(error = %msg, "pandoc TeX conversion failed; trying LaTeXML if enabled");
+            pandoc_error = Some(msg);
             String::new()
         }
     };
 
+    let mut latexml_error: Option<String> = None;
     if latexml_enabled() {
         match run_latexml_pipeline(
             &layout.tex_dir,
@@ -386,22 +396,38 @@ async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> (String, Option
         )
         .await
         {
-            Ok(markdown) => {
+            Ok(markdown) if !markdown.trim().is_empty() => {
                 let ast = parse_latexml_xml(&xml_path)
                     .map_err(|e| {
                         warn!(error = %e, "latexml xml→ast parse failed; semantic_ast unset");
                         e
                     })
                     .ok();
-                return (markdown, ast);
+                return Ok((markdown, ast));
+            }
+            Ok(_) => {
+                let msg = "latexml pipeline produced empty markdown".to_string();
+                warn!(error = %msg, "latexml pipeline produced no body; keeping pandoc markdown if available");
+                latexml_error = Some(msg);
             }
             Err(e) => {
-                warn!(error = %e, "latexml pipeline failed; keeping pandoc markdown");
+                let msg = format!("{e:#}");
+                warn!(error = %msg, "latexml pipeline failed; keeping pandoc markdown");
+                latexml_error = Some(msg);
             }
         }
     }
 
-    (pandoc_markdown, None)
+    if pandoc_markdown.trim().is_empty() {
+        let mut msg = pandoc_error.unwrap_or_else(|| "pandoc produced no markdown".to_string());
+        if let Some(latexml_msg) = latexml_error {
+            msg.push_str("; latexml fallback failed: ");
+            msg.push_str(&latexml_msg);
+        }
+        return Err(anyhow!("TeX source conversion produced no markdown: {msg}"));
+    }
+
+    Ok((pandoc_markdown, None))
 }
 
 async fn run_latexml_pipeline(
@@ -707,6 +733,24 @@ fn abstract_from_first_paragraph(md: &str) -> String {
 
 /// Split markdown by `## Heading` lines into sections. We pass
 /// `--shift-heading-level-by=1` to pandoc so `\section` always becomes `##`.
+fn reviewable_sections_from_markdown(md: &str) -> Result<Vec<Section>> {
+    let mut sections = extract_md_sections(md);
+    sections.retain(|s| !s.body_markdown.trim().is_empty());
+    if !sections.is_empty() {
+        return Ok(sections);
+    }
+
+    let body = md.trim();
+    if body.is_empty() {
+        return Err(anyhow!("TeX source conversion produced no markdown"));
+    }
+
+    Ok(vec![Section {
+        heading: "Body".into(),
+        body_markdown: body.to_string(),
+    }])
+}
+
 fn extract_md_sections(md: &str) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
     let mut current: Option<(String, String)> = None;
@@ -1149,6 +1193,7 @@ mod tests {
             const KEYS: &[&str] = &[
                 "GROKRXIV_TEX_ENABLE_LATEXML",
                 "GROKRXIV_TEX_DISABLE_LATEXML",
+                "GROKRXIV_PANDOC_BIN",
                 "GROKRXIV_LATEXML_BIN",
                 "GROKRXIV_LATEXMLPOST_BIN",
             ];
@@ -1450,6 +1495,31 @@ World.
                 .map(|s| &s.heading)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_bundle_rejects_empty_markdown_when_pandoc_fails() {
+        let _env = TexEnvGuard::new();
+        std::env::set_var("GROKRXIV_TEX_DISABLE_LATEXML", "1");
+        std::env::set_var("GROKRXIV_PANDOC_BIN", "false");
+        let tex = r#"\documentclass{article}
+\begin{document}
+\section{Main result}
+This body must not disappear silently.
+\end{document}
+"#;
+        let bundle = make_targz(&[("main.tex", tex)]);
+
+        match parse_bundle(&bundle).await {
+            Ok(extract) => panic!(
+                "pandoc failure must not produce a successful empty extraction: {:?}",
+                extract.sections
+            ),
+            Err(err) => assert!(
+                format!("{err:#}").contains("TeX source conversion produced no markdown"),
+                "unexpected error: {err:#}"
+            ),
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -4,7 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Extraction Worker: P0-006 source-to-body full extraction recovery for `regression-pr54-weyl`. Diagnose why `pandoc_tex_to_markdown`/source conversion produced 0-byte `body.md`; recover full body with theorem environments or fail extraction before persistence.
+1. Extraction Worker: P0-007 theorem/equation recovery for `regression-pr54-weyl`. P0-006 recovered a nonempty PDF fallback body, but `equations.json` and `theorem_graph.json` are still empty; recover theorem/equation artifacts from TeX/PDF or persist honest skipped/failed extraction reasons before claiming Tier R green.
 2. Gate Worker: N2 explicit specialist-failure artifacts: every specialist timeout/failure emits a failed or partial artifact with status and reason.
 3. Gate Worker: N3 gate input completeness: policy gate and meta recommendation require all upstream artifacts present, schema-valid, and extraction-completeness green.
 4. Gate Worker: N4 bundle completeness: every declared artifact exists or has an honest `skip_reason`.
@@ -19,6 +19,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-001 F3 stale runtime binary: fixed locally by reinstalling `grokrxiv-app` and `agenthero-dag-app-grokrxiv`; product dry-run and real run reached the review-loop path.
 - P0-002 no-publishing guardrail: fixed locally with `--no-external-actions`, app catalog/help coverage, app-runtime parser/dispatch tests, PATH binary install, and safe dry-run evidence. No full corpus rerun yet.
 - P0-003 N1 review-on-empty-body guard: fixed locally with app-runtime extraction-completeness gate before review row creation/specialist launch. Affected regression entry now fails at Extract instead of producing a verdict or PR.
+- P0-006 source-to-body empty-body recovery: fixed locally by failing closed on empty TeX conversion, marking empty `body.md` source-to-body stages failed, and treating failed extraction stages as audit failures. No-cache, no-VLM extraction for `2606.00799` now regenerates a 50,697-byte body and 5 sections via PDF fallback. Residual theorem/equation recovery is queued as P0-007.
 
 ## Work Rule
 

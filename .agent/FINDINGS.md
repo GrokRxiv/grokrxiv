@@ -136,6 +136,23 @@ Fix plan: inspect `source_manifest.json`, cached source availability, and `pando
 Attempts: 1
 Escalation status: none.
 
+## P0-006 Resolution
+
+Status: fixed locally for the empty-body false-success path, 2026-06-13T00:28Z.
+Root cause:
+- `grokrxiv-ingest::tex::parse_bundle` swallowed Pandoc failures by returning empty Markdown and still produced `Ok(TexExtract { sections: [] })`.
+- `ingest_pipeline` recorded `source_to_body` as `ok` before it had materialized or validated `body.md`.
+Evidence:
+- Added a failing fixture for a TeX bundle whose Pandoc conversion exits nonzero; before the fix it returned a successful empty extraction.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest tex::tests -- --nocapture`: pass, 20 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1`: pass, 261 tests.
+- `git diff --check`: pass.
+- `GROKRXIV_INGEST_NO_CACHE=1 GROKRXIV_INGEST_SKIP_STAGES=vlm cargo run --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --bin grokrxiv-app -- --json extract 2606.00799`: exit 1 after local artifact materialization because configured data-repo push to `git@github.com:GrokRxiv/grokrxiv-data.git` fails with `unsupported URL protocol`.
+- Local artifacts regenerated for `2606.00799`: `body.md` is 50,697 bytes, `sections.json` has 5 sections, and `source_to_body` provenance is `pdf_extract_text` with `status: ok`.
+Residual:
+- The local recovery currently falls back to PDF text, so `equations.json` and `theorem_graph.json` remain empty for the Weyl paper. That is honest and reviewable body recovery, not a full Tier R green result.
+- The data-repo push failure is a separate environment/tooling defect and was not fixed here.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004

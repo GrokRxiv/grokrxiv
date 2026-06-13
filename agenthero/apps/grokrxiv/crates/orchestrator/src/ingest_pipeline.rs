@@ -470,10 +470,15 @@ async fn run_inner(
         Some("pdf") => SourceBodyProducer::PdfExtract,
         _ => SourceBodyProducer::PdfExtract,
     };
-    stage_reports.push(
-        StageReport::ok("source_to_body", None, None, Vec::new())
-            .with_provenance(source_body_producer.provenance(extraction_mode)),
-    );
+    let body_md_str = bundle
+        .body_markdown
+        .clone()
+        .unwrap_or_else(|| build_body_markdown(&extract));
+    stage_reports.push(source_to_body_stage_report(
+        source_body_producer,
+        extraction_mode,
+        &body_md_str,
+    ));
 
     // Stage 2 reflection: Pandoc markdown is the default TeX path. LaTeXML is
     // optional enrichment for a semantic AST, so absence is only degraded when
@@ -538,10 +543,6 @@ async fn run_inner(
     // silently degrade because their tools read `workdir/body.md` and got
     // NoSuchFile. Written BEFORE Stages 4-7 fan out so all four parallel
     // agents see the file.
-    let body_md_str = bundle
-        .body_markdown
-        .clone()
-        .unwrap_or_else(|| build_body_markdown(&extract));
     write_body_md_to_workdir(workdir.path(), &body_md_str).await?;
 
     // semantic_ast embedded into the bundle for Tier-2 routing decisions.
@@ -2746,6 +2747,20 @@ impl StageReport {
             provenance: None,
         }
     }
+    fn failed(name: &str, warning: &str) -> Self {
+        Self {
+            name: name.into(),
+            status: "failed".into(),
+            duration_ms: None,
+            cost_usd: None,
+            model: None,
+            runner: None,
+            warnings: vec![warning.into()],
+            iters: None,
+            tool_call_summary: None,
+            provenance: None,
+        }
+    }
     fn skipped(name: &str, reason: &str) -> Self {
         Self {
             name: name.into(),
@@ -2783,6 +2798,20 @@ impl StageReport {
             "inputs": self.provenance.as_ref().map(|p| p.inputs.clone()).unwrap_or_default(),
             "outputs": self.provenance.as_ref().map(|p| p.outputs.clone()).unwrap_or_default(),
         })
+    }
+}
+
+fn source_to_body_stage_report(
+    producer: SourceBodyProducer,
+    extraction_mode: ExtractionMode,
+    body_md: &str,
+) -> StageReport {
+    let provenance = producer.provenance(extraction_mode);
+    if body_md.trim().is_empty() {
+        StageReport::failed("source_to_body", "source-to-body produced empty body.md")
+            .with_provenance(provenance)
+    } else {
+        StageReport::ok("source_to_body", None, None, Vec::new()).with_provenance(provenance)
     }
 }
 
@@ -3193,6 +3222,27 @@ mod a4_tests {
         let path = agents_dir.join("extraction").join(format!("{stage}.yaml"));
         let yaml = std::fs::read_to_string(&path).expect("read extraction routing fixture");
         serde_yaml::from_str(&yaml).expect("parse extraction routing fixture")
+    }
+
+    #[test]
+    fn source_to_body_report_marks_empty_body_failed() {
+        let report = source_to_body_stage_report(
+            SourceBodyProducer::PandocTex,
+            ExtractionMode::PandocEnabled,
+            "",
+        );
+        let value = report.to_value();
+
+        assert_eq!(value["name"], "source_to_body");
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["tool"], "pandoc_tex_to_markdown");
+        assert!(value["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("empty body.md"))));
     }
 
     #[test]

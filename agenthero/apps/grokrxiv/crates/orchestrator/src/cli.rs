@@ -2868,6 +2868,9 @@ fn audit_extraction_report_provenance(
         if status == "degraded" {
             warnings.push(format!("extraction stage {name} degraded"));
         }
+        if status == "failed" {
+            failures.push(format!("extraction stage {name} failed"));
+        }
         if matches!(
             name,
             "vlm" | "macros" | "equations" | "theorems" | "citations"
@@ -11594,6 +11597,24 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             .failures
             .iter()
             .any(|msg| msg.contains("citation contexts")));
+    }
+
+    #[test]
+    fn extraction_report_failed_stage_is_audit_failure() {
+        let report = serde_json::json!({
+            "stages": [
+                {"name": "source_to_body", "status": "failed"}
+            ]
+        });
+        let mut warnings = Vec::new();
+        let mut failures = Vec::new();
+
+        audit_extraction_report_provenance(&report, &mut warnings, &mut failures);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(failures
+            .iter()
+            .any(|msg| msg == "extraction stage source_to_body failed"));
     }
 
     #[test]
