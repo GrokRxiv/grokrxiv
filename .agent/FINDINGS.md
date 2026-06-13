@@ -291,6 +291,47 @@ Residual:
 - No full affected review-loop rerun was executed in this checkpoint.
 - P0-004 residual work remains: Gemini-grounded fallback/quorum for unresolved residue, provider auth/header handling if local env requires it, and the safe Tier R rerun proving citation `needs_review <= 2`.
 
+## P0-004c: Citation Waterfall Had No Grounded Residue Resolver Or Provider Headers
+
+ID: P0-004c
+Corpus entry: `regression-pr54-weyl` / Tier R citation `needs_review <= 2` expectation
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixtures reproduced missing grounded fallback API and missing ADS/Semantic Scholar provider headers before implementation
+Bucket: F1 contract / F3 provider auth
+NEVER-event: supports N2 partial-result robustness and Tier R citation integrity; not a NEVER-event by itself.
+Symptom: after Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH all missed a plain reference, the verifier emitted `source="citation_waterfall"` and `status="unverified"` with no final grounded adjudication path. Provider requests also sent no Semantic Scholar API key or ADS bearer token, so authenticated local resolver endpoints would return misses even when env keys were present.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/crates/verifier/src/citation.rs`
+- `.env` key presence check: `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL=absent`, `SEMANTIC_SCHOLAR_API_KEY=absent`, `NASA_ADS_API_TOKEN=absent`, `ADS_API_TOKEN=absent`
+Root cause:
+- `CitationVerifier` had a deterministic provider vector ending at zbMATH and no configured final grounded provider for residue.
+- `resolve_provider_bibliographic` used the generic JSON request helper, so provider-specific auth headers could not be attached.
+Fix plan:
+1. Add a failing fixture for a deterministic waterfall miss that resolves only through a URL-backed grounded response.
+2. Add a config-gated `gemini_grounded` bibliographic provider that runs last and requires matching-title plus HTTP URL evidence before returning `resolved`.
+3. Add a failing fixture requiring `x-api-key` for Semantic Scholar and `Authorization: Bearer` for ADS.
+4. Add provider-specific request headers from `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, or `ADS_API_TOKEN`.
+5. Do not claim Tier R green until a real grounded resolver URL is configured and the safe affected review-loop command is rerun.
+Attempts: 1
+Escalation status: none.
+
+## P0-004c Resolution
+
+Status: fixed locally for the verifier-side grounded fallback contract and provider headers, 2026-06-13T02:11Z.
+Evidence:
+- `grounded_fallback_resolves_residue_with_url_evidence` first failed before implementation with missing `CitationVerifier::with_bibliographic_and_grounded_provider_bases`; it now passes and shows a waterfall residue resolving via `source="gemini_grounded"` with URL evidence.
+- `provider_requests_include_semantic_scholar_and_ads_auth_headers` first failed because Semantic Scholar and ADS mock endpoints returned 404 without expected headers; it now passes with `SEMANTIC_SCHOLAR_API_KEY` and `NASA_ADS_API_TOKEN`.
+- Grounded responses are accepted only when verdict/status is `verified`, `resolved`, or `exists`, the returned title matches the citation title, and at least one HTTP URL appears in `evidence_urls`, `urls`, `evidence`, or `quorum` evidence fields.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 33 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- Repo `.env` does not currently configure `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` or provider keys, so this checkpoint does not prove the live Tier R affected review-loop run.
+- The safe affected command remains pending: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`.
+
 ## P0-009: Policy Gate Could Infer Completeness From Partial Specialist Rows
 
 ID: P0-009
@@ -441,7 +482,7 @@ Symptom: citation validation checked 53 references and emitted partial evidence,
 Raw evidence paths:
 - `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/dossier-p0-004-citation-waterfall.md`
 - `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/eca527eb-3930-49e6-a828-66dd64611430/review_loop/citation_validation_report.json`
-Root cause: resolver waterfall is not implemented or not wired into this review-loop path; ADS, zbMATH, OpenAlex, INSPIRE, and Gemini-grounded adjudication evidence are absent.
+Root cause at audit time: resolver waterfall was not implemented or not wired into this review-loop path; ADS, zbMATH, OpenAlex, INSPIRE, and Gemini-grounded adjudication evidence were absent. P0-012 through P0-014 have since added the verifier-side deterministic waterfall, retraction screening, config-gated grounded fallback, and provider headers; the live Tier R rerun remains the proof step.
 Fix plan: add Weyl-classics citation fixture, implement deterministic waterfall/cache, preserve per-reference partial statuses, and require unverified/needs_review count `<= 2`.
 Attempts: 1
 Escalation status: none.
@@ -466,9 +507,9 @@ Evidence:
 - `git diff --check`: pass.
 Residual:
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint, so Tier R is not green yet.
-- Retraction screening is still not implemented in this verifier path.
-- Gemini-grounded fallback/quorum for unresolved residue is still not implemented.
-- Provider authentication/header handling for production ADS/Semantic Scholar deployments still needs a focused pass if local env requires keys.
+- Retraction screening is now fixed locally by P0-004b.
+- Verifier-side Gemini-grounded fallback and ADS/Semantic Scholar auth headers are now fixed locally by P0-004c.
+- Repo `.env` still lacks `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` and provider keys, so the live grounded endpoint and affected Tier R rerun remain pending.
 
 ## P0-005: PR Fixer Timed Out After 360 Seconds
 

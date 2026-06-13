@@ -7,7 +7,8 @@
 //!   - Plain refs (no DOI, no arxiv_id) → Crossref free-text bibliographic
 //!                             query first, then OpenAlex, Semantic Scholar,
 //!                             NASA ADS, INSPIRE-HEP, and zbMATH Open for
-//!                             pre-DOI classics.
+//!                             pre-DOI classics, then an optional URL-backed
+//!                             Gemini-grounded adjudicator endpoint for residue.
 //!
 //! Results are memoised in-process by lookup URL so a paper with repeated
 //! citations only spends one network round-trip per unique key. The verifier
@@ -40,6 +41,7 @@ enum BibliographicProviderKind {
     Ads,
     InspireHep,
     ZbMath,
+    GeminiGrounded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,21 @@ impl CitationLookup {
             resolved_url,
             source,
             reason: None,
+        }
+    }
+
+    fn resolved_with_reason(
+        source: &'static str,
+        resolved_doi: Option<String>,
+        resolved_url: Option<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: CitationLookupStatus::Resolved,
+            resolved_doi,
+            resolved_url,
+            source,
+            reason: Some(reason.into()),
         }
     }
 
@@ -293,6 +310,40 @@ impl CitationVerifier {
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Construct a verifier with deterministic providers plus a final
+    /// URL-evidence grounded resolver. Production enables the same provider
+    /// with `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`.
+    pub fn with_bibliographic_and_grounded_provider_bases(
+        crossref_base: impl Into<String>,
+        arxiv_base: impl Into<String>,
+        doi_resolver_base: impl Into<String>,
+        openalex_base: impl Into<String>,
+        semantic_scholar_base: impl Into<String>,
+        ads_base: impl Into<String>,
+        inspire_hep_base: impl Into<String>,
+        zbmath_base: impl Into<String>,
+        grounded_base: impl Into<String>,
+    ) -> Self {
+        let mut verifier = Self::with_bibliographic_provider_bases(
+            crossref_base,
+            arxiv_base,
+            doi_resolver_base,
+            openalex_base,
+            semantic_scholar_base,
+            ads_base,
+            inspire_hep_base,
+            zbmath_base,
+        );
+        verifier
+            .bibliographic_providers
+            .push(BibliographicProvider::new(
+                "gemini_grounded",
+                grounded_base,
+                BibliographicProviderKind::GeminiGrounded,
+            ));
+        verifier
     }
 
     async fn resolve_doi(&self, http: &reqwest::Client, doi: &str) -> CitationLookup {
@@ -517,8 +568,14 @@ impl CitationVerifier {
             );
         }
 
+        let provider_names = self
+            .bibliographic_providers
+            .iter()
+            .map(|provider| provider.source)
+            .collect::<Vec<_>>()
+            .join(" -> ");
         let reason = format!(
-            "not verified by resolver waterfall (Crossref -> OpenAlex -> Semantic Scholar -> NASA ADS -> INSPIRE-HEP -> zbMATH); {}",
+            "not verified by resolver waterfall (Crossref -> {provider_names}); {}",
             reasons.join("; ")
         );
         let resolved = if non_transient_count == 0 && transient_count > 0 {
@@ -573,10 +630,20 @@ impl CitationVerifier {
         query_text: &str,
     ) -> CitationLookup {
         let url = provider_query_url(provider, query_text);
-        match send_json_with_timeout(http, &url).await {
+        match send_provider_json_with_timeout(http, &url, provider.kind).await {
             JsonLookup::Ok(v) => {
                 if let Some(hit) = provider_hit_if_title_matches(&v, provider.kind, query_text) {
-                    CitationLookup::resolved(provider.source, hit.doi, hit.url)
+                    match (provider.kind, hit.url.clone()) {
+                        (BibliographicProviderKind::GeminiGrounded, Some(url)) => {
+                            CitationLookup::resolved_with_reason(
+                                provider.source,
+                                hit.doi,
+                                Some(url.clone()),
+                                format!("grounded URL evidence: {url}"),
+                            )
+                        }
+                        _ => CitationLookup::resolved(provider.source, hit.doi, hit.url),
+                    }
                 } else {
                     CitationLookup::unverified(
                         provider.source,
@@ -813,7 +880,7 @@ struct BibliographicHit {
 }
 
 fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
-    vec![
+    let mut providers = vec![
         BibliographicProvider::new(
             "openalex",
             "https://api.openalex.org/works",
@@ -839,7 +906,18 @@ fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
             "https://api.zbmath.org/v1/document/_structured_search",
             BibliographicProviderKind::ZbMath,
         ),
-    ]
+    ];
+    if let Ok(base_url) = std::env::var("GROKRXIV_CITATION_GROUNDED_RESOLVER_URL") {
+        let base_url = base_url.trim();
+        if !base_url.is_empty() {
+            providers.push(BibliographicProvider::new(
+                "gemini_grounded",
+                base_url.to_string(),
+                BibliographicProviderKind::GeminiGrounded,
+            ));
+        }
+    }
+    providers
 }
 
 fn record_bibliographic_attempt(
@@ -978,6 +1056,9 @@ fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> Str
         BibliographicProviderKind::ZbMath => {
             format!("{}?query={encoded}&results_per_page=5", provider.base_url)
         }
+        BibliographicProviderKind::GeminiGrounded => {
+            format!("{}?query={encoded}", provider.base_url)
+        }
     }
 }
 
@@ -996,6 +1077,7 @@ fn provider_hit_if_title_matches(
         BibliographicProviderKind::Ads => ads_hits(body),
         BibliographicProviderKind::InspireHep => inspire_hep_hits(body),
         BibliographicProviderKind::ZbMath => zbmath_hits(body),
+        BibliographicProviderKind::GeminiGrounded => gemini_grounded_hits(body),
     };
     hits.into_iter()
         .find(|hit| title_matches(query_text, &hit.title))
@@ -1214,6 +1296,91 @@ fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
         .collect()
 }
 
+fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    grounded_candidate_values(body)
+        .into_iter()
+        .filter_map(|candidate| {
+            let verdict = string_field(candidate, "verdict")
+                .or_else(|| string_field(candidate, "status"))
+                .unwrap_or_default();
+            if !matches!(
+                verdict.to_ascii_lowercase().as_str(),
+                "verified" | "resolved" | "exists"
+            ) {
+                return None;
+            }
+            let title = string_field(candidate, "title")?;
+            let evidence_url = grounded_evidence_urls(candidate).into_iter().next()?;
+            let doi = string_field(candidate, "resolved_doi")
+                .or_else(|| string_field(candidate, "doi"))
+                .and_then(|doi| normalize_doi(&doi));
+            let url = first_http_string(candidate.get("resolved_url")).or(Some(evidence_url));
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
+}
+
+fn grounded_candidate_values(body: &serde_json::Value) -> Vec<&serde_json::Value> {
+    body.get("candidates")
+        .or_else(|| body.get("results"))
+        .and_then(|value| value.as_array())
+        .filter(|items| !items.is_empty())
+        .map(|items| items.iter().collect())
+        .unwrap_or_else(|| vec![body])
+}
+
+fn grounded_evidence_urls(candidate: &serde_json::Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    collect_http_strings(candidate.get("evidence_urls"), &mut urls);
+    collect_http_strings(candidate.get("urls"), &mut urls);
+    collect_http_strings(candidate.get("evidence"), &mut urls);
+    if let Some(quorum) = candidate.get("quorum").and_then(|value| value.as_array()) {
+        for item in quorum {
+            collect_http_strings(item.get("url"), &mut urls);
+            collect_http_strings(item.get("resolved_url"), &mut urls);
+            collect_http_strings(item.get("evidence_urls"), &mut urls);
+            collect_http_strings(item.get("evidence"), &mut urls);
+        }
+    }
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+fn collect_http_strings(value: Option<&serde_json::Value>, out: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    match value {
+        serde_json::Value::String(text) => collect_http_substrings(text, out),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_http_strings(Some(item), out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["url", "resolved_url", "source_url", "evidence_url"] {
+                collect_http_strings(map.get(key), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_http_substrings(text: &str, out: &mut Vec<String>) {
+    for token in text.split_whitespace() {
+        let cleaned = token.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
+        });
+        if cleaned.starts_with("http://") || cleaned.starts_with("https://") {
+            out.push(cleaned.trim_end_matches('.').to_string());
+        }
+    }
+}
+
 async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..2 {
@@ -1311,10 +1478,14 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
     JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
-async fn send_json_with_timeout(http: &reqwest::Client, url: &str) -> JsonLookup {
+async fn send_provider_json_with_timeout(
+    http: &reqwest::Client,
+    url: &str,
+    kind: BibliographicProviderKind,
+) -> JsonLookup {
     match tokio::time::timeout(
         Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
-        send_json_with_retry(http, url),
+        send_provider_json_with_retry(http, url, kind),
     )
     .await
     {
@@ -1323,6 +1494,73 @@ async fn send_json_with_timeout(http: &reqwest::Client, url: &str) -> JsonLookup
             "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
         )),
     }
+}
+
+async fn send_provider_json_with_retry(
+    http: &reqwest::Client,
+    url: &str,
+    kind: BibliographicProviderKind,
+) -> JsonLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        let request = apply_provider_headers(http.get(url), kind);
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return match response.json::<serde_json::Value>().await {
+                        Ok(body) => JsonLookup::Ok(body),
+                        Err(err) => JsonLookup::Transient(err.to_string()),
+                    };
+                }
+                if is_transient_status(status) && attempt == 0 {
+                    last_err = Some(format!("status {status}"));
+                    continue;
+                }
+                return if is_definitive_missing_status(status) {
+                    JsonLookup::Unresolved(format!("status {status}"))
+                } else {
+                    JsonLookup::Transient(format!("status {status}"))
+                };
+            }
+            Err(err) => {
+                last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+        }
+    }
+    JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+fn apply_provider_headers(
+    mut request: reqwest::RequestBuilder,
+    kind: BibliographicProviderKind,
+) -> reqwest::RequestBuilder {
+    match kind {
+        BibliographicProviderKind::SemanticScholar => {
+            if let Some(token) = nonblank_env("SEMANTIC_SCHOLAR_API_KEY") {
+                request = request.header("x-api-key", token);
+            }
+        }
+        BibliographicProviderKind::Ads => {
+            if let Some(token) =
+                nonblank_env("NASA_ADS_API_TOKEN").or_else(|| nonblank_env("ADS_API_TOKEN"))
+            {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+        }
+        _ => {}
+    }
+    request
+}
+
+fn nonblank_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn is_transient_status(status: reqwest::StatusCode) -> bool {
@@ -1463,8 +1701,33 @@ fn clean_bib_text(value: &str) -> String {
 mod tests {
     use super::*;
     use grokrxiv_schemas::{Citation, PaperExtract};
-    use wiremock::matchers::{method, path};
+    use std::sync::{Mutex as StdMutex, OnceLock};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static ENV_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prior = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prior }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn paper_with(cites: Vec<Citation>) -> PaperExtract {
         PaperExtract {
@@ -1928,6 +2191,190 @@ mod tests {
             .collect();
         assert!(sources.contains(&"ads"), "sources={sources:?}");
         assert!(sources.contains(&"zbmath"), "sources={sources:?}");
+    }
+
+    #[tokio::test]
+    async fn provider_requests_include_semantic_scholar_and_ads_auth_headers() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _semantic_key = EnvVarGuard::set("SEMANTIC_SCHOLAR_API_KEY", "s2-test-key");
+        let _ads_key = EnvVarGuard::set("NASA_ADS_API_TOKEN", "ads-test-key");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .and(header("x-api-key", "s2-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ads/v1/search/query"))
+            .and(header("Authorization", "Bearer ads-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "response": {
+                    "docs": [{
+                        "title": ["Philosophie der Raum-Zeit-Lehre"],
+                        "bibcode": "1928przl.book.....R",
+                        "identifier": ["https://ui.adsabs.harvard.edu/abs/1928przl.book.....R/abstract"]
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_structured_search", server.uri()),
+        );
+        let paper = paper_with(vec![classic_ref(
+            "reichenbach1928",
+            "Philosophie der Raum-Zeit-Lehre",
+            1928,
+        )]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["entries"][0]["source"], "ads");
+    }
+
+    #[tokio::test]
+    async fn grounded_fallback_resolves_residue_with_url_evidence() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ads/v1/search/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "response": {"docs": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/inspire/api/literature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": {"hits": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zbmath/v1/document/_structured_search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/grounded/citation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "verdict": "verified",
+                "title": "Philosophie der Raum-Zeit-Lehre",
+                "resolved_url": "https://archive.org/details/philosophiederra00reic",
+                "evidence_urls": ["https://archive.org/details/philosophiederra00reic"],
+                "evidence": [
+                    "Gemini grounded search found a digitized catalogue record with the matching title."
+                ],
+                "quorum": [
+                    {
+                        "provider": "gemini_grounded",
+                        "verdict": "verified",
+                        "url": "https://archive.org/details/philosophiederra00reic"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_and_grounded_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_structured_search", server.uri()),
+            format!("{}/grounded/citation", server.uri()),
+        );
+        let paper = paper_with(vec![classic_ref(
+            "reichenbach1928",
+            "Philosophie der Raum-Zeit-Lehre",
+            1928,
+        )]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["checked"], 1);
+        assert_eq!(r.notes["unverified"].as_array().unwrap().len(), 0);
+        assert_eq!(r.notes["resolved_via_bibliographic_query"], 1);
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["source"], "gemini_grounded");
+        assert_eq!(
+            r.notes["entries"][0]["resolved_url"],
+            "https://archive.org/details/philosophiederra00reic"
+        );
+        let reason = r.notes["entries"][0]["reason"].as_str().unwrap();
+        assert!(reason.contains("https://archive.org/details/philosophiederra00reic"));
     }
 
     #[test]

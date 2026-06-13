@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T01:57:34Z
+Updated: 2026-06-13T02:11:15Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 13, P0-013 citation retraction screening.
-- Branch/worktree: `p0-013-citation-retractions` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-013-citation-retractions`.
-- Branch base commit: `2a9adae`.
+- Session type: P0 session 14, P0-014 citation grounded fallback and provider headers.
+- Branch/worktree: `p0-014-citation-grounded-fallback` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-014-citation-grounded-fallback`.
+- Branch base commit: `6e46242`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-004 citation reliability. P0-012 fixed the deterministic bibliographic waterfall for PR-54-style pre-DOI classics. P0-013 fixed Crossref production retraction metadata screening: DOI lookups now inspect `update-to`, `updated-by`, relation retraction markers, and `RETRACTED:` titles; retracted entries become first-class `status="retracted"` verifier failures, are preserved in citation-validation reports as `crossref_retraction`, and are surfaced in CLI citation evidence. Residual P0-004 work remains: Gemini-grounded fallback/quorum for unresolved residue, provider auth/header handling if local env requires it, and an affected Tier R rerun proving `needs_review <= 2`. No full corpus green claim yet.
+- In-flight defect: P0-004 citation reliability. P0-012 fixed the deterministic bibliographic waterfall for PR-54-style pre-DOI classics. P0-013 fixed Crossref production retraction metadata screening. P0-014 added an optional URL-backed `gemini_grounded` final resolver for waterfall residue, requires URL evidence before marking a grounded hit resolved, and sends Semantic Scholar / ADS auth headers from local env when present. Residual P0-004 work remains: configure or implement the real grounded resolver endpoint, then run the affected Tier R review-loop command proving `needs_review <= 2`. No full corpus green claim yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -48,6 +48,7 @@ Updated: 2026-06-13T01:57:34Z
 - P0-011 fix, 2026-06-13T01:34Z: N5 false-proof halt now checks corpus Tier C/G context before downstream review-loop work. Lean `PROVED` on `blum-pvnp`/synthetic false-theorem-style entries produces a halt dossier, halted policy/report artifacts, and no PR side effect. Targeted review-loop tests passed, serial full app-runtime lib tests passed, and app workspace check passed.
 - P0-012 progress, 2026-06-13T01:47Z: citation verifier now has a deterministic bibliographic resolver waterfall after Crossref for plain references. The new PR-54 classics fixture first failed because the provider-base constructor did not exist, then passed with ADS/zbMATH resolving four of six classic refs and only two unverified residues. Citation validation reports now preserve `ads`/`zbmath` sources, resolved DOI/URL evidence, and expanded resolver statuses. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 30 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` passed, 273 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-013 progress, 2026-06-13T01:57Z: citation verifier now fails closed on Crossref production retraction metadata for DOI lookups. A new retraction fixture first failed with `status=resolved`/`Pass`, then passed with `status=retracted`, `source=crossref_retraction`, explicit evidence, and verifier `Fail`. Citation-validation reports preserve `crossref_retraction` evidence and mark retracted resolver results as remediation items. CLI citation summaries now include `retracted=<n>` and include retraction evidence in review text. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 31 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
+- P0-014 progress, 2026-06-13T02:11Z: citation verifier now has a config-gated `gemini_grounded` final provider after Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH residue. It accepts only `verified`/`resolved` grounded responses with a matching title and HTTP URL evidence, emits `status=resolved`, `source=gemini_grounded`, `verified_via=gemini_grounded`, and a URL-evidence reason, and leaves non-evidenced residue as needs-review. Provider requests now send `x-api-key` from `SEMANTIC_SCHOLAR_API_KEY` and `Authorization: Bearer` from `NASA_ADS_API_TOKEN` or `ADS_API_TOKEN` when those local env vars exist. Repo `.env` currently has no grounded resolver URL or provider keys, so no affected Tier R rerun was executed and no corpus-green claim is made. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 33 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
 
 ## Coordinator Rules
 
