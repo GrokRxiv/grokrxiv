@@ -4,7 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Coordinator / Corpus Auditor: after the P0-027 worker is merged, rerun `regression-pr54-weyl` before any full sweep to catch regressions from the synthetic-fixture and Lean-verdict changes. Do not claim phase exit until both runners pass the full gate.
+1. Coordinator / Corpus Auditor: rerun `regression-pr54-weyl` before any full sweep to catch regressions from the synthetic-fixture and Lean-verdict changes. Do not claim phase exit until both runners pass the full gate.
 
 ## Completed Queue Items
 

@@ -274,6 +274,13 @@
 | 2026-06-13T11:43:00Z | `a839cb3` | `p0-027-false-theorem-lean-verdict` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass, no warnings after helper cleanup | chat transcript |
 | 2026-06-13T11:44:00Z | `a839cb3` | `p0-027-false-theorem-lean-verdict` | `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` | pass, 45 tests | chat transcript |
 | 2026-06-13T11:44:00Z | `a839cb3` | `p0-027-false-theorem-lean-verdict` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-027-false-theorem-lean-verdict` | pass, coordinator fast-forwarded from `a839cb3` to `6ffc436` | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 12 tests after coordinator merge | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop -- --nocapture` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture` | pass, 7 tests after coordinator merge | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` | pass, 45 tests after coordinator merge | chat transcript |
+| 2026-06-13T11:47:47Z | `6ffc436` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 
