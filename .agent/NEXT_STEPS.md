@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 15: continue local-only P0 from the P0-014 citation-grounded-fallback checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 16: continue local-only P0 from the P0-015 local-Gemini-grounded-resolver checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -31,6 +31,7 @@ Fixed P0 items so far:
 - P0-004a: PR-54 classics citation waterfall is fixed locally. Plain references now use Crossref first, then OpenAlex, Semantic Scholar, NASA ADS, INSPIRE-HEP, and zbMATH with bounded per-provider lookups, title normalization/transliteration, cached final status, and per-entry `verified_via` evidence.
 - P0-004b: retraction screening is fixed locally. DOI Crossref lookups now parse production retraction metadata (`update-to`, `updated-by`, relation retraction markers, `RETRACTED:` titles), mark such entries `status="retracted"` with `source="crossref_retraction"`, fail the citation gate, preserve `crossref_retraction` through citation-validation reports as remediation evidence, and surface `retracted=<n>` in CLI citation summaries.
 - P0-004c: grounded fallback/provider headers are fixed locally. Plain-reference resolver residue can now flow to a config-gated final `gemini_grounded` provider after Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH. Grounded hits require matching title plus HTTP URL evidence, and Semantic Scholar/ADS requests send local env auth headers when present.
+- P0-004d: local Gemini grounded API fallback is fixed locally. When `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` is unset and a Gemini API key is present, the verifier can call Gemini `generateContent` directly with Google Search grounding, parse JSON output plus grounding metadata URLs, and still require matching-title plus HTTP URL evidence before resolving residue.
 
 P0-013 validation:
 - New verifier fixture first failed before implementation because the retracted DOI was treated as `status=resolved` and verifier `Pass`.
@@ -53,12 +54,22 @@ P0-014 validation:
 - `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
 - `git diff --check`: pass.
 
+P0-015 validation:
+- New local Gemini API fixture first failed before implementation because `CitationVerifier::with_bibliographic_and_local_gemini_grounded_provider_bases` did not exist.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier local_gemini_grounded_api_resolves_residue_with_grounding_metadata -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier grounded -- --nocapture`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier default_providers_include_local_gemini_api_when_key_is_configured -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 35 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+
 Parallel-test note:
 - Full parallel app-runtime lib runs are currently flaky in config/env-heavy tests. In P0-010, two parallel runs failed on different tests (`supervisor::tests::apply_revisions_errors_without_db`, then `state::tests::build_agent_registry_applies_resolved_model_override`), while both tests passed individually and the full suite passed serially. Treat this as residual test-isolation debt, not a P0-010 regression.
 
 Residual: no full affected review-loop rerun was executed after P0-014. Tier R is not green until a safe review-loop run verifies full extraction, all specialists, bundle completeness, citation partial results, and citation `needs_review <= 2`.
 
-Next queue item: P0-004 live citation reliability. Repo `.env` currently lacks `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; configure or implement the real local grounded resolver endpoint, then run the affected Tier R review command safely:
+Next queue item: P0-004 live citation reliability. Repo `.env` plus split env files currently lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; configure a real local grounded resolver endpoint or Gemini API key, then run the affected Tier R review command safely:
 
 agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions
 

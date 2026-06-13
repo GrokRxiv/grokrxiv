@@ -511,6 +511,27 @@ Residual:
 - Verifier-side Gemini-grounded fallback and ADS/Semantic Scholar auth headers are now fixed locally by P0-004c.
 - Repo `.env` still lacks `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` and provider keys, so the live grounded endpoint and affected Tier R rerun remain pending.
 
+## P0-004 Progress: Local Gemini Grounded API Fallback
+
+Status: fixed locally for the app-local Gemini API transport, 2026-06-13T02:23Z.
+Evidence:
+- Added `local_gemini_grounded_api_resolves_residue_with_grounding_metadata`.
+- The fixture first failed before implementation because `CitationVerifier::with_bibliographic_and_local_gemini_grounded_provider_bases` did not exist.
+- The verifier now appends a final `gemini_grounded` provider from local env when `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` is unset and `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` is configured.
+- The direct Gemini request posts to `/v1beta/models/<model>:generateContent`, sends `x-goog-api-key`, enables `tools: [{"google_search": {}}]`, requests JSON output, and preserves `groundingMetadata.groundingChunks[*].web.uri` as URL evidence.
+- Grounded hits still require `verdict`/`status` of `verified`, `resolved`, or `exists`, a matching title, and HTTP URL evidence before they become `status=resolved`, `source=gemini_grounded`, and `verified_via=gemini_grounded`.
+- Added `default_providers_include_local_gemini_api_when_key_is_configured` to protect env selection, including model and mockable base URL.
+- `agenthero/apps/grokrxiv/env/.env_review.example` now documents `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GROKRXIV_CITATION_GROUNDED_MODEL`, and `GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier grounded -- --nocapture`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier default_providers_include_local_gemini_api_when_key_is_configured -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 35 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- Repo `.env` and included env files still lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`, so this checkpoint does not prove a live Tier R affected review-loop run.
+- Configure a Gemini API key or app-local grounded resolver endpoint before the next `regression-pr54-weyl` safe rerun.
+
 ## P0-005: PR Fixer Timed Out After 360 Seconds
 
 ID: P0-005

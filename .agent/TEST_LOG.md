@@ -107,6 +107,13 @@
 | 2026-06-13T02:14:58Z | `1230e49` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests after worker fast-forward merge | chat transcript |
 | 2026-06-13T02:14:58Z | `1230e49` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after worker fast-forward merge | chat transcript |
 | 2026-06-13T02:14:58Z | `1230e49` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass; status output empty after worker fast-forward merge | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier local_gemini_grounded_api_resolves_residue_with_grounding_metadata -- --nocapture` | expected fail before fix: missing `CitationVerifier::with_bibliographic_and_local_gemini_grounded_provider_bases`; pass after fix, 1 test | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier grounded -- --nocapture` | pass, 2 tests | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier default_providers_include_local_gemini_api_when_key_is_configured -- --nocapture` | pass, 1 test | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 35 tests | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T02:23:15Z | `c42cb74` | `p0-015-grounded-resolver` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 
