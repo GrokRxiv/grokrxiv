@@ -125,6 +125,9 @@
 | 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 36 tests | chat transcript |
 | 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
 | 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T03:10:48Z | `39b9a64` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, installed PATH `grokrxiv-app` from structured-title checkpoint | chat transcript |
+| 2026-06-13T03:10:48Z | `39b9a64` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass, installed PATH `agenthero-dag-app-grokrxiv` from structured-title checkpoint | chat transcript |
+| 2026-06-13T03:10:48Z | `39b9a64` | `grokrxiv-local-corpus-harness` | `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | terminated after stall: `20260613T025743Z` run.log stayed zero bytes for 12.5 minutes; process parked with local DB sockets only; duplicate `20260613T030051Z` run was also terminated | `agenthero/apps/grokrxiv/evals/results/20260613T025743Z/regression-pr54-weyl/run.log` |
 
 ## Logging Rule
 

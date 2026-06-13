@@ -4,11 +4,12 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Citation Worker / Coordinator: P0-004 live proof step remains open. Latest safe Tier R run after P0-015 emitted partial citation results but still had `unverified=5` (`Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`) against expected `<= 2`. Configure a real `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, local Gemini API key (`GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`), ADS token, or add another deterministic provider, then rerun the safe affected command.
-2. Coordinator / Verifier Worker: P0-005 PR fixer timeout is confirmed on valid extraction/review inputs by review `83675683-633c-44a4-b9c6-0569eee2ddeb`; work it after P0-004 is green or formally blocked on provider credentials.
-3. Policy Gate Worker: add a focused Tier R fixture for `expected.recommendation: honest`. Current `policy_gate` requires `accept`, but the corpus entry explicitly leaves the verdict unpinned and asserts integrity gates.
-4. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
-5. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
+1. Runtime Worker: P0-018 rerun stall. After P0-004e, the affected safe rerun with freshly installed PATH binaries emitted a zero-byte log and slept with only local DB sockets after 12.5 minutes. Debug local DB/runtime launch before retrying the full affected command.
+2. Citation Worker / Coordinator: P0-004 live proof step remains open. Latest completed safe Tier R run after P0-015 emitted partial citation results but still had `unverified=5` (`Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`) against expected `<= 2`. Structured-title query fix is tested but not yet proven by a completed affected rerun. Configure a real `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, local Gemini API key (`GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`), ADS token, or add another deterministic provider if residue remains above target.
+3. Coordinator / Verifier Worker: P0-005 PR fixer timeout is confirmed on valid extraction/review inputs by review `83675683-633c-44a4-b9c6-0569eee2ddeb`; work it after P0-004 is green or formally blocked on provider credentials.
+4. Policy Gate Worker: add a focused Tier R fixture for `expected.recommendation: honest`. Current `policy_gate` requires `accept`, but the corpus entry explicitly leaves the verdict unpinned and asserts integrity gates.
+5. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
+6. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
 
 ## Completed Queue Items
 
@@ -27,6 +28,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-004d local Gemini grounded API fallback: fixed locally by adding a direct Gemini `generateContent` transport for the final `gemini_grounded` provider when no resolver URL is configured but a Gemini API key is present. The request enables Google Search grounding, requires grounding URL evidence, and documents the env knobs in `.env_review.example`. Repo `.env` and split env files currently lack the resolver URL, Gemini API key, Semantic Scholar key, and ADS token; the affected Tier R rerun remains queued until real local credentials or endpoint config exist.
 - P0-016 affected Tier R safe rerun: executed after reinstalling the local PATH binaries. Review `83675683-633c-44a4-b9c6-0569eee2ddeb` proved N2/N4/no-external-action guardrails are producing explicit artifacts, and citation validation is no longer wholesale-empty. The run is still red: citation residue is `unverified=5` against expected `<= 2`; Haskell/Lean/semantic adequacy fail on the typed-IR gap; PR fixer times out after 360s; policy gate requires `accept` despite Tier R only requiring an honest recommendation.
 - P0-004e structured-title bibliographic query: fixed locally by sending parsed `Citation.title` to the bibliographic waterfall when available, falling back to raw citation text only when no title exists. This should improve public provider matches for old/classic references whose raw bibliography labels confuse provider search. Verifier, app citation, and app workspace checks passed; affected Tier R rerun remains pending after reinstalling PATH binaries.
+- P0-018 affected rerun stall: captured and terminated a post-P0-004e safe rerun that produced a zero-byte log for 12.5 minutes and parked with only local DB sockets. No review id or corpus verdict was produced.
 
 ## Work Rule
 

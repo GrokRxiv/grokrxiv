@@ -574,6 +574,28 @@ Residual:
 - No affected `regression-pr54-weyl` safe review-loop rerun was executed after this verifier change.
 - Reinstall PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` before the next affected rerun.
 
+## P0-018: Affected Rerun Stalled Before Emitting Product Output
+
+ID: P0-018
+Corpus entry: `regression-pr54-weyl`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: terminated by operator after stall.
+finish_reason: zero-byte log after 12.5 minutes; app runtime parked with only local DB sockets.
+Bucket: F3 toolchain/runtime or F4 cascade from local runtime state.
+NEVER-event: none observed; no review id or review-loop artifacts were emitted.
+Symptom: after reinstalling PATH binaries from commit `39b9a64`, the affected rerun did not flush any product output to `run.log`. It launched `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app --json --status review ...`, then remained sleeping with zero CPU.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T025743Z/regression-pr54-weyl/run.log` (zero bytes)
+- `agenthero/apps/grokrxiv/evals/results/20260613T030051Z/regression-pr54-weyl/run.log` (newer duplicate, terminated; zero bytes)
+- `/tmp/grokrxiv-app_2026-06-12_210456_2WxS.sample.txt`
+Observed process state: after 12.5 minutes, only local DB sockets to `localhost:54322` remained open; provider HTTPS sockets had closed; `ps` showed `grokrxiv-app` sleeping at 0.0% CPU.
+Root cause: unknown. Possible local runtime/DB wait introduced by the rerun path or prior duplicate command, not enough evidence to change code.
+Owning code: unknown; start with app runtime launch/status path and local DB interactions before re-running.
+Fix plan: before the next affected rerun, check for existing review-loop processes, verify local DB responsiveness, and consider running the app binary directly with the same args to see whether `agh`/adapter buffering is hiding progress. If it stalls again, capture a symbolized backtrace or add app-runtime progress logging around early review launch/status DB calls.
+Attempts: 1 after P0-004e structured-title fix.
+Escalation status: none; retry/debug needed.
+
 ## P0-016 Review-Loop Triage After Guardrail Fixes
 
 Corpus entry: `regression-pr54-weyl`
