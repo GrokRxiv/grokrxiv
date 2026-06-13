@@ -873,3 +873,46 @@ Pass counts:
 Residuals:
 - No full corpus-green claim.
 - `bertrand-elementary` remains blocked on human corpus pin decision because pinned `v5` is withdrawn/unavailable.
+
+## P0-043 Worker Verification
+
+Time UTC: 2026-06-13T23:17:35Z
+Branch: `p0-043-zeta-citation-timeout`
+Scope: zeta bibitem citation title extraction
+
+Red-first evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest bibitem_newblock_title_uses_bibliographic_title_not_key -- --nocapture` failed before implementation because `Citation.title` was `selberg1949elementary` instead of `An elementary proof of the prime-number theorem`.
+
+Commands passed after implementation:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest bibitem_newblock_title_uses_bibliographic_title_not_key -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked
+GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions --dry-run
+GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+```
+
+Pass counts:
+- Focused ingest fixture: 1/1.
+- Ingest lib: 47/47.
+- Structural tests: 45/45.
+- App workspace check: pass.
+
+Affected rerun:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260613T230107Z/zeta3-after-p0-043-bibitem-titles`.
+- Review id: `c393d134-a7e1-4275-bbde-4d85cbfb63c4`.
+- Product exit: 0.
+- External actions: disabled; `pr_url=null`.
+- Versioned reference cache: `/Users/mlong/Documents/Development/grokrxiv-data/papers/2503.07625v2/references.json`, `citations=32`, `key_title_count=0`.
+- Citation validation: `status=warn`, `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`, `malformed=0`.
+- Policy gate: no citation-validation blocking issue remains.
+
+Residuals:
+- No full corpus-green claim.
+- Remaining zeta red is separate P0-044 Haskell semantic target hygiene: bibliography/math snippets are still formalized as partial proof obligations.
+- P0-039 remains blocked on human corpus sign-off for `bertrand-elementary` v5.

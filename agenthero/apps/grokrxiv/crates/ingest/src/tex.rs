@@ -1029,10 +1029,21 @@ fn parse_bibitems(src: &str) -> Vec<Citation> {
             raw: format!("{key}: {raw_clean}"),
             doi,
             arxiv_id,
-            title: Some(key.clone()),
+            title: extract_bibitem_title(raw).or_else(|| Some(key.clone())),
         });
     }
     out
+}
+
+fn extract_bibitem_title(raw: &str) -> Option<String> {
+    let mut parts = raw.split("\\newblock");
+    parts.next()?;
+    let candidate = parts.next()?.trim();
+    let title = sanitize_bib_value(candidate)
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';'))
+        .trim()
+        .to_string();
+    (!title.is_empty()).then_some(title)
 }
 
 fn parse_bibfile(src: &str) -> Vec<Citation> {
@@ -1797,6 +1808,30 @@ See~\cite{foo}.
                 || extract.bibliography[0].raw.contains("A. Foo"),
             "bibliography raw should reference 'foo'/'A. Foo': {}",
             extract.bibliography[0].raw
+        );
+    }
+
+    #[test]
+    fn bibitem_newblock_title_uses_bibliographic_title_not_key() {
+        let citations = parse_bibitems(
+            r#"\begin{thebibliography}{199}
+\bibitem{selberg1949elementary}
+Atle Selberg.
+\newblock An elementary proof of the prime-number theorem.
+\newblock \emph{Annals of Mathematics}, \textbf{50}(2):305--313, 1949.
+\end{thebibliography}
+"#,
+        );
+
+        assert_eq!(citations.len(), 1);
+        assert_eq!(
+            citations[0].title.as_deref(),
+            Some("An elementary proof of the prime-number theorem")
+        );
+        assert!(
+            citations[0].raw.starts_with("selberg1949elementary:"),
+            "raw reference should preserve the bibitem key for traceability: {}",
+            citations[0].raw
         );
     }
 

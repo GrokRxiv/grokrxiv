@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T22:48:18Z
+Updated: 2026-06-13T23:17:35Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: coordinator after P0-039 fast-forward merge and verification.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-039-bertrand-extraction-completeness` in `.agent/worktrees/p0-039-bertrand-extraction-completeness`.
-- Latest merged worker checkpoint: P0-039 at `1aeab11`.
+- Session type: worker P0-043 after affected rerun and verification; worker checkpoint commit pending.
+- Branch/worktree: worker branch `p0-043-zeta-citation-timeout` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-043-zeta-citation-timeout`; coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Latest merged worker checkpoint: P0-039 at `1aeab11`; P0-043 is not merged yet.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-039 app-local version-pin handling is merged and coordinator-verified. Remaining blocker is corpus ground truth: `bertrand-elementary` is pinned to `2407.07620v5`, but arXiv v5 returns 404 for both PDF and e-print and the abs page marks the submission withdrawn/no PDF; v1-v4 are retrievable. Do not edit the corpus version or expected block without human sign-off. Separate residual from zeta: citation validation failed deterministic policy after citation specialist timeout (`checked=32`, `unverified=24`); queue that separately if it repeats in the next sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-043 zeta citation metadata fixed in the worker. `parse_bibitems` now extracts the first bibliographic `\newblock` title instead of using the bibitem key as the title, so deterministic citation lookup searches real titles. Affected rerun `c393d134-a7e1-4275-bbde-4d85cbfb63c4` changed citation validation from policy-blocking failure to non-blocking warning (`checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`); policy no longer has a citation-validation blocking issue. Remaining red from that run is separate P0-044 Haskell/Lean/semantic target hygiene, where bibliography/math snippets were still formalized as partial proof obligations. P0-039 remains blocked on human corpus sign-off for withdrawn/unavailable `bertrand-elementary` v5. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -94,6 +94,7 @@ Updated: 2026-06-13T22:48:18Z
 - P0-041 coordinator verification, 2026-06-13T21:57Z: fast-forward merged `p0-041-render-quantifier-escape` into `grokrxiv-local-corpus-harness` at `43ee9e0`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-042 PR deterministic fast-path miss before P0-039 Bertrand extraction.
 - P0-042 progress, 2026-06-13T22:26Z: worker branch `p0-042-pr-deterministic-fast-path` corrected the P0-041 diagnosis: the PR fast-path code was already correct when the original rendered TeX compiles; scratch compilation of the original P0-041 rendered review failed on raw `ℕ`, with `ℝ` on the same line. Added red-first renderer coverage for raw `ℕ`/`ℝ`, mapped U+2115/U+211D to PDFLaTeX-safe `\mathbb` commands, and verified a patched scratch copy of the P0-041 source compiles. Worker checks passed: render tests 10/10, PR fast-path fixture, app-runtime `review_loop` 17/17, app workspace check, structural tests 45/45, `git diff --check`, and PATH installs. Affected safe rerun `20260613T220435Z/zeta3-after-p0-042-nr-symbols` completed as review `21dd04be-2bc6-475c-9621-c877aefc9db8`: product exit 0, external actions disabled, `pr_url=null`, `pr_fixes.status=pass`, `author_role=deterministic_pr_artifact_compiler`, zero PR-fixer agent outputs, fixed PDF written, and no raw `ℕ`/`ℝ` Unicode errors. Residual red: citation-validation policy failed with 24 unverified references after citation specialist timeout. Next queued item is P0-039 Bertrand extraction; no full corpus-green claim or phase tag.
 - P0-042 coordinator verification, 2026-06-13T22:29Z: fast-forward merged `p0-042-pr-deterministic-fast-path` into `grokrxiv-local-corpus-harness` at `7240b2d`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-039 Bertrand extraction completeness.
+- P0-043 progress, 2026-06-13T23:17Z: worker branch `p0-043-zeta-citation-timeout` fixed zeta citation title extraction. Red fixture `bibitem_newblock_title_uses_bibliographic_title_not_key` failed before implementation when title was `selberg1949elementary`, then passed after `parse_bibitems` extracted the first bibliographic `\newblock` title. Full ingest lib tests passed 47/47, app workspace check passed, structural tests passed 45/45, `git diff --check` passed, PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` installs passed, and installed dry-run passed. Affected no-cache rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`: product exit 0, external actions disabled, `pr_url=null`, versioned references have `key_title_count=0`, citation validation is `status=warn` with `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`, and policy has no citation-validation blocking issue. Remaining red is queued separately as P0-044 Haskell semantic target hygiene; no full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 

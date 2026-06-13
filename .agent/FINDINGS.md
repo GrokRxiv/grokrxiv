@@ -79,6 +79,66 @@ Residual:
 Attempts: 1
 Escalation status: human sign-off required for corpus pin.
 
+## P0-043 - Zeta Citation Metadata Uses Bibitem Keys As Titles
+
+ID: P0-043
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `21dd04be-2bc6-475c-9621-c877aefc9db8`
+Review id after fix: `c393d134-a7e1-4275-bbde-4d85cbfb63c4`
+Runner: local CLI
+Command: `GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected rerun completed; citation validation no longer blocks policy, but Haskell/Lean/semantic adequacy remain red.
+Bucket: F1 app-local citation extraction metadata
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-041 and P0-042 affected `zeta3-irrationality` reruns both ended with citation-validation policy failure: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`.
+- The apparent timeout was not the actionable root cause. The deterministic resolver was searching bibliography keys such as `selberg1949elementary` instead of paper titles.
+- Stale unversioned cache under `/Users/mlong/Documents/Development/grokrxiv-data/papers/2503.07625/references.json` was misleading; the no-cache affected rerun writes the versioned cache under `/Users/mlong/Documents/Development/grokrxiv-data/papers/2503.07625v2/references.json`.
+
+Raw evidence paths:
+- Before: `agenthero/apps/grokrxiv/evals/results/20260613T220435Z/zeta3-after-p0-042-nr-symbols/`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T230107Z/zeta3-after-p0-043-bibitem-titles/`
+
+Artifact paths:
+- After citation validation: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/c393d134-a7e1-4275-bbde-4d85cbfb63c4/review_loop/citation_validation_report.json`
+- After policy gate: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/c393d134-a7e1-4275-bbde-4d85cbfb63c4/review_loop/policy_gate.json`
+
+Root cause:
+- TeX `\bibitem` bibliography entries in the zeta paper contain the real title in the first `\newblock` after the author block.
+- `parse_bibitems` set `Citation.title` to the bibitem key, so deterministic citation providers searched keys rather than bibliographic titles.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/ingest/src/tex.rs`
+
+Resolution:
+1. Added `extract_bibitem_title` to read the first bibliographic `\newblock`, sanitize TeX markup, and trim trailing punctuation.
+2. Changed `parse_bibitems` to prefer that extracted title and only fall back to the bibitem key if no title can be extracted.
+3. Added a zeta-style red-first fixture proving the title is `An elementary proof of the prime-number theorem`, not `selberg1949elementary`, while preserving the key in raw text for traceability.
+
+Evidence:
+- Red-first fixture `bibitem_newblock_title_uses_bibliographic_title_not_key` failed before implementation with left `Some("selberg1949elementary")`; passed after the fix.
+- Focused fixture passed after implementation.
+- Full ingest lib tests passed 47/47.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs passed for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`.
+- Installed safe dry-run passed with cache disabled and `external_actions.enabled=false`.
+- Affected no-cache rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`, product exit 0, external actions disabled, `pr_url=null`.
+- Versioned references now have `citations=32` and `key_title_count=0`; sample extracted titles include `Prime Number Theorem with Remainder Term`, `The Prime Number Theorem`, and `Additive Combinatorics`.
+- Citation validation is now `status=warn`, `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`, `malformed=0`, `unresolved_fraction=0.0`.
+- Policy no longer includes `Citation-validation evidence failed deterministic policy.` in `blocking_issues`.
+
+Residual:
+- The affected rerun remains red for a separate P0-044 issue: Haskell/Lean/semantic adequacy block because bibliography/math snippets such as `body_math_41` and `body_math_67` are formalized as partial proof obligations. Queue that as `zeta Haskell semantic target hygiene / bibliography snippets`.
+- P0-039 remains blocked on human corpus sign-off for the withdrawn/unavailable Bertrand v5 corpus pin.
+- No full P0 green claim. This was an affected single-entry rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-036 - PR Artifact Fixer Timeout / Checkmark Escape
 
 ID: P0-036
