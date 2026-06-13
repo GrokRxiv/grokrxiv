@@ -1,14 +1,14 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T20:39:14Z
+Updated: 2026-06-13T20:43:00Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0-038 renderer fix worker complete; checkpoint/merge pending.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; active worker branch `p0-038-render-sqrt-escape` in `.agent/worktrees/p0-038-render-sqrt-escape`.
-- Latest merged worker checkpoint: P0-037 state checkpoint at `7b9dcbe`; P0-038 worker is based on coordinator checkpoint `7b9dcbe`.
+- Session type: coordinator after P0-038 fast-forward merge; next worker should start P0-040.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-038-render-sqrt-escape` in `.agent/worktrees/p0-038-render-sqrt-escape`.
+- Latest merged worker checkpoint: P0-038 at `5a6c068`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
