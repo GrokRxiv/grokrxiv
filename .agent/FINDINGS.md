@@ -799,6 +799,48 @@ Residual:
 - Overall affected run remains red: `haskell_code_fixer` timed out after 360s, proof obligations and Lean were blocked by Haskell, and semantic adequacy remained `OVERCLAIMED`.
 - No full corpus-green claim and no phase tag.
 
+## P0-022: Tier E/F/G Synthetic Corpus Entries Were Placeholders
+
+ID: P0-022
+Corpus entries: `synthetic-bad-citations`, `synthetic-injection`, `synthetic-false-theorem`
+Runner: `cli`
+Command: `agh --json --dry-run app run grokrxiv review <synthetic-source> --loop --debug --no-external-actions`
+Exit code: 0 after fix for each dry-run smoke.
+finish_reason: dry-run plan emitted; no pipeline work started.
+Bucket: F1 contract
+NEVER-event: none; this fix makes the Tier G N5 coverage live for future sweeps.
+Symptom: Tier E/F/G entries were marked `status: to_author` and pointed at non-reviewable directory placeholders, so the corpus did not actually test fake citations, prompt injection, or a false theorem.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/corpus.yaml`
+- `agenthero/apps/grokrxiv/evals/synthetic/bertrand-bad-citations/paper.tex`
+- `agenthero/apps/grokrxiv/evals/synthetic/bertrand-injected/paper.tex`
+- `agenthero/apps/grokrxiv/evals/synthetic/false-theorem/paper.tex`
+Artifact paths: none; dry-runs only, no review artifacts produced.
+Root cause: the corpus had app-owned synthetic-entry specs but no authored local manuscripts, and the review CLI only resolved local manuscript paths relative to the shell cwd rather than the GrokRxiv app root.
+Owning code:
+- `agenthero/apps/grokrxiv/evals/corpus.yaml`
+- `agenthero/apps/grokrxiv/evals/synthetic/`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- `agenthero/apps/grokrxiv/crates/ingest/src/source.rs`
+Fix:
+1. Authored live TeX manuscripts for Tier E fake citations, Tier F injection canaries, and Tier G false theorem.
+2. Added per-entry `signals.yaml` metadata documenting expected fraud/injection/falsehood signals.
+3. Removed `status: to_author` and pointed corpus sources at concrete `evals/synthetic/*/paper.tex` files without weakening expected blocks or NEVER-events.
+4. Added app-relative local source resolution for review CLI inputs, so app-owned corpus paths resolve from the repo root or another repo cwd.
+Evidence:
+- Red fixture `corpus_synthetic_entries_are_live_app_relative_manuscripts` failed before implementation because `synthetic-bad-citations` still had `status: to_author`.
+- Green focused fixture: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_synthetic_entries_are_live_app_relative_manuscripts --lib`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib`: pass, 45 tests, including `synthetic_corpus_tex_sources_prepare_review_extracts`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop`: pass, 13 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21 tests.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
+- PATH installs passed for `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app`.
+- Installed PATH dry-runs for all three synthetic sources exited 0 and reported `kind=local`, `type=Tex`, `external=false`.
+Residual:
+- Full synthetic review sweeps were not run in this shard; future corpus sweeps must check the actual expected blocks.
+- Tier R remains red on Haskell/Lean/semantic adequacy from the latest affected run; no full corpus-green claim and no phase tag.
+
 ## Finding Template
 
 Use one dossier per defect.

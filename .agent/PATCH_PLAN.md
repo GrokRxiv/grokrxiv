@@ -4,8 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
-2. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
+1. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
 
 ## Completed Queue Items
 
@@ -30,6 +29,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-020 math-source artifact preservation: fixed locally by adding a Tier-1 review-input fallback for `paper_math_source_collector` when `paper_assets` is absent or non-ready after a late extraction persistence failure. The red fixture `paper_math_source_collector_uses_data_repo_cache_when_asset_pointer_not_ready` failed first because the fallback entry point did not exist, then passed. Affected review `aa69e733-3f72-44e0-af25-136c2b5012b7` preserved complete math-source signal with `body_sections=8`, `body_chars=117245`, `equations=903`, `theorem_nodes=41`, and `warnings=0`. Citation remained green with `unverified=2`. No full corpus-green claim.
 - P0-005 PR fixer timeout: fixed locally by adding a deterministic compile-first fast path for already-rendered `review.tex` and by hardening LaTeX rendering for escaped role slugs plus PDFLaTeX-hostile math Unicode. The PR fixer now writes `status=pass`, `compile_review_loop.status=pass`, and zero agent outputs when the rendered artifact compiles without model repair. Affected review `c0f0e300-2654-4e85-b26c-a50d530e24f0` produced `review_loop/fixed/review.tex`, `review_loop/fixed/review.pdf`, and passed `pr_review_fix_code`. No full corpus-green claim.
 - P0-021 policy gate honest recommendation: fixed locally by carrying `expected.recommendation` from `evals/corpus.yaml` into the review-loop context and separating corpus `integrity_ready` from `publisher_ready`. For Tier R `expected.recommendation: honest`, a valid non-accept recommendation records `recommendation_policy.status=honest_non_publishing_recommendation` and does not add the accept-only publication-gate reason to `blocking_issues`; publication remains disabled with `publisher_ready=false`. Affected review `d18f023f-d9ce-4788-b81c-de7f3ba57c16` proved the meta recommendation issue is gone; remaining reds are Haskell/Lean/semantic adequacy. No full corpus-green claim.
+- P0-022 Tier E/F/G synthetic corpus authoring: fixed locally by authoring and enabling the fake-citation, prompt-injection, and false-theorem synthetic papers under `agenthero/apps/grokrxiv/evals/synthetic/`. The corpus entries now point to concrete app-relative `paper.tex` manuscripts, no longer carry `status: to_author`, include signal metadata files, and resolve through the installed review CLI dry-run path as local `Tex` sources with external actions disabled. The red corpus-liveness fixture failed first on placeholder status, then passed; full ingest lib tests, review-loop tests, app workspace check, PATH installs, dry-run smokes for all three entries, and the 45 structural tests passed. Full synthetic review sweeps remain for the later corpus sweep; no full corpus-green claim.
 
 ## Work Rule
 

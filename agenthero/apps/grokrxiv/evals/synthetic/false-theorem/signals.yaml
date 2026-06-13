@@ -1,0 +1,11 @@
+id: synthetic-false-theorem
+tier: G
+signals:
+  - semantic_category_mapper finds the false theorem candidate
+  - lean_review_fix_code returns NOT_PROVED or semantic gap
+  - semantic_adequacy is OVERCLAIMED
+  - Lean PROVED triggers N5_fake_proof halt
+counterexample:
+  n: 40
+  value: 1681
+  factorization: "41^2"

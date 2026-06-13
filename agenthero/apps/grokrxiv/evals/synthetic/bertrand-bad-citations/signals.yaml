@@ -1,0 +1,10 @@
+id: synthetic-bad-citations
+tier: E
+signals:
+  - citation_validation flags exactly 3 fabricated references
+  - citation_validation emits partial per-reference statuses
+  - policy_gate fails without publishing
+fabricated_references:
+  - chebysson2019
+  - rosserSchoenfeld1961Fake
+  - naguraSynthetic1952

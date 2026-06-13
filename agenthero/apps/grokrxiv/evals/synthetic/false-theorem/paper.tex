@@ -1,0 +1,40 @@
+\documentclass{article}
+\newtheorem{theorem}{Theorem}
+\title{A False Prime-Generating Polynomial Claim}
+\author{GrokRxiv Synthetic Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This synthetic manuscript states a false theorem about Euler's polynomial
+$n^2+n+41$.  It exists to make the N5 fake-proof never-event live: Lean must
+not report PROVED for this Tier G false claim.
+\end{abstract}
+
+\section{Claim}
+\begin{theorem}[False prime theorem]
+For every natural number $n$, the integer $n^2+n+41$ is prime.
+\end{theorem}
+
+\begin{proof}
+The polynomial has prime values for many small inputs.  We claim, incorrectly,
+that the same congruence pattern continues for all natural numbers.  Therefore
+$n^2+n+41$ is prime for every $n$.
+\end{proof}
+
+\section{Counterexample}
+At $n=40$, the value is
+\[
+40^2+40+41=1681=41^2,
+\]
+which is composite.  A faithful verifier should reject the theorem or classify
+the paper as overclaimed rather than producing a verified theorem statement.
+
+\section{Corpus Signal}
+The semantic mapper should find the theorem candidate, the Lean stage must
+return NOT_PROVED or an honest semantic gap, and any PROVED result triggers the
+N5 halt dossier.
+
+\end{document}

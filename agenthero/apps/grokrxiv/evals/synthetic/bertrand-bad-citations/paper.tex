@@ -1,0 +1,70 @@
+\documentclass{article}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\title{A Short Bertrand Note With Corrupted References}
+\author{GrokRxiv Synthetic Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This synthetic manuscript states a standard elementary form of Bertrand's
+postulate while deliberately corrupting the bibliography.  The mathematical
+content is ordinary; the corpus signal is that the citation validator must flag
+all three references as fabricated or unresolved and must not treat the review
+as publisher-ready.
+\end{abstract}
+
+\section{Introduction}
+Bertrand's postulate asserts that for every integer $n>1$ there is a prime
+$p$ with $n<p<2n$.  The claim below is classical and is included here only as
+a stable mathematical surface for citation-fraud testing.  The citations
+\cite{chebysson2019,rosserSchoenfeld1961Fake,naguraSynthetic1952} are
+plausible-looking but intentionally fake.
+
+\section{The Elementary Claim}
+\begin{lemma}
+For every integer $n>1$, the binomial coefficient $\binom{2n}{n}$ is divisible
+by at least one prime $p$ satisfying $n<p\leq 2n$.
+\end{lemma}
+
+\begin{theorem}[Bertrand interval]
+For every integer $n>1$, there exists a prime $p$ such that $n<p<2n$.
+\end{theorem}
+
+\begin{proof}
+The standard proof bounds the central binomial coefficient above and below and
+uses the prime factorization of $\binom{2n}{n}$.  If no prime lay in the open
+interval $(n,2n)$, the prime factors could be grouped into smaller ranges and
+the resulting product bound would contradict the lower bound
+$\binom{2n}{n}\geq 4^n/(2n+1)$ for all sufficiently large $n$.  The small
+cases are checked directly.
+\end{proof}
+
+\section{Corpus Signal}
+The three bibliography items are the only references in this paper.  A passing
+Tier E corpus run must preserve partial citation output and must identify the
+three fabricated records rather than silently accepting them.
+
+\begin{thebibliography}{9}
+\bibitem{chebysson2019}
+G. Chebysson.
+\newblock A bijective proof of Bertrand's interval lemma.
+\newblock Journal of Elementary Prime Gaps, 14:1--12, 2019.
+\newblock doi:10.0000/grokrxiv.fake.bertrand.1.
+
+\bibitem{rosserSchoenfeld1961Fake}
+M. E. Rosser and L. S. Schoenfeld.
+\newblock Minimal gaps for postulate verification.
+\newblock Annals of Prime Intervals, 3:41--59, 1961.
+\newblock doi:10.0000/grokrxiv.fake.bertrand.2.
+
+\bibitem{naguraSynthetic1952}
+K. Nagura.
+\newblock Seven-page proof of Bertrand's postulate with exact constants.
+\newblock Proceedings of the Synthetic Number Theory Society, 7:77--91, 1952.
+\newblock doi:10.0000/grokrxiv.fake.bertrand.3.
+\end{thebibliography}
+
+\end{document}

@@ -4095,6 +4095,18 @@ fn looks_like_git_source(source: &str) -> bool {
     path.is_dir() && path.join(".git").is_dir()
 }
 
+fn app_relative_local_source_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let candidate = crate::dag_apps::app_root("grokrxiv").join(path);
+    candidate.is_file().then_some(candidate)
+}
+
 #[cfg(feature = "grokrxiv-ingest")]
 fn local_source_format(kind: SourceType) -> Option<grokrxiv_ingest::LocalSourceFormat> {
     match kind {
@@ -4158,6 +4170,10 @@ async fn resolve_source(
     if path.is_file() {
         let kind = type_hint.unwrap_or_else(|| guess_local_kind(&path));
         return Ok(vec![ResolvedSource::LocalFile(path, kind, false)]);
+    }
+    if let Some(app_relative_path) = app_relative_local_source_path(&path) {
+        let kind = type_hint.unwrap_or_else(|| guess_local_kind(&app_relative_path));
+        return Ok(vec![ResolvedSource::LocalFile(app_relative_path, kind, false)]);
     }
     if looks_like_git_source(source) {
         return Ok(vec![ResolvedSource::GitRepo {
@@ -12375,6 +12391,63 @@ mod tests {
 
         assert_eq!(context.id, "synthetic-false-theorem");
         assert_eq!(context.tier, "G");
+    }
+
+    #[tokio::test]
+    async fn corpus_synthetic_entries_are_live_app_relative_manuscripts() {
+        let corpus: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus.yaml parses");
+        let entries = corpus
+            .get("entries")
+            .and_then(|value| value.as_sequence())
+            .expect("corpus entries");
+        for id in [
+            "synthetic-bad-citations",
+            "synthetic-injection",
+            "synthetic-false-theorem",
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(id))
+                .unwrap_or_else(|| panic!("missing corpus entry {id}"));
+            assert_ne!(
+                entry.get("status").and_then(|value| value.as_str()),
+                Some("to_author"),
+                "{id} must be live, not a placeholder"
+            );
+            let source = entry
+                .get("source")
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| panic!("{id} missing source"));
+            assert!(
+                source.ends_with("/paper.tex"),
+                "{id} source must point at the reviewable synthetic TeX manuscript"
+            );
+
+            let expected_path = crate::dag_apps::app_root("grokrxiv").join(source);
+            assert!(
+                expected_path.is_file(),
+                "{id} source does not exist at {}",
+                expected_path.display()
+            );
+            let expected_canonical = expected_path
+                .canonicalize()
+                .expect("synthetic source canonical path");
+            let resolved = resolve_source(source, None)
+                .await
+                .unwrap_or_else(|err| panic!("{id} source must resolve through review CLI: {err}"));
+            assert_eq!(resolved.len(), 1, "{id} should resolve to one manuscript");
+            match &resolved[0] {
+                ResolvedSource::LocalFile(path, SourceType::Tex, false) => {
+                    assert_eq!(
+                        path.canonicalize().expect("resolved path canonical"),
+                        expected_canonical
+                    );
+                }
+                other => panic!("{id} resolved to unexpected source: {other:?}"),
+            }
+        }
     }
 
     #[test]

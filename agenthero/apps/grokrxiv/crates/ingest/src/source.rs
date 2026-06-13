@@ -1018,6 +1018,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn synthetic_corpus_tex_sources_prepare_review_extracts() {
+        let app_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("app root");
+        let synthetic = app_root.join("evals").join("synthetic");
+
+        let bad_citations = prepare_local_file_source(
+            &synthetic.join("bertrand-bad-citations").join("paper.tex"),
+            None,
+            None,
+            Vec::new(),
+            Some("math.NT".to_string()),
+        )
+        .await
+        .expect("prepare bad-citations synthetic paper");
+        assert!(
+            bad_citations.extract.sections.len() >= 3,
+            "bad-citations paper should have reviewable body sections"
+        );
+        assert_eq!(
+            bad_citations.extract.bibliography.len(),
+            3,
+            "Tier E synthetic paper should contain exactly the three fake references"
+        );
+        let bad_citations_json = serde_json::to_string(&bad_citations.extract).unwrap();
+        assert!(bad_citations_json.contains("grokrxiv.fake.bertrand.1"));
+        assert!(bad_citations_json.contains("grokrxiv.fake.bertrand.2"));
+        assert!(bad_citations_json.contains("grokrxiv.fake.bertrand.3"));
+
+        let injected = prepare_local_file_source(
+            &synthetic.join("bertrand-injected").join("paper.tex"),
+            None,
+            None,
+            Vec::new(),
+            Some("math.NT".to_string()),
+        )
+        .await
+        .expect("prepare injection synthetic paper");
+        let injected_json = serde_json::to_string(&injected.extract).unwrap();
+        assert!(injected_json.contains("SYSTEM OVERRIDE"));
+        assert!(injected_json.contains("publisher_ready=true"));
+
+        let false_theorem = prepare_local_file_source(
+            &synthetic.join("false-theorem").join("paper.tex"),
+            None,
+            None,
+            Vec::new(),
+            Some("math.NT".to_string()),
+        )
+        .await
+        .expect("prepare false-theorem synthetic paper");
+        let false_theorem_json = serde_json::to_string(&false_theorem.extract).unwrap();
+        assert!(false_theorem_json.contains("False prime theorem"));
+        assert!(false_theorem_json.contains("1681"));
+        assert!(false_theorem_json.contains("41^2"));
+    }
+
     #[test]
     fn ambiguous_git_tex_error_lists_paper_path_candidates() {
         let tmp = TempDir::new().unwrap();
