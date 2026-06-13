@@ -2,12 +2,13 @@
 
 Continue exactly from here:
 
-## P0-036 Coordinator Merge
+## P0-037 First Full Local CLI Corpus Sweep
 
-Current worker:
-- Branch: `p0-036-pr-fixer-timeout`
-- Worktree: `.agent/worktrees/p0-036-pr-fixer-timeout`
-- Status: P0-036 is fixed locally and affected Tier R rerun passed the review-loop integrity gate.
+Current coordinator:
+- Branch: `grokrxiv-local-corpus-harness`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- P0-036 merged checkpoint: `5152bf3`
+- Status: P0-036 is merged and coordinator-side verification passed. No phase tag exists and no full P0 green claim has been made.
 
 Read first:
 - `agenthero/apps/grokrxiv/evals/corpus.yaml`
@@ -31,32 +32,6 @@ P0-036 evidence:
 - Semantic adequacy reached `MATCHES`.
 - Citation stayed within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
 - Policy integrity ready; publisher remains disabled/non-ready because the honest recommendation is `major_revision`.
-
-Coordinator merge ritual:
-
-```bash
-cd /Users/mlong/Documents/Development/grokrxiv
-git status --short --branch
-git merge --ff-only p0-036-pr-fixer-timeout
-cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
-cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
-cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib
-cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
-cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
-git diff --check
-git status --short --branch
-```
-
-After coordinator verification, update `.agent/AGENT_STATUS.md`, `.agent/TEST_LOG.md`, `.agent/NEXT_STEPS.md`, and `agenthero/apps/grokrxiv/evals/results/LEDGER.md`, then commit:
-
-```bash
-git add .
-git commit -m "codex checkpoint: P0 - P0-036 coordinator merge"
-```
-
-## P0-037 Next Work
-
-After P0-036 is merged and verified on the coordinator, run the first full local CLI corpus sweep from `agenthero/apps/grokrxiv/evals/LOOP.md` against `agenthero/apps/grokrxiv/evals/corpus.yaml`.
 
 Expected next session shape:
 1. Start a fresh local worker branch/worktree, for example `p0-037-full-cli-sweep`.

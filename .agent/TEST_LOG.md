@@ -501,3 +501,26 @@ Affected rerun:
 
 Residuals:
 - No phase tag or full P0 green claim. A full corpus sweep and both-runner exit gate remain pending.
+
+## P0-036 Coordinator Merge - 2026-06-13T19:23:14Z
+
+Commands passed after fast-forward merge to `grokrxiv-local-corpus-harness` at `5152bf3`:
+
+```bash
+git merge --ff-only p0-036-pr-fixer-timeout
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+```
+
+Pass counts:
+- Render tests: 10/10.
+- App-runtime `review_loop`: 17/17.
+- Review-loop crate: 15/15.
+- Structural tests: 45/45.
+
+Residuals:
+- No phase tag or full P0 green claim. P0-037 must run the first full local CLI corpus sweep from `evals/LOOP.md` against `evals/corpus.yaml`.
