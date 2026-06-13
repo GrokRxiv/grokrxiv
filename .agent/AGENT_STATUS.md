@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T11:58:44Z
+Updated: 2026-06-13T12:00:47Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 28 worker complete; Tier R regression rerun captured and triaged.
-- Branch/worktree: worker branch `p0-028-tier-r-regression-rerun` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-028-tier-r-regression-rerun`; coordinator branch `grokrxiv-local-corpus-harness` remains in `/Users/mlong/Documents/Development/grokrxiv`.
-- Branch base commit: `a6e01c8`; current checkpoint commit: pending P0-028 worker checkpoint commit.
+- Session type: P0 session 28 integration complete; Tier R regression rerun dossier merged and verified on coordinator.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-028-tier-r-regression-rerun` fast-forward merged.
+- Branch base commit: `a6e01c8`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-028 worker ready for coordinator merge. Safe Tier R rerun `20260613T115145Z`, review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`, product exit 0, external actions disabled, and `pr_url=null`. P0-004/P0-020/P0-005/P0-021/P0-027 did not regress: math-source signal preserved (`body_chars=117245`, `theorem_nodes=41`, `equations=903`), citation checked 53 with `unverified=2`, PR fixer passed, honest recommendation policy passed, and Lean emitted `verdict=NOT_PROVED proof_status=SEMANTIC_GAP`. The run is still red because local `claude` runner invocations exited 1 with empty output for `summary`, `technical_correctness`, first `meta_reviewer`, and `haskell_semantic_author`; Haskell failure cascaded to proof obligations, Lean, and semantic adequacy. Next action is P0-029 focused runner-failure diagnosis. No full corpus green claim or phase tag.
+- In-flight defect: none currently assigned. P0-028 is integrated. Safe Tier R rerun `20260613T115145Z`, review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`, product exit 0, external actions disabled, and `pr_url=null`. P0-004/P0-020/P0-005/P0-021/P0-027 did not regress: math-source signal preserved (`body_chars=117245`, `theorem_nodes=41`, `equations=903`), citation checked 53 with `unverified=2`, PR fixer passed, honest recommendation policy passed, and Lean emitted `verdict=NOT_PROVED proof_status=SEMANTIC_GAP`. The run is still red because local `claude` runner invocations exited 1 with empty output for `summary`, `technical_correctness`, first `meta_reviewer`, and `haskell_semantic_author`; Haskell failure cascaded to proof obligations, Lean, and semantic adequacy. Next action is P0-029 focused runner-failure diagnosis. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -71,6 +71,7 @@ Updated: 2026-06-13T11:58:44Z
 - P0-027 false-theorem Lean verdict path, 2026-06-13T11:45Z: worker branch `p0-027-false-theorem-lean-verdict` annotated failed/skipped Lean proof-loop results with `verdict`, `proof_status`, and theorem-map entries, and narrowed proof-status classification to final Lean code/compile diagnostics instead of reviewer prose. Red-first fixtures exposed missing `NOT_PROVED` annotation and false `USES_SORRY` classification, then passed. Affected rerun `20260613T111624Z` completed as review `5c2b0a1f-4ef8-4cba-96ae-16630b57931c`: product exit 0, external actions disabled, `lean_review_fix_code [FAIL] ... verdict=NOT_PROVED proof_status=FAILED`, theorem map status `FAILED`, and no `PROVED` entries. Worker checks passed: review-loop crate 12/12, app-runtime `review_loop` 13/13, `corpus_` tests 7/7, app workspace check, structural tests 45/45, and `git diff --check`.
 - P0-027 coordinator verification, 2026-06-13T11:47Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `6ffc436`, then reran coordinator-side checks. Review-loop crate tests passed 12/12; app-runtime `review_loop` passed 13/13; `corpus_` tests passed 7/7; app workspace check passed; structural tests passed 45/45; `git diff --check` passed; worktree was clean before this state-only update. No full corpus-green claim or phase tag.
 - P0-028 Tier R regression rerun, 2026-06-13T11:58Z: worker branch `p0-028-tier-r-regression-rerun` refreshed PATH `grokrxiv-app` and reran `regression-pr54-weyl` safely with external actions disabled. Product command exited 0 as review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`; citation/PR/policy/math-source/Lean verdict fixes did not regress. The run remains red on explicit empty local `claude` exit-1 failures in specialist and Haskell author paths, with Haskell cascading to proof obligations, Lean, semantic adequacy, and policy. No full corpus-green claim or phase tag.
+- P0-028 coordinator verification, 2026-06-13T12:00Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `d9059d7`, then ran `git diff --check` and `git status --short`; both passed with a clean worktree before this state-only integration update. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 

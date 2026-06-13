@@ -285,6 +285,8 @@
 | 2026-06-13T11:51:45Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | wrapped `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0; review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`; external actions disabled; deterministic review-loop status failed | `agenthero/apps/grokrxiv/evals/results/20260613T115145Z/regression-pr54-weyl/run.log` |
 | 2026-06-13T11:58:44Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | artifact inspection for review `3ccf7aa5-ce30-445f-8880-6fb4e15ad464` | Tier R fixed invariants held: body chars 117245, theorem nodes 41, equations 903, citation checked 53 with unverified 2/unresolved 0, bundle completeness pass, PR fixer pass, honest recommendation policy pass, Lean `NOT_PROVED`/`SEMANTIC_GAP`; remaining red is empty local runner failure and Haskell cascade | chat transcript |
 | 2026-06-13T11:58:44Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | `claude --version` | pass, exit 0, `2.1.177 (Claude Code)`; does not explain per-role empty exit 1 failures | chat transcript |
+| 2026-06-13T12:00:47Z | `d9059d7` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-028-tier-r-regression-rerun` | pass, coordinator fast-forwarded from `a6e01c8` to `d9059d7` | chat transcript |
+| 2026-06-13T12:00:47Z | `d9059d7` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 
