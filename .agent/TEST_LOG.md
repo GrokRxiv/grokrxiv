@@ -916,3 +916,30 @@ Residuals:
 - No full corpus-green claim.
 - Remaining zeta red is separate P0-044 Haskell semantic target hygiene: bibliography/math snippets are still formalized as partial proof obligations.
 - P0-039 remains blocked on human corpus sign-off for `bertrand-elementary` v5.
+
+## P0-043 Coordinator Verification
+
+Time UTC: 2026-06-13T23:21:32Z
+Branch: `grokrxiv-local-corpus-harness`
+Merged worker: `p0-043-zeta-citation-timeout`
+Merge result: fast-forward from `83c403b` to `347d858`
+
+Commands passed after fast-forward merge:
+
+```bash
+git merge --ff-only p0-043-zeta-citation-timeout
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+```
+
+Pass counts:
+- Ingest lib: 47/47.
+- Structural tests: 45/45.
+- App workspace check: pass.
+
+Residuals:
+- No full corpus-green claim.
+- P0-039 still requires human corpus sign-off for unavailable Bertrand v5.
+- P0-044 remains queued for zeta Haskell semantic target hygiene.
