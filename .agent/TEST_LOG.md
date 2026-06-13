@@ -346,3 +346,28 @@ agenthero/apps/grokrxiv/evals/results/<sweep-ts>/<entry-id>/dossier.md
 ```
 
 Only `LEDGER.md` is tracked by git by default; raw result directories are local evidence paths unless a human asks to commit them.
+## P0-035 - 2026-06-13T16:21:32Z
+
+Commands passed:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_preserves_lean_targets --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Focused evidence:
+- `review_loop_recovers_code_artifact_written_before_author_timeout` covers non-empty on-disk recovery after runner failure.
+- `review_loop_haskell_code_payload_elides_bulk_math_context` covers compact Haskell payloads.
+- `review_loop_deterministic_haskell_author_preserves_lean_targets` covers deterministic Haskell author output, semantic validation, canonical source-span fields, typed equality rendering, and local `ghc -fno-code` when GHC is available.
+- App review-loop suite passed 16/16.
+
+Affected reruns:
+- `f56a5919-30b9-40a9-ac9c-f05c14fcf8d1`: no `SemanticModel.hs`; recovery correctly did not fabricate output.
+- `e9fce92a-0664-4ca8-9d6f-56f3a16592f6`: Haskell input compacted to ~74KB, but CLI author still timed out.
+- `cbcdc89d-818f-412a-841d-def8cc567af8`: deterministic author removed the author timeout and advanced to fixer.
+- `20439187-6d3d-47f7-bef0-4f4bb32548dc`: deterministic scaffold got past the author timeout but exposed syntax/source-span/typed-conclusion issues; fixed afterward.
+- `5532f3ca-e656-4f02-bbe6-c2c7df4bed33`: final attempted affected rerun was blocked by local Claude CLI quota (`api_error_status=429`) in specialist/reviewer/fixer paths. Product exited 0 with external actions disabled; no full corpus-green claim.

@@ -5238,6 +5238,641 @@ impl ReviewLoopGitHarness {
     }
 }
 
+fn compact_review_fix_code_base_artifact(
+    task: &ReviewFixCodeTask,
+    base_artifact: serde_json::Value,
+) -> serde_json::Value {
+    if task.target_id != "haskell" {
+        return base_artifact;
+    }
+
+    let mut compact = base_artifact;
+    if let Some(obj) = compact.as_object_mut() {
+        if let Some(semantic_ir) = obj.get("semantic_ir").cloned() {
+            obj.insert(
+                "semantic_ir".to_string(),
+                compact_haskell_semantic_ir_for_code_author(&semantic_ir),
+            );
+        }
+        if let Some(paper_math_sources) = obj.get("paper_math_sources").cloned() {
+            obj.insert(
+                "paper_math_sources".to_string(),
+                summarize_review_loop_paper_math_sources(&paper_math_sources),
+            );
+        }
+        if let Some(claims) = obj.get("claims").cloned() {
+            obj.insert("claims".to_string(), summarize_review_loop_claims(&claims));
+        }
+    }
+    compact
+}
+
+fn compact_haskell_semantic_ir_for_code_author(
+    semantic_ir: &serde_json::Value,
+) -> serde_json::Value {
+    let mut compact = serde_json::Map::new();
+    for key in [
+        "schema_version",
+        "source",
+        "review_id",
+        "formalization_policy",
+        "knowledge_graph_summary",
+        "limitations",
+        "theorem_candidates",
+        "definitions",
+        "assumptions",
+    ] {
+        if let Some(value) = semantic_ir.get(key) {
+            compact.insert(key.to_string(), value.clone());
+        }
+    }
+
+    let supporting_equation_count = semantic_ir
+        .get("supporting_equations")
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    compact.insert("supporting_equations".to_string(), serde_json::json!([]));
+    compact.insert(
+        "supporting_equations_summary".to_string(),
+        serde_json::json!({
+            "count": supporting_equation_count,
+            "artifact_ref": "review_loop/semantic_ir.json#/supporting_equations",
+            "omitted_from_code_author_payload": true,
+            "reason": "supporting equations are context, not Lean theorem targets",
+        }),
+    );
+
+    let nonformal_claim_count = semantic_ir
+        .get("nonformal_review_claims")
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    compact.insert("nonformal_review_claims".to_string(), serde_json::json!([]));
+    compact.insert(
+        "nonformal_review_claims_summary".to_string(),
+        serde_json::json!({
+            "count": nonformal_claim_count,
+            "artifact_ref": "review_loop/semantic_ir.json#/nonformal_review_claims",
+            "omitted_from_code_author_payload": true,
+            "reason": "nonformal review claims must not become Haskell or Lean theorem obligations",
+        }),
+    );
+
+    let paper_math_sources = semantic_ir
+        .get("paper_math_sources")
+        .map(summarize_review_loop_paper_math_sources)
+        .unwrap_or_else(|| serde_json::json!({
+            "artifact_ref": "review_loop/paper_math_sources.json",
+            "omitted_from_code_author_payload": true,
+        }));
+    compact.insert("paper_math_sources".to_string(), paper_math_sources);
+
+    serde_json::Value::Object(compact)
+}
+
+fn summarize_review_loop_paper_math_sources(value: &serde_json::Value) -> serde_json::Value {
+    let theorem_nodes = value
+        .pointer("/theorem_graph/nodes")
+        .and_then(|nodes| nodes.as_array())
+        .map(Vec::len)
+        .or_else(|| {
+            value
+                .pointer("/theorem_graph/theorem_graph")
+                .and_then(|nodes| nodes.as_array())
+                .map(Vec::len)
+        })
+        .unwrap_or(0);
+    serde_json::json!({
+        "artifact_ref": "review_loop/paper_math_sources.json",
+        "omitted_from_code_author_payload": true,
+        "theorem_nodes": theorem_nodes,
+        "equations": value
+            .pointer("/equations/equations")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+        "artifact_sources": value
+            .get("artifact_sources")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+        "warnings": value
+            .get("warnings")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+    })
+}
+
+fn summarize_review_loop_claims(value: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "artifact_ref": "review_loop/claims.json",
+        "omitted_from_code_author_payload": true,
+        "claims": value
+            .get("claims")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+    })
+}
+
+fn deterministic_haskell_semantic_model_agent_run(
+    role: &str,
+    task: &ReviewFixCodeTask,
+    base_artifact: &serde_json::Value,
+) -> Option<AgentRun> {
+    if task.target_id != "haskell" {
+        return None;
+    }
+    let code = deterministic_haskell_semantic_model_code(base_artifact);
+    Some(AgentRun {
+        role: role.to_string(),
+        runner: AgentRunnerKind::Cli,
+        model: "deterministic-haskell-semantic-model".to_string(),
+        output: serde_json::json!({
+            "language": task.language,
+            "filename": task.filename,
+            "code": code,
+            "notes": [
+                "generated locally from compact semantic_ir theorem candidates to avoid semantic-author runner timeout"
+            ],
+            "confidence": 1.0,
+        }),
+        raw_output: Some(
+            "generated locally from compact semantic_ir theorem candidates".to_string(),
+        ),
+        tokens_in: None,
+        tokens_out: None,
+        latency_ms: 0,
+        cache_hit: true,
+        sandbox_ref: None,
+        verifier_status: None,
+        verifier_notes: None,
+    })
+}
+
+fn deterministic_haskell_semantic_model_code(base_artifact: &serde_json::Value) -> String {
+    let semantic_ir = base_artifact
+        .get("semantic_ir")
+        .unwrap_or(&serde_json::Value::Null);
+    let theorem_candidates = semantic_ir
+        .get("theorem_candidates")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let definitions = semantic_ir
+        .get("definitions")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let assumptions = semantic_ir
+        .get("assumptions")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = String::from(
+        "module SemanticModel where\n\n\
+data SourceSpan = SourceSpan { sourceArtifact :: String, sourceClaimId :: String, sourcePaperSourceId :: String, sourceSectionId :: String, sourceTextExcerpt :: String } deriving (Eq, Show)\n\n\
+data MathType = UnknownType String | PropType | CustomType String deriving (Eq, Show)\n\n\
+data Term = UnknownTerm String | Var String | RawTerm String SourceSpan deriving (Eq, Show)\n\n\
+data Proposition = SemanticGap SourceSpan String | UninterpretedPredicate String [Term] SourceSpan | Equals Term Term | Implies Proposition Proposition | And [Proposition] deriving (Eq, Show)\n\n\
+data Binder = Binder { binderName :: String, binderType :: MathType, binderSpan :: SourceSpan } deriving (Eq, Show)\n\n\
+data Definition = Definition { definitionId :: String, definitionStatement :: String, definitionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
+data Assumption = Assumption { assumptionId :: String, assumptionStatement :: String, assumptionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
+data LeanTarget = LeanTarget { targetDeclaration :: String, targetExpectedShape :: String, targetSource :: SourceSpan } deriving (Eq, Show)\n\n\
+data TheoremIR = TheoremIR { theoremId :: String, theoremStatement :: String, theoremSpan :: SourceSpan, theoremBinders :: [Binder], theoremAssumptions :: [Proposition], theoremConclusion :: Proposition, theoremTarget :: LeanTarget } deriving (Eq, Show)\n\n\
+data ClaimIR = ClaimIR { claimId :: String, claimRawText :: String, claimSource :: SourceSpan, claimTheorem :: Maybe TheoremIR } deriving (Eq, Show)\n\n\
+data ProofObligation = ProofObligation { obligationId :: String, obligationStatement :: Proposition, obligationSource :: SourceSpan, obligationLean :: LeanTarget } deriving (Eq, Show)\n\n",
+    );
+
+    out.push_str("definitions :: [Definition]\ndefinitions =\n");
+    out.push_str(&haskell_list(
+        definitions
+            .iter()
+            .enumerate()
+            .map(|(idx, definition)| {
+                format!(
+                    "Definition {} {} {}",
+                    haskell_string_literal(&json_string_or_fallback(
+                        definition,
+                        &["id", "name"],
+                        &format!("definition_{}", idx + 1),
+                    )),
+                    haskell_string_literal(&json_string_or_fallback(
+                        definition,
+                        &["statement", "text", "label"],
+                        "unknown definition",
+                    )),
+                    haskell_source_span_literal(definition, &format!("definition_{}", idx + 1))
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
+    out.push_str("\n\n");
+
+    out.push_str("globalAssumptions :: [Assumption]\nglobalAssumptions =\n");
+    out.push_str(&haskell_list(
+        assumptions
+            .iter()
+            .enumerate()
+            .map(|(idx, assumption)| {
+                format!(
+                    "Assumption {} {} {}",
+                    haskell_string_literal(&json_string_or_fallback(
+                        assumption,
+                        &["id", "name"],
+                        &format!("assumption_{}", idx + 1),
+                    )),
+                    haskell_string_literal(&json_string_or_fallback(
+                        assumption,
+                        &["statement", "text", "label"],
+                        "unknown assumption",
+                    )),
+                    haskell_source_span_literal(assumption, &format!("assumption_{}", idx + 1))
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
+    out.push_str("\n\n");
+
+    let theorem_names = theorem_candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, theorem)| {
+            let lean_decl = theorem
+                .get("formalization_target")
+                .and_then(|target| target.get("lean_declaration"))
+                .and_then(|value| value.as_str())
+                .or_else(|| theorem.get("id").and_then(|value| value.as_str()))
+                .unwrap_or("theorem_target");
+            format!("theorem_{}_{}", idx + 1, haskell_identifier_suffix(lean_decl))
+        })
+        .collect::<Vec<_>>();
+
+    for (idx, theorem) in theorem_candidates.iter().enumerate() {
+        let name = &theorem_names[idx];
+        let theorem_id = json_string_or_fallback(theorem, &["id"], &format!("theorem_{}", idx + 1));
+        let statement = json_string_or_fallback(theorem, &["statement", "text"], "unknown theorem");
+        let lean_decl = theorem
+            .get("formalization_target")
+            .and_then(|target| target.get("lean_declaration"))
+            .and_then(|value| value.as_str())
+            .unwrap_or(&theorem_id);
+        let expected_shape = theorem
+            .get("formalization_target")
+            .and_then(|target| target.get("expected_shape"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("theorem");
+        let span = haskell_source_span_literal(theorem, &theorem_id);
+        let conclusion = theorem
+            .pointer("/theorem_ir/conclusion")
+            .or_else(|| theorem.pointer("/typed_transcription/conclusion"))
+            .map(|value| haskell_proposition_literal(value, "span"))
+            .unwrap_or_else(|| {
+                format!(
+                    "SemanticGap span {}",
+                    haskell_string_literal(&format!(
+                        "typed conclusion unavailable for {lean_decl}"
+                    ))
+                )
+            });
+        let theorem_assumptions = haskell_inline_list(
+            theorem
+                .pointer("/theorem_ir/assumptions")
+                .or_else(|| theorem.pointer("/typed_transcription/assumptions"))
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|value| haskell_proposition_literal(value, "span"))
+                .collect::<Vec<_>>(),
+        );
+        let theorem_binders = haskell_inline_list(
+            theorem
+                .pointer("/theorem_ir/binders")
+                .or_else(|| theorem.pointer("/typed_transcription/binders"))
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .map(|(binder_idx, value)| {
+                    format!(
+                        "Binder {} (UnknownType \"not structurally typed in Phase 0\") span",
+                        haskell_string_literal(&json_string_or_fallback(
+                            value,
+                            &["name", "id"],
+                            &format!("binder_{}", binder_idx + 1),
+                        ))
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        out.push_str(&format!("{name} :: TheoremIR\n"));
+        out.push_str(&format!("{name} =\n"));
+        out.push_str(&format!("  let span = {span}\n"));
+        out.push_str(&format!("      conclusion = {conclusion}\n"));
+        out.push_str(&format!(
+            "      target = LeanTarget {} {} span\n",
+            haskell_string_literal(lean_decl),
+            haskell_string_literal(expected_shape)
+        ));
+        out.push_str("  in TheoremIR\n");
+        out.push_str(&format!(
+            "       {{ theoremId = {}\n",
+            haskell_string_literal(&theorem_id)
+        ));
+        out.push_str(&format!(
+            "       , theoremStatement = {}\n",
+            haskell_string_literal(&statement)
+        ));
+        out.push_str("       , theoremSpan = span\n");
+        out.push_str(&format!("       , theoremBinders = {theorem_binders}\n"));
+        out.push_str(&format!(
+            "       , theoremAssumptions = {theorem_assumptions}\n"
+        ));
+        out.push_str("       , theoremConclusion = conclusion\n");
+        out.push_str("       , theoremTarget = target\n");
+        out.push_str("       }\n\n");
+    }
+
+    out.push_str("theoremTargets :: [TheoremIR]\ntheoremTargets =\n");
+    out.push_str(&haskell_list(theorem_names.clone()));
+    out.push_str("\n\nclaims :: [ClaimIR]\nclaims =\n");
+    out.push_str(&haskell_list(
+        theorem_names
+            .iter()
+            .map(|name| {
+                format!(
+                    "ClaimIR (theoremId {name}) (theoremStatement {name}) (theoremSpan {name}) (Just {name})"
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
+    out.push_str("\n\ncategoryToObligations :: String -> ClaimIR -> [ProofObligation]\n");
+    out.push_str("categoryToObligations _ = claimToObligations\n\n");
+    out.push_str("claimToObligations :: ClaimIR -> [ProofObligation]\n");
+    out.push_str("claimToObligations claim =\n");
+    out.push_str("  case claimTheorem claim of\n");
+    out.push_str("    Nothing -> []\n");
+    out.push_str("    Just theorem ->\n");
+    out.push_str("      [ ProofObligation\n");
+    out.push_str("          (theoremId theorem)\n");
+    out.push_str("          (theoremConclusion theorem)\n");
+    out.push_str("          (theoremSpan theorem)\n");
+    out.push_str("          (theoremTarget theorem)\n");
+    out.push_str("      ]\n\n");
+    out.push_str("obligationToLean :: ProofObligation -> LeanTarget\n");
+    out.push_str("obligationToLean = obligationLean\n\n");
+    out.push_str("allProofObligations :: [ProofObligation]\n");
+    out.push_str("allProofObligations = concatMap claimToObligations claims\n");
+    out
+}
+
+fn haskell_list(items: Vec<String>) -> String {
+    if items.is_empty() {
+        "  []".to_string()
+    } else {
+        format!("  [ {}\n  ]", items.join("\n  , "))
+    }
+}
+
+fn haskell_inline_list(items: Vec<String>) -> String {
+    if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{}]", items.join(", "))
+    }
+}
+
+fn haskell_proposition_literal(value: &serde_json::Value, span_expr: &str) -> String {
+    match value.get("kind").and_then(|kind| kind.as_str()) {
+        Some("equals") => format!(
+            "Equals ({}) ({})",
+            haskell_term_literal(value.get("lhs").unwrap_or(&serde_json::Value::Null), span_expr),
+            haskell_term_literal(value.get("rhs").unwrap_or(&serde_json::Value::Null), span_expr)
+        ),
+        Some("implies") => format!(
+            "Implies ({}) ({})",
+            haskell_proposition_literal(
+                value
+                    .get("premise")
+                    .or_else(|| value.get("lhs"))
+                    .unwrap_or(&serde_json::Value::Null),
+                span_expr
+            ),
+            haskell_proposition_literal(
+                value
+                    .get("conclusion")
+                    .or_else(|| value.get("rhs"))
+                    .unwrap_or(&serde_json::Value::Null),
+                span_expr
+            )
+        ),
+        Some("and") => {
+            let parts = value
+                .get("parts")
+                .or_else(|| value.get("items"))
+                .and_then(|items| items.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|item| haskell_proposition_literal(item, span_expr))
+                .collect::<Vec<_>>();
+            format!("And {}", haskell_inline_list(parts))
+        }
+        Some(kind) => format!(
+            "UninterpretedPredicate {} [] {span_expr}",
+            haskell_string_literal(kind)
+        ),
+        None => format!(
+            "SemanticGap {span_expr} {}",
+            haskell_string_literal("proposition not structurally typed in Phase 0")
+        ),
+    }
+}
+
+fn haskell_term_literal(value: &serde_json::Value, span_expr: &str) -> String {
+    match value.get("kind").and_then(|kind| kind.as_str()) {
+        Some("var") => format!(
+            "Var {}",
+            haskell_string_literal(&json_string_or_fallback(value, &["name", "id"], "unknown"))
+        ),
+        Some("raw") => format!(
+            "RawTerm {} {span_expr}",
+            haskell_string_literal(&json_string_or_fallback(value, &["text", "name"], "raw term"))
+        ),
+        Some(kind) => format!(
+            "RawTerm {} {span_expr}",
+            haskell_string_literal(&format!(
+                "{kind}: {}",
+                json_string_or_fallback(value, &["name", "text", "id"], "unknown term")
+            ))
+        ),
+        None => format!(
+            "UnknownTerm {}",
+            haskell_string_literal("term not structurally typed in Phase 0")
+        ),
+    }
+}
+
+fn haskell_identifier_suffix(raw: &str) -> String {
+    let mut suffix = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while suffix.contains("__") {
+        suffix = suffix.replace("__", "_");
+    }
+    suffix = suffix.trim_matches('_').to_string();
+    if suffix.is_empty() {
+        "target".to_string()
+    } else if suffix
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        format!("target_{suffix}")
+    } else {
+        suffix
+    }
+}
+
+fn json_string_or_fallback(
+    value: &serde_json::Value,
+    keys: &[&str],
+    fallback: &str,
+) -> String {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn haskell_source_span_literal(value: &serde_json::Value, fallback_claim: &str) -> String {
+    let span = value.get("source_span").unwrap_or(value);
+    let artifact = span
+        .get("artifact")
+        .and_then(|value| value.as_str())
+        .unwrap_or("review_loop/semantic_ir.json");
+    let claim_id = span
+        .get("claim_id")
+        .or_else(|| span.get("claimId"))
+        .or_else(|| value.get("id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(fallback_claim);
+    let paper_source_id = span
+        .get("paper_source_id")
+        .or_else(|| span.get("paperSourceId"))
+        .or_else(|| span.get("source_id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(claim_id);
+    let section_id = span
+        .get("section_id")
+        .or_else(|| span.get("sectionId"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let text_excerpt = span
+        .get("text_excerpt")
+        .or_else(|| span.get("textExcerpt"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    format!(
+        "(SourceSpan {} {} {} {} {})",
+        haskell_string_literal(artifact),
+        haskell_string_literal(claim_id),
+        haskell_string_literal(paper_source_id),
+        haskell_string_literal(section_id),
+        haskell_string_literal(text_excerpt)
+    )
+}
+
+fn haskell_string_literal(raw: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in raw.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push(' '),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+async fn recovered_agent_run_from_code_file(
+    role: &str,
+    task: &ReviewFixCodeTask,
+    final_path: &Path,
+    started_at: std::time::SystemTime,
+    runner_error: &str,
+) -> anyhow::Result<Option<AgentRun>> {
+    let metadata = match tokio::fs::metadata(final_path).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("stat {}", final_path.display()));
+        }
+    };
+    if metadata.len() == 0 {
+        return Ok(None);
+    }
+    if let Ok(modified_at) = metadata.modified() {
+        let cutoff = started_at
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or(started_at);
+        if modified_at < cutoff {
+            return Ok(None);
+        }
+    }
+    let code = tokio::fs::read_to_string(final_path)
+        .await
+        .with_context(|| format!("read {}", final_path.display()))?;
+    if code.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let note = format!(
+        "recovered from on-disk artifact after runner failure: {}",
+        truncate(runner_error, 260)
+    );
+    Ok(Some(AgentRun {
+        role: role.to_string(),
+        runner: AgentRunnerKind::Cli,
+        model: "recovered-on-disk-artifact".to_string(),
+        output: serde_json::json!({
+            "language": task.language,
+            "filename": task.filename,
+            "code": code,
+            "notes": [note],
+            "confidence": 0.0,
+        }),
+        raw_output: Some(format!(
+            "recovered from on-disk artifact after runner failure at {}",
+            final_path.display()
+        )),
+        tokens_in: None,
+        tokens_out: None,
+        latency_ms: 0,
+        cache_hit: true,
+        sandbox_ref: None,
+        verifier_status: None,
+        verifier_notes: None,
+    }))
+}
+
 async fn run_review_fix_code_loop(
     state: &super::AppState,
     paper_id: Uuid,
@@ -5253,6 +5888,7 @@ async fn run_review_fix_code_loop(
     let mut previous_compile: Option<serde_json::Value> = None;
     let mut previous_review: Option<serde_json::Value> = None;
     let mut final_status = "fail".to_string();
+    let base_artifact = compact_review_fix_code_base_artifact(&task, base_artifact);
     let harness =
         match prepare_review_loop_git_harness(review_id, &task, base_artifact.clone(), workdir)
             .await
@@ -5331,55 +5967,239 @@ async fn run_review_fix_code_loop(
                 ),
             );
         }
-        let generation_run = match run_review_loop_agent(
-            state,
-            paper_id,
-            review_id,
-            role,
-            agent_artifact.clone(),
-            review_loop_code_system_prompt(&task, role, attempt),
-            review_loop_code_user_prompt(&task, role, attempt),
-            Some(&harness.path),
-        )
-        .await
-        {
-            Ok(run) => run,
-            Err(err) => {
-                let audit = write_review_loop_agent_output_audit(
-                    &artifact_root,
-                    &task,
-                    attempt,
+        let mut generation_recovery: Option<serde_json::Value> = None;
+        let generation_run =
+            if attempt == 1 {
+                match deterministic_haskell_semantic_model_agent_run(role, &task, &base_artifact)
+                {
+                    Some(run) => {
+                        generation_recovery = Some(serde_json::json!({
+                            "status": "deterministic_local_author",
+                            "reason": "generated Haskell scaffold locally from compact semantic_ir theorem candidates",
+                        }));
+                        run
+                    }
+                    None => {
+                        let generation_started_at = std::time::SystemTime::now();
+                        match run_review_loop_agent(
+                            state,
+                            paper_id,
+                            review_id,
+                            role,
+                            agent_artifact.clone(),
+                            review_loop_code_system_prompt(&task, role, attempt),
+                            review_loop_code_user_prompt(&task, role, attempt),
+                            Some(&harness.path),
+                        )
+                        .await
+                        {
+                            Ok(run) => run,
+                            Err(err) => {
+                match recovered_agent_run_from_code_file(
                     role,
-                    "generate",
-                    &agent_artifact,
-                    None,
-                    None,
-                    None,
-                    "rejected",
+                    &task,
+                    final_path,
+                    generation_started_at,
                     &format!("{err:#}"),
                 )
                 .await
-                .unwrap_or_else(|audit_err| {
-                    serde_json::json!({
-                        "role": role,
-                        "phase": "generate",
-                        "attempt": attempt,
-                        "decision": {
-                            "status": "rejected",
-                            "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
-                        }
-                    })
-                });
-                attempts.push(serde_json::json!({
-                    "attempt": attempt,
-                    "status": "fail",
-                    "author_role": role,
-                    "author_error": format!("{err:#}"),
-                    "agent_output_audits": [audit],
-                }));
-                break;
+                {
+                    Ok(Some(run)) => {
+                        generation_recovery = Some(serde_json::json!({
+                            "status": "recovered_from_file",
+                            "reason": format!("{err:#}"),
+                            "path": final_path.display().to_string(),
+                        }));
+                        run
+                    }
+                    Ok(None) => {
+                        let audit = write_review_loop_agent_output_audit(
+                            &artifact_root,
+                            &task,
+                            attempt,
+                            role,
+                            "generate",
+                            &agent_artifact,
+                            None,
+                            None,
+                            None,
+                            "rejected",
+                            &format!("{err:#}"),
+                        )
+                        .await
+                        .unwrap_or_else(|audit_err| {
+                            serde_json::json!({
+                                "role": role,
+                                "phase": "generate",
+                                "attempt": attempt,
+                                "decision": {
+                                    "status": "rejected",
+                                    "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
+                                }
+                            })
+                        });
+                        attempts.push(serde_json::json!({
+                            "attempt": attempt,
+                            "status": "fail",
+                            "author_role": role,
+                            "author_error": format!("{err:#}"),
+                            "agent_output_audits": [audit],
+                        }));
+                        break;
+                    }
+                    Err(recovery_err) => {
+                        let decision_reason =
+                            format!("{err:#}; on-disk artifact recovery failed: {recovery_err:#}");
+                        let audit = write_review_loop_agent_output_audit(
+                            &artifact_root,
+                            &task,
+                            attempt,
+                            role,
+                            "generate",
+                            &agent_artifact,
+                            None,
+                            None,
+                            None,
+                            "rejected",
+                            &decision_reason,
+                        )
+                        .await
+                        .unwrap_or_else(|audit_err| {
+                            serde_json::json!({
+                                "role": role,
+                                "phase": "generate",
+                                "attempt": attempt,
+                                "decision": {
+                                    "status": "rejected",
+                                    "reason": format!("agent failed: {err:#}; recovery failed: {recovery_err:#}; audit write failed: {audit_err:#}")
+                                }
+                            })
+                        });
+                        attempts.push(serde_json::json!({
+                            "attempt": attempt,
+                            "status": "fail",
+                            "author_role": role,
+                            "author_error": format!("{err:#}"),
+                            "recovery_error": format!("{recovery_err:#}"),
+                            "agent_output_audits": [audit],
+                        }));
+                        break;
+                    }
+                }
             }
-        };
+                        }
+                    }
+                }
+            } else {
+                let generation_started_at = std::time::SystemTime::now();
+                match run_review_loop_agent(
+                    state,
+                    paper_id,
+                    review_id,
+                    role,
+                    agent_artifact.clone(),
+                    review_loop_code_system_prompt(&task, role, attempt),
+                    review_loop_code_user_prompt(&task, role, attempt),
+                    Some(&harness.path),
+                )
+                .await
+                {
+                    Ok(run) => run,
+                    Err(err) => {
+                        match recovered_agent_run_from_code_file(
+                            role,
+                            &task,
+                            final_path,
+                            generation_started_at,
+                            &format!("{err:#}"),
+                        )
+                        .await
+                        {
+                            Ok(Some(run)) => {
+                                generation_recovery = Some(serde_json::json!({
+                                    "status": "recovered_from_file",
+                                    "reason": format!("{err:#}"),
+                                    "path": final_path.display().to_string(),
+                                }));
+                                run
+                            }
+                            Ok(None) => {
+                                let audit = write_review_loop_agent_output_audit(
+                                    &artifact_root,
+                                    &task,
+                                    attempt,
+                                    role,
+                                    "generate",
+                                    &agent_artifact,
+                                    None,
+                                    None,
+                                    None,
+                                    "rejected",
+                                    &format!("{err:#}"),
+                                )
+                                .await
+                                .unwrap_or_else(|audit_err| {
+                                    serde_json::json!({
+                                        "role": role,
+                                        "phase": "generate",
+                                        "attempt": attempt,
+                                        "decision": {
+                                            "status": "rejected",
+                                            "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
+                                        }
+                                    })
+                                });
+                                attempts.push(serde_json::json!({
+                                    "attempt": attempt,
+                                    "status": "fail",
+                                    "author_role": role,
+                                    "author_error": format!("{err:#}"),
+                                    "agent_output_audits": [audit],
+                                }));
+                                break;
+                            }
+                            Err(recovery_err) => {
+                                let decision_reason =
+                                    format!("{err:#}; on-disk artifact recovery failed: {recovery_err:#}");
+                                let audit = write_review_loop_agent_output_audit(
+                                    &artifact_root,
+                                    &task,
+                                    attempt,
+                                    role,
+                                    "generate",
+                                    &agent_artifact,
+                                    None,
+                                    None,
+                                    None,
+                                    "rejected",
+                                    &decision_reason,
+                                )
+                                .await
+                                .unwrap_or_else(|audit_err| {
+                                    serde_json::json!({
+                                        "role": role,
+                                        "phase": "generate",
+                                        "attempt": attempt,
+                                        "decision": {
+                                            "status": "rejected",
+                                            "reason": format!("agent failed: {err:#}; recovery failed: {recovery_err:#}; audit write failed: {audit_err:#}")
+                                        }
+                                    })
+                                });
+                                attempts.push(serde_json::json!({
+                                    "attempt": attempt,
+                                    "status": "fail",
+                                    "author_role": role,
+                                    "author_error": format!("{err:#}"),
+                                    "recovery_error": format!("{recovery_err:#}"),
+                                    "agent_output_audits": [audit],
+                                }));
+                                break;
+                            }
+                        }
+                    }
+                }
+            };
         let generation_path = round_dir.join("generation.json");
         let _ = write_loop_json(&generation_path, &generation_run.output).await;
         let code = match code_from_agent_run(&generation_run, &task) {
@@ -5560,8 +6380,12 @@ async fn run_review_fix_code_loop(
             "fail"
         };
         let generation_decision_reason = if attempt_status == "pass" {
-            "generated artifact accepted by schema, semantic validator, compiler, and reviewer"
-                .to_string()
+            if generation_recovery.is_some() {
+                "generated artifact recovered from on-disk file after runner failure and accepted by schema, semantic validator, compiler, and reviewer".to_string()
+            } else {
+                "generated artifact accepted by schema, semantic validator, compiler, and reviewer"
+                    .to_string()
+            }
         } else {
             review_fix_attempt_rejection_reason(&semantic_validation, &compile_run, &review_output)
         };
@@ -5640,6 +6464,7 @@ async fn run_review_fix_code_loop(
             "status": attempt_status,
             "author_role": role,
             "reviewer_role": task.reviewer_role,
+            "generation_recovery": generation_recovery,
             "source_path": round_source_path.display().to_string(),
             "final_path": final_path.display().to_string(),
             "harness": harness.as_json(),
@@ -6552,7 +7377,7 @@ async fn run_review_loop_for_review(
                 "Treat review_loop/semantic_ir.json as the canonical typed mathematical IR contract.",
                 "The Haskell file is a checked consumer/round-trip artifact derived from canonical IR JSON; do not invent theorem statements outside that IR.",
                 "Define SourceSpan, MathType, Term, Proposition, Binder, Definition, Assumption, TheoremIR, ClaimIR, ProofObligation, and LeanTarget types.",
-                "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir and paper_math_sources.",
+                "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir theorem_candidates/definitions/assumptions; use paper_math_sources only as provenance/count context in this compact code-author payload.",
                 "Treat semantic categories as annotations over typed mathematical transcription, not as replacements for the math.",
                 "Do not turn summary, novelty, citation, reviewer recommendation, or publisher-readiness claims into Lean obligations.",
                 "Do not model this as review roles, category counts, claimCount, or publisherReadyLowerBound.",
@@ -12815,6 +13640,264 @@ mod tests {
                 .len()
                 >= 7
         );
+    }
+
+    #[tokio::test]
+    async fn review_loop_recovers_code_artifact_written_before_author_timeout() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-loop-recover-")
+            .tempdir()
+            .expect("tempdir");
+        let final_path = tempdir.path().join("SemanticModel.hs");
+        let recovered_code = "module SemanticModel where\n\
+data SourceSpan = SourceSpan deriving (Eq, Show)\n\
+data MathType = NatType deriving (Eq, Show)\n\
+data Term = Var String deriving (Eq, Show)\n\
+data Proposition = PTrue deriving (Eq, Show)\n\
+data Binder = Binder deriving (Eq, Show)\n\
+data TheoremIR = TheoremIR deriving (Eq, Show)\n\
+data ClaimIR = ClaimIR deriving (Eq, Show)\n\
+data Definition = Definition deriving (Eq, Show)\n\
+data Assumption = Assumption deriving (Eq, Show)\n\
+data ProofObligation = ProofObligation deriving (Eq, Show)\n\
+data LeanTarget = LeanTarget deriving (Eq, Show)\n\
+categoryToObligations = []\n\
+claimToObligations = []\n\
+obligationToLean = LeanTarget\n";
+        tokio::fs::write(&final_path, recovered_code)
+            .await
+            .expect("write recovered artifact");
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+
+        let run = recovered_agent_run_from_code_file(
+            task.author_role,
+            &task,
+            &final_path,
+            std::time::SystemTime::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+            "CliRunner timed out after 360s for role haskell_semantic_author",
+        )
+        .await
+        .expect("recover code artifact")
+        .expect("artifact should be recoverable");
+
+        assert_eq!(run.role, "haskell_semantic_author");
+        assert_eq!(run.output["language"], "haskell");
+        assert_eq!(run.output["filename"], "SemanticModel.hs");
+        assert_eq!(run.output["code"], recovered_code);
+        assert!(run.cache_hit);
+        assert!(run.output["notes"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("recovered from on-disk artifact after runner failure"));
+    }
+
+    #[test]
+    fn review_loop_haskell_code_payload_elides_bulk_math_context() {
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+        let bulk_equation = "bulk supporting equation text ".repeat(500);
+        let base = serde_json::json!({
+            "review_id": "11111111-1111-1111-1111-111111111111",
+            "task": "Generate Haskell IR",
+            "requirements": ["retain formal theorem targets"],
+            "paper_math_sources": {
+                "equations": {
+                    "equations": [
+                        {"id": "eq_1", "statement": bulk_equation},
+                        {"id": "eq_2", "statement": "context equation"}
+                    ]
+                },
+                "theorem_graph": {"nodes": [{"id": "thm_1"}]},
+                "artifact_sources": [{"artifact": "body.tex"}],
+                "warnings": []
+            },
+            "semantic_ir": {
+                "schema_version": "1.0.0",
+                "source": "paper_math_sources",
+                "review_id": "11111111-1111-1111-1111-111111111111",
+                "formalization_policy": {"tier": "P0"},
+                "theorem_candidates": [
+                    {
+                        "id": "thm_1",
+                        "formalization_class": "formal_math",
+                        "statement": "For all n, n + 0 = n.",
+                        "formalization_target": {
+                            "lean_declaration": "thm_1",
+                            "expected_shape": "theorem"
+                        }
+                    }
+                ],
+                "definitions": [{"id": "def_1", "statement": "Nat"}],
+                "assumptions": [],
+                "supporting_equations": [
+                    {"id": "eq_1", "statement": bulk_equation},
+                    {"id": "eq_2", "statement": "context equation"}
+                ],
+                "nonformal_review_claims": [
+                    {"id": "nf_1", "statement": "review metadata"}
+                ],
+                "paper_math_sources": {
+                    "equations": {
+                        "equations": [{"id": "eq_1", "statement": bulk_equation}]
+                    }
+                }
+            },
+            "semantic_model": {"theorem_candidate_count": 1}
+        });
+
+        let compact = compact_review_fix_code_base_artifact(&task, base);
+        let compact_text = serde_json::to_string(&compact).expect("compact json");
+
+        assert_eq!(
+            compact["semantic_ir"]["theorem_candidates"][0]["formalization_target"]
+                ["lean_declaration"],
+            "thm_1"
+        );
+        assert_eq!(
+            compact["semantic_ir"]["supporting_equations_summary"]["count"],
+            2
+        );
+        assert_eq!(
+            compact["semantic_ir"]["supporting_equations"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            compact["paper_math_sources"]["artifact_ref"],
+            "review_loop/paper_math_sources.json"
+        );
+        assert!(!compact_text.contains("bulk supporting equation text"));
+        assert!(compact_text.len() < 12_000, "len={}", compact_text.len());
+    }
+
+    #[test]
+    fn review_loop_deterministic_haskell_author_preserves_lean_targets() {
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+        let base = compact_review_fix_code_base_artifact(
+            &task,
+            serde_json::json!({
+                "semantic_ir": {
+                    "schema_version": "1.0.0",
+                    "theorem_candidates": [
+                        {
+                            "id": "thm_alpha",
+                            "formalization_class": "formal_math",
+                            "statement": "For all n, n + 0 = n.",
+                            "source_span": {
+                                "artifact": "theorem_graph.json",
+                                "claim_id": "thm_alpha",
+                                "section_id": "sec-test",
+                                "text_excerpt": "For all n, n + 0 = n."
+                            },
+                            "theorem_ir": {
+                                "assumptions": [],
+                                "binders": [],
+                                "conclusion": {
+                                    "kind": "equals",
+                                    "lhs": {"kind": "var", "name": "n + 0"},
+                                    "rhs": {"kind": "var", "name": "n"}
+                                }
+                            },
+                            "formalization_target": {
+                                "lean_declaration": "thm_alpha",
+                                "expected_shape": "theorem"
+                            }
+                        },
+                        {
+                            "id": "thm_beta",
+                            "formalization_class": "formal_math",
+                            "statement": "If A, then A.",
+                            "formalization_target": {
+                                "lean_declaration": "thm_beta",
+                                "expected_shape": "lemma"
+                            }
+                        }
+                    ],
+                    "definitions": [],
+                    "assumptions": [],
+                    "supporting_equations": [],
+                    "paper_math_sources": {}
+                }
+            }),
+        );
+
+        let run = deterministic_haskell_semantic_model_agent_run(
+            task.author_role,
+            &task,
+            &base,
+        )
+        .expect("deterministic haskell run");
+        let code = run.output["code"].as_str().expect("code output");
+
+        assert!(code.contains("thm_alpha"));
+        assert!(code.contains("thm_beta"));
+        assert!(code.contains("SemanticGap"));
+        assert!(code.contains("sourceSectionId"));
+        assert!(code.contains("sourceTextExcerpt"));
+        assert!(code.contains("Equals (Var \"n + 0\") (Var \"n\")"));
+        assert!(!code.contains("PRaw"));
+        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
+
+        if std::process::Command::new("ghc")
+            .arg("--numeric-version")
+            .output()
+            .is_ok()
+        {
+            let tempdir = tempfile::Builder::new()
+                .prefix("grokrxiv-deterministic-haskell-")
+                .tempdir()
+                .expect("tempdir");
+            let source_path = tempdir.path().join("SemanticModel.hs");
+            std::fs::write(&source_path, code).expect("write generated haskell");
+            let compile = std::process::Command::new("ghc")
+                .arg("-fno-code")
+                .arg(&source_path)
+                .output()
+                .expect("run ghc");
+            assert!(
+                compile.status.success(),
+                "stderr={}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+        }
     }
 
     #[test]

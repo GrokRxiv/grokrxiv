@@ -1399,3 +1399,21 @@ Fix plan:
 Attempts:
 Escalation status:
 ```
+## P0-035 - Haskell semantic-author timeout
+
+Status: fixed locally; affected corpus rerun blocked by local Claude CLI quota before final verdict.
+
+Evidence:
+- P0-034 final review `d146096c-c34d-43d6-b7a2-251fe4919e67` had `haskell_semantic_author` timeout after 360s. The old worker artifact tree contained `SemanticModel.hs`, so the first app defect was that runner errors discarded a file already written to disk.
+- Fresh review `f56a5919-30b9-40a9-ac9c-f05c14fcf8d1` had no `SemanticModel.hs` after timeout, proving recovery alone was not sufficient.
+- Fresh review `e9fce92a-0664-4ca8-9d6f-56f3a16592f6` proved payload compaction worked (`review_input.json` ~74KB, `supporting_equations_count=0`, `supporting_equations_summary.count=903`) but the CLI author still timed out.
+- Review `cbcdc89d-818f-412a-841d-def8cc567af8` proved deterministic author removed the author timeout and advanced to the normal fix loop.
+- Review `20439187-6d3d-47f7-bef0-4f4bb32548dc` exposed deterministic scaffold fidelity/syntax issues; fixed by preserving `section_id`, `text_excerpt`, typed conclusions, and canonical assumptions/binders.
+- Final attempted rerun `5532f3ca-e656-4f02-bbe6-c2c7df4bed33` was dominated by local Claude CLI quota (`api_error_status=429`) in specialists/reviewer/fixer. It reached Haskell and deterministic author did not consume Claude, but no final clean corpus verdict is available until quota resets or a tested API runner is used.
+
+Fix:
+- Recover code artifacts written during failed runner attempts when the file is non-empty and modified during the failed attempt.
+- Compact Haskell code-author payloads so bulk supporting equations and raw paper sources are represented by artifact/count summaries, not sent wholesale to the author.
+- Generate Haskell attempt 1 deterministically from compact typed `semantic_ir`, preserving Lean declarations and typed theorem conclusions, and let existing validation/GHC/reviewer gates decide pass/fail.
+
+No expectation or NEVER-event was weakened.

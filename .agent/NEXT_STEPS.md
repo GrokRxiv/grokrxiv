@@ -53,3 +53,31 @@ Do not run approve, request-revisions, publisher, close, withdraw, or merge acti
 Do not weaken `expected:` blocks or NEVER-events.
 Do not raise token caps or timeouts without a diagnosed cause.
 ```
+## Next session - P0-035 resume after local Claude quota reset
+
+Current worker:
+- Branch: `p0-035-haskell-author-timeout`
+- Worktree: `.agent/worktrees/p0-035-haskell-author-timeout`
+- Base: coordinator `107bcba`; not merged yet.
+
+First action:
+1. Read `.agent/AGENT_STATUS.md`, `.agent/FINDINGS.md`, `.agent/PATCH_PLAN.md`, `.agent/TEST_LOG.md`, and `agenthero/apps/grokrxiv/evals/results/LEDGER.md`.
+2. Confirm local Claude CLI quota reset with a scrubbed-env tiny prompt or use a deliberately tested API-runner path. Do not rerun the full Tier R entry while quota is exhausted.
+3. Re-run the affected entry safely after reinstalling binaries from this branch:
+
+```bash
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 \
+  --loop --debug --no-external-actions
+```
+
+Acceptance to integrate P0-035:
+- `haskell_semantic_author` must not time out.
+- Haskell attempt 1 should be `generation_recovery.status=deterministic_local_author`.
+- `SemanticModel.hs` must compile under pinned GHC and preserve Lean declarations/source spans/typed conclusions.
+- External actions remain disabled and `pr_url=null`.
+- Citation remains within Tier R threshold (`needs_review`/unverified <= 2).
+
+If the rerun passes the P0-035 acceptance but later stages remain red, checkpoint and merge this worker as the Haskell author-timeout fix, then queue the next distinct defect. If deterministic Haskell still fails local GHC or semantic validation, fix that before merging. Do not weaken corpus expectations or raise timeouts/token caps.

@@ -54,3 +54,11 @@ one defect -> failing fixture test -> minimal fix -> affected corpus rerun -> ch
 ```
 
 Coordinator assigns one queue item at a time into a local worktree under `.agent/worktrees/`. Workers must not merge themselves back to the integration branch.
+## P0-035 Haskell semantic-author timeout
+
+- Fixed locally by replacing the timeout-prone Haskell attempt-1 author call with deterministic app-local scaffold generation from compact `semantic_ir`.
+- Added bounded recovery for files written before runner timeout; recovery refuses missing, empty, or stale files.
+- Added Haskell author payload compaction: `supporting_equations`, raw `paper_math_sources`, and raw claims are summarized by artifact/count references while theorem candidates, definitions, assumptions, source spans, and Lean target declarations remain available.
+- Added deterministic scaffold generation that preserves canonical `SourceSpan` fields (`artifact`, `claim_id`, `paper_source_id`, `section_id`, `text_excerpt`), typed equality conclusions, assumptions/binders, and Lean target declarations.
+- Verification passed: focused deterministic/recovery/payload tests, app review-loop tests 16/16, app workspace check, `git diff --check`, and PATH installs for `grokrxiv-app` plus `agenthero-dag-app-grokrxiv`.
+- Affected Tier R reruns show the author timeout is removed, but the final rerun is blocked by local Claude CLI quota before a clean end-to-end verdict. Next action is to rerun `regression-pr54-weyl` after quota reset or via a tested API-runner path.
