@@ -202,6 +202,11 @@
 | 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `ghc --numeric-version; /opt/homebrew/bin/ghc --numeric-version; lake --version; lean --version` | F3 environment drift: PATH `ghc` returned `8.4.2`; Homebrew GHC returned pinned `9.14.1`; Lake and Lean matched pins | chat transcript |
 | 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
 | 2026-06-13T08:48:49Z | `0730743` | `p0-023-toolchain-corpus-pins` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
+| 2026-06-13T08:53:28Z | `c419b88` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-023-toolchain-corpus-pins` | pass, coordinator fast-forwarded from `0730743` to `c419b88` | chat transcript |
+| 2026-06-13T08:53:28Z | `c419b88` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib` | pass, 6 tests after coordinator merge | chat transcript |
+| 2026-06-13T08:53:28Z | `c419b88` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T08:53:28Z | `c419b88` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T08:53:28Z | `c419b88` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, no diff whitespace errors and clean worktree before status-state update | chat transcript |
 
 ## Logging Rule
 

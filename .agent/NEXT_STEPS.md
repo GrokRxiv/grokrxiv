@@ -16,7 +16,7 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-If branch `p0-023-toolchain-corpus-pins` has not yet been merged, first fast-forward merge it into `grokrxiv-local-corpus-harness` and rerun:
+P0-023 has already been fast-forward merged into `grokrxiv-local-corpus-harness` at `c419b88`. Before changing the next defect, confirm the integrated baseline is still clean with:
 
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop

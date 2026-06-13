@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T08:48:49Z
+Updated: 2026-06-13T08:53:28Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 22, P0-023 toolchain and corpus pinning.
-- Branch/worktree: worker branch `p0-023-toolchain-corpus-pins` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-023-toolchain-corpus-pins`; coordinator branch `grokrxiv-local-corpus-harness` was fast-forwarded to P0-022 before this branch was created.
-- Branch base commit: `0730743`; current checkpoint commit: this checkpoint commit.
+- Session type: P0 session 22 integration complete; P0-023 toolchain and corpus pinning merged.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-023-toolchain-corpus-pins` fast-forward merged.
+- Branch base commit: `0730743`; current checkpoint commit: `c419b88`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-023 repo pins are fixed on this worker branch. All arXiv corpus entries now use concrete versions; `evals/toolchain.lock.yaml` records the required GHC 9.14.1, Lean 4.30.0, Lake 5.0.0-src+d024af0, and mathlib v4.30.0 commit `c5ea00351c28e24afc9f0f84379aa41082b1188f`; `evals/lean/` contains the pinned Lean/Lake manifest. Local F3 remains: the current shell resolves `ghc` to `/usr/local/bin/ghc` 8.4.2 before `/opt/homebrew/bin/ghc` 9.14.1. Do not claim phase-exit preflight green until PATH `ghc --numeric-version` resolves to 9.14.1 or the harness has an explicit approved runner environment. No full corpus green claim or phase tag.
+- In-flight defect: next queue item is P0 F3 GHC PATH drift. P0-023 repo pins are merged: all arXiv corpus entries use concrete versions; `evals/toolchain.lock.yaml` records the required GHC 9.14.1, Lean 4.30.0, Lake 5.0.0-src+d024af0, and mathlib v4.30.0 commit `c5ea00351c28e24afc9f0f84379aa41082b1188f`; `evals/lean/` contains the pinned Lean/Lake manifest. Local F3 remains: the current shell resolves `ghc` to `/usr/local/bin/ghc` 8.4.2 before `/opt/homebrew/bin/ghc` 9.14.1. Do not claim phase-exit preflight green until PATH `ghc --numeric-version` resolves to 9.14.1 or the harness has an explicit approved runner environment. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -63,6 +63,7 @@ Updated: 2026-06-13T08:48:49Z
 - P0-005 PR fixer fast path, 2026-06-13T07:50Z: rendered LaTeX now escapes agent role slugs and PDFLaTeX-hostile math Unicode, and the PR fixer first deterministically copies and compiles an already-rendered `review.tex` before invoking the `pr_artifact_fixer` model. The fast path writes the same `pr_fixes.json` contract with zero agent outputs when compile succeeds. Tests passed: `grokrxiv-render --test render` 10/10, focused app-runtime PR fixer test, `review_loop` tests 12/12, and app workspace check. PATH binaries `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app` were reinstalled. Affected safe run `20260613T072256Z` completed as review `c0f0e300-2654-4e85-b26c-a50d530e24f0`: product exit 0, external actions disabled, `pr_url=null`, `pr_fixer [OK]`, `pr_review_fix_code [OK]`, fixed PDF present. Overall loop remains red on Lean timeout, semantic adequacy, and policy recommendation semantics. No full corpus-green claim or phase tag.
 - P0-021 policy gate honest recommendation, 2026-06-13T08:24Z: review-loop corpus context now carries `expected.recommendation`, and the policy artifact distinguishes `publisher_ready` from corpus integrity. For entries with `expected.recommendation: honest`, a valid non-accept meta-review no longer becomes a blocking issue solely because it is not `accept`; the policy records `honest_non_publishing_recommendation` while keeping `publisher_ready=false`. Red fixture failed first with missing context field/helper, then `review_loop` tests passed 13/13, app workspace check passed, PATH binaries were reinstalled, and affected safe run `20260613T080031Z` completed as review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`: product exit 0, external actions disabled, `pr_url=null`, policy blocking issues only Haskell/Lean/semantic adequacy. No full corpus-green claim or phase tag.
 - P0-022 Tier E/F/G synthetic corpus authoring, 2026-06-13T08:38Z: added live TeX manuscripts and signal metadata for `synthetic-bad-citations`, `synthetic-injection`, and `synthetic-false-theorem`; enabled the entries by removing `status: to_author`; and taught review source resolution to find app-relative local manuscripts such as `evals/synthetic/false-theorem/paper.tex` from any repo cwd. Red fixture `corpus_synthetic_entries_are_live_app_relative_manuscripts` first failed on the placeholder status, then passed. Ingest synthetic parse test passed and confirmed Tier E has exactly 3 bibliography records, Tier F retains injection canaries, and Tier G retains the false theorem/counterexample signal. App workspace check and 45 structural tests passed. Installed PATH dry-runs for all three synthetic entries resolved as local `Tex` with `external_actions=false`. No full synthetic review sweep, corpus-green claim, or phase tag.
+- P0-023 toolchain/corpus pins, 2026-06-13T08:53Z: fast-forward merged worker branch `p0-023-toolchain-corpus-pins` into `grokrxiv-local-corpus-harness` at `c419b88`. Pinned all arXiv corpus versions, added `evals/toolchain.lock.yaml`, and added the eval Lean/Lake project with mathlib v4.30.0. Coordinator-side verification passed: corpus app-runtime tests 6/6, review-loop tests 13/13, app workspace check, and `git diff --check`. Local F3 remains because PATH `ghc` resolves to 8.4.2 while the repo pin requires 9.14.1. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
