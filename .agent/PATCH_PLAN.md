@@ -4,10 +4,11 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Citation Worker / Coordinator: P0-004 live proof step: configure a real `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL` endpoint or local Gemini API key (`GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`), then run the affected Tier R review-loop command proving citation `needs_review <= 2` without wholesale-empty artifacts.
-2. Coordinator / Verifier Worker: P0-005 PR fixer timeout, deferred until P0-002/P0-003 stop invalid PR-fixer execution and P0-004 proves the citation stage is no longer the first Tier R blocker.
-3. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
-4. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
+1. Citation Worker / Coordinator: P0-004 live proof step remains open. Latest safe Tier R run after P0-015 emitted partial citation results but still had `unverified=5` (`Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`) against expected `<= 2`. Configure a real `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, local Gemini API key (`GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`), ADS token, or add another deterministic provider, then rerun the safe affected command.
+2. Coordinator / Verifier Worker: P0-005 PR fixer timeout is confirmed on valid extraction/review inputs by review `83675683-633c-44a4-b9c6-0569eee2ddeb`; work it after P0-004 is green or formally blocked on provider credentials.
+3. Policy Gate Worker: add a focused Tier R fixture for `expected.recommendation: honest`. Current `policy_gate` requires `accept`, but the corpus entry explicitly leaves the verdict unpinned and asserts integrity gates.
+4. Corpus Auditor / Gate Worker: Tier E/F/G synthetic papers: author and enable fake-citation, prompt-injection, and false-theorem entries.
+5. Coordinator / Verifier Worker: toolchain and corpus pins: pin `lake`, Lean/mathlib, `ghc`, and all `pin_on_first_run` arXiv versions.
 
 ## Completed Queue Items
 
@@ -24,6 +25,8 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-004b retraction screening: fixed locally by parsing Crossref production retraction metadata on DOI lookups (`update-to`, `updated-by`, relation retraction markers, and `RETRACTED:` titles), marking such entries `status="retracted"` with `source="crossref_retraction"`, failing the verifier gate, preserving retraction evidence in citation-validation reports as remediation items, and surfacing retraction counts/evidence in CLI citation summaries. Gemini fallback/quorum and the affected Tier R rerun remain queued under P0-004 residual reliability.
 - P0-004c grounded fallback/provider headers: fixed locally by adding a config-gated final `gemini_grounded` bibliographic provider after the deterministic waterfall, requiring matching-title plus HTTP URL evidence before marking residue resolved, and sending Semantic Scholar/ADS auth headers from local env when present. Repo `.env` currently lacks `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; the affected Tier R rerun remains queued until a real grounded resolver is configured.
 - P0-004d local Gemini grounded API fallback: fixed locally by adding a direct Gemini `generateContent` transport for the final `gemini_grounded` provider when no resolver URL is configured but a Gemini API key is present. The request enables Google Search grounding, requires grounding URL evidence, and documents the env knobs in `.env_review.example`. Repo `.env` and split env files currently lack the resolver URL, Gemini API key, Semantic Scholar key, and ADS token; the affected Tier R rerun remains queued until real local credentials or endpoint config exist.
+- P0-016 affected Tier R safe rerun: executed after reinstalling the local PATH binaries. Review `83675683-633c-44a4-b9c6-0569eee2ddeb` proved N2/N4/no-external-action guardrails are producing explicit artifacts, and citation validation is no longer wholesale-empty. The run is still red: citation residue is `unverified=5` against expected `<= 2`; Haskell/Lean/semantic adequacy fail on the typed-IR gap; PR fixer times out after 360s; policy gate requires `accept` despite Tier R only requiring an honest recommendation.
+- P0-004e structured-title bibliographic query: fixed locally by sending parsed `Citation.title` to the bibliographic waterfall when available, falling back to raw citation text only when no title exists. This should improve public provider matches for old/classic references whose raw bibliography labels confuse provider search. Verifier, app citation, and app workspace checks passed; affected Tier R rerun remains pending after reinstalling PATH binaries.
 
 ## Work Rule
 

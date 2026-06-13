@@ -118,6 +118,13 @@
 | 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests after worker fast-forward merge | chat transcript |
 | 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after worker fast-forward merge | chat transcript |
 | 2026-06-13T02:25:04Z | `90d6123` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass; status output empty after worker fast-forward merge | chat transcript |
+| 2026-06-13T02:30:22Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced older PATH `grokrxiv-app` from stale worktree install | chat transcript |
+| 2026-06-13T02:30:22Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass, replaced older PATH `agenthero-dag-app-grokrxiv` from stale worktree install | chat transcript |
+| 2026-06-13T02:30:22Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | fail at corpus/review-loop gate while product command exits 0: review `83675683-633c-44a4-b9c6-0569eee2ddeb`, external actions disabled, citation partial results non-empty but `unverified=5`, Haskell missing `MathType`, semantic adequacy `OVERCLAIMED`, PR fixer timeout, policy gate not ready | `agenthero/apps/grokrxiv/evals/results/20260613T023022Z/regression-pr54-weyl/run.log` |
+| 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_prefers_structured_title_over_raw_label -- --nocapture` | pass, 1 test | chat transcript |
+| 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 36 tests | chat transcript |
+| 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | chat transcript |
+| 2026-06-13T02:58:48Z | `f525ed4` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 
 ## Logging Rule
 

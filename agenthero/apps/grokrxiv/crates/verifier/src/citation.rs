@@ -827,7 +827,15 @@ impl Verifier for CitationVerifier {
                 }
             }
             if lookup.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
-                let biblio_lookup = self.resolve_bibliographic(ctx.http, &c.raw).await;
+                let bibliographic_text = c
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or(&c.raw);
+                let biblio_lookup = self
+                    .resolve_bibliographic(ctx.http, bibliographic_text)
+                    .await;
                 if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
                     resolved_via_biblio += 1;
                 }
@@ -1909,7 +1917,7 @@ mod tests {
     use super::*;
     use grokrxiv_schemas::{Citation, PaperExtract};
     use std::sync::{Mutex as StdMutex, OnceLock};
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     static ENV_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
@@ -2278,6 +2286,66 @@ mod tests {
         assert_eq!(r.notes["unverified"].as_array().unwrap().len(), 1);
         assert_eq!(r.notes["entries"][0]["status"], "unverified");
         assert_eq!(r.notes["entries"][0]["exists"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn bibliographic_waterfall_prefers_structured_title_over_raw_label() {
+        let server = MockServer::start().await;
+        let title = "On Manifolds with an Affine Connection and the Theory of General Relativity";
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .and(query_param("search", title))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [{
+                    "display_name": title,
+                    "doi": null,
+                    "id": "https://openalex.org/W583184355",
+                    "primary_location": {
+                        "landing_page_url": "http://cds.cern.ch/record/108877"
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_structured_search", server.uri()),
+        );
+        let paper = paper_with(vec![Citation {
+            raw: "Cartan:1986: On Manifolds with an Affine Connection and the Theory of General Relativity, 1986".into(),
+            doi: None,
+            arxiv_id: None,
+            title: Some(title.to_string()),
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["resolved_via_bibliographic_query"], 1);
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["verified_via"], "openalex");
     }
 
     #[tokio::test]

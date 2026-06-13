@@ -532,6 +532,74 @@ Residual:
 - Repo `.env` and included env files still lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`, so this checkpoint does not prove a live Tier R affected review-loop run.
 - Configure a Gemini API key or app-local grounded resolver endpoint before the next `regression-pr54-weyl` safe rerun.
 
+## P0-004 Live Tier R Rerun: Partial Results But 5 Unverified Residues
+
+ID: P0-004e
+Corpus entry: `regression-pr54-weyl`
+Review id: `83675683-633c-44a4-b9c6-0569eee2ddeb`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: F3 toolchain/config until a real grounded resolver/API key/ADS token is configured; F1 if residue remains above target with configured providers.
+NEVER-event: none. Citation artifact was non-empty and partial results were emitted.
+Symptom: citation validation now emits a partial-result report and has `unresolved=0`, `malformed=0`, `transient_unknown=0`, but still has `unverified=5` against Tier R `citation_needs_review <= 2`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T023022Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T023022Z/regression-pr54-weyl/verdict.json`
+- `agenthero/apps/grokrxiv/evals/results/20260613T023022Z/regression-pr54-weyl/dossier.md`
+Artifact paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/83675683-633c-44a4-b9c6-0569eee2ddeb/review_loop/citation_validation_report.json`
+Observed counts: `checked=53`, `unverified=5`, `unresolved=0`, `malformed=0`, `transient_unknown=0`, `unresolved_fraction=0.0`.
+Unverified keys: `Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`.
+Provider evidence for residue: public fallback only; evidence strings report Semantic Scholar `429 Too Many Requests`, ADS `401 Unauthorized`, and zbMATH `400 Bad Request`.
+Root cause: repo `.env` and split env files do not configure `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, Gemini API key envs, `SEMANTIC_SCHOLAR_API_KEY`, or ADS token envs, so P0-014/P0-015 live final providers were not available in this run.
+Owning code: `agenthero/apps/grokrxiv/crates/verifier/src/citation.rs` and local env/config.
+Fix plan: configure a real local grounded resolver endpoint, Gemini API key, ADS token, or add another deterministic provider that resolves at least three of the five remaining references with URL evidence. Re-run the same safe Tier R command and require residue `<= 2`.
+Attempts: 2 live Tier R runs for citation reliability after initial audit; latest safe run after P0-015 still red.
+Escalation status: blocked on local credential/provider configuration or additional deterministic provider work; do not claim P0-004 complete.
+
+## P0-004 Progress: Structured Title Bibliographic Query
+
+Status: fixed locally for verifier behavior, 2026-06-13T02:58Z.
+Evidence:
+- Added `bibliographic_waterfall_prefers_structured_title_over_raw_label`.
+- The verifier now sends `Citation.title` to the bibliographic waterfall when a parsed non-empty title exists, instead of querying with the raw bibliography label such as `Cartan:1986: ...`.
+- This lets providers such as OpenAlex match old/classic records by clean title while retaining the raw citation as fallback when no structured title exists.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_prefers_structured_title_over_raw_label -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 36 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+Residual:
+- No affected `regression-pr54-weyl` safe review-loop rerun was executed after this verifier change.
+- Reinstall PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` before the next affected rerun.
+
+## P0-016 Review-Loop Triage After Guardrail Fixes
+
+Corpus entry: `regression-pr54-weyl`
+Review id: `83675683-633c-44a4-b9c6-0569eee2ddeb`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: mixed.
+NEVER-event: none observed. `external_actions_enabled=false`, `pr_url=null`, and stderr confirms external PR dispatch was skipped.
+Positive evidence:
+- All five specialists started; summary, novelty, reproducibility, and meta-review passed; technical correctness and citation were explicit warnings.
+- `review_loop/bundle_completeness.json` reports `status=pass`, `missing_count=0`, and explicit skip reasons for PR-fixer outputs.
+- `citation_validation_report.json` is non-empty and reported through the review-loop final artifacts.
+Remaining red stages:
+- `haskell_review_fix_code`: `SemanticModel.hs must define typed mathematical IR type MathType` plus related `ClaimIR`, `ProofObligation`, `LeanTarget`, and mapping-function requirements.
+- `proof_obligation_generator` and `lean_review_fix_code`: cascade from failed Haskell IR generation.
+- `semantic_adequacy_checker`: `status=fail`; 369 mapped statements are `OVERCLAIMED`.
+- `pr_fixer`: `CliRunner timed out after 360s for role pr_artifact_fixer`; this confirms P0-005 remains reachable on a now-valid extraction/review path.
+- `policy_gate`: fails because meta-review recommendation is `major_revision`, not `accept`; this is stricter than Tier R `expected.recommendation: honest`.
+Fix plan:
+- Keep Haskell/Lean deterministic statement emission under the P2 typed-IR phase unless P0 explicitly changes the review-loop policy to gate only Tier R integrity expectations.
+- Reopen P0-005 as a real timeout on valid inputs after P0-004 is either proven or explicitly blocked on provider configuration.
+- Add a policy-gate fixture for Tier R `recommendation: honest` before changing policy behavior.
+Escalation status: none; no N5 halt.
+
 ## P0-005: PR Fixer Timed Out After 360 Seconds
 
 ID: P0-005
@@ -550,7 +618,7 @@ Raw evidence paths:
 Root cause: unknown from this audit; likely downstream of P0-003 because the loop should not enter PR fixing after invalid extraction.
 Fix plan: do not tune timeouts yet; fix P0-002 and P0-003 first, then rerun if PR fixing is still reachable on valid extraction.
 Attempts: 1
-Escalation status: deferred.
+Escalation status: no longer purely deferred; P0-016 confirmed the same timeout on review `83675683-633c-44a4-b9c6-0569eee2ddeb` after extraction, specialists, bundle completeness, and citation partial-result emission were all present. Still work it after P0-004 citation residue is either green or formally blocked by missing local provider credentials.
 
 ## Finding Template
 

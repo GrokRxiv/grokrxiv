@@ -67,13 +67,20 @@ P0-015 validation:
 Parallel-test note:
 - Full parallel app-runtime lib runs are currently flaky in config/env-heavy tests. In P0-010, two parallel runs failed on different tests (`supervisor::tests::apply_revisions_errors_without_db`, then `state::tests::build_agent_registry_applies_resolved_model_override`), while both tests passed individually and the full suite passed serially. Treat this as residual test-isolation debt, not a P0-010 regression.
 
-Residual: no full affected review-loop rerun was executed after P0-014. Tier R is not green until a safe review-loop run verifies full extraction, all specialists, bundle completeness, citation partial results, and citation `needs_review <= 2`.
+Residual: the full affected review-loop rerun after P0-015 was executed safely and did not invoke external actions, but Tier R is still not green. Citation partial results are non-empty, but residue is `unverified=5` against expected `<= 2`; Haskell/Lean/semantic adequacy, PR fixer, and policy gate also remain red.
 
-Next queue item: P0-004 live citation reliability. Repo `.env` plus split env files currently lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; configure a real local grounded resolver endpoint or Gemini API key, then run the affected Tier R review command safely:
+Next queue item: P0-004 live citation reliability remains open. The 2026-06-13T02:30Z safe affected run created review `83675683-633c-44a4-b9c6-0569eee2ddeb` and proved citation artifacts are partial/non-empty, but `citation_validation_report.json` still has `unverified=5` (`Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`) against Tier R expected `<= 2`. A structured-title bibliographic query fix landed after that run, so first reinstall the PATH binaries, then rerun safely. Repo `.env` plus split env files currently lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; configure a real local grounded resolver endpoint, Gemini API key, ADS token, or add another deterministic provider if the structured-title rerun still leaves residue above target.
 
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked
 agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions
 
-If citation `needs_review` is still above 2 or citation artifacts are empty, write a new P0-004 dossier instead of tuning timeouts blindly.
+If citation `needs_review`/`unverified` is still above 2 or citation artifacts are empty, write a new P0-004 dossier instead of tuning timeouts blindly.
+
+Known red stages from the latest safe run:
+- Haskell typed-IR contract: `SemanticModel.hs must define typed mathematical IR type MathType`; keep under P2 typed-IR unless P0 explicitly changes what the Tier R gate considers.
+- PR fixer timeout: P0-005 is now confirmed on valid inputs and should be worked after P0-004 is green or formally blocked.
+- Policy gate: current code requires `accept`; add a fixture before changing behavior because Tier R only requires `recommendation: honest`.
 
 Known unrelated blocker from P0-006/P0-007 smokes:
 - Fresh extraction materializes local artifacts, then exits 1 because the configured data-repo remote `git@github.com:GrokRxiv/grokrxiv-data.git` fails with `unsupported URL protocol`.
