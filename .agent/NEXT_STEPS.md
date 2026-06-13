@@ -16,15 +16,14 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-P0-026 worker branch `p0-026-false-theorem-n5-check` is ready for coordinator merge. It adds:
+P0-026 worker branch `p0-026-false-theorem-n5-check` has been fast-forward merged into coordinator at `43bbf3a`. It added:
 - a stronger `corpus_synthetic_entries_are_live_app_relative_manuscripts` test that parses synthetic TeX sources through review ingest and asserts parsed body length clears the 1,000-character extraction gate.
 - a larger Tier G false-theorem manuscript that still preserves the false universal claim and explicit `n=40` counterexample.
 
-Before changing the next defect, merge and verify the worker on coordinator:
+Before changing the next defect, confirm the integrated baseline is still clean if another session may have landed work:
 
 cd /Users/mlong/Documents/Development/grokrxiv
 git status --short
-git merge --ff-only p0-026-false-theorem-n5-check
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop
 cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
@@ -41,7 +40,7 @@ Current state after the worker checks:
 - P0-023 corpus/toolchain pins are in repo state.
 - P0-024 makes the corpus runner environment select locked GHC `9.14.1` even when the host PATH exposes stale `/usr/local/bin/ghc` `8.4.2`.
 - P0-025 fixes the Tier F semantic-IR canary leak; coordinator-side verification passed.
-- P0-026 fixes the Tier G false-theorem fixture liveness defect. Before fix, `synthetic-false-theorem` failed at extraction with parsed body length 741. After fix, affected rerun `20260613T102058Z`, review `7ac26d88-9e8a-457f-bce0-a6425a42ad33`, reached review-loop theorem mapping with `theorem_candidates=2`.
+- P0-026 fixes the Tier G false-theorem fixture liveness defect. Before fix, `synthetic-false-theorem` failed at extraction with parsed body length 741. After fix, affected rerun `20260613T102058Z`, review `7ac26d88-9e8a-457f-bce0-a6425a42ad33`, reached review-loop theorem mapping with `theorem_candidates=2`. Coordinator-side verification passed.
 - Latest affected Tier R run remains `20260613T080031Z`, review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
 - No full corpus-green claim and no phase tag.
 

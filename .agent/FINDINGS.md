@@ -1015,6 +1015,7 @@ Evidence:
 - Affected rerun review `7ac26d88-9e8a-457f-bce0-a6425a42ad33`: product exit 0, external actions disabled, `pr_url=null`, `semantic_category_mapper [OK] theorem_candidates=2`, `semantic_adequacy_checker [FAIL] OVERCLAIMED`, `policy_gate [FAIL]`, and `publish_decision [FAIL]`.
 - `review_loop/lean/results.json`: `status="fail"`, `skipped=true`, `skip_reason="Haskell mathematical IR generation did not pass; Lean verification is blocked."`
 - `review_loop/haskell/results.json` and `run.log`: `CliRunner timed out after 360s for role haskell_code_fixer`.
+- Coordinator merge verification at `43bbf3a`: `corpus_` tests 7/7, app-runtime `review_loop` tests 13/13, app workspace check, structural tests 45/45, and `git diff --check` passed.
 Residual:
 - The corpus expectation `lean_review_fix_code: NOT_PROVED` is still red. The current actual is a blocked/skipped Lean stage after Haskell timeout, not a false `PROVED` and not the expected `NOT_PROVED`.
 - P0-027 should decide whether to add an honest deterministic `NOT_PROVED`/blocked verdict path for Haskell IR failures in P0 or defer the full fix to P2 typed IR/deterministic Lean emission with an explicit dossier. No expected block was weakened.

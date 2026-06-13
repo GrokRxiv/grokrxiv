@@ -257,6 +257,12 @@
 | 2026-06-13T10:37:00Z | `26f80c4` | `p0-026-false-theorem-n5-check` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T10:38:00Z | `26f80c4` | `p0-026-false-theorem-n5-check` | `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` | pass, 45 tests | chat transcript |
 | 2026-06-13T10:40:00Z | `26f80c4` | `p0-026-false-theorem-n5-check` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-026-false-theorem-n5-check` | pass, coordinator fast-forwarded from `26f80c4` to `43bbf3a` | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture` | pass, 7 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop -- --nocapture` | pass, 13 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract` | pass, 45 tests after coordinator merge | chat transcript |
+| 2026-06-13T10:45:15Z | `43bbf3a` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 
