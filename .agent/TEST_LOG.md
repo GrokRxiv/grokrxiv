@@ -83,13 +83,13 @@
 | 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_ -- --nocapture` | pass, 12 tests | chat transcript |
 | 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T01:33:55Z | `ad932e4` | `p0-011-false-proof-halt` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 272 tests | chat transcript |
-| 2026-06-13T01:45:26Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results -- --nocapture` | expected fail before implementation: missing `CitationVerifier::with_bibliographic_provider_bases`; pass after fix, 1 test | chat transcript |
-| 2026-06-13T01:47:15Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation_report_preserves_waterfall_resolver_sources -- --nocapture` | pass, 1 test | chat transcript |
-| 2026-06-13T01:45:26Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 30 tests | chat transcript |
-| 2026-06-13T01:47:15Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation -- --nocapture` | pass, 3 tests | chat transcript |
-| 2026-06-13T01:47:15Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 273 tests | chat transcript |
-| 2026-06-13T01:45:26Z | `pending-p0-012` | `p0-012-citation-waterfall` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
-| 2026-06-13T01:47:15Z | `pending-p0-012` | `p0-012-citation-waterfall` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T01:45:26Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results -- --nocapture` | expected fail before implementation: missing `CitationVerifier::with_bibliographic_provider_bases`; pass after fix, 1 test | chat transcript |
+| 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation_report_preserves_waterfall_resolver_sources -- --nocapture` | pass, 1 test | chat transcript |
+| 2026-06-13T01:45:26Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` | pass, 30 tests | chat transcript |
+| 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation -- --nocapture` | pass, 3 tests | chat transcript |
+| 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 273 tests | chat transcript |
+| 2026-06-13T01:45:26Z | `17b5308` | `p0-012-citation-waterfall` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:47:15Z | `17b5308` | `p0-012-citation-waterfall` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 
