@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 32: merge P0-031, then diagnose the Haskell semantic target explosion. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 33: diagnose P0-032, the Haskell semantic target explosion / fixer timeout. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -16,10 +16,10 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Current worker state:
-- Worker branch `p0-031-tier-r-after-runner`
-- Worker base `ee66046`
-- Worker checkpoint commit is expected to be `codex checkpoint: P0 - tier r rerun after runner reset`
+Current coordinator state:
+- Branch `grokrxiv-local-corpus-harness`
+- P0-031 worker `p0-031-tier-r-after-runner` fast-forward merged at `e7ebd4f`
+- State-only integration commit is pending from the current session
 - No baseline tag, no full corpus-green claim, and no phase tag yet
 
 P0-031 evidence:
@@ -41,24 +41,19 @@ Current red:
 - Semantic adequacy stayed `OVERCLAIMED` with 913 verdicts and empty emitted/verified statements.
 - Policy/publish decision failed from the Haskell/Lean/semantic adequacy cascade.
 
-Session 32 task:
-1. In the worker, confirm `git diff --check`, `git status --short`, and commit:
-   `git add .`
-   `git commit -m "codex checkpoint: P0 - tier r rerun after runner reset"`
-2. In the coordinator worktree:
-   `cd /Users/mlong/Documents/Development/grokrxiv`
+Session 33 task:
+1. Confirm the coordinator state-only integration commit was created:
+   `git log --oneline -3`
    `git status --short --branch`
-   `git merge --ff-only p0-031-tier-r-after-runner`
-3. Run coordinator verification:
-   `git diff --check`
-   Optional if state-only merge only: no code tests required beyond status/diff.
-4. Commit the coordinator integration update:
-   `codex checkpoint: P0 - tier r rerun after runner reset integration`
-5. Start P0-032 in a fresh worker. Diagnose the target explosion before patching:
+2. Start a fresh local worker from the coordinator:
+   `git worktree add .agent/worktrees/p0-032-haskell-target-scope -b p0-032-haskell-target-scope`
+3. Diagnose before patching:
    - Read `review_loop/semantic_model.json`, `semantic_ir.json`, `haskell/results.json`, and the Haskell decisions for review `667842d3-71e0-4fe9-950a-1518db105049`.
+   - Locate the code that turns theorem/equation signals into Haskell/Lean target declarations.
    - Determine why equation targets are included as required Lean declarations and whether P0 should bound target selection or classify this as a P2 typed-IR gap.
-   - If app-local, write a failing fixture first, then fix.
-   - If architectural/P2, write an explicit F2/F4 dossier and keep the corpus red without weakening expectations.
+4. If app-local, write a failing fixture first, then fix.
+5. If architectural/P2, write an explicit F2/F4 dossier and keep the corpus red without weakening expectations.
+6. Do not run a full Tier R rerun until the focused fixture or dossier makes the next action clear.
 
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not weaken `expected:` blocks or NEVER-events.

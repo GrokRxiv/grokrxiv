@@ -304,6 +304,8 @@
 | 2026-06-13T12:22:32Z | `ee66046` | `p0-031-tier-r-after-runner` | wrapped preflight `agh doctor` plus GHC/Lake/Lean provenance | pass, doctor exit 0; GHC `9.14.1`, Lean `4.30.0`, Lake `5.0.0-src+d024af0` | `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/` |
 | 2026-06-13T12:48:08Z | `ee66046` | `p0-031-tier-r-after-runner` | wrapped `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0; review `667842d3-71e0-4fe9-950a-1518db105049`; deterministic review-loop fail; no external actions, `pr_url=null` | `agenthero/apps/grokrxiv/evals/results/20260613T122232Z/regression-pr54-weyl/run.log` |
 | 2026-06-13T12:48:08Z | `ee66046` | `p0-031-tier-r-after-runner` | artifact checks for review `667842d3-71e0-4fe9-950a-1518db105049` | fixed invariants held: body chars 117245, sections 8, theorem nodes 41, equations 903, citation checked 53/unverified 2/unresolved 0/transient_unknown 0, PR fixer pass, PR review pass, honest recommendation policy pass; remaining red Haskell fixer timeout and semantic adequacy overclaimed | chat transcript |
+| 2026-06-13T12:50:08Z | `e7ebd4f` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-031-tier-r-after-runner` | pass, coordinator fast-forwarded from `ee66046` to `e7ebd4f` | chat transcript |
+| 2026-06-13T12:50:08Z | `e7ebd4f` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
 
 ## Logging Rule
 
