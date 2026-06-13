@@ -101,6 +101,41 @@ Fix plan: write failing fixture test for empty body/sections/theorem graph, add 
 Attempts: 1
 Escalation status: none.
 
+## P0-003 Resolution
+
+Status: N1 review-on-empty-body guard fixed locally, 2026-06-13T00:10Z.
+Evidence:
+- Added `extraction_completeness_gate` in `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor/review_flow.rs`.
+- The gate rejects empty sections and body text below 1,000 chars before review row creation, specialist launch, meta synthesis, policy, PR fixer, or PR dispatch.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime extraction_completeness_gate`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib`: pass, 259 tests.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
+- `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`: exits 1 at `[2/6] Extract [FAIL] extraction completeness failed`.
+- Raw affected-entry evidence: `agenthero/apps/grokrxiv/evals/results/20260613T000936Z/regression-pr54-weyl/run.log`.
+Residual:
+- Tier R is still red against `expected.extraction: full_body_with_theorem_envs`; source-to-body still produced a zero-byte body and `sections.json` is empty. Track as P0-006 before downstream N2/N3 work that depends on a reviewable body.
+
+## P0-006: Source-To-Body Extraction Still Produces Empty Body For Weyl
+
+ID: P0-006
+Corpus entry: `regression-pr54-weyl`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 1
+finish_reason: extraction-completeness gate blocked review before specialist launch
+Bucket: F1 contract
+NEVER-event: N1_review_on_empty_body is now blocked, but expected full-body extraction is still failing.
+Symptom: the review no longer proceeds on empty body, but the extractor still has `body.md` at 0 bytes, `sections.json` with 0 sections, and no theorem/equation artifacts for the regression paper.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T000936Z/regression-pr54-weyl/run.log`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/body.md`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/sections.json`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/extraction_report.json`
+Root cause: not diagnosed in this session. `source_to_body` / `pandoc_tex_to_markdown` still reports ok despite no body text.
+Fix plan: inspect `source_manifest.json`, cached source availability, and `pandoc_tex_to_markdown`; add a fixture where source conversion yields empty output and either recover full body or mark extraction failed before persistence.
+Attempts: 1
+Escalation status: none.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004

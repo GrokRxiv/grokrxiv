@@ -30,6 +30,14 @@
 | 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass, replaced PATH `agenthero-dag-app-grokrxiv` | chat transcript |
 | 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `agh --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | pass, exit 0, PATH runtime emitted `external_actions.enabled=false` and did not start pipeline work | chat transcript |
 | 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `agh app run grokrxiv review --help \| rg -- '--no-external-actions\|Usage:'` | pass, help advertises `--no-external-actions` | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime extraction_completeness_gate_rejects_empty_review_context` | fail, compile error `extraction_completeness_gate` missing | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime extraction_completeness_gate` | pass, 2 tests | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib` | pass, 259 tests | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced PATH `grokrxiv-app` | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass, replaced PATH `agenthero-dag-app-grokrxiv` | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | expected fail, exit 1 at `[2/6] Extract [FAIL] extraction completeness failed`; no PR/specialist output | `agenthero/apps/grokrxiv/evals/results/20260613T000936Z/regression-pr54-weyl/run.log` |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
+| 2026-06-13T00:10:29Z | `d5d73f4` | `p0-003-extraction-completeness` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 

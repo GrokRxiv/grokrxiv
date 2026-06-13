@@ -4,7 +4,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. Gate Worker: P0-003 / N1 extraction-completeness gate. Abort review when extraction sections are empty, body density is too low, or theorem environments expected from source are missing.
+1. Extraction Worker: P0-006 source-to-body full extraction recovery for `regression-pr54-weyl`. Diagnose why `pandoc_tex_to_markdown`/source conversion produced 0-byte `body.md`; recover full body with theorem environments or fail extraction before persistence.
 2. Gate Worker: N2 explicit specialist-failure artifacts: every specialist timeout/failure emits a failed or partial artifact with status and reason.
 3. Gate Worker: N3 gate input completeness: policy gate and meta recommendation require all upstream artifacts present, schema-valid, and extraction-completeness green.
 4. Gate Worker: N4 bundle completeness: every declared artifact exists or has an honest `skip_reason`.
@@ -18,6 +18,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 - P0-001 F3 stale runtime binary: fixed locally by reinstalling `grokrxiv-app` and `agenthero-dag-app-grokrxiv`; product dry-run and real run reached the review-loop path.
 - P0-002 no-publishing guardrail: fixed locally with `--no-external-actions`, app catalog/help coverage, app-runtime parser/dispatch tests, PATH binary install, and safe dry-run evidence. No full corpus rerun yet.
+- P0-003 N1 review-on-empty-body guard: fixed locally with app-runtime extraction-completeness gate before review row creation/specialist launch. Affected regression entry now fails at Extract instead of producing a verdict or PR.
 
 ## Work Rule
 

@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T00:00:39Z
+Updated: 2026-06-13T00:10:29Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 3, P0-002 no-external-actions fix.
-- Branch/worktree: `p0-002-no-pr-guardrail` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-002-no-pr-guardrail`.
+- Session type: P0 session 4, P0-003 N1 extraction-completeness guard fix.
+- Branch/worktree: `p0-003-extraction-completeness` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-003-extraction-completeness`.
 - Branch base commit: `0f157da`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-003 / N1 extraction-completeness gate. P0-002 is fixed locally with `--no-external-actions`; no full corpus rerun has been performed after the guardrail fix.
+- In-flight defect: P0-006 / source-to-body full extraction recovery for `regression-pr54-weyl`; P0-003 now blocks review on empty extraction but the Tier R expected full-body extraction is still red.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -39,6 +39,7 @@ Updated: 2026-06-13T00:00:39Z
 - P0-001 fix, 2026-06-12T23:27Z: reinstalled `grokrxiv-app` and `agenthero-dag-app-grokrxiv`; product dry-run accepted `--loop` and emitted the review-loop stage plan.
 - P0 second RUN, 2026-06-12T23:47Z: `regression-pr54-weyl` completed as review `eca527eb-3930-49e6-a828-66dd64611430`; review-loop deterministic status failed and opened PR #55. New findings: P0-002 no-publishing guardrail breach, P0-003 N1 extraction gate failure, P0-004 citation waterfall gap, P0-005 PR fixer timeout.
 - P0-002 fix, 2026-06-13T00:00Z: added `--no-external-actions` to the GrokRxiv review action, app runtime parser, post-loop PR dispatch, dry-run output, help/catalog tests, and LOOP.md. PATH dry-run confirms `external_actions.enabled=false` without starting the DAG.
+- P0-003 fix, 2026-06-13T00:10Z: added an app-runtime extraction-completeness gate before review row creation/specialist launch. Safe affected-entry rerun exits 1 at `[2/6] Extract [FAIL] extraction completeness failed`; no `pr_url`, GitHub URL, Review DAG, specialist, or external action output appears in the log.
 
 ## Coordinator Rules
 

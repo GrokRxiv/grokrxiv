@@ -74,6 +74,7 @@ pub(super) async fn run_one_paper_full(state: &AppState, arxiv_id: &str) -> anyh
         paper_id = crate::db::upsert_paper(pool, &pe, None).await?;
         extract = pe;
     }
+    ensure_extraction_completeness(&extract)?;
     tracing::info!(arxiv_id, %paper_id, "M1: paper persisted");
     crate::cli_status::emit_stage(2, 6, "Extract", StatusMark::Ok, "paper artifacts persisted");
     crate::cli_status::emit_stage(
@@ -149,6 +150,84 @@ pub(super) fn review_cache_disabled() -> bool {
     ) || matches!(
         std::env::var("GROKRXIV_INGEST_NO_CACHE").as_deref(),
         Ok("1") | Ok("true")
+    )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtractionCompletenessGate {
+    review_ready: bool,
+    body_chars: usize,
+    section_count: usize,
+    failures: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn extraction_completeness_gate(
+    extract: &grokrxiv_schemas::PaperExtract,
+) -> ExtractionCompletenessGate {
+    let mut failures = Vec::new();
+    let mut warnings = Vec::new();
+    let section_count = extract.sections.len();
+    let body_chars = extract
+        .sections
+        .iter()
+        .map(|section| section.heading.chars().count() + section.body_markdown.chars().count())
+        .sum::<usize>();
+
+    if extract.title.trim().is_empty() {
+        failures.push("metadata title is empty".to_string());
+    }
+    if extract.abstract_.trim().is_empty() {
+        failures.push("metadata abstract is empty".to_string());
+    }
+    if section_count == 0 {
+        failures.push("extraction completeness failed: no body sections".to_string());
+    }
+    if body_chars < 1_000 {
+        failures.push(format!(
+            "extraction completeness failed: body text is too small for review context ({body_chars} chars)"
+        ));
+    }
+    if extract.bibliography.is_empty() {
+        warnings.push("bibliography is empty".to_string());
+    }
+
+    ExtractionCompletenessGate {
+        review_ready: failures.is_empty(),
+        body_chars,
+        section_count,
+        failures,
+        warnings,
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn ensure_extraction_completeness(extract: &grokrxiv_schemas::PaperExtract) -> anyhow::Result<()> {
+    let gate = extraction_completeness_gate(extract);
+    if gate.review_ready {
+        return Ok(());
+    }
+    let failure_summary = gate.failures.join("; ");
+    tracing::warn!(
+        arxiv_id = %extract.arxiv_id,
+        body_chars = gate.body_chars,
+        section_count = gate.section_count,
+        failures = %failure_summary,
+        "review: extraction completeness gate failed"
+    );
+    crate::cli_status::emit_stage(
+        2,
+        6,
+        "Extract",
+        StatusMark::Fail,
+        "extraction completeness failed",
+    );
+    anyhow::bail!(
+        "extraction completeness gate failed for {}: {}",
+        extract.arxiv_id,
+        failure_summary
     )
 }
 
@@ -445,6 +524,58 @@ edges: []
 
         assert_eq!(cfg.min_specialist_quorum, 4);
     }
+
+    #[test]
+    fn extraction_completeness_gate_rejects_empty_review_context() {
+        let extract = grokrxiv_schemas::PaperExtract {
+            arxiv_id: "2606.00799".to_string(),
+            title: "A Weyl Geometry Test Paper".to_string(),
+            authors: vec![],
+            abstract_: "The abstract is present, but the extracted body is empty.".to_string(),
+            field: Some("math-ph".to_string()),
+            sections: vec![],
+            figures: vec![],
+            bibliography: vec![],
+            source_format: Some("tex".to_string()),
+        };
+
+        let gate = extraction_completeness_gate(&extract);
+
+        assert!(!gate.review_ready);
+        assert_eq!(gate.body_chars, 0);
+        assert!(gate
+            .failures
+            .iter()
+            .any(|msg| msg.contains("body sections")));
+        assert!(gate
+            .failures
+            .iter()
+            .any(|msg| msg.contains("body text")));
+    }
+
+    #[test]
+    fn extraction_completeness_gate_accepts_substantive_sections() {
+        let extract = grokrxiv_schemas::PaperExtract {
+            arxiv_id: "2407.07620".to_string(),
+            title: "An Elementary Bertrand Postulate Proof".to_string(),
+            authors: vec![],
+            abstract_: "We give a complete proof with explicit lemmas.".to_string(),
+            field: Some("math.NT".to_string()),
+            sections: vec![grokrxiv_schemas::Section {
+                heading: "Main theorem".to_string(),
+                body_markdown: "Theorem. ".repeat(140),
+            }],
+            figures: vec![],
+            bibliography: vec![],
+            source_format: Some("tex".to_string()),
+        };
+
+        let gate = extraction_completeness_gate(&extract);
+
+        assert!(gate.review_ready, "{:?}", gate.failures);
+        assert!(gate.body_chars >= 1_000);
+        assert_eq!(gate.section_count, 1);
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -480,6 +611,8 @@ pub(super) async fn run_review_dag_inner_with_context(
     use grokrxiv_schemas::{MetaReview, VerifierStatus};
     use serde_json::json;
     use std::sync::Arc;
+
+    ensure_extraction_completeness(&extract)?;
 
     let resolve_agent = |role: &str| -> anyhow::Result<(
         Arc<ConfiguredAgent>,
