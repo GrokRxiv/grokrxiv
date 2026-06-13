@@ -11,6 +11,7 @@ use agenthero_dag_runtime::{
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
@@ -5897,6 +5898,7 @@ async fn run_review_loop_for_review(
     let stages = review_loop_stage_plan()?;
     let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
     tokio::fs::create_dir_all(&artifact_dir).await?;
+    let mut bundle_skip_reasons = BTreeMap::new();
     let paper_id = paper_id_for_review(pool, review_id)
         .await
         .context("review-loop: load paper_id for review")?;
@@ -6140,6 +6142,12 @@ async fn run_review_loop_for_review(
     let haskell_pass = haskell_results["status"] == "pass";
     write_loop_json(&haskell_dir.join("results.json"), &haskell_results).await?;
     write_loop_json(&haskell_dir.join("fix_rounds.json"), &haskell_results).await?;
+    if !haskell_dir.join("SemanticModel.hs").is_file() {
+        bundle_skip_reasons.insert(
+            "review_loop/haskell/SemanticModel.hs".to_string(),
+            review_fix_loop_summary(&haskell_results),
+        );
+    }
     record_review_loop_node(
         pool,
         review_id,
@@ -6282,6 +6290,12 @@ async fn run_review_loop_for_review(
     let lean_pass = lean_results["status"] == "pass";
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
+    if !lean_final_path.is_file() {
+        bundle_skip_reasons.insert(
+            "review_loop/lean/GrokRxiv/Proofs.lean".to_string(),
+            review_fix_loop_summary(&lean_results),
+        );
+    }
     record_review_loop_node(
         pool,
         review_id,
@@ -6373,6 +6387,17 @@ async fn run_review_loop_for_review(
         &citation_report,
     )
     .await?;
+    let citation_adjudication = serde_json::json!({
+        "stage": "citation_validation_adjudication",
+        "status": "skipped",
+        "skip_reason": "Review-loop citation adjudication DAG output is not wired yet; using paper-review citation verifier evidence.",
+        "source_artifact": "review_loop/citation_validation_report.json",
+    });
+    write_loop_json(
+        &artifact_dir.join("citation_validation_adjudication.json"),
+        &citation_adjudication,
+    )
+    .await?;
     record_review_loop_node(
         pool,
         review_id,
@@ -6407,6 +6432,25 @@ async fn run_review_loop_for_review(
         .get("status")
         .and_then(|v| v.as_str())
         .is_some_and(|status| status == "pass");
+    let pr_skip_reason = pr_fixes
+        .get("issues")
+        .and_then(|value| value.as_array())
+        .and_then(|issues| issues.first())
+        .and_then(|issue| issue.as_str())
+        .unwrap_or("PR fixer did not produce the declared artifact")
+        .to_string();
+    if !artifact_dir.join("fixed/review.tex").is_file() {
+        bundle_skip_reasons.insert(
+            "review_loop/fixed/review.tex".to_string(),
+            pr_skip_reason.clone(),
+        );
+    }
+    if !artifact_dir.join("fixed/review.pdf").is_file() {
+        bundle_skip_reasons.insert("review_loop/fixed/review.pdf".to_string(), pr_skip_reason);
+    }
+    for (output, reason) in review_loop_bundle_skip_reasons(&citation_report, &pr_fixes) {
+        bundle_skip_reasons.entry(output).or_insert(reason);
+    }
     record_review_loop_node(
         pool,
         review_id,
@@ -6480,10 +6524,41 @@ async fn run_review_loop_for_review(
         },
     );
 
+    let pre_policy_stages = stages
+        .iter()
+        .filter(|stage| {
+            !matches!(
+                stage.id.as_str(),
+                "policy_gate" | "review_loop_report" | "publish_decision"
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let bundle_completeness = review_loop_bundle_completeness_report(
+        &pre_policy_stages,
+        &artifact_dir,
+        &bundle_skip_reasons,
+    )
+    .await?;
+    write_loop_json(
+        &artifact_dir.join("bundle_completeness.json"),
+        &bundle_completeness,
+    )
+    .await?;
+    let bundle_completeness_pass = bundle_completeness["status"] == "pass";
+
     let (_, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
     let mut blocking_issues = Vec::new();
     if publication_gate.verdict != crate::review_gate::GateVerdict::Pass {
         blocking_issues.push(publication_gate.reason.clone());
+    }
+    if !bundle_completeness_pass {
+        let issue = bundle_completeness["failures"]
+            .as_array()
+            .and_then(|failures| failures.first())
+            .and_then(|failure| failure.as_str())
+            .unwrap_or("Review-loop bundle is missing declared artifacts.");
+        blocking_issues.push(format!("Review-loop bundle completeness failed: {issue}"));
     }
     if !haskell_pass {
         blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
@@ -6520,11 +6595,13 @@ async fn run_review_loop_for_review(
             "semantic_adequacy": "all_theorem_claims_match_proved_lean_declarations",
             "citation_validation": "pass_or_warn",
             "pr_artifacts": "fixed_tex_and_pdf_present",
+            "artifact_bundle": "all_declared_outputs_present_or_explicitly_skipped",
             "publication_gate": "pass"
         },
         "blocking_issues": blocking_issues,
         "component_status": {
             "publication_gate": format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
+            "bundle_completeness": bundle_completeness["status"],
             "haskell": if haskell_pass { "pass" } else { "fail" },
             "lean": if lean_pass { "pass" } else { "fail" },
             "semantic_adequacy": semantic_adequacy["status"],
@@ -6597,10 +6674,12 @@ async fn run_review_loop_for_review(
             "semantic_adequacy": "review_loop/semantic_adequacy.json",
             "proof_obligations": "review_loop/proof_obligations.json",
             "citation_validation": "review_loop/citation_validation_report.json",
+            "citation_adjudication": "review_loop/citation_validation_adjudication.json",
             "pr_fixes": "review_loop/pr_fixes.json",
             "pr_harness": "review_loop/fixed/harness.json",
             "agent_outputs": "review_loop/agent_outputs",
             "policy_gate": "review_loop/policy_gate.json",
+            "bundle_completeness": "review_loop/bundle_completeness.json",
         },
         "agent_output_audits": {
             "haskell": haskell_results["agent_output_audit_summary"],
@@ -6614,6 +6693,7 @@ async fn run_review_loop_for_review(
         },
         "theorem_formalization": theorem_map,
         "semantic_adequacy": semantic_adequacy,
+        "bundle_completeness": bundle_completeness,
         "publishability_vector": policy_gate["publishability_vector"],
         "release_tier": policy_gate["release_tier"],
         "pr_evidence": pr_fixes,
@@ -6635,7 +6715,10 @@ async fn run_review_loop_for_review(
         } else {
             VerifierStatus::Fail
         },
-        serde_json::json!({"artifact_path": "review_loop/review_loop_report.json"}),
+        serde_json::json!({
+            "artifact_path": "review_loop/review_loop_report.json",
+            "bundle_completeness": "review_loop/bundle_completeness.json"
+        }),
     )
     .await?;
     emit_review_loop_node_debug(
@@ -6643,7 +6726,11 @@ async fn run_review_loop_for_review(
         publisher_ready,
         "review_loop/review_loop_report.json",
         debug_output,
-        "final loop report persisted",
+        if bundle_completeness_pass {
+            "final loop report persisted"
+        } else {
+            "declared artifact bundle has missing outputs without skip_reason"
+        },
     );
 
     let publish_decision = report["publish_decision"].clone();
@@ -7088,6 +7175,130 @@ async fn write_loop_json(path: &Path, value: &serde_json::Value) -> anyhow::Resu
     Ok(())
 }
 
+fn review_loop_artifact_output_paths(manifest_output: &str) -> Option<(String, String)> {
+    let bundle_rel = manifest_output
+        .strip_prefix("review_loop/")
+        .unwrap_or(manifest_output);
+    if Path::new(bundle_rel).extension().is_none() {
+        return None;
+    }
+    let artifact_path = if manifest_output.starts_with("review_loop/") {
+        manifest_output.to_string()
+    } else {
+        format!("review_loop/{manifest_output}")
+    };
+    Some((bundle_rel.to_string(), artifact_path))
+}
+
+fn review_loop_skip_reason(
+    skip_reasons: &BTreeMap<String, String>,
+    manifest_output: &str,
+    bundle_rel: &str,
+    artifact_path: &str,
+) -> Option<String> {
+    skip_reasons
+        .get(manifest_output)
+        .or_else(|| skip_reasons.get(artifact_path))
+        .or_else(|| skip_reasons.get(bundle_rel))
+        .cloned()
+}
+
+async fn review_loop_bundle_completeness_report(
+    stages: &[ReviewLoopStage],
+    artifact_dir: &Path,
+    skip_reasons: &BTreeMap<String, String>,
+) -> anyhow::Result<serde_json::Value> {
+    let mut artifacts = Vec::new();
+    let mut present_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut missing_count = 0usize;
+    let mut failures = Vec::new();
+
+    for stage in stages {
+        for manifest_output in &stage.outputs {
+            let Some((bundle_rel, artifact_path)) =
+                review_loop_artifact_output_paths(manifest_output)
+            else {
+                continue;
+            };
+            let fs_path = artifact_dir.join(&bundle_rel);
+            let exists = tokio::fs::metadata(&fs_path)
+                .await
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false);
+            let skip_reason =
+                review_loop_skip_reason(skip_reasons, manifest_output, &bundle_rel, &artifact_path);
+            let status = if exists {
+                present_count += 1;
+                "present"
+            } else if skip_reason.is_some() {
+                skipped_count += 1;
+                "skipped"
+            } else {
+                missing_count += 1;
+                failures.push(format!(
+                    "declared artifact `{artifact_path}` is missing and has no skip_reason"
+                ));
+                "missing"
+            };
+            artifacts.push(serde_json::json!({
+                "stage_id": stage.id,
+                "manifest_output": manifest_output,
+                "artifact_path": artifact_path,
+                "fs_path": fs_path.display().to_string(),
+                "status": status,
+                "skip_reason": skip_reason,
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "status": if missing_count == 0 { "pass" } else { "fail" },
+        "declared_artifact_count": artifacts.len(),
+        "present_count": present_count,
+        "skipped_count": skipped_count,
+        "missing_count": missing_count,
+        "artifacts": artifacts,
+        "failures": failures,
+    }))
+}
+
+fn review_loop_bundle_skip_reasons(
+    citation_report: &serde_json::Value,
+    pr_fixes: &serde_json::Value,
+) -> BTreeMap<String, String> {
+    let mut skip_reasons = BTreeMap::new();
+    skip_reasons.insert(
+        "citation_validation_adjudication.json".to_string(),
+        "citation-validation adjudication is not materialized separately by the current review-loop runtime; citation_validation_report.json carries the deterministic citation evidence.".to_string(),
+    );
+    if pr_fixes
+        .get("fixed_pdf")
+        .map(|value| value.is_null())
+        .unwrap_or(true)
+    {
+        let reason = pr_fixes
+            .get("issues")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .and_then(|value| value.as_str())
+            .unwrap_or("fixed review.pdf was not produced")
+            .to_string();
+        skip_reasons.insert("review_loop/fixed/review.pdf".to_string(), reason);
+    }
+    if citation_report
+        .get("status")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        skip_reasons.insert(
+            "citation_validation_report.json".to_string(),
+            "citation validation did not return a status field".to_string(),
+        );
+    }
+    skip_reasons
+}
+
 async fn record_review_loop_node(
     pool: &sqlx::PgPool,
     review_id: Uuid,
@@ -7192,36 +7403,37 @@ async fn append_review_loop_pr_files(
     files: &mut Vec<(String, Vec<u8>)>,
 ) {
     let dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+    let mut rels = BTreeSet::new();
+    match review_loop_stage_plan() {
+        Ok(stages) => {
+            for stage in stages {
+                for output in stage.outputs {
+                    if let Some((bundle_rel, _)) = review_loop_artifact_output_paths(&output) {
+                        rels.insert(bundle_rel);
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%review_id, err = %err, "review-loop: failed to load manifest outputs for PR bundle");
+        }
+    }
     for rel in [
-        "review_loop_report.json",
-        "policy_gate.json",
-        "claims.json",
-        "knowledge_graph.json",
-        "semantic_ir.json",
-        "semantic_model.json",
-        "proof_obligations.json",
-        "semantic_adequacy.json",
-        "citation_validation_report.json",
-        "pr_fixes.json",
+        "bundle_completeness.json",
         "haskell/GROKRXIV_HARNESS.md",
         "haskell/harness.json",
         "haskell/harness_task_input.json",
-        "haskell/SemanticModel.hs",
-        "haskell/results.json",
         "lean/GROKRXIV_HARNESS.md",
         "lean/harness.json",
         "lean/harness_task_input.json",
-        "lean/GrokRxiv/Proofs.lean",
-        "lean/results.json",
-        "lean/theorem_map.json",
-        "lean/verification_report.json",
         "fixed/GROKRXIV_HARNESS.md",
         "fixed/harness.json",
         "fixed/harness_task_input.json",
-        "fixed/review.tex",
-        "fixed/review.pdf",
     ] {
-        let path = dir.join(rel);
+        rels.insert(rel.to_string());
+    }
+    for rel in rels {
+        let path = dir.join(&rel);
         match tokio::fs::read(&path).await {
             Ok(bytes) => files.push((format!("{repo_prefix}/review_loop/{rel}"), bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -11164,6 +11376,135 @@ mod tests {
         assert_eq!(
             stages.last().map(|stage| stage.id.as_str()),
             Some("publish_decision")
+        );
+    }
+
+    #[tokio::test]
+    async fn review_loop_bundle_completeness_flags_missing_declared_outputs() {
+        let stages = vec![
+            ReviewLoopStage {
+                id: "citation_validation".to_string(),
+                kind: "dag_call".to_string(),
+                dag_type: Some("citation-validation".to_string()),
+                inputs: vec!["references.json".to_string()],
+                outputs: vec![
+                    "citation_validation_report.json".to_string(),
+                    "citation_validation_adjudication.json".to_string(),
+                ],
+                required: true,
+            },
+            ReviewLoopStage {
+                id: "pr_fixer".to_string(),
+                kind: "tool".to_string(),
+                dag_type: None,
+                inputs: vec![],
+                outputs: vec![
+                    "review_loop/pr_fixes.json".to_string(),
+                    "review_loop/fixed/review.pdf".to_string(),
+                ],
+                required: true,
+            },
+        ];
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-loop-bundle-")
+            .tempdir()
+            .expect("tempdir");
+        tokio::fs::write(
+            tempdir.path().join("citation_validation_report.json"),
+            br#"{"status":"fail"}"#,
+        )
+        .await
+        .expect("write citation report");
+        tokio::fs::create_dir_all(tempdir.path().join("fixed"))
+            .await
+            .expect("fixed dir");
+        tokio::fs::write(
+            tempdir.path().join("pr_fixes.json"),
+            br#"{"status":"fail","fixed_pdf":null}"#,
+        )
+        .await
+        .expect("write pr fixes");
+
+        let report =
+            review_loop_bundle_completeness_report(&stages, tempdir.path(), &Default::default())
+                .await
+                .expect("bundle report");
+
+        assert_eq!(report["status"].as_str(), Some("fail"));
+        assert_eq!(report["missing_count"].as_u64(), Some(2));
+        let missing_outputs = report["artifacts"]
+            .as_array()
+            .expect("artifacts")
+            .iter()
+            .filter(|artifact| artifact["status"] == "missing")
+            .filter_map(|artifact| artifact["manifest_output"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            missing_outputs,
+            vec![
+                "citation_validation_adjudication.json",
+                "review_loop/fixed/review.pdf"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn review_loop_bundle_completeness_accepts_explicit_skip_reasons() {
+        let stages = vec![ReviewLoopStage {
+            id: "pr_fixer".to_string(),
+            kind: "tool".to_string(),
+            dag_type: None,
+            inputs: vec![],
+            outputs: vec!["review_loop/fixed/review.pdf".to_string()],
+            required: true,
+        }];
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-loop-bundle-skip-")
+            .tempdir()
+            .expect("tempdir");
+        let mut skip_reasons = std::collections::BTreeMap::new();
+        skip_reasons.insert(
+            "review_loop/fixed/review.pdf".to_string(),
+            "fixed review.pdf was not produced because LaTeX compilation failed".to_string(),
+        );
+
+        let report = review_loop_bundle_completeness_report(&stages, tempdir.path(), &skip_reasons)
+            .await
+            .expect("bundle report");
+
+        assert_eq!(report["status"].as_str(), Some("pass"));
+        assert_eq!(report["skipped_count"].as_u64(), Some(1));
+        assert_eq!(
+            report["artifacts"][0]["skip_reason"].as_str(),
+            Some("fixed review.pdf was not produced because LaTeX compilation failed")
+        );
+    }
+
+    #[test]
+    fn review_loop_bundle_skip_reasons_include_current_honest_skips() {
+        let citation_report = serde_json::json!({
+            "stage": "citation_validation",
+            "status": "fail",
+            "source": "paper-review citation verifier evidence plus declared review-loop DAG call"
+        });
+        let pr_fixes = serde_json::json!({
+            "stage": "pr_fixer",
+            "status": "fail",
+            "fixed_pdf": null,
+            "issues": ["fixed review.pdf was not produced"]
+        });
+
+        let skip_reasons = review_loop_bundle_skip_reasons(&citation_report, &pr_fixes);
+
+        assert!(skip_reasons
+            .get("citation_validation_adjudication.json")
+            .expect("citation adjudication skip")
+            .contains("citation_validation_report.json"));
+        assert_eq!(
+            skip_reasons
+                .get("review_loop/fixed/review.pdf")
+                .map(String::as_str),
+            Some("fixed review.pdf was not produced")
         );
     }
 

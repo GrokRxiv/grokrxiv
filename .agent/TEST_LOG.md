@@ -71,6 +71,14 @@
 | 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
 | 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `git diff --check` | pass | chat transcript |
 | 2026-06-13T01:08:22Z | `02ea56d` | `p0-009-gate-input-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` | pass, 264 tests | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle_completeness_flags_missing_declared_outputs -- --nocapture` | expected fail before implementation, compile error `review_loop_bundle_completeness_report` missing | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle_skip_reasons_include_current_honest_skips -- --nocapture` | expected fail before implementation, compile error `review_loop_bundle_skip_reasons` missing | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle -- --nocapture` | pass, 3 tests | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_stage_plan_is_loaded_from_manifest -- --nocapture` | pass, 1 test | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` | flaky parallel failure: first `supervisor::tests::apply_revisions_errors_without_db`, then `state::tests::build_agent_registry_applies_resolved_model_override`; each passed individually | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` | pass, 267 tests | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T01:21:31Z | `e85d1ff` | `p0-010-bundle-completeness` | `git diff --check` | pass | chat transcript |
 
 ## Logging Rule
 

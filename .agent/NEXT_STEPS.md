@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 9: continue local-only P0 from the P0-009 checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 10: continue local-only P0 from the P0-010 checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -25,26 +25,27 @@ Fixed P0 items so far:
 - P0-006: source-to-body false-success path fails closed on empty TeX conversion and extraction audit treats failed stages as failures.
 - P0-007: raw TeX fallback recovers a reviewable body, theorem aliases, construction blocks, equations, and reports `raw_tex_markdown_fallback`.
 - P0-008: N2 explicit specialist-failure artifacts are fixed locally. Specialist runner errors/join failures persist schema-valid fallback outputs, force `review_agents.verifier_status=fail`, and render `verifier.notes.agent_execution={status:"failed", role, reason}`.
-- P0-009: N3 gate input completeness is fixed locally for required specialist artifacts. Live review DAG gating and persisted publication-gate reconstruction now evaluate outputs against DAG-declared `feeds_meta` roles, so missing required roles are blocked and cannot shrink `expected_total`.
+- P0-009: N3 gate input completeness is fixed locally for required specialist artifacts. Live review DAG gating and persisted publication-gate reconstruction now evaluate outputs against DAG-declared `feeds_meta` roles.
+- P0-010: N4 bundle completeness is fixed locally. Review-loop runs write `review_loop/bundle_completeness.json`, policy blocks on manifest-declared non-terminal artifacts missing without `skip_reason`, citation adjudication has an explicit skip artifact until the real DAG output is wired, and PR attachments are derived from `review-loop.yaml` outputs plus harness sidecars.
 
-P0-009 validation:
-- New fixture first failed before implementation because `SpecialistGate::evaluate_required_roles` did not exist.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_gate_blocks_meta_when_required_roles_are_missing -- --nocapture`: pass after fix.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime gate -- --nocapture`: pass, 12 tests.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_failure -- --nocapture`: pass, 3 tests.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture`: pass, 264 tests.
+P0-010 validation:
+- New bundle fixture first failed before implementation because `review_loop_bundle_completeness_report` did not exist.
+- New skip-reason fixture first failed before implementation because `review_loop_bundle_skip_reasons` did not exist.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle -- --nocapture`: pass, 3 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_stage_plan_is_loaded_from_manifest -- --nocapture`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 267 tests.
 - `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
 - `git diff --check`: pass.
 
-Residual: no full affected `regression-pr54-weyl` review-loop rerun was executed after P0-009 because it invokes the full multi-agent loop. Tier R is not green until a safe review-loop run verifies all specialists complete, citation partial results exist, and citation `needs_review <= 2`.
+Parallel-test note:
+- Full parallel app-runtime lib runs are currently flaky in config/env-heavy tests. In P0-010, two parallel runs failed on different tests (`supervisor::tests::apply_revisions_errors_without_db`, then `state::tests::build_agent_registry_applies_resolved_model_override`), while both tests passed individually and the full suite passed serially. Treat this as residual test-isolation debt, not a P0-010 regression.
 
-Next queue item: N4 bundle completeness. Every declared artifact must exist or have an honest `skip_reason`; the loop should never treat an incomplete artifact bundle as complete. Start with a red fixture before production code.
+Residual: no full affected `regression-pr54-weyl` review-loop rerun was executed after P0-010 because it invokes the full multi-agent loop. Tier R is not green until a safe review-loop run verifies full extraction, all specialists, bundle completeness, citation partial results, and citation `needs_review <= 2`.
+
+Next queue item: N5 false-proof halt. Lean `PROVED` on Tier C/G flawed claims must halt all workers and write an escalation dossier. Start with a red fixture before production code.
 
 Known unrelated blocker from P0-006/P0-007 smokes:
 - Fresh extraction materializes local artifacts, then exits 1 because the configured data-repo remote `git@github.com:GrokRxiv/grokrxiv-data.git` fails with `unsupported URL protocol`.
-
-N3 residual to keep in mind:
-- P0-003 enforces extraction completeness before review row creation, but extraction-completeness is not yet persisted as a first-class policy-gate input. Do not claim full N3 corpus coverage until a safe review-loop or persisted policy-path check proves this path.
 
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not run no-cache extraction without `GROKRXIV_INGEST_SKIP_STAGES=vlm` unless you intend to invoke the configured PDF/VLM extraction agent.

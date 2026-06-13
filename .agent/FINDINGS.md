@@ -288,6 +288,52 @@ Residual:
 - The extraction-completeness flag is enforced before review row creation by P0-003 but is not yet persisted as a first-class policy-gate input. Track this as residual N3 hardening if a later persisted policy path needs to prove extraction-completeness provenance independently.
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint.
 
+## P0-010: Review-Loop Bundles Could Omit Declared Artifacts Without Skip Reasons
+
+ID: P0-010
+Corpus entry: `regression-pr54-weyl` / NEVER-event `N4_bundle_missing_declared_artifacts`
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixture reproduced missing bundle-completeness API before implementation
+Bucket: F1 contract
+NEVER-event: N4_bundle_missing_declared_artifacts
+Symptom: `dags/review-loop.yaml` declares artifact outputs such as `citation_validation_adjudication.json` and `review_loop/fixed/review.pdf`, while the runtime could complete with those files absent and only nearby failure state in `citation_validation_report.json` or `pr_fixes.json`. The PR attachment list was hand-maintained, so manifest-declared outputs could drift out of the published/revision bundle.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/dags/review-loop.yaml`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Root cause:
+- Review-loop runtime had no manifest-output bundle completeness pass.
+- Missing optional/failed outputs were not normalized into per-declared-output statuses with `skip_reason`.
+- `append_review_loop_pr_files` used a static file list instead of the manifest output list.
+Fix plan:
+1. Add a failing fixture for missing declared outputs without skip reasons.
+2. Add a fixture proving explicit skip reasons make a missing declared output honest.
+3. Emit `review_loop/bundle_completeness.json` before policy over non-terminal manifest outputs.
+4. Add policy/report component status for bundle completeness.
+5. Make review-loop PR attachments derive from `review-loop.yaml` outputs plus harness sidecars.
+Attempts: 1
+Escalation status: none.
+
+## P0-010 Resolution
+
+Status: fixed locally for bundle completeness, 2026-06-13T01:21Z.
+Evidence:
+- Added manifest-output normalization and `review_loop_bundle_completeness_report` in `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`.
+- Review-loop runtime now writes `bundle_completeness.json` before policy for non-terminal declared artifact outputs and blocks policy when any declared output is missing without a skip reason.
+- The runtime now writes an explicit skipped `citation_validation_adjudication.json` artifact while citation adjudication is not separately materialized.
+- Missing Haskell/Lean generated source and PR fixed TeX/PDF outputs get explicit skip reasons derived from the relevant fix-loop result.
+- `append_review_loop_pr_files` now derives bundle attachments from `review-loop.yaml` outputs and includes `bundle_completeness.json` plus harness sidecars.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle_completeness_flags_missing_declared_outputs -- --nocapture`: expected compile fail before implementation, then pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle -- --nocapture`: pass, 3 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_stage_plan_is_loaded_from_manifest -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 267 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- Parallel `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` is flaky in config/env-heavy tests unrelated to P0-010. In this session, `supervisor::tests::apply_revisions_errors_without_db` and then `state::tests::build_agent_registry_applies_resolved_model_override` failed in separate parallel full runs, but each passed individually and the full lib suite passed serially.
+- No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004

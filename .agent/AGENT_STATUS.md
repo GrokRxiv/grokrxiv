@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T01:08:22Z
+Updated: 2026-06-13T01:21:31Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 8, P0-009 gate input completeness.
-- Branch/worktree: `p0-009-gate-input-completeness` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-009-gate-input-completeness`.
-- Branch base commit: `02ea56d`.
+- Session type: P0 session 9, P0-010 bundle completeness.
+- Branch/worktree: `p0-010-bundle-completeness` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-010-bundle-completeness`.
+- Branch base commit: `e85d1ff`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-009 fixed locally for N3 gate input completeness. The specialist gate now evaluates persisted/runtime outputs against DAG-declared `feeds_meta` roles, so missing required specialist artifacts block meta-review and publication instead of shrinking `expected_total`. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
+- In-flight defect: P0-010 fixed locally for N4 bundle completeness. Review-loop runs now produce `review_loop/bundle_completeness.json`, check manifest-declared non-terminal artifact outputs before policy, require missing outputs to have explicit skip reasons, and attach manifest outputs dynamically in PR bundles. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -44,6 +44,7 @@ Updated: 2026-06-13T01:08:22Z
 - P0-007 fix, 2026-06-13T00:49Z: raw TeX fallback recovers reviewable Markdown from TeX document bodies after converter failure, canonicalizes `\newtheorem` aliases, includes `construction` theorem-like blocks, and reports `source_to_body.tool=raw_tex_markdown_fallback`. Affected extraction for `2606.00799` materialized local artifacts with `body.md` 117,247 bytes, `equations.json` 903 entries, and `theorem_graph.json` 41 nodes. `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-008 fix, 2026-06-13T00:59Z: specialist runner failures now carry an execution-failure marker through review DAG persistence, force verifier status `fail`, and add structured `agent_execution.status=failed`, `role`, and `reason` notes to the rendered agent artifact envelope. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 263 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-009 fix, 2026-06-13T01:08Z: specialist gate input completeness now uses DAG-declared required specialist roles for both live review DAG gating and persisted publication-gate reconstruction. Missing required roles are represented as blocked roles and force `meta_can_run=false` even when the persisted usable-row count reaches quorum. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 264 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
+- P0-010 fix, 2026-06-13T01:21Z: review-loop bundle completeness now checks manifest-declared artifact outputs, writes `bundle_completeness.json`, records explicit skips for currently unwired citation adjudication and missing PR PDFs, gates policy on unskipped missing outputs, and builds PR attachments from the manifest output list plus harness evidence. Targeted N4 tests passed, serial full app-runtime lib tests passed, and app workspace check passed. Parallel full lib runs exposed pre-existing config/env test isolation flakes; the failing tests passed individually and in the serial full run.
 
 ## Coordinator Rules
 
