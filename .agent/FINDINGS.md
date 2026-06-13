@@ -571,30 +571,29 @@ Evidence:
 - `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
 - `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
 Residual:
-- No affected `regression-pr54-weyl` safe review-loop rerun was executed after this verifier change.
-- Reinstall PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` before the next affected rerun.
+- PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` were reinstalled after this verifier change.
+- The affected `regression-pr54-weyl` safe review-loop rerun at `20260613T025743Z` interrupted before citation validation, so the structured-title fix is not yet proven against Tier R.
 
-## P0-018: Affected Rerun Stalled Before Emitting Product Output
+## P0-018: Affected Rerun Interrupted Before Citation Validation
 
 ID: P0-018
 Corpus entry: `regression-pr54-weyl`
 Runner: `cli`
 Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
-Exit code: terminated by operator after stall.
-finish_reason: zero-byte log after 12.5 minutes; app runtime parked with only local DB sockets.
-Bucket: F3 toolchain/runtime or F4 cascade from local runtime state.
-NEVER-event: none observed; no review id or review-loop artifacts were emitted.
-Symptom: after reinstalling PATH binaries from commit `39b9a64`, the affected rerun did not flush any product output to `run.log`. It launched `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app --json --status review ...`, then remained sleeping with zero CPU.
+Exit code: unknown; the command/session ended without usable product output.
+finish_reason: zero-byte log; partial review artifact tree existed, but no Haskell result or citation validation artifact was written.
+Bucket: F3 toolchain/runtime or session interruption.
+NEVER-event: none observed; no citation-validation result was emitted.
+Symptom: after reinstalling PATH binaries from commit `39b9a64`, the affected rerun did not flush any product output to `run.log`. It created partial review artifact tree `19197b5c-84cd-4c5f-9693-557943b3dc58` with early review-loop artifacts through `semantic_model.json`, then all run processes exited before `review_loop/haskell/results.json` or `review_loop/citation_validation_report.json` appeared.
 Raw evidence paths:
 - `agenthero/apps/grokrxiv/evals/results/20260613T025743Z/regression-pr54-weyl/run.log` (zero bytes)
-- `agenthero/apps/grokrxiv/evals/results/20260613T030051Z/regression-pr54-weyl/run.log` (newer duplicate, terminated; zero bytes)
-- `/tmp/grokrxiv-app_2026-06-12_210456_2WxS.sample.txt`
-Observed process state: after 12.5 minutes, only local DB sockets to `localhost:54322` remained open; provider HTTPS sockets had closed; `ps` showed `grokrxiv-app` sleeping at 0.0% CPU.
-Root cause: unknown. Possible local runtime/DB wait introduced by the rerun path or prior duplicate command, not enough evidence to change code.
-Owning code: unknown; start with app runtime launch/status path and local DB interactions before re-running.
-Fix plan: before the next affected rerun, check for existing review-loop processes, verify local DB responsiveness, and consider running the app binary directly with the same args to see whether `agh`/adapter buffering is hiding progress. If it stalls again, capture a symbolized backtrace or add app-runtime progress logging around early review launch/status DB calls.
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/19197b5c-84cd-4c5f-9693-557943b3dc58/review_loop/`
+Observed process state: after the session ended, `ps`/`pgrep` showed no remaining `agh`, `agenthero-dag-app-grokrxiv`, `grokrxiv-app`, `claude`, or `codex exec` process for this run.
+Root cause: unknown. The partial artifact tree proves the app advanced past review creation, but not far enough to prove P0-004e.
+Owning code: unknown; do not change code from this evidence alone.
+Fix plan: retry the same safe affected command. If another zero-output interruption occurs, then debug run/session capture or add app-runtime progress logging around Haskell stage execution.
 Attempts: 1 after P0-004e structured-title fix.
-Escalation status: none; retry/debug needed.
+Escalation status: none; retry needed.
 
 ## P0-016 Review-Loop Triage After Guardrail Fixes
 

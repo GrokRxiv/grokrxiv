@@ -69,12 +69,13 @@ Parallel-test note:
 
 Residual: the full affected review-loop rerun after P0-015 was executed safely and did not invoke external actions, but Tier R is still not green. Citation partial results are non-empty, but residue is `unverified=5` against expected `<= 2`; Haskell/Lean/semantic adequacy, PR fixer, and policy gate also remain red.
 
-Next queue item: P0-018 runtime stall before retrying P0-004. The post-P0-004e affected rerun was attempted after reinstalling PATH binaries from `39b9a64`, but `20260613T025743Z` produced a zero-byte log for 12.5 minutes and parked with only local DB sockets. Before another full affected rerun, check no duplicate runs exist, verify local DB responsiveness, and consider running the app binary directly with the same args to isolate `agh`/adapter buffering from app-runtime launch.
+Next queue item: retry P0-004 live citation reliability. The post-P0-004e affected rerun was attempted after reinstalling PATH binaries from `39b9a64`, but `20260613T025743Z` ended before Haskell results or citation validation. It created partial artifact tree `19197b5c-84cd-4c5f-9693-557943b3dc58` and left `run.log` at 0 bytes, so it is not a corpus verdict. Before retrying, check no prior review-loop processes are still active.
 
 P0-004 live citation reliability remains open. The latest completed safe affected run was 2026-06-13T02:30Z review `83675683-633c-44a4-b9c6-0569eee2ddeb`; it proved citation artifacts are partial/non-empty but still had `unverified=5` (`Cartan`, `Ehlers`, `March`, `Reichenbach`, `Trautman`) against Tier R expected `<= 2`. The structured-title bibliographic query fix is tested but not yet proven by a completed affected rerun. Repo `.env` plus split env files currently lack `GROKRXIV_CITATION_GROUNDED_RESOLVER_URL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `NASA_ADS_API_TOKEN`, and `ADS_API_TOKEN`; configure a real local grounded resolver endpoint, Gemini API key, ADS token, or add another deterministic provider if the structured-title rerun still leaves residue above target.
 
-cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
-cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked
+# PATH binaries were refreshed after P0-004e, but reinstalling is safe if unsure:
+# cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+# cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked
 agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions
 
 If citation `needs_review`/`unverified` is still above 2 or citation artifacts are empty, write a new P0-004 dossier instead of tuning timeouts blindly.
