@@ -26,5 +26,13 @@ Do not define review-role histograms, `claimCount`, `categoryCounts`, or
 Include pure mapping functions named `categoryToObligations`,
 `claimToObligations`, and `obligationToLean`. Do not use foreign imports, IO,
 or unsafe language extensions. Preserve explicit unknown/hole values when the
-IR marks a type, term, or proposition as unknown. The code must compile with
-`ghc -fno-code`.
+IR marks a type, term, or proposition as unknown.
+
+Never make an unknown or raw theorem proposition true by construction. In
+particular, do not render `PRaw` or any raw paper statement as `True` with the
+paper text only in a comment, and do not materialize paper theorem candidates
+with empty binders and empty assumptions just to satisfy Lean target names. If
+the IR does not provide enough structure for a theorem statement, preserve that
+as an explicit semantic gap or uninterpreted predicate carrying the source span.
+
+The code must compile with `ghc -fno-code`.

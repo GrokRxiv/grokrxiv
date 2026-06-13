@@ -631,6 +631,7 @@ pub fn validate_haskell_semantic_model_code(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    let has_theorem_candidates = !theorem_candidates.is_empty();
     for theorem in theorem_candidates {
         if theorem.get("formalization_class").and_then(|v| v.as_str()) != Some("formal_math") {
             issues.push(
@@ -648,6 +649,49 @@ pub fn validate_haskell_semantic_model_code(
                     "SemanticModel.hs must include Lean target declaration {lean_decl}."
                 ));
             }
+        }
+    }
+    if has_theorem_candidates && code.contains("PRaw") {
+        let normalized = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        let compact = code
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        let contains_normalized =
+            |needles: &[&str]| needles.iter().any(|needle| normalized.contains(needle));
+        let contains_compact =
+            |needles: &[&str]| needles.iter().any(|needle| compact.contains(needle));
+        if contains_normalized(&[
+            "PRaw s -> \"True",
+            "PRaw raw -> \"True",
+            "PRaw text -> \"True",
+            "PRaw _ -> \"True",
+        ]) || contains_compact(&[
+            "PRaws->\"True",
+            "PRawraw->\"True",
+            "PRawtext->\"True",
+            "PRaw_->\"True",
+            "renderProp(PRaws)=\"True",
+            "renderProp(PRaw_)=\"True",
+        ]) {
+            issues.push(
+                "SemanticModel.hs must not render PRaw theorem propositions as True; use an explicit semantic gap or uninterpreted predicate with provenance."
+                    .to_string(),
+            );
+        }
+        let raw_theorem_conclusion = contains_normalized(&["conclusion = PRaw", "thmConclusion = PRaw"])
+            || contains_compact(&["conclusion=PRaw", "thmConclusion=PRaw"]);
+        let empty_binders = contains_normalized(&["binders = []", "thmBinders = []"])
+            || contains_compact(&["binders=[]", "thmBinders=[]"]);
+        let empty_assumptions = contains_normalized(&[
+            "theoremAssumptions = []",
+            "thmAssumptions = []",
+        ]) || contains_compact(&["theoremAssumptions=[]", "thmAssumptions=[]"]);
+        if raw_theorem_conclusion && (empty_binders || empty_assumptions) {
+            issues.push(
+                "SemanticModel.hs must not map paper theorem candidates to PRaw conclusions with empty binders or assumptions."
+                    .to_string(),
+            );
         }
     }
     issues
@@ -1552,6 +1596,97 @@ obligationToLean prop = LeanTarget "add_zero_claim" prop
         let issues = validate_haskell_semantic_model_code(math_ir_module, &semantic_ir);
 
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn haskell_validator_rejects_raw_theorem_tautologies() {
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_claim_3",
+                    "kind": "theorem",
+                    "formalization_class": "formal_math",
+                    "statement": "For all n in N, n + 0 = n.",
+                    "source_claim_id": "claim_3",
+                    "source_span": {"artifact": "theorem_graph.json", "claim_id": "claim_3"},
+                    "formalization_target": {
+                        "lean_declaration": "add_zero_claim",
+                        "expected_shape": "theorem"
+                    }
+                }
+            ]
+        });
+        let tautological_raw_module = r#"
+module SemanticModel where
+
+data SourceSpan = SourceSpan { artifact :: String, claimId :: String } deriving (Eq, Show)
+data SemanticCategory = PlainTheorem deriving (Eq, Show)
+data MathType = NatType | PropType | CustomType String deriving (Eq, Show)
+data Term = Var String | NatLit Integer | Add Term Term deriving (Eq, Show)
+data Proposition = Equals Term Term | PRaw String deriving (Eq, Show)
+data Binder = Binder { binderName :: String, binderType :: MathType } deriving (Eq, Show)
+data Definition = Definition { definitionName :: String } deriving (Eq, Show)
+data Assumption = Assumption { assumptionText :: String } deriving (Eq, Show)
+data LeanTarget = LeanTarget { leanDeclaration :: String, leanStatement :: Proposition } deriving (Eq, Show)
+data ProofObligation = ProofObligation { obligationStatement :: Proposition, leanTarget :: LeanTarget } deriving (Eq, Show)
+data TheoremIR = TheoremIR
+  { theoremName :: String
+  , theoremSpan :: SourceSpan
+  , binders :: [Binder]
+  , theoremAssumptions :: [Proposition]
+  , conclusion :: Proposition
+  } deriving (Eq, Show)
+data ClaimIR = ClaimIR
+  { rawText :: String
+  , sourceSpan :: SourceSpan
+  , category :: SemanticCategory
+  , theoremIR :: TheoremIR
+  , assumptions :: [Assumption]
+  } deriving (Eq, Show)
+
+renderProp :: Proposition -> String
+renderProp prop = case prop of
+  Equals left right -> "structured equality"
+  PRaw s -> "True /- raw: " ++ s ++ " -/"
+
+categoryToObligations :: SemanticCategory -> ClaimIR -> [ProofObligation]
+categoryToObligations _ claim =
+  [ProofObligation (conclusion (theoremIR claim)) (obligationToLean (conclusion (theoremIR claim)))]
+
+claimToObligations :: ClaimIR -> [ProofObligation]
+claimToObligations claim = categoryToObligations (category claim) claim
+
+obligationToLean :: Proposition -> LeanTarget
+obligationToLean prop = LeanTarget "add_zero_claim" prop
+
+paperTheoremClaim :: ClaimIR
+paperTheoremClaim =
+  let span = SourceSpan "theorem_graph.json" "claim_3"
+      theorem = TheoremIR
+        { theoremName = "add_zero_claim"
+        , theoremSpan = span
+        , binders = []
+        , theoremAssumptions = []
+        , conclusion = PRaw "For all n in N, n + 0 = n."
+        }
+  in ClaimIR "For all n in N, n + 0 = n." span PlainTheorem theorem []
+"#;
+
+        let issues = validate_haskell_semantic_model_code(tautological_raw_module, &semantic_ir);
+
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("PRaw") && issue.contains("True")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("empty binders") || issue.contains("assumptions")),
+            "{issues:?}"
+        );
     }
 
     #[test]

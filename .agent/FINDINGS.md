@@ -1287,6 +1287,96 @@ Residual:
 Attempts: 1
 Escalation status: none.
 
+## P0-034: Haskell Raw Theorem Tautology Guard
+
+ID: P0-034
+Corpus entry: `regression-pr54-weyl`
+Review ids: `2d695158-7d82-4242-8038-e62a37d3f928`, `d146096c-c34d-43d6-b7a2-251fe4919e67`
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product command exited 0 on both affected reruns; deterministic review-loop status failed.
+finish_reason: P0-034 converted the P0-033 raw-tautology failure into a deterministic validator/prompt contract. The corpus entry remains red for the next defect.
+Bucket: F2 fidelity
+NEVER-event: none triggered. External actions were disabled; no PR URL was created; Lean did not report `PROVED`.
+Symptom:
+- P0-033 showed Haskell round 2 compiling and passing shallow validation while representing paper-derived `PRaw` theorem conclusions as `True /- raw: ... -/` with empty binders and assumptions.
+- This made theorem-level obligations proof-irrelevant comments over tautologies.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T130722Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T134041Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T140644Z/regression-pr54-weyl/run.log`
+Artifact paths:
+- Prior failing artifact: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/4bd37a7a-9452-476b-911d-9d75cfc37c51/review_loop/haskell/round_2/SemanticModel.hs`
+- Post-fix round-2 artifact: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2d695158-7d82-4242-8038-e62a37d3f928/review_loop/haskell/round_2/SemanticModel.hs`
+Root cause:
+- `validate_haskell_semantic_model_code` enforced typed IR surface and required Lean target names, but did not reject raw theorem propositions rendered as `True`.
+- The Haskell author/fixer/reviewer prompts did not explicitly forbid unknown theorem content from being collapsed into proof-irrelevant truth.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/review-loop/src/lib.rs`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_semantic_author.md`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_code_fixer.md`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_code_reviewer.md`
+Resolution:
+1. Added red-first fixture `haskell_validator_rejects_raw_theorem_tautologies`.
+2. Updated deterministic validation to reject `PRaw` theorem propositions rendered as `True`, including compact Haskell formatting such as `renderProp (PRaw _) = "True"`.
+3. Updated deterministic validation to reject paper theorem candidates mapped to raw conclusions with empty binders or empty assumptions.
+4. Tightened Haskell author/fixer/reviewer prompts so unknown theorem content must become an explicit semantic gap or uninterpreted predicate with provenance, never a tautology.
+Evidence:
+- Red-first focused test failed before implementation because `validate_haskell_semantic_model_code` returned no issues for the raw tautology fixture.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop haskell_validator_rejects_raw_theorem_tautologies --lib -- --nocapture`: pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib`: pass, 14 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass.
+- Affected rerun `20260613T134041Z`: product exit 0; external actions disabled; `pr_url=null`; Haskell round 2 had no `PRaw` or `True /- raw` hits; semantic validation failed on missing Lean target declarations `thm_12`, `thm_14`, `thm_21`, `thm_22`, `thm_23`, `thm_27`, `thm_34`, and `thm_35`.
+Residual:
+- The final installed-binary affected rerun `20260613T140644Z` did not reach Haskell semantic validation because `haskell_semantic_author` timed out after 360s. This is queued separately as P0-035.
+- Tier R remains red. No full corpus-green claim or phase tag.
+Attempts: 1
+Escalation status: none.
+
+## P0-035: Haskell Semantic Author Timeout After Proposition-Fidelity Guard
+
+ID: P0-035
+Corpus entry: `regression-pr54-weyl`
+Review id: `d146096c-c34d-43d6-b7a2-251fe4919e67`
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product command exited 0; deterministic review-loop status failed.
+finish_reason: final affected rerun after P0-034 on the installed local binary timed out in Haskell semantic author before producing `SemanticModel.hs`.
+Bucket: F4 cascade pending diagnosis; likely app-local prompt/input-size or runner-timeout surface, not a reason to raise timeouts.
+NEVER-event: none triggered. External actions disabled, `pr_url=null`, no Lean `PROVED`.
+Symptom:
+- `haskell_semantic_author` ran for the configured 360s and timed out before writing a Haskell round artifact.
+- `proof_obligation_generator`, Lean, semantic adequacy, policy, report, and publish decision then failed from the Haskell block.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T140644Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T140644Z/regression-pr54-weyl/exit.status`
+- `agenthero/apps/grokrxiv/evals/results/20260613T140644Z/provenance.json`
+Artifact paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/d146096c-c34d-43d6-b7a2-251fe4919e67/review_loop/haskell/results.json`
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/d146096c-c34d-43d6-b7a2-251fe4919e67/review_loop/semantic_model.json`
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/d146096c-c34d-43d6-b7a2-251fe4919e67/review_loop/citation_validation_report.json`
+Root cause:
+- Not diagnosed in P0-034. The failure is explicit and bounded: the Haskell author timed out before output after target scoping reduced theorem candidates to 10.
+Owning code:
+- Haskell semantic author harness and prompt/input packaging under the GrokRxiv review-loop runtime.
+Evidence:
+- Product `exit.status`: `0`.
+- `run.log`: `haskell_review_fix_code [FAIL] ... CliRunner timed out after 360s for role haskell_semantic_author`.
+- `haskell/results.json`: one failed attempt with `author_error="CliRunner timed out after 360s for role haskell_semantic_author"`.
+- Target scoping held: `semantic_category_mapper [OK] ... theorem_candidates=10 definitions=28 assumptions=3`; paper math source collector preserved `theorem_nodes=41 equations=903 sources=6 warnings=0`.
+- Citation stayed within Tier R threshold: `checked=53`, `unverified=1`, `unresolved=0`, `transient_unknown=0`.
+- PR fixer and PR review still passed.
+- Lean remained honest: `status="fail"`, `verdict="NOT_PROVED"`, `proof_status="SEMANTIC_GAP"`.
+Fix plan:
+1. Reproduce the Haskell semantic author invocation from the recorded artifact directory outside the full corpus run.
+2. Inspect input size, prompt content, exact model command, exit code, stdout, stderr, and decision artifacts.
+3. Add a failing fixture or harness test for the diagnosed timeout trigger.
+4. Fix by reducing/structuring Haskell author input or making timeout failures produce actionable partial diagnostics; do not raise caps blindly.
+Attempts: 1
+Escalation status: none.
+
 ## Finding Template
 
 Use one dossier per defect.

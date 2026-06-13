@@ -14,3 +14,9 @@ Passing code must define typed mathematical IR types (`MathType`, `Term`,
 preserve source spans, model assumptions/definitions, and connect formal math
 statements to Lean targets. It must not require literal internal theorem IDs;
 Lean declaration names are the stable proof targets.
+
+Fail any artifact that renders a raw or unknown paper theorem proposition as
+`True` with the source text only in a comment, or that maps paper theorem
+candidates to empty binders and empty assumptions without canonical IR support.
+Such code is compiler-valid but unfaithful: it turns theorem-level obligations
+into metadata comments over tautologies.
