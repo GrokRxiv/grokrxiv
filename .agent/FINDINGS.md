@@ -886,6 +886,53 @@ Residual:
 - Local shell F3 remains: `ghc --numeric-version` returns `8.4.2` because `/usr/local/bin/ghc` precedes Homebrew/ghcup; `/opt/homebrew/bin/ghc --numeric-version` returns the pinned `9.14.1`. Do not claim preflight or phase-exit green until the actual runner PATH resolves `ghc` to 9.14.1 or an approved runner environment is recorded.
 - No full corpus sweep, synthetic review sweep, API runner sweep, baseline tag, or phase-green claim.
 
+## P0-024: Corpus Runner Resolved Stale PATH GHC
+
+ID: P0-024
+Corpus entries: all entries that execute Haskell or preflight `ghc`.
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version`
+Exit code: fixture failed before fix, 0 after fix.
+finish_reason: targeted fixture failed first because the corpus runner was missing, then passed after the app-local runner environment and GHC shim were added.
+Bucket: F3 toolchain
+NEVER-event: none.
+Symptom: the operator shell resolved `ghc` to `/usr/local/bin/ghc` `8.4.2` while the corpus pin requires GHC `9.14.1`; `/opt/homebrew/bin/ghc` was the pinned `9.14.1` binary but appeared later than `/usr/local/bin` in PATH.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env`
+- `agenthero/apps/grokrxiv/evals/bin/ghc`
+- `agenthero/apps/grokrxiv/evals/toolchain.lock.yaml`
+- `agenthero/apps/grokrxiv/evals/LOOP.md`
+Artifact paths: none; no corpus review run was started in this shard.
+Root cause: PATH drift on the host. The repo had a toolchain lock, but LOOP.md still described direct `ghc`/`lake`/`lean` invocation, so a stale system GHC could be used for preflight or independent Haskell re-verification.
+Owning code:
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env`
+- `agenthero/apps/grokrxiv/evals/bin/ghc`
+- `agenthero/apps/grokrxiv/evals/LOOP.md`
+- `agenthero/apps/grokrxiv/evals/toolchain.lock.yaml`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Fix:
+1. Added `grokrxiv-corpus-env`, a POSIX sh wrapper that prepends app-owned `evals/bin` shims before executing the requested command.
+2. Added an app-owned `ghc` shim that reads the required version from `evals/toolchain.lock.yaml`, honors `GROKRXIV_GHC_BIN` only when it reports that version, and otherwise searches known local install paths for GHC `9.14.1`.
+3. Updated LOOP.md preflight, corpus run, and independent Haskell/Lean re-verification commands to run through the wrapper.
+4. Recorded the runner environment in `toolchain.lock.yaml`.
+Evidence:
+- Red fixture `corpus_toolchain_env_selects_pinned_ghc_over_stale_path` first failed with `missing corpus toolchain runner`.
+- Green fixture: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_toolchain_env_selects_pinned_ghc_over_stale_path --lib`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib`: pass, 7 tests.
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version`: pass, `9.14.1`.
+- `PATH=/usr/local/bin agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version`: pass, `9.14.1`.
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lake --version`: pass, Lake `5.0.0-src+d024af0`.
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lean --version`: pass, Lean `4.30.0`.
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh doctor`: pass, exit 0.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop`: pass, 13 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21 tests.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
+- `git diff --check`: pass.
+Residual:
+- This fix does not change the user's interactive shell PATH; direct `ghc` may still resolve to `8.4.2` outside the corpus wrapper.
+- Full LOOP preflight, synthetic review sweeps, API runner sweep, full corpus green baseline, and phase tag remain pending.
+
 ## Finding Template
 
 Use one dossier per defect.

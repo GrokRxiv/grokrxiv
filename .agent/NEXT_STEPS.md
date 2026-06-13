@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 23: continue local-only P0 from the P0-023 toolchain/corpus-pin checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 25: continue local-only P0 from the P0-024 GHC runner-environment checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -16,37 +16,48 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-P0-023 has already been fast-forward merged into `grokrxiv-local-corpus-harness` at `c419b88`. Before changing the next defect, confirm the integrated baseline is still clean with:
+P0-024 worker branch `p0-024-ghc-runner-env` adds:
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env`
+- `agenthero/apps/grokrxiv/evals/bin/ghc`
+- LOOP.md instructions that run preflight, corpus review, and independent Haskell/Lean re-verification through the wrapper.
+- `toolchain.lock.yaml.runner_environment` documenting the wrapper.
+- fixture `corpus_toolchain_env_selects_pinned_ghc_over_stale_path`.
+
+If this branch has not yet been merged into coordinator:
+1. In the worker, run `git status`, stage all files, and commit:
+   `git commit -m "codex checkpoint: P0 - corpus toolchain runner env"`.
+2. In `/Users/mlong/Documents/Development/grokrxiv`, fast-forward merge:
+   `git merge --ff-only p0-024-ghc-runner-env`.
+3. Coordinator-side verification:
 
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib
 cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop
 cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version
+PATH=/usr/local/bin agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc --numeric-version
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh doctor
 git diff --check
 git status --short
 
-Current state:
+Current state after the worker checks:
 - P0-004 citation reliability is green for Tier R on local CLI.
 - P0-020 math-source artifact preservation is green for Tier R on local CLI.
 - P0-005 PR fixer timeout is green for Tier R on local CLI.
 - P0-021 policy gate honest recommendation is green for Tier R on local CLI.
 - P0-022 Tier E/F/G synthetic corpus entries are authored and live at `evals/synthetic/*/paper.tex`.
-- P0-023 corpus/toolchain pins are in repo state: all arXiv entries have concrete `vN` versions; `evals/toolchain.lock.yaml` pins GHC 9.14.1, Lean 4.30.0, Lake 5.0.0-src+d024af0, and mathlib v4.30.0 commit `c5ea00351c28e24afc9f0f84379aa41082b1188f`; `evals/lean/lake-manifest.json` records the resolved mathlib/transitive dependency set.
-- Latest affected run remains `20260613T080031Z`, review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
-- Citation report remains within Tier R threshold: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
-- Paper math sources remain preserved: `paper_math_source_collector [OK] theorem_nodes=41 equations=903 sources=6 warnings=0`.
-- PR fixer remains green: `review_loop/pr_fixes.json` has `status=pass`, `compile_review_loop.status=pass`, `author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, and fixed artifacts `review_loop/fixed/review.tex` plus `review_loop/fixed/review.pdf`.
-- Policy gate remains honest/non-publishing: `recommendation_policy.status=honest_non_publishing_recommendation`, `expected_recommendation=honest`, `actual_recommendation=major_revision`, `recommendation_policy.integrity_ready=true`, `publisher_ready=false`.
+- P0-023 corpus/toolchain pins are in repo state.
+- P0-024 makes the corpus runner environment select locked GHC `9.14.1` even when the host PATH exposes stale `/usr/local/bin/ghc` `8.4.2`.
+- Latest affected Tier R run remains `20260613T080031Z`, review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
 - No full corpus-green claim and no phase tag.
 
-Next queue item: F3 GHC PATH drift before any phase-exit/full-corpus sweep.
-- Repo pin requires `ghc --numeric-version` to resolve to `9.14.1`.
-- Current shell returned `8.4.2` because `/usr/local/bin/ghc` precedes `/opt/homebrew/bin/ghc`.
-- `/opt/homebrew/bin/ghc --numeric-version` returned `9.14.1`.
-- Do not edit user shell startup files without approval. Either get explicit approval to fix PATH/symlinks, or configure an approved local runner environment so the preflight command itself records GHC 9.14.1.
-
-After the GHC preflight is clean:
-- Run the LOOP.md preflight again (`agh doctor`, contract SHAs, `ghc`, `lake`, `lean` versions).
-- Run the next narrow corpus checks before a full sweep: the three synthetic entries with `--loop --debug --no-external-actions`, then Tier R if needed.
+After the coordinator merge is clean:
+- Run LOOP.md preflight through `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env` and record provenance.
+- Run the next narrow corpus checks before any full sweep:
+  1. `synthetic-bad-citations`
+  2. `synthetic-injection`
+  3. `synthetic-false-theorem`
+  4. `regression-pr54-weyl` if synthetic checks do not reveal a higher-priority failure.
+- Use `--loop --debug --no-external-actions` for every review run.
 - Keep expected blocks/NEVER-events monotonic; do not weaken existing expectations.
 
 Known red stages after the latest Tier R affected run:
@@ -56,5 +67,5 @@ Known red stages after the latest Tier R affected run:
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not weaken `expected:` blocks or NEVER-events.
 Do not run no-cache extraction without `GROKRXIV_INGEST_SKIP_STAGES=vlm` unless you intend to invoke the configured PDF/VLM extraction agent.
-After the next fix, update .agent files, append LEDGER.md, run git status, and checkpoint commit.
+After the next fix or corpus check, update .agent files, append LEDGER.md, run git status, and checkpoint commit.
 ```

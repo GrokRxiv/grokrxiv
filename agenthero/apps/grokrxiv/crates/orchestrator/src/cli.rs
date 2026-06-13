@@ -12494,6 +12494,10 @@ mod tests {
         .expect("toolchain.lock.yaml parses");
 
         assert_eq!(lock["version"].as_i64(), Some(1));
+        assert_eq!(
+            lock["runner_environment"]["command"].as_str(),
+            Some("agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env")
+        );
         assert_eq!(lock["toolchains"]["ghc"]["version"].as_str(), Some("9.14.1"));
         assert_eq!(
             lock["toolchains"]["lean"]["version"].as_str(),
@@ -12553,6 +12557,67 @@ mod tests {
         assert!(
             lake_manifest.contains("\"rev\": \"c5ea00351c28e24afc9f0f84379aa41082b1188f\""),
             "eval lake manifest must resolve the locked mathlib revision"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corpus_toolchain_env_selects_pinned_ghc_over_stale_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_root = crate::dag_apps::app_root("grokrxiv");
+        let env_script = app_root.join("evals/bin/grokrxiv-corpus-env");
+        assert!(
+            env_script.is_file(),
+            "missing corpus toolchain runner at {}",
+            env_script.display()
+        );
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-ghc-path-fixture")
+            .tempdir()
+            .expect("temp dir");
+        let stale_dir = tempdir.path().join("stale-bin");
+        let pinned_dir = tempdir.path().join("pinned-bin");
+        std::fs::create_dir_all(&stale_dir).expect("stale bin dir");
+        std::fs::create_dir_all(&pinned_dir).expect("pinned bin dir");
+        let stale_ghc = stale_dir.join("ghc");
+        let pinned_ghc = pinned_dir.join("ghc");
+        std::fs::write(
+            &stale_ghc,
+            "#!/bin/sh\nif [ \"$1\" = \"--numeric-version\" ]; then echo 8.4.2; else echo stale-ghc; fi\n",
+        )
+        .expect("write stale ghc");
+        std::fs::write(
+            &pinned_ghc,
+            "#!/bin/sh\nif [ \"$1\" = \"--numeric-version\" ]; then echo 9.14.1; else echo pinned-ghc; fi\n",
+        )
+        .expect("write pinned ghc");
+        for path in [&stale_ghc, &pinned_ghc] {
+            let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).expect("chmod ghc fixture");
+        }
+
+        let output = std::process::Command::new(&env_script)
+            .arg("ghc")
+            .arg("--numeric-version")
+            .env("GROKRXIV_GHC_BIN", &pinned_ghc)
+            .env("PATH", &stale_dir)
+            .output()
+            .expect("run corpus toolchain env");
+
+        assert!(
+            output.status.success(),
+            "toolchain env failed: status={:?} stdout={} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "9.14.1",
+            "corpus toolchain env must prefer the pinned GHC over stale PATH"
         );
     }
 

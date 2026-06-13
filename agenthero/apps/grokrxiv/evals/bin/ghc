@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) script_dir=${0%/*} ;;
+  *) script_dir=. ;;
+esac
+script_dir=$(CDPATH= cd -- "$script_dir" && pwd -P)
+evals_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+lock_file="$evals_dir/toolchain.lock.yaml"
+
+required_version=
+in_ghc=0
+while IFS= read -r line; do
+  case "$line" in
+    "  ghc:")
+      in_ghc=1
+      ;;
+    "  "*)
+      if [ "$in_ghc" = "1" ]; then
+        case "$line" in
+          *"version:"*)
+            required_version=${line#*version:}
+            while :; do
+              case "$required_version" in
+                " "*) required_version=${required_version# } ;;
+                "	"*) required_version=${required_version#	} ;;
+                \"*) required_version=${required_version#\"} ;;
+                *) break ;;
+              esac
+            done
+            while :; do
+              case "$required_version" in
+                *" ") required_version=${required_version% } ;;
+                *"	") required_version=${required_version%	} ;;
+                *\") required_version=${required_version%\"} ;;
+                *) break ;;
+              esac
+            done
+            break
+            ;;
+        esac
+      fi
+      ;;
+    *)
+      if [ "$in_ghc" = "1" ]; then
+        break
+      fi
+      ;;
+  esac
+done < "$lock_file"
+
+if [ -z "$required_version" ]; then
+  echo "error: could not read GHC version from $lock_file" >&2
+  exit 65
+fi
+
+try_candidate() {
+  candidate=$1
+  shift
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    version=$("$candidate" --numeric-version 2>/dev/null || true)
+    if [ "$version" = "$required_version" ]; then
+      exec "$candidate" "$@"
+    fi
+  fi
+}
+
+if [ -n "${GROKRXIV_GHC_BIN:-}" ]; then
+  try_candidate "$GROKRXIV_GHC_BIN" "$@"
+  echo "error: GROKRXIV_GHC_BIN does not point to GHC $required_version: $GROKRXIV_GHC_BIN" >&2
+  exit 127
+fi
+
+try_candidate "/opt/homebrew/bin/ghc" "$@"
+try_candidate "$HOME/.ghcup/bin/ghc-$required_version" "$@"
+try_candidate "$HOME/.ghcup/bin/ghc" "$@"
+try_candidate "/usr/local/bin/ghc-$required_version" "$@"
+try_candidate "/usr/local/bin/ghc" "$@"
+
+echo "error: no executable GHC $required_version found for GrokRxiv corpus preflight" >&2
+echo "hint: set GROKRXIV_GHC_BIN to a GHC $required_version binary, or install one under Homebrew/ghcup" >&2
+exit 127

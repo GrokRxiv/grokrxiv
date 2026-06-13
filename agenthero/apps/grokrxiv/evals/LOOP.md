@@ -29,14 +29,21 @@ block, zero NEVER-events, on **both runners** (`cli` first, then `api`).
 
 ## Phase 1 — RUN
 
-Preflight once per sweep: `agh doctor`; verify `ghc`, `lake`, `lean` on PATH and
-record versions; record git SHA of app contracts (app.yaml, dags/, agents/,
-prompts/, schemas/) into `evals/results/<sweep-ts>/provenance.json`.
+Preflight once per sweep through the pinned corpus toolchain environment:
+`agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh doctor`; verify
+`ghc`, `lake`, `lean` through the same wrapper and record versions; record git
+SHA of app contracts (app.yaml, dags/, agents/, prompts/, schemas/) into
+`evals/results/<sweep-ts>/provenance.json`.
+
+The wrapper prepends `evals/bin/` to PATH for the command it runs. This is
+intentional: it makes `ghc` resolve to the GHC version pinned in
+`evals/toolchain.lock.yaml` without editing operator shell startup files.
 
 For each corpus entry (failing entries first, then full sweep):
 
 ```sh
-agh --json app run grokrxiv review <source> --loop --debug --no-external-actions \
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review <source> --loop --debug --no-external-actions \
   |& tee evals/results/<sweep-ts>/<entry-id>/run.log
 ```
 
@@ -55,8 +62,8 @@ Order matters — NEVER-events first:
    (jsonschema CLI or python). `agh app run grokrxiv verify <review_id>` where
    applicable.
 4. **Independent re-verification** (trust = re-derivability):
-   - `ghc -fno-code SemanticModel.hs` re-run
-   - `lake env lean GrokRxiv/Proofs.lean` re-run; `grep -E 'sorry|admit|axiom'`
+   - `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env ghc -fno-code SemanticModel.hs` re-run
+   - `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env lake env lean GrokRxiv/Proofs.lean` re-run; `grep -E 'sorry|admit|axiom'`
    - DB: `review_agents` rows for dag_type='review-loop' — one row per node,
      verifier_status populated, no gaps
    - Tier B only: diff emitted Lean statement vs `fidelity_reference`

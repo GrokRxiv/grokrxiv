@@ -2,6 +2,10 @@ version: 1
 app: grokrxiv
 scope: golden-corpus-preflight
 recorded_at: "2026-06-13T08:35:00Z"
+runner_environment:
+  command: "agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env"
+  path_prefix: "agenthero/apps/grokrxiv/evals/bin"
+  purpose: "Prepends app-owned toolchain shims for corpus preflight, review runs, and independent re-verification without editing operator shell startup files."
 toolchains:
   ghc:
     version: "9.14.1"
