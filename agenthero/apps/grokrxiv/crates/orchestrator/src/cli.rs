@@ -5612,18 +5612,25 @@ data ProofObligation = ProofObligation { obligationId :: String, obligationState
             .collect::<Vec<_>>(),
     ));
     out.push_str("\n\ncategoryToObligations :: String -> ClaimIR -> [ProofObligation]\n");
-    out.push_str("categoryToObligations _ = claimToObligations\n\n");
+    out.push_str("categoryToObligations category claim\n");
+    out.push_str(
+        "  | category `elem` [\"summary\", \"novelty\", \"citation\", \"meta_reviewer\", \"reviewer_recommendation\", \"publisher_readiness\", \"policy_gate\"] = []\n",
+    );
+    out.push_str("  | otherwise = claimToObligations claim\n\n");
     out.push_str("claimToObligations :: ClaimIR -> [ProofObligation]\n");
     out.push_str("claimToObligations claim =\n");
     out.push_str("  case claimTheorem claim of\n");
     out.push_str("    Nothing -> []\n");
     out.push_str("    Just theorem ->\n");
-    out.push_str("      [ ProofObligation\n");
-    out.push_str("          (theoremId theorem)\n");
-    out.push_str("          (theoremConclusion theorem)\n");
-    out.push_str("          (theoremSpan theorem)\n");
-    out.push_str("          (theoremTarget theorem)\n");
-    out.push_str("      ]\n\n");
+    out.push_str("      case theoremConclusion theorem of\n");
+    out.push_str("        SemanticGap _ _ -> []\n");
+    out.push_str("        conclusion ->\n");
+    out.push_str("          [ ProofObligation\n");
+    out.push_str("              (theoremId theorem)\n");
+    out.push_str("              conclusion\n");
+    out.push_str("              (theoremSpan theorem)\n");
+    out.push_str("              (theoremTarget theorem)\n");
+    out.push_str("          ]\n\n");
     out.push_str("obligationToLean :: ProofObligation -> LeanTarget\n");
     out.push_str("obligationToLean = obligationLean\n\n");
     out.push_str("allProofObligations :: [ProofObligation]\n");
@@ -5683,6 +5690,14 @@ fn haskell_proposition_literal(value: &serde_json::Value, span_expr: &str) -> St
                 .collect::<Vec<_>>();
             format!("And {}", haskell_inline_list(parts))
         }
+        Some("unknown_prop") => format!(
+            "SemanticGap {span_expr} {}",
+            haskell_string_literal(&json_string_or_fallback(
+                value,
+                &["text", "reason", "statement"],
+                "unknown_prop"
+            ))
+        ),
         Some(kind) => format!(
             "UninterpretedPredicate {} [] {span_expr}",
             haskell_string_literal(kind)
@@ -13898,6 +13913,89 @@ obligationToLean = LeanTarget\n";
                 String::from_utf8_lossy(&compile.stderr)
             );
         }
+    }
+
+    #[test]
+    fn review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps() {
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+        let base = compact_review_fix_code_base_artifact(
+            &task,
+            serde_json::json!({
+                "semantic_ir": {
+                    "schema_version": "1.0.0",
+                    "theorem_candidates": [
+                        {
+                            "id": "thm_structured",
+                            "formalization_class": "formal_math",
+                            "statement": "For all n, n + 0 = n.",
+                            "theorem_ir": {
+                                "assumptions": [],
+                                "binders": [],
+                                "conclusion": {
+                                    "kind": "equals",
+                                    "lhs": {"kind": "var", "name": "n + 0"},
+                                    "rhs": {"kind": "var", "name": "n"}
+                                }
+                            },
+                            "formalization_target": {
+                                "lean_declaration": "thm_structured",
+                                "expected_shape": "theorem"
+                            }
+                        },
+                        {
+                            "id": "thm_gap",
+                            "formalization_class": "formal_math",
+                            "statement": "The text is theorem-like, but Phase 0 cannot parse a statement.",
+                            "theorem_ir": {
+                                "assumptions": [],
+                                "binders": [],
+                                "conclusion": {
+                                    "kind": "unknown_prop",
+                                    "text": "statement not structurally typed"
+                                }
+                            },
+                            "formalization_target": {
+                                "lean_declaration": "thm_gap",
+                                "expected_shape": "theorem"
+                            }
+                        }
+                    ],
+                    "definitions": [],
+                    "assumptions": [],
+                    "supporting_equations": [],
+                    "paper_math_sources": {}
+                }
+            }),
+        );
+
+        let run = deterministic_haskell_semantic_model_agent_run(
+            task.author_role,
+            &task,
+            &base,
+        )
+        .expect("deterministic haskell run");
+        let code = run.output["code"].as_str().expect("code output");
+
+        assert!(code.contains("categoryToObligations category claim"));
+        assert!(code.contains("\"summary\""));
+        assert!(code.contains("\"citation\""));
+        assert!(code.contains("\"publisher_readiness\""));
+        assert!(code.contains("SemanticGap span \"statement not structurally typed\""));
+        assert!(!code.contains("UninterpretedPredicate \"unknown_prop\" []"));
+        assert!(code.contains("SemanticGap _ _ -> []"));
+        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
     }
 
     #[test]

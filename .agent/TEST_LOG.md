@@ -371,3 +371,42 @@ Affected reruns:
 - `cbcdc89d-818f-412a-841d-def8cc567af8`: deterministic author removed the author timeout and advanced to fixer.
 - `20439187-6d3d-47f7-bef0-4f4bb32548dc`: deterministic scaffold got past the author timeout but exposed syntax/source-span/typed-conclusion issues; fixed afterward.
 - `5532f3ca-e656-4f02-bbe6-c2c7df4bed33`: final attempted affected rerun was blocked by local Claude CLI quota (`api_error_status=429`) in specialist/reviewer/fixer paths. Product exited 0 with external actions disabled; no full corpus-green claim.
+
+## P0-035b - 2026-06-13T16:51:17Z
+
+Red-first evidence:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps --lib -- --nocapture
+```
+
+Before the generator fix, the test failed because generated Haskell did not contain `categoryToObligations category claim`.
+
+Commands passed after the fix:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_preserves_lean_targets --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Focused pass counts:
+- App-runtime focused scaffold-filter fixture: pass.
+- App-runtime deterministic-author preservation fixture: pass.
+- App-runtime `review_loop` subset: pass, 17 tests.
+- Structural tests: pass, 45 tests.
+
+Affected reruns:
+- `20260613T162808Z/regression-pr54-weyl-api-after-p0-035`: API override, review `30f9623e-ba82-44a6-9976-b6e3c72d8af3`; Haskell deterministic author did not time out but independent reviewer rejected proof obligations from non-math categories and `unknown_prop`.
+- `20260613T163854Z/regression-pr54-weyl-api-after-p0-035-haskell-filter`: API override, review `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`; product exit 0; external actions disabled; `pr_url=null`; Haskell `status=pass`, attempt 1 `status=pass`, `generation_recovery.status=deterministic_local_author`, compile pass, reviewer pass, and `theorem_obligations=10`.
+- Citation for `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
+- Scrubbed CLI probes before and after the fix still failed with stdout JSON `api_error_status=429` and reset `11:20am (America/Costa_Rica)`.
+
+Residuals:
+- No full Tier R green claim. The API affected rerun is red on missing API `gemini` provider for novelty plus Lean `NOT_PROVED`/`FAILED` and semantic adequacy `OVERCLAIMED`.
+- Normal CLI affected rerun remains the next acceptance check after local Claude quota reset.

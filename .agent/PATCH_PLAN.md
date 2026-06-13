@@ -4,7 +4,8 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 
 ## Seeded Queue
 
-1. P0-035 Haskell semantic-author timeout after proposition-fidelity guard: one defect only. Reproduce the `haskell_semantic_author` invocation for review `d146096c-c34d-43d6-b7a2-251fe4919e67` from the recorded artifact directory, capture exact command/stdout/stderr/decision artifacts, and diagnose why the author times out after 360s with only 10 theorem candidates. Add a failing fixture or harness test for the diagnosed trigger, then fix by reducing/structuring the Haskell author input or producing actionable partial diagnostics. Do not raise timeouts, weaken Tier R expectations, or skip Haskell/Lean gates.
+1. P0-035 CLI acceptance rerun after local Claude quota reset: the deterministic Haskell author timeout and follow-up scaffold obligation defects are fixed under targeted tests and an API affected rerun. When scrubbed CLI `claude` no longer returns `api_error_status=429`, rerun `regression-pr54-weyl` through the normal wrapped CLI. Acceptance for merging this worker: Haskell attempt 1 uses `deterministic_local_author`, pinned GHC compile passes, independent Haskell reviewer passes, external actions remain disabled, `pr_url=null`, and citation remains within Tier R (`unverified <= 2`). If later Lean/adequacy stages remain red, merge P0-035 and queue the next defect; do not keep editing P0-035 for unrelated downstream failures.
+2. P0-036 Lean proof / semantic adequacy red: after P0-035 merge, diagnose the next distinct red in Tier R. Current API evidence shows Haskell now passes, but Lean remains `NOT_PROVED`/`FAILED` and semantic adequacy remains `OVERCLAIMED`. Classify honestly as P0-fixable only if the failure is app-local and mechanically testable; otherwise write an F2/P2 dossier without weakening Tier R or Tier B expectations.
 
 ## Completed Queue Items
 
@@ -62,3 +63,11 @@ Coordinator assigns one queue item at a time into a local worktree under `.agent
 - Added deterministic scaffold generation that preserves canonical `SourceSpan` fields (`artifact`, `claim_id`, `paper_source_id`, `section_id`, `text_excerpt`), typed equality conclusions, assumptions/binders, and Lean target declarations.
 - Verification passed: focused deterministic/recovery/payload tests, app review-loop tests 16/16, app workspace check, `git diff --check`, and PATH installs for `grokrxiv-app` plus `agenthero-dag-app-grokrxiv`.
 - Affected Tier R reruns show the author timeout is removed, but the final rerun is blocked by local Claude CLI quota before a clean end-to-end verdict. Next action is to rerun `regression-pr54-weyl` after quota reset or via a tested API-runner path.
+
+## P0-035b Haskell scaffold obligation filtering
+
+- Fixed locally by filtering review/meta/citation/policy categories out of proof-obligation generation and rendering `unknown_prop` as a `SemanticGap` that remains auditable but is not emitted as a Lean target.
+- Added red-first fixture `review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps`; it failed before implementation and passed after the generator change.
+- Verification passed: focused new test, deterministic-author preservation test, app review-loop tests 17/17, app workspace check, structural tests 45/45, `git diff --check`, and PATH installs for `grokrxiv-app` plus `agenthero-dag-app-grokrxiv`.
+- API affected rerun `dad9153a-778c-4c4b-b2f3-f096a4c0ed21` proved Haskell now passes in one deterministic attempt with pinned GHC compile pass, independent reviewer pass, and `theorem_obligations=10`. Citation stayed within Tier R (`unverified=2`).
+- Residuals are intentionally separate: API novelty provider config, Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, and normal CLI rerun blocked by local Claude quota.

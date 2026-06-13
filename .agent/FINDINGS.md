@@ -1417,3 +1417,43 @@ Fix:
 - Generate Haskell attempt 1 deterministically from compact typed `semantic_ir`, preserving Lean declarations and typed theorem conclusions, and let existing validation/GHC/reviewer gates decide pass/fail.
 
 No expectation or NEVER-event was weakened.
+
+## P0-035b - Deterministic Haskell Scaffold Reviewer Rejection
+
+ID: P0-035b
+Corpus entry: `regression-pr54-weyl`
+Review id: `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`
+Runner: `api` override for affected rerun; CLI probe still quota-blocked
+Command: `AGENTHERO_RUNNER_OVERRIDE=api AGENTHERO_ALLOW_PROVIDER_API=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product command exited 0; deterministic review-loop status failed downstream
+finish_reason: Haskell stage passed after deterministic scaffold hardening; downstream API/Lean/adequacy gates remain red
+Bucket: F1 contract fix for app-local Haskell obligation generation, with residual F2/P2 Lean adequacy gap
+NEVER-event: none. External actions stayed disabled, `pr_url=null`, and Lean did not report `PROVED`.
+Symptom:
+- The first API affected rerun after deterministic authoring proved the author timeout was gone, but the independent Haskell reviewer rejected the generated module.
+- The reviewer rejection was legitimate: `categoryToObligations _ = claimToObligations` treated review/citation/publisher-policy categories as proof obligations, and `unknown_prop` conclusions became placeholder obligations instead of honest semantic gaps.
+Root cause:
+- The deterministic Haskell scaffold generated proof obligations from every `ClaimIR` with a theorem, without filtering review-loop categories that are not mathematical theorem targets.
+- The proposition literal renderer mapped `unknown_prop` to a generic `UninterpretedPredicate`, which let structurally unknown statements flow into Lean obligations instead of staying as semantic gaps.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Resolution:
+1. Added red-first fixture `review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps`.
+2. Generated `categoryToObligations category claim` so summary, novelty, citation, meta-review, reviewer recommendation, publisher readiness, and policy gate categories return no proof obligations.
+3. Rendered `unknown_prop` as `SemanticGap span "...reason..."`.
+4. Suppressed `SemanticGap` conclusions in `claimToObligations`, so they remain auditable Haskell IR but do not become Lean targets.
+Evidence:
+- Red-first focused test failed before implementation because generated code did not contain `categoryToObligations category claim`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_filters_review_categories_and_semantic_gaps --lib -- --nocapture`: pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author_preserves_lean_targets --lib -- --nocapture`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture`: pass, 17 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45 structural tests.
+- `git diff --check`: pass.
+- API affected rerun `20260613T163854Z/regression-pr54-weyl-api-after-p0-035-haskell-filter` completed as review `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`: Haskell `status=pass`, `attempts[0].status=pass`, `generation_recovery.status=deterministic_local_author`, compile pass, reviewer pass, and `theorem_obligations=10`.
+- Citation remained within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
+Residual:
+- This is not a full Tier R green claim. The API rerun failed novelty because `ApiRunner` has no registered provider for `gemini`; Lean remains `NOT_PROVED`/`FAILED`; semantic adequacy remains `OVERCLAIMED`.
+- Scrubbed CLI probes before and after this fix still exit 1 with stdout JSON `api_error_status=429`, reset `11:20am (America/Costa_Rica)`, so a normal CLI affected rerun remains pending before strict coordinator merge if CLI-runner evidence is required.
+Attempts: 1
+Escalation status: none.
