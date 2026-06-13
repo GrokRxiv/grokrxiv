@@ -4,8 +4,8 @@
 //! [`run_ingest_pipeline`] entry point:
 //!
 //! 1. **Stage 1 (ingest source)** — arXiv metadata + PDF + tar.gz acquisition.
-//! 2. **Stage 2 (tool)** — TeX → Pandoc markdown or PDF → text, with optional
-//!    LaTeXML semantic AST enrichment.
+//! 2. **Stage 2 (tool)** — TeX → reviewable Markdown or PDF → text, with
+//!    optional LaTeXML semantic AST enrichment.
 //! 3. **Stage 3 (agent)** — `VlmExtractorAgent`, only when no TeX source exists.
 //! 4. **Stages 4–7 (tools by default, agents when enabled)** — macros,
 //!    equations, theorems, citations. The default `pandoc_enabled` mode uses
@@ -41,7 +41,9 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use grokrxiv_ingest::{DeterministicIngest, PaperExtract};
+use grokrxiv_ingest::{
+    DeterministicIngest, PaperExtract, TexBodyProducer as IngestTexBodyProducer,
+};
 use grokrxiv_storage::{
     ArtifactBundle, GitArtifactStore, PaperArtifacts, PersistedPointer, ReviewInput,
     SupabaseStorage,
@@ -231,6 +233,8 @@ impl NodeProvenance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SourceBodyProducer {
     PandocTex,
+    LatexmlTex,
+    RawTexFallback,
     PdfExtract,
     VlmAgent,
 }
@@ -241,6 +245,20 @@ impl SourceBodyProducer {
             Self::PandocTex => NodeProvenance::cli_tool(
                 "source_to_body",
                 "pandoc_tex_to_markdown",
+                ["source.tar.gz"],
+                ["body.md"],
+                mode,
+            ),
+            Self::LatexmlTex => NodeProvenance::cli_tool(
+                "source_to_body",
+                "latexml_tex_to_markdown",
+                ["source.tar.gz"],
+                ["body.md"],
+                mode,
+            ),
+            Self::RawTexFallback => NodeProvenance::rust_tool(
+                "source_to_body",
+                "raw_tex_markdown_fallback",
                 ["source.tar.gz"],
                 ["body.md"],
                 mode,
@@ -465,10 +483,15 @@ async fn run_inner(
         ),
     );
 
-    let mut source_body_producer = match extract.source_format.as_deref() {
-        Some("tex") => SourceBodyProducer::PandocTex,
-        Some("pdf") => SourceBodyProducer::PdfExtract,
-        _ => SourceBodyProducer::PdfExtract,
+    let mut source_body_producer = match staged.tex_body_producer {
+        Some(IngestTexBodyProducer::PandocTex) => SourceBodyProducer::PandocTex,
+        Some(IngestTexBodyProducer::LatexmlTex) => SourceBodyProducer::LatexmlTex,
+        Some(IngestTexBodyProducer::RawTexFallback) => SourceBodyProducer::RawTexFallback,
+        None => match extract.source_format.as_deref() {
+            Some("tex") => SourceBodyProducer::PandocTex,
+            Some("pdf") => SourceBodyProducer::PdfExtract,
+            _ => SourceBodyProducer::PdfExtract,
+        },
     };
     let body_md_str = bundle
         .body_markdown
@@ -3243,6 +3266,21 @@ mod a4_tests {
             .any(|warning| warning
                 .as_str()
                 .is_some_and(|msg| msg.contains("empty body.md"))));
+    }
+
+    #[test]
+    fn source_to_body_report_names_raw_tex_fallback() {
+        let report = source_to_body_stage_report(
+            SourceBodyProducer::RawTexFallback,
+            ExtractionMode::PandocEnabled,
+            "## Main\n\nRecovered body.",
+        );
+        let value = report.to_value();
+
+        assert_eq!(value["name"], "source_to_body");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["tool"], "raw_tex_markdown_fallback");
+        assert_eq!(value["executor"], "tool");
     }
 
     #[test]

@@ -12,7 +12,10 @@
 //!    `latexmlpost` → `pandoc` to produce semantic XML + HTML5 + Markdown.
 //!    Parse the XML into a `semantic_ast` JSON tree. If LaTeXML times out or
 //!    errors, keep the pandoc Markdown.
-//! 5. Parse the resulting Markdown into title / abstract / sections.
+//! 5. If both converter paths fail but the raw TeX has a reviewable document
+//!    body, recover a conservative Markdown body from raw TeX headings while
+//!    preserving equation and theorem environments for deterministic scanners.
+//! 6. Parse the resulting Markdown into title / abstract / sections.
 //!    Bibliography is harvested from `\bibitem` blocks in the original TeX
 //!    plus any `.bib` / biblatex `.bbl` files in the bundle.
 //!
@@ -60,6 +63,19 @@ pub struct TexExtract {
     pub bibliography: Vec<Citation>,
     /// LaTeXML-derived semantic AST (JSON). `None` if LaTeXML was unavailable.
     pub semantic_ast: Option<Value>,
+    /// Converter path that produced the reviewable body sections.
+    pub body_producer: TexBodyProducer,
+}
+
+/// Source-to-body path used for TeX bundles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TexBodyProducer {
+    /// Plain Pandoc `latex -> markdown` conversion.
+    PandocTex,
+    /// LaTeXML XML/HTML enrichment followed by Markdown conversion.
+    LatexmlTex,
+    /// Conservative raw-TeX fallback after converter failure.
+    RawTexFallback,
 }
 
 /// Editable main TeX source extracted from an arXiv source bundle.
@@ -109,7 +125,20 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
     let raw_main = std::fs::read_to_string(&main_path)
         .with_context(|| format!("read main tex {main_path:?}"))?;
 
-    let (markdown, semantic_ast) = run_conversion(&tmp, &layout).await?;
+    let (markdown, semantic_ast, body_producer) = match run_conversion(&tmp, &layout).await {
+        Ok(converted) => converted,
+        Err(err) => {
+            if let Some(markdown) = raw_tex_markdown_fallback(&raw_main) {
+                warn!(
+                    error = %err,
+                    "using raw TeX markdown fallback after converter failure"
+                );
+                (markdown, None, TexBodyProducer::RawTexFallback)
+            } else {
+                return Err(err);
+            }
+        }
+    };
 
     let title = extract_title(&markdown, &raw_main);
     let abstract_text = extract_abstract(&markdown, &raw_main);
@@ -122,6 +151,7 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
         sections,
         bibliography,
         semantic_ast,
+        body_producer,
     })
 }
 
@@ -361,7 +391,10 @@ fn subprocess_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> Result<(String, Option<Value>)> {
+async fn run_conversion(
+    tmp: &TempDir,
+    layout: &BundleLayout,
+) -> Result<(String, Option<Value>, TexBodyProducer)> {
     let timeout = subprocess_timeout();
     let xml_path = tmp.path().join("paper.xml");
     let html_path = tmp.path().join("paper.html");
@@ -403,7 +436,7 @@ async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> Result<(String,
                         e
                     })
                     .ok();
-                return Ok((markdown, ast));
+                return Ok((markdown, ast, TexBodyProducer::LatexmlTex));
             }
             Ok(_) => {
                 let msg = "latexml pipeline produced empty markdown".to_string();
@@ -427,7 +460,153 @@ async fn run_conversion(tmp: &TempDir, layout: &BundleLayout) -> Result<(String,
         return Err(anyhow!("TeX source conversion produced no markdown: {msg}"));
     }
 
-    Ok((pandoc_markdown, None))
+    Ok((pandoc_markdown, None, TexBodyProducer::PandocTex))
+}
+
+fn raw_tex_markdown_fallback(raw_tex: &str) -> Option<String> {
+    let aliases = theorem_aliases(raw_tex);
+    let body = raw_document_body(raw_tex)?;
+    let body = strip_tex_comments(body);
+    let body = normalize_theorem_alias_environments(&body, &aliases);
+    let mut out = String::new();
+
+    for line in body.lines() {
+        if let Some(heading) = markdown_heading_from_tex_line(line) {
+            if !out.ends_with("\n\n") && !out.trim().is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&heading);
+            out.push_str("\n\n");
+            continue;
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+
+    let out = out.trim();
+    if out.is_empty() || !out.chars().any(char::is_alphanumeric) {
+        return None;
+    }
+    Some(format!("{out}\n"))
+}
+
+fn raw_document_body(raw_tex: &str) -> Option<&str> {
+    let re = Regex::new(r"(?s)\\begin\{document\}(.*?)\\end\{document\}").ok()?;
+    re.captures(raw_tex)
+        .and_then(|cap| cap.get(1).map(|m| m.as_str()))
+}
+
+fn strip_tex_comments(raw: &str) -> String {
+    let mut out = String::new();
+    for line in raw.lines() {
+        let cut = first_unescaped_percent(line).unwrap_or(line.len());
+        out.push_str(line[..cut].trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+fn first_unescaped_percent(line: &str) -> Option<usize> {
+    for (idx, ch) in line.char_indices() {
+        if ch == '%' && !is_escaped_tex_char(line, idx) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn is_escaped_tex_char(line: &str, idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    let mut slash_count = 0usize;
+    let mut cursor = idx;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        slash_count += 1;
+        cursor -= 1;
+    }
+    slash_count % 2 == 1
+}
+
+fn theorem_aliases(raw_tex: &str) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    let re = Regex::new(
+        r"\\newtheorem\s*\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}(?:\[[^\]]+\])?\s*\{(?P<title>[^{}]+)\}",
+    )
+    .expect("valid regex");
+    for caps in re.captures_iter(raw_tex) {
+        let Some(env) = caps.name("env").map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(title) = caps.name("title").map(|m| m.as_str()) else {
+            continue;
+        };
+        if let Some(kind) = canonical_theorem_kind(title) {
+            aliases.insert(env.to_string(), kind.to_string());
+        }
+    }
+    aliases
+}
+
+fn canonical_theorem_kind(title: &str) -> Option<&'static str> {
+    let lower = sanitize_inline(title).to_lowercase();
+    let normalized = lower
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect::<String>();
+    match normalized.as_str() {
+        "theorem" => Some("theorem"),
+        "lemma" => Some("lemma"),
+        "proposition" => Some("proposition"),
+        "corollary" => Some("corollary"),
+        "definition" => Some("definition"),
+        "proof" => Some("proof"),
+        "remark" => Some("remark"),
+        "construction" => Some("construction"),
+        "example" => Some("example"),
+        _ => None,
+    }
+}
+
+fn normalize_theorem_alias_environments(body: &str, aliases: &HashMap<String, String>) -> String {
+    let mut out = body.to_string();
+    for (alias, canonical) in aliases {
+        if alias == canonical {
+            continue;
+        }
+        out = out.replace(
+            &format!("\\begin{{{alias}}}"),
+            &format!("\\begin{{{canonical}}}"),
+        );
+        out = out.replace(
+            &format!("\\end{{{alias}}}"),
+            &format!("\\end{{{canonical}}}"),
+        );
+    }
+    out
+}
+
+fn markdown_heading_from_tex_line(line: &str) -> Option<String> {
+    let re = Regex::new(
+        r"^\s*\\(?P<cmd>part|section|subsection|subsubsection|paragraph|subparagraph)\*?(?:\[[^\]]*\])?\s*\{(?P<title>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\s*$",
+    )
+    .expect("valid regex");
+    let caps = re.captures(line)?;
+    let cmd = caps.name("cmd")?.as_str();
+    let title = sanitize_inline(caps.name("title")?.as_str());
+    if title.is_empty() {
+        return None;
+    }
+    let hashes = match cmd {
+        "part" | "section" => "##",
+        "subsection" => "###",
+        "subsubsection" => "####",
+        "paragraph" => "#####",
+        "subparagraph" => "######",
+        _ => return None,
+    };
+    Some(format!("{hashes} {title}"))
 }
 
 async fn run_latexml_pipeline(
@@ -1332,7 +1511,10 @@ mod tests {
             "\\documentclass{article}\n\\begin{document}\nBody\n\\end{document}\n".to_string(),
         )];
         for idx in 0..TEX_BUNDLE_MAX_TEXT_FILES {
-            files.push((format!("refs/ref-{idx}.bib"), "@article{x,title={X}}\n".to_string()));
+            files.push((
+                format!("refs/ref-{idx}.bib"),
+                "@article{x,title={X}}\n".to_string(),
+            ));
         }
         let bundle = make_targz_owned(&files);
 
@@ -1498,14 +1680,77 @@ World.
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn parse_bundle_rejects_empty_markdown_when_pandoc_fails() {
+    async fn parse_bundle_uses_raw_tex_fallback_when_converters_fail() {
+        let _env = TexEnvGuard::new();
+        std::env::set_var("GROKRXIV_TEX_DISABLE_LATEXML", "1");
+        std::env::set_var("GROKRXIV_PANDOC_BIN", "false");
+        let tex = r#"\documentclass{article}
+\usepackage{amsthm}
+\newtheorem{thm}{Theorem}[section]
+\newtheorem{constr}[thm]{Construction}
+\begin{document}
+\section{Main result}
+This body must not disappear silently.
+\begin{thm}\label{thm:weyl}
+Every compatible structure is unique.
+\end{thm}
+\begin{constr}\label{constr:frame}
+Choose an adapted frame.
+\end{constr}
+\begin{equation}\label{eq:weyl}
+a=b
+\end{equation}
+\end{document}
+"#;
+        let bundle = make_targz(&[("main.tex", tex)]);
+
+        let extract = parse_bundle(&bundle)
+            .await
+            .expect("raw TeX fallback should preserve reviewable body");
+        let body_joined = extract
+            .sections
+            .iter()
+            .map(|s| s.body_markdown.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            extract
+                .sections
+                .iter()
+                .any(|s| s.heading.eq_ignore_ascii_case("Main result")),
+            "expected section heading from raw TeX fallback, got {:?}",
+            extract
+                .sections
+                .iter()
+                .map(|s| &s.heading)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            body_joined.contains("\\begin{theorem}\\label{thm:weyl}"),
+            "expected theorem alias to be canonicalized in fallback body: {body_joined}"
+        );
+        assert!(
+            body_joined.contains("\\begin{construction}\\label{constr:frame}"),
+            "expected construction alias to be canonicalized in fallback body: {body_joined}"
+        );
+        assert!(
+            body_joined.contains("\\begin{equation}\\label{eq:weyl}"),
+            "expected equation environment to survive fallback body: {body_joined}"
+        );
+        assert!(
+            extract.semantic_ast.is_none(),
+            "raw TeX fallback must not invent a semantic AST"
+        );
+        assert_eq!(extract.body_producer, TexBodyProducer::RawTexFallback);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_bundle_rejects_empty_markdown_when_pandoc_fails_without_body() {
         let _env = TexEnvGuard::new();
         std::env::set_var("GROKRXIV_TEX_DISABLE_LATEXML", "1");
         std::env::set_var("GROKRXIV_PANDOC_BIN", "false");
         let tex = r#"\documentclass{article}
 \begin{document}
-\section{Main result}
-This body must not disappear silently.
 \end{document}
 "#;
         let bundle = make_targz(&[("main.tex", tex)]);

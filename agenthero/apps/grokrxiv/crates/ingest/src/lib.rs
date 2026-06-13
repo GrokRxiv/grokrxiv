@@ -26,5 +26,7 @@ pub use source::{
     scan_git_repo_corpus, CorpusManuscriptCandidate, CorpusScanOptions, InferredSubject,
     LocalSourceFormat, PreparedReviewSource, ReviewSourceSpec, SourceIdentity, SourceKind,
 };
-pub use tex::{extract_main_tex_source, parse_bundle, source_url, MainTexSource, TexExtract};
+pub use tex::{
+    extract_main_tex_source, parse_bundle, source_url, MainTexSource, TexBodyProducer, TexExtract,
+};
 pub use types::*;

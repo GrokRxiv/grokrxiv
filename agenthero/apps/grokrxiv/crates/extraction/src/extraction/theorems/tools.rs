@@ -21,7 +21,7 @@
 //! 1. **LaTeX-flavoured markdown**:
 //!    `\begin{theorem}[Optional title]\label{thm:foo} BODY \end{theorem}`
 //!    (also `lemma`, `proposition`, `corollary`, `definition`, `proof`,
-//!     `remark`, `example`).
+//!     `remark`, `construction`, `example`).
 //! 2. **Bold-prefix markdown**:
 //!    `**Theorem 2.1.** STATEMENT` or `**Theorem 2.1 (Title).** STATEMENT`
 //!    (case-insensitive on the type word; one line of statement preview).
@@ -391,6 +391,7 @@ const TEX_ENV_KINDS: &[&str] = &[
     "definition",
     "proof",
     "remark",
+    "construction",
     "example",
 ];
 
@@ -768,6 +769,7 @@ fn resolve_label_in_markdown(label: &str, body: &str, ctx: &ToolCtx<'_>) -> Opti
             "definition" => "definition",
             "proof" => "proof",
             "remark" => "remark",
+            "construction" => "construction",
             "example" => "example",
             "equation" | "align" | "gather" | "multline" | "eqnarray" => "equation",
             _ => "section",
@@ -913,6 +915,21 @@ mod tests {
     }
 
     #[test]
+    fn read_section_extracts_construction_block() {
+        let dir = tempdir();
+        let body = "# Section\n\n\\begin{construction}\\label{constr:frame} Choose an adapted frame. \\end{construction}\n";
+        std::fs::write(dir.path().join("body.md"), body).unwrap();
+        let ctx = ctx_no_ast(dir.path());
+        let sec_list = list_sections(&ctx).unwrap();
+        let id = sec_list[0]["id"].as_str().unwrap();
+        let out = read_section(id, &ctx).unwrap();
+        let theorems = out["theorems"].as_array().unwrap();
+        assert_eq!(theorems.len(), 1, "expected 1 block, got {theorems:?}");
+        assert_eq!(theorems[0]["label"], "constr:frame");
+        assert_eq!(theorems[0]["type"], "construction");
+    }
+
+    #[test]
     fn read_section_handles_markdown_theorem() {
         let dir = tempdir();
         let body =
@@ -961,5 +978,17 @@ mod tests {
         assert_eq!(out["kind"], "unknown");
         assert_eq!(out["id"], "thm:does_not_exist");
         assert_eq!(out["location"], "");
+    }
+
+    #[test]
+    fn resolve_label_finds_construction_environment() {
+        let dir = tempdir();
+        let body = "# Section\n\n\\begin{construction}\\label{constr:frame} Choose an adapted frame. \\end{construction}\n";
+        std::fs::write(dir.path().join("body.md"), body).unwrap();
+        let ctx = ctx_no_ast(dir.path());
+        let out = resolve_label("constr:frame", &ctx).unwrap();
+        assert_eq!(out["kind"], "construction");
+        assert_eq!(out["id"], "constr:frame");
+        assert!(out["location"].as_str().unwrap().contains("char_offset"));
     }
 }

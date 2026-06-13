@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::arxiv::{fetch_metadata, ArxivMeta};
 use crate::download::{download_pdf, download_source};
 use crate::extract::{extract_bibliography, normalize_pdf_text, pdf_to_text, split_sections};
-use crate::tex::{parse_bundle, source_url};
+use crate::tex::{parse_bundle, source_url, TexBodyProducer};
 use crate::types::{Citation, PaperExtract, Section};
 
 /// Output of Stages 1 + 2 — everything an orchestrator needs to drive the
@@ -32,7 +32,7 @@ pub struct DeterministicIngest {
     /// arXiv Atom metadata (title/authors/abstract/category, plus pdf_url).
     pub meta: ArxivMeta,
     /// Built `PaperExtract` (title/abstract/sections/bibliography). The
-    /// section bodies are the Pandoc markdown the review path consumes.
+    /// section bodies are the reviewable Markdown the review path consumes.
     pub extract: PaperExtract,
     /// Raw PDF bytes (always fetched — it's the archival viewable artifact).
     /// `None` only when the upstream PDF endpoint failed; pipeline continues.
@@ -44,6 +44,8 @@ pub struct DeterministicIngest {
     /// opt-in LaTeXML pipeline successfully. The orchestrator hands this to
     /// extraction agents via `ExtractionContext.semantic_ast`.
     pub semantic_ast: Option<Value>,
+    /// Source-to-body converter used for TeX bundles; `None` on PDF fallback.
+    pub tex_body_producer: Option<TexBodyProducer>,
 }
 
 /// Deterministic Stages 1 + 2: arXiv metadata fetch → TeX source (preferred)
@@ -83,8 +85,9 @@ pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
     };
 
     // 3. Build the extract, preferring TeX when present (Stage 2).
-    let (extract, semantic_ast) = if let Some(t) = tex_extract {
+    let (extract, semantic_ast, tex_body_producer) = if let Some(t) = tex_extract {
         info!(arxiv_id, "ingest source=tex");
+        let body_producer = t.body_producer;
         let title = if t.title.is_empty() {
             meta.title.clone()
         } else {
@@ -106,7 +109,7 @@ pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
             bibliography: t.bibliography,
             source_format: Some("tex".to_string()),
         };
-        (extract, t.semantic_ast)
+        (extract, t.semantic_ast, Some(body_producer))
     } else {
         info!(arxiv_id, "ingest source=pdf");
         let (sections, bibliography) = pdf_extract(pdf_bytes.as_ref());
@@ -121,7 +124,7 @@ pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
             bibliography,
             source_format: Some("pdf".to_string()),
         };
-        (extract, None)
+        (extract, None, None)
     };
 
     Ok(DeterministicIngest {
@@ -130,6 +133,7 @@ pub async fn ingest_staged(arxiv_id: &str) -> Result<DeterministicIngest> {
         pdf_bytes,
         source_tarball,
         semantic_ast,
+        tex_body_producer,
     })
 }
 

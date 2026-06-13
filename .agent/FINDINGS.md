@@ -153,6 +153,55 @@ Residual:
 - The local recovery currently falls back to PDF text, so `equations.json` and `theorem_graph.json` remain empty for the Weyl paper. That is honest and reviewable body recovery, not a full Tier R green result.
 - The data-repo push failure is a separate environment/tooling defect and was not fixed here.
 
+## P0-007: Theorem/Equation Artifacts Empty After Source-To-Body Recovery
+
+ID: P0-007
+Corpus entry: `regression-pr54-weyl`
+Runner: `cli`
+Command: `GROKRXIV_INGEST_NO_CACHE=1 GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_SKIP_STAGES=vlm GROKRXIV_APP_BIN=/nonexistent/grokrxiv-app cargo run -p agenthero-orchestrator --bin agh -- --json app run grokrxiv extract 2606.00799`
+Exit code: 1
+finish_reason: local extraction materialized artifacts, then Stage 8 failed on configured data-repo remote push (`unsupported URL protocol`)
+Bucket: F1 contract
+NEVER-event: N1 is blocked by P0-003; Tier R `full_body_with_theorem_envs` was still red before this fix.
+Symptom: P0-006 recovered nonempty PDF fallback body, but `equations.json` and `theorem_graph.json` were empty because the source TeX path was discarded after Pandoc failed.
+Raw evidence paths:
+- `/tmp/grokrxiv-2606.00799.LqWAQu/Weyl-type_theorems.tex`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/body.md`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/equations.json`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/theorem_graph.json`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/extraction_report.json`
+Root cause:
+- Pandoc fails on the Weyl source at bundled `biblatex.sty` (`unexpected :`), causing the old path to discard TeX and fall back to lossy PDF text.
+- The raw TeX source contains theorem aliases (`\newtheorem{thm}{Theorem}`, `\newtheorem{constr}[thm]{Construction}`) and many display equations, but the deterministic theorem scanner only recognized canonical environment names.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/ingest/src/tex.rs`
+- `agenthero/apps/grokrxiv/crates/ingest/src/pipeline.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/ingest_pipeline.rs`
+- `agenthero/apps/grokrxiv/crates/extraction/src/extraction/theorems/tools.rs`
+Fix plan:
+1. Add fixture where converter failure must recover a raw-TeX body with canonical theorem and equation environments.
+2. Add theorem scanner coverage for `construction` blocks and labels.
+3. Thread a source-to-body producer through ingest so extraction reports identify `raw_tex_markdown_fallback` honestly.
+4. Re-run affected extraction with VLM skipped and no cache.
+Attempts: 1
+Escalation status: none.
+
+## P0-007 Resolution
+
+Status: fixed locally for theorem/equation artifact recovery, 2026-06-13T00:49Z.
+Evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest parse_bundle_ -- --nocapture`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-extraction construction -- --nocapture`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime source_to_body_report_names_raw_tex_fallback -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime deterministic_equation_fallback_extracts_pandoc_math -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime deterministic_theorem_fallback_extracts_title_headings -- --nocapture`: pass, 1 test.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- Affected extraction command above still exits 1 on data-repo remote push, but local artifacts are materialized: `body.md` 117,247 bytes, `equations.json` 903 entries, `theorem_graph.json` 41 nodes.
+- `extraction_report.json` now reports `source_to_body.status=ok`, `source_to_body.tool=raw_tex_markdown_fallback`, `equations.tool=scan_equations`, and `theorems.tool=scan_theorems`.
+Residual:
+- Tier R is still not full green until the safe review-loop run verifies all specialists, citation partial results, and citation `needs_review <= 2`.
+- The data-repo push failure is environment/tooling outside this defect and remains unresolved.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004
