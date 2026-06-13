@@ -1,13 +1,13 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T02:11:15Z
+Updated: 2026-06-13T02:14:58Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 14, P0-014 citation grounded fallback and provider headers.
-- Branch/worktree: `p0-014-citation-grounded-fallback` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-014-citation-grounded-fallback`.
+- Session type: P0 session 14, P0-014 citation grounded fallback and provider headers, merged back to coordinator.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-014-citation-grounded-fallback` was fast-forward merged.
 - Branch base commit: `6e46242`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
@@ -49,6 +49,7 @@ Updated: 2026-06-13T02:11:15Z
 - P0-012 progress, 2026-06-13T01:47Z: citation verifier now has a deterministic bibliographic resolver waterfall after Crossref for plain references. The new PR-54 classics fixture first failed because the provider-base constructor did not exist, then passed with ADS/zbMATH resolving four of six classic refs and only two unverified residues. Citation validation reports now preserve `ads`/`zbmath` sources, resolved DOI/URL evidence, and expanded resolver statuses. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 30 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture` passed, 273 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 - P0-013 progress, 2026-06-13T01:57Z: citation verifier now fails closed on Crossref production retraction metadata for DOI lookups. A new retraction fixture first failed with `status=resolved`/`Pass`, then passed with `status=retracted`, `source=crossref_retraction`, explicit evidence, and verifier `Fail`. Citation-validation reports preserve `crossref_retraction` evidence and mark retracted resolver results as remediation items. CLI citation summaries now include `retracted=<n>` and include retraction evidence in review text. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 31 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
 - P0-014 progress, 2026-06-13T02:11Z: citation verifier now has a config-gated `gemini_grounded` final provider after Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH residue. It accepts only `verified`/`resolved` grounded responses with a matching title and HTTP URL evidence, emits `status=resolved`, `source=gemini_grounded`, `verified_via=gemini_grounded`, and a URL-evidence reason, and leaves non-evidenced residue as needs-review. Provider requests now send `x-api-key` from `SEMANTIC_SCHOLAR_API_KEY` and `Authorization: Bearer` from `NASA_ADS_API_TOKEN` or `ADS_API_TOKEN` when those local env vars exist. Repo `.env` currently has no grounded resolver URL or provider keys, so no affected Tier R rerun was executed and no corpus-green claim is made. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 33 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed.
+- P0-014 coordinator verification, 2026-06-13T02:14Z: fast-forward merged worker branch into `grokrxiv-local-corpus-harness` at `1230e49`, then reran coordinator-side checks. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier` passed, 33 tests; `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` passed, 21 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed; `git diff --check` passed; `git status --short` had no output. No corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
