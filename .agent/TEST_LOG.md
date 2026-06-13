@@ -23,6 +23,13 @@
 | 2026-06-12T23:48:15Z | `57f6306` | `grokrxiv-local-corpus-harness` | `ghc -fno-code SemanticModel.hs` in review-loop Haskell artifact | pass, exit 0 | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/ghc-rerun.log` |
 | 2026-06-12T23:48:15Z | `57f6306` | `grokrxiv-local-corpus-harness` | `lake env lean GrokRxiv/Proofs.lean` in review-loop Lean artifact | pass, exit 0 | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/lean-rerun.log` |
 | 2026-06-12T23:48:15Z | `57f6306` | `grokrxiv-local-corpus-harness` | `grep -nE 'sorry|admit|axiom' GrokRxiv/Proofs.lean` | pass, grep exit 1 means no forbidden terms found | `agenthero/apps/grokrxiv/evals/results/20260612T232139Z/regression-pr54-weyl/lean-forbidden-grep.log` |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib` | pass, 257 tests | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo run -p agenthero-orchestrator --bin agh -- --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | pass, exit 0, emitted `external_actions.enabled=false` | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced PATH `grokrxiv-app` | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass, replaced PATH `agenthero-dag-app-grokrxiv` | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `agh --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions` | pass, exit 0, PATH runtime emitted `external_actions.enabled=false` and did not start pipeline work | chat transcript |
+| 2026-06-13T00:00:39Z | `42854c4` | `p0-002-no-pr-guardrail` | `agh app run grokrxiv review --help \| rg -- '--no-external-actions\|Usage:'` | pass, help advertises `--no-external-actions` | chat transcript |
 
 ## Logging Rule
 

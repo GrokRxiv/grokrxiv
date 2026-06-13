@@ -889,6 +889,7 @@ pub async fn run_grokrxiv_action(
                     exclude: request.exclude,
                     loop_enabled: request.loop_enabled,
                     debug_output: request.debug_output,
+                    no_external_actions: request.no_external_actions,
                 },
                 json,
                 dry_run,
@@ -1110,6 +1111,7 @@ struct ResearchReviewArgs {
     exclude: Vec<String>,
     loop_enabled: bool,
     debug_output: bool,
+    no_external_actions: bool,
 }
 
 struct IngestArgs {
@@ -1190,6 +1192,7 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
         exclude: Vec::new(),
         loop_enabled: false,
         debug_output: false,
+        no_external_actions: false,
     };
 
     while let Some(arg) = iter.next() {
@@ -1220,6 +1223,7 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
             "--exclude" => parsed.exclude.push(next_arg(&mut iter, "--exclude")?),
             "--loop" => parsed.loop_enabled = true,
             "--debug" => parsed.debug_output = true,
+            "--no-external-actions" => parsed.no_external_actions = true,
             other => anyhow::bail!("unknown GrokRxiv review argument `{other}`"),
         }
     }
@@ -3189,7 +3193,7 @@ async fn batch_run(
             }
             if batch.auto_pr {
                 let pr = open_review_pr_for_gate(&state, new_review_id, json, false).await?;
-                pr_url = Some(pr.pr_url);
+                pr_url = pr.pr_url;
                 state_label = "pr_open".to_string();
             }
             crate::batch::mark_item_succeeded(
@@ -3710,6 +3714,7 @@ async fn review_extracted(source: &str, force: bool, json: bool) -> anyhow::Resu
         ));
         let review_id = super::supervisor::run_review_for_paper_blocking(&state, paper_id).await?;
         let pr = open_review_pr_for_gate(&state, review_id, json, false).await?;
+        let pr_url = review_pr_dispatch_pr_url(&pr)?;
         if json {
             println!(
                 "{}",
@@ -3717,7 +3722,7 @@ async fn review_extracted(source: &str, force: bool, json: bool) -> anyhow::Resu
                     "arxiv_id": arxiv_id,
                     "paper_id": paper_id,
                     "review_id": review_id,
-                    "pr_url": pr.pr_url,
+                    "pr_url": pr_url,
                     "gate_verdict": pr.gate_verdict,
                     "recommendation": pr.recommendation,
                     "pr_kind": pr.kind.as_str(),
@@ -3726,7 +3731,7 @@ async fn review_extracted(source: &str, force: bool, json: bool) -> anyhow::Resu
         } else {
             println!(
                 "arxiv_id={arxiv_id} paper_id={paper_id} review_id={review_id} pr_url={}",
-                pr.pr_url
+                pr_url
             );
         }
         Ok(())
@@ -3873,6 +3878,7 @@ struct ReviewSourceOptions {
     exclude: Vec<String>,
     loop_enabled: bool,
     debug_output: bool,
+    no_external_actions: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4133,6 +4139,9 @@ async fn review_source(
                 },
                 "debug": {
                     "enabled": options.debug_output,
+                },
+                "external_actions": {
+                    "enabled": !options.no_external_actions,
                 }
             });
             if let Some(stages) = loop_stages.as_ref() {
@@ -4154,6 +4163,9 @@ async fn review_source(
                         .unwrap_or_default();
                     println!("  {} ({}){}", stage.id, stage.kind, dag_call);
                 }
+            }
+            if options.no_external_actions {
+                println!("external actions: disabled");
             }
         }
         return Ok(());
@@ -4265,6 +4277,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
+                    !options.no_external_actions,
                     json,
                 )
                 .await?;
@@ -4277,12 +4290,12 @@ async fn review_resolved_sources(
                 let envelope = review_result_envelope_with_pr(envelope, &pr);
                 if !json {
                     println!(
-                        "source_kind=arxiv source_id={id} paper_id={} review_id={review_id} pr_url={}",
+                        "source_kind=arxiv source_id={id} paper_id={} review_id={review_id} {}",
                         envelope
                             .get("paper_id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("<unknown>"),
-                        pr.pr_url
+                        review_pr_dispatch_cli_summary(&pr)
                     );
                 }
                 results.push(envelope);
@@ -4302,13 +4315,14 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
+                    !options.no_external_actions,
                     json,
                 )
                 .await?;
                 if !json {
                     println!(
-                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
-                        pr.pr_url
+                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} {}",
+                        review_pr_dispatch_cli_summary(&pr)
                     );
                 }
                 let mut envelope = review_result_envelope(
@@ -4346,13 +4360,14 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
+                    !options.no_external_actions,
                     json,
                 )
                 .await?;
                 if !json {
                     println!(
-                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} pr_url={}",
-                        pr.pr_url
+                        "source_kind={source_kind} source_id={source_id} paper_id={paper_id} review_id={review_id} {}",
+                        review_pr_dispatch_cli_summary(&pr)
                     );
                 }
                 let mut envelope = review_result_envelope(
@@ -4673,10 +4688,11 @@ impl ReviewPrDispatchKind {
 
 #[derive(Debug, Clone)]
 struct ReviewPrDispatchOutcome {
-    pr_url: String,
+    pr_url: Option<String>,
     gate_verdict: crate::review_gate::GateVerdict,
     recommendation: String,
     kind: ReviewPrDispatchKind,
+    external_actions_enabled: bool,
 }
 
 fn review_pr_dispatch_kind(gate: &crate::review_gate::PublicationGate) -> ReviewPrDispatchKind {
@@ -4702,8 +4718,37 @@ fn review_result_envelope_with_pr(
             serde_json::json!(pr.recommendation.clone()),
         );
         obj.insert("pr_kind".to_string(), serde_json::json!(pr.kind.as_str()));
+        obj.insert(
+            "external_actions_enabled".to_string(),
+            serde_json::json!(pr.external_actions_enabled),
+        );
     }
     envelope
+}
+
+fn review_pr_dispatch_skipped_by_policy(
+    gate: &crate::review_gate::PublicationGate,
+) -> ReviewPrDispatchOutcome {
+    ReviewPrDispatchOutcome {
+        pr_url: None,
+        gate_verdict: gate.verdict,
+        recommendation: gate.recommendation.clone(),
+        kind: review_pr_dispatch_kind(gate),
+        external_actions_enabled: false,
+    }
+}
+
+fn review_pr_dispatch_cli_summary(pr: &ReviewPrDispatchOutcome) -> String {
+    match pr.pr_url.as_deref() {
+        Some(pr_url) => format!("pr_url={pr_url}"),
+        None => format!("external_actions=disabled pr_kind={}", pr.kind.as_str()),
+    }
+}
+
+fn review_pr_dispatch_pr_url(pr: &ReviewPrDispatchOutcome) -> anyhow::Result<&str> {
+    pr.pr_url.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("review PR dispatch did not produce a PR URL because external actions were disabled")
+    })
 }
 
 fn review_result_envelope_with_loop(
@@ -7728,10 +7773,11 @@ async fn open_review_pr_for_gate(
         kind.as_str()
     ));
     Ok(ReviewPrDispatchOutcome {
-        pr_url,
+        pr_url: Some(pr_url),
         gate_verdict: gate.verdict,
         recommendation: gate.recommendation,
         kind,
+        external_actions_enabled: true,
     })
 }
 
@@ -7740,6 +7786,7 @@ async fn open_review_pr_after_optional_loop(
     review_id: Uuid,
     loop_enabled: bool,
     debug_output: bool,
+    external_actions_enabled: bool,
     json: bool,
 ) -> anyhow::Result<(ReviewPrDispatchOutcome, Option<ReviewLoopOutcome>)> {
     let loop_outcome = if loop_enabled {
@@ -7747,6 +7794,19 @@ async fn open_review_pr_after_optional_loop(
     } else {
         None
     };
+    if !external_actions_enabled {
+        let pool = state
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?;
+        let (_, gate, _) = load_publication_gate_context(pool, review_id).await?;
+        let outcome = review_pr_dispatch_skipped_by_policy(&gate);
+        crate::cli_status::emit(format!(
+            "review {review_id}: external actions disabled; skipped PR [{}]",
+            outcome.kind.as_str()
+        ));
+        return Ok((outcome, loop_outcome));
+    }
     let pr = open_review_pr_for_gate(state, review_id, json, false).await?;
     Ok((pr, loop_outcome))
 }
@@ -11056,6 +11116,7 @@ mod tests {
             "https://arxiv.org/abs/2606.00799".to_string(),
             "--loop".to_string(),
             "--debug".to_string(),
+            "--no-external-actions".to_string(),
             "--type".to_string(),
             "arxiv".to_string(),
         ])
@@ -11065,6 +11126,7 @@ mod tests {
         assert_eq!(parsed.source_type, Some(SourceType::Arxiv));
         assert!(parsed.loop_enabled);
         assert!(parsed.debug_output);
+        assert!(parsed.no_external_actions);
     }
 
     #[test]
@@ -11604,5 +11666,21 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             review_pr_dispatch_kind(&failed),
             ReviewPrDispatchKind::RevisionNeeded
         );
+    }
+
+    #[test]
+    fn review_pr_dispatch_disabled_external_actions_do_not_plan_pr_side_effect() {
+        let failed = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+
+        let outcome = review_pr_dispatch_skipped_by_policy(&failed);
+
+        assert_eq!(outcome.kind, ReviewPrDispatchKind::RevisionNeeded);
+        assert_eq!(outcome.pr_url, None);
+        assert!(!outcome.external_actions_enabled);
+        assert_eq!(outcome.gate_verdict, crate::review_gate::GateVerdict::Fail);
     }
 }

@@ -144,6 +144,9 @@ actions:
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.
+      - name: --no-external-actions
+        kind: flag
+        description: Run review and loop checks without opening publication or revision PRs.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

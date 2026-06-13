@@ -36,7 +36,7 @@ prompts/, schemas/) into `evals/results/<sweep-ts>/provenance.json`.
 For each corpus entry (failing entries first, then full sweep):
 
 ```sh
-agh app run grokrxiv review <source> --loop --debug --json \
+agh --json app run grokrxiv review <source> --loop --debug --no-external-actions \
   |& tee evals/results/<sweep-ts>/<entry-id>/run.log
 ```
 

@@ -62,6 +62,22 @@ Fix plan: add product-surface coverage and a safe local corpus command that disa
 Attempts: 1
 Escalation status: PR #55 was opened by the run; do not invoke close/withdraw from the corpus loop without human direction.
 
+## P0-002 Resolution
+
+Status: fixed locally, 2026-06-13T00:00Z.
+Evidence:
+- Added `--no-external-actions` to `agenthero/apps/grokrxiv/app.yaml` so the app catalog and action help advertise the corpus-safe mode.
+- Added app-runtime parser and dispatch coverage for `--no-external-actions`.
+- `open_review_pr_after_optional_loop` now runs the optional review loop, evaluates the publication gate, and returns `pr_url: null` without calling publication or revision PR code when external actions are disabled.
+- `agenthero/apps/grokrxiv/evals/LOOP.md` now uses `agh --json app run grokrxiv review <source> --loop --debug --no-external-actions`.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib`: pass, 257 tests.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked`: pass.
+- `agh --json --dry-run app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`: pass, emitted `external_actions.enabled=false` and did not start pipeline work.
+Residual:
+- No real corpus rerun yet; continue P0-003 first so the next live run fails at extraction completeness instead of proceeding into downstream review/PR-fix stages.
+
 ## P0-003: N1 Extraction Completeness Gate Did Not Fire
 
 ID: P0-003

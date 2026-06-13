@@ -114,8 +114,9 @@ fn app_run_grokrxiv_review_loop_parses_as_product_path() {
         "review",
         "https://arxiv.org/abs/2606.00799",
         "--loop",
+        "--no-external-actions",
     ])
-    .expect("review --loop should parse as the canonical app review path");
+    .expect("review --loop --no-external-actions should parse as the canonical app review path");
 
     assert!(cli.json);
     assert!(cli.dry_run);
@@ -125,7 +126,12 @@ fn app_run_grokrxiv_review_loop_parses_as_product_path() {
                 assert_eq!(app, "grokrxiv");
                 assert_eq!(
                     args,
-                    vec!["review", "https://arxiv.org/abs/2606.00799", "--loop"]
+                    vec![
+                        "review",
+                        "https://arxiv.org/abs/2606.00799",
+                        "--loop",
+                        "--no-external-actions"
+                    ]
                 );
             }
             other => panic!("expected App::Run command, got {other:?}"),
@@ -207,6 +213,18 @@ fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
         .expect("review action should advertise --debug");
     assert_eq!(
         debug_option.get("kind").and_then(|value| value.as_str()),
+        Some("flag")
+    );
+    let no_external_actions_option = options
+        .iter()
+        .find(|option| {
+            option.get("name").and_then(|name| name.as_str()) == Some("--no-external-actions")
+        })
+        .expect("review action should advertise --no-external-actions");
+    assert_eq!(
+        no_external_actions_option
+            .get("kind")
+            .and_then(|value| value.as_str()),
         Some("flag")
     );
 }
@@ -485,7 +503,13 @@ fn app_run_action_help_renders_manifest_action_usage_without_executing() {
         stdout.contains("Usage: agh app run grokrxiv review"),
         "action help should include concrete usage, got:\n{stdout}"
     );
-    for expected in ["URL_OR_PATH", "--type", "--include", "--exclude"] {
+    for expected in [
+        "URL_OR_PATH",
+        "--type",
+        "--include",
+        "--exclude",
+        "--no-external-actions",
+    ] {
         assert!(
             stdout.contains(expected),
             "review help should include `{expected}`, got:\n{stdout}"
