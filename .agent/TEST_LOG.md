@@ -295,6 +295,10 @@
 | 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `git diff --check` | pass | chat transcript |
 | 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app` from worker; existing locked yanked-zip warning only | chat transcript |
 | 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `grokrxiv-app --json --status review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions --dry-run` | pass, product dry-run printed stage plan and `external_actions.enabled=false` | chat transcript |
+| 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-029-agent-runner-empty-failure` | pass, coordinator fast-forwarded from `4f18357` to `2e7961b` | chat transcript |
+| 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture` | pass, 42 runner tests after coordinator merge | chat transcript |
+| 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
+| 2026-06-13T12:18:14Z | `2e7961b` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass before state-only integration commit | chat transcript |
 
 ## Logging Rule
 
