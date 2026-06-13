@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 29: diagnose the local agent-runner empty failures. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 30: merge and verify P0-029. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -16,43 +16,50 @@ Read:
 - .agent/TEST_LOG.md
 - agenthero/apps/grokrxiv/evals/results/LEDGER.md
 
-Current coordinator state:
-- Branch `grokrxiv-local-corpus-harness`
-- P0-028 worker `p0-028-tier-r-regression-rerun` fast-forward merged at `d9059d7`
-- State-only integration commit is pending from the current session
+Current worker state:
+- Worker branch `p0-029-agent-runner-empty-failure`
+- Worker base `4f18357`
+- Worker checkpoint commit is expected to be `codex checkpoint: P0 - classify cli stdout session limit`
 - No baseline tag, no full corpus-green claim, and no phase tag yet
 
-P0-028 evidence:
-- Run directory: `agenthero/apps/grokrxiv/evals/results/20260613T115145Z/regression-pr54-weyl/`
-- Review ID: `3ccf7aa5-ce30-445f-8880-6fb4e15ad464`
-- Product exit status: `0`
-- External actions disabled; `pr_url=null`
-- Extraction/math-source signal preserved: `body_chars=117245`, `theorem_nodes=41`, `equations=903`, `warnings=0`
-- Citation validation stayed within Tier R threshold: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`
-- Bundle completeness passed
-- PR fixer and PR review passed
-- Honest recommendation policy stayed fixed: `recommendation_policy.status="honest_non_publishing_recommendation"`
-- Lean emitted `verdict="NOT_PROVED"` and `proof_status="SEMANTIC_GAP"` because Haskell failed
+P0-029 result:
+- The empty local `claude` exit-1 failure from P0-028 was diagnosed.
+- With normal shell API env, the exact Haskell harness invocation succeeded.
+- With app-equivalent provider API env scrubbing, a tiny Claude prompt exited 1 with structured stdout containing `api_error_status=429` and `You've hit your session limit`, while stderr was empty.
+- Root cause in app code: `exec_and_capture` only inspected stderr on nonzero subprocess exits, so stdout-only structured provider failures became blank generic errors.
+- Fix: `exec_and_capture` now combines stderr, stdout, and CLI log for quota/session-limit detection, and generic nonzero failures include bounded `stderr=`, `stdout=`, or `log=` detail.
+- Regression test: `exec_and_capture_classifies_claude_session_limit_on_stdout`.
 
-Current red:
-- `summary`, `technical_correctness`, first `meta_reviewer`, and `haskell_semantic_author` local runner invocations failed with empty ``claude` exited with Some(1)` messages.
-- Haskell failure cascaded into proof obligations, Lean, semantic adequacy, and policy.
-- `claude --version` exits 0 (`2.1.177 (Claude Code)`), so the binary exists; the per-role invocation path still needs diagnosis.
+P0-029 verification already run in the worker:
+- Red-first targeted test failed before the fix with `error chain should carry CliError for stdout session limits`.
+- Targeted test passed after the fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture`: pass, 42 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass.
+- `grokrxiv-app --json --status review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions --dry-run`: pass.
 
-Start P0-029:
+Session 30 task:
+1. In the worker, confirm `git diff --check`, `git status --short`, and commit:
+   `git add .`
+   `git commit -m "codex checkpoint: P0 - classify cli stdout session limit"`
+2. In the coordinator worktree:
+   `cd /Users/mlong/Documents/Development/grokrxiv`
+   `git status --short --branch`
+   `git merge --ff-only p0-029-agent-runner-empty-failure`
+3. Run coordinator verification:
+   `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture`
+   `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`
+   `git diff --check`
+4. If coordinator verification passes, append ledger/state updates and commit:
+   `codex checkpoint: P0 - cli stdout session limit integration`
+5. Only after merge verification, decide P0-031:
+   - If local Claude scrubbed-env session limit has reset, rerun `regression-pr54-weyl`.
+   - If not, configure a deliberate CLI quota fallback and test it before rerunning.
+   - Do not raise token caps/timeouts, do not weaken `expected:` blocks, and do not claim phase exit.
 
-cd /Users/mlong/Documents/Development/grokrxiv
-git status --short
-git worktree add .agent/worktrees/p0-029-agent-runner-empty-failure -b p0-029-agent-runner-empty-failure
-cd .agent/worktrees/p0-029-agent-runner-empty-failure
-
-P0-029 task:
-1. Reproduce one failing role invocation outside the full corpus run, preferably from:
-   `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3ccf7aa5-ce30-445f-8880-6fb4e15ad464/review_loop/agent_outputs/haskell_review_fix_code/round_1/haskell_semantic_author/`
-2. Capture the exact command, exit code, stdout, stderr, and relevant environment/config discovered from the app runner. Do not rely on chat memory.
-3. If the failure is deterministic and app-local, add a focused failing test or fixture and fix it.
-4. If the failure is environment/auth/model-runner state, write an F3 dossier with concrete operator action and stop that defect thread; do not mask it by raising token caps or timeouts.
-5. Rerun `regression-pr54-weyl` only after P0-029 is classified or fixed.
+Safe Tier R rerun command when runner is usable:
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions
 
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not weaken `expected:` blocks or NEVER-events.

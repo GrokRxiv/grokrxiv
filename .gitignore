@@ -38,6 +38,7 @@ coverage/
 # AgentHero runtime state and generated artifacts
 .agenthero/
 .agent/worktrees/
+.agent/*-repro/
 artifacts/
 **/artifacts/
 **/.vercel/

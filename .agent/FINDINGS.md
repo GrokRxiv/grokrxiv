@@ -1106,6 +1106,55 @@ Residual:
 - Tier R is not green because `expected.paper_review: all_specialists_complete` is not satisfied and Haskell/Lean remain blocked by the empty local runner failure.
 - Next session should reproduce one failing role invocation from the recorded artifact directory outside the full corpus run, capture the exact command, exit code, stdout, stderr, and environment-sensitive config, and then fix the deterministic runner/config defect if found.
 
+## P0-029: Local Runner Ignored Nonzero Claude Failure Details On Stdout
+
+ID: P0-029
+Corpus entry: `regression-pr54-weyl`
+Runner: `cli`
+Commands:
+- Exact Haskell harness repro with normal shell API env: `printf '/grokrxiv-review\n\nRead the files in this directory and emit only JSON matching schema.json.\n' | claude -p - --model claude-opus-4-7 --output-format json`
+- Scrubbed-env probe matching app runner behavior: `env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GOOGLE_GENERATIVE_AI_API_KEY -u GOOGLE_API_KEY -u GEMINI_API_KEY GROKRXIV_CLI_API_ENV_SCRUBBED=1 ... claude -p - --model claude-opus-4-7 --output-format json`
+Exit code: normal shell repro exited 0; scrubbed-env probe exited 1.
+finish_reason: deterministic app-local runner reporting defect, with residual F3 local Claude session quota state.
+Bucket: F1 contract for error classification/reporting; F3 toolchain for current local Claude session limit.
+NEVER-event: none triggered. This patch makes runner failures explicit; it does not weaken any corpus expectation.
+Symptom:
+- P0-028 surfaced empty messages such as ``claude` exited with Some(1) for role haskell_semantic_author: ` even though the CLI can emit structured failure JSON on stdout.
+- A scrubbed-env Claude invocation returned `api_error_status=429` and `You've hit your session limit` on stdout, with stderr empty and exit code 1.
+Raw evidence paths:
+- `.agent/p0-029-repro/haskell_semantic_author_exact/stdout.json`
+- `.agent/p0-029-repro/haskell_semantic_author_exact/stderr.txt`
+- `.agent/p0-029-repro/haskell_semantic_author_exact/status.txt`
+- `.agent/p0-029-repro/scrubbed-claude-probe/stdout.json`
+- `.agent/p0-029-repro/scrubbed-claude-probe/stderr.txt`
+- `.agent/p0-029-repro/scrubbed-claude-probe/status.txt`
+Artifact paths:
+- Prior failing Haskell audit: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3ccf7aa5-ce30-445f-8880-6fb4e15ad464/review_loop/agent_outputs/haskell_review_fix_code/round_1/haskell_semantic_author/`
+Root cause:
+1. `exec_and_capture` only converted stderr to a diagnostic string on nonzero subprocess exits.
+2. Claude Code can write structured result JSON, including `is_error=true` and `api_error_status=429`, to stdout while leaving stderr empty.
+3. The app runner intentionally scrubs provider API environment variables for CLI subprocesses, so local shell success with `ANTHROPIC_API_KEY` set did not match the app runner environment.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/agents/runners/cli.rs`
+Fix:
+1. Added a red-first fake-Claude fixture that exits 1, writes a session-limit result JSON to stdout, and leaves stderr empty.
+2. Changed `exec_and_capture` to combine stderr, stdout, and CLI log when detecting quota/session-limit signals on nonzero exits.
+3. Changed generic nonzero subprocess errors to include a bounded `stderr=`, `stdout=`, or `log=` detail instead of an empty suffix.
+4. Updated the `CliError::QuotaExhausted` display label from `stderr=` to `message=` because the signal may come from stdout or a provider log.
+Evidence:
+- Red test before fix: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime exec_and_capture_classifies_claude_session_limit_on_stdout --lib -- --nocapture` failed with `error chain should carry CliError for stdout session limits`.
+- Same targeted test passed after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture`: pass, 42 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass; existing locked yanked-zip warning only.
+- `grokrxiv-app --json --status review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions --dry-run`: pass; emitted `external_actions.enabled=false` and the review-loop stage plan.
+Residual:
+- The underlying local Claude state is still quota/session-limit constrained when provider API env is scrubbed. The next Tier R rerun should wait for reset or configure a deliberate, tested CLI fallback such as `AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER` and matching model env. Do not mask it by raising token caps or timeouts.
+- No affected Tier R rerun was executed in this worker after the fix because it would hit the same local session-limit condition. No full corpus-green claim or phase tag.
+Attempts: 1
+Escalation status: none. This is not a three-strike escalation yet; the next thread is a coordinator merge plus either local CLI quota reset/fallback or a Tier R rerun when the runner can execute.
+
 ## Finding Template
 
 Use one dossier per defect.

@@ -287,6 +287,14 @@
 | 2026-06-13T11:58:44Z | `a6e01c8` | `p0-028-tier-r-regression-rerun` | `claude --version` | pass, exit 0, `2.1.177 (Claude Code)`; does not explain per-role empty exit 1 failures | chat transcript |
 | 2026-06-13T12:00:47Z | `d9059d7` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-028-tier-r-regression-rerun` | pass, coordinator fast-forwarded from `a6e01c8` to `d9059d7` | chat transcript |
 | 2026-06-13T12:00:47Z | `d9059d7` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | exact Haskell harness repro with normal shell API env | pass, `claude` exited 0; JSON wrapper `is_error=false`, `stop_reason=end_turn`, `terminal_reason=completed`, extracted `SemanticModel.hs` with schema-compatible fields | `.agent/p0-029-repro/haskell_semantic_author_exact/` |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | app-equivalent scrubbed-env Claude probe | expected environment failure, exit 1 with stdout JSON `is_error=true`, `api_error_status=429`, and `You've hit your session limit`; stderr empty | `.agent/p0-029-repro/scrubbed-claude-probe/` |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime exec_and_capture_classifies_claude_session_limit_on_stdout --lib -- --nocapture` | expected fail before fix: error chain did not carry `CliError` for stdout session limits; pass after `exec_and_capture` inspected stdout on nonzero exits | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime agents::runners::cli::tests --lib -- --nocapture` | pass, 42 runner tests | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `git diff --check` | pass | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app` from worker; existing locked yanked-zip warning only | chat transcript |
+| 2026-06-13T12:15:39Z | `P0-029-worker` | `p0-029-agent-runner-empty-failure` | `grokrxiv-app --json --status review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions --dry-run` | pass, product dry-run printed stage plan and `external_actions.enabled=false` | chat transcript |
 
 ## Logging Rule
 

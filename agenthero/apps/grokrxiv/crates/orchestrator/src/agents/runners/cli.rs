@@ -52,7 +52,7 @@ impl std::fmt::Display for CliError {
             CliError::QuotaExhausted { provider, message } => write!(
                 f,
                 "{provider} CLI quota exhausted. Set --runner api or wait for reset. \
-                 stderr={message}"
+                 message={message}"
             ),
         }
     }
@@ -1044,12 +1044,13 @@ async fn exec_and_capture(
         .map_err(|e| anyhow::anyhow!("read stderr for `{}` failed: {e}", built.program))?;
 
     if !status.success() {
+        let stdout = String::from_utf8_lossy(&stdout).to_string();
         let stderr = String::from_utf8_lossy(&stderr).to_string();
-        // FP-RPT3b B5: classify as a structured quota error when stderr
+        // FP-RPT3b B5: classify as a structured quota error when stderr/stdout
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
         // failure.
-        let combined_error_log = combine_stderr_and_cli_log(&stderr, built);
+        let combined_error_log = combine_subprocess_error_log(&stderr, &stdout, built);
         if let Some(snippet) = detect_quota_signal(&combined_error_log) {
             return Err(anyhow::Error::new(CliError::QuotaExhausted {
                 provider: provider.to_string(),
@@ -1062,8 +1063,9 @@ async fn exec_and_capture(
                 role,
             )));
         }
+        let detail = subprocess_failure_detail(&stderr, &stdout, built);
         anyhow::bail!(
-            "`{}` exited with {:?} for role {}: {stderr}",
+            "`{}` exited with {:?} for role {}: {detail}",
             built.program,
             status.code(),
             role,
@@ -1101,17 +1103,25 @@ async fn exec_and_capture(
     Ok(stdout)
 }
 
-fn combine_stderr_and_cli_log(stderr: &str, built: &BuiltCommand) -> String {
-    let Some(cli_log) = cli_log_from_args(built) else {
-        return stderr.to_string();
-    };
-    if stderr.trim().is_empty() {
-        cli_log
-    } else if cli_log.trim().is_empty() {
-        stderr.to_string()
-    } else {
-        format!("{stderr}\n{cli_log}")
+fn combine_subprocess_error_log(stderr: &str, stdout: &str, built: &BuiltCommand) -> String {
+    let cli_log = cli_log_from_args(built).unwrap_or_default();
+    [stderr, stdout, cli_log.as_str()]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn subprocess_failure_detail(stderr: &str, stdout: &str, built: &BuiltCommand) -> String {
+    let cli_log = cli_log_from_args(built).unwrap_or_default();
+    for (label, body) in [("stderr", stderr), ("stdout", stdout), ("log", cli_log.as_str())] {
+        let trimmed = body.trim();
+        if !trimmed.is_empty() {
+            let snippet: String = trimmed.chars().take(600).collect();
+            return format!("{label}={snippet}");
+        }
     }
+    "stderr/stdout empty".to_string()
 }
 
 fn cli_log_from_args(built: &BuiltCommand) -> Option<String> {
@@ -2486,6 +2496,51 @@ mod tests {
                 assert!(
                     message.to_lowercase().contains("rate limit"),
                     "stderr snippet missing rate-limit signal: {message}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_classifies_claude_session_limit_on_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake-claude.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"You'\''ve hit your session limit · resets 6:10am (America/Costa_Rica)"}'
+exit 1
+"#,
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            schema_path: None,
+            cwd: None,
+        };
+
+        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "claude")
+            .await
+            .expect_err("subprocess should exit non-zero");
+
+        let downcast = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>())
+            .expect("error chain should carry CliError for stdout session limits");
+        match downcast {
+            CliError::QuotaExhausted { provider, message } => {
+                assert_eq!(provider, "claude");
+                assert!(
+                    message.to_lowercase().contains("session limit"),
+                    "stdout snippet missing session-limit signal: {message}"
                 );
             }
         }
