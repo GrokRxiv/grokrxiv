@@ -595,6 +595,81 @@ Fix plan: retry the same safe affected command. If another zero-output interrupt
 Attempts: 1 after P0-004e structured-title fix.
 Escalation status: none; retry needed.
 
+## P0-019: Structured-Title Rerun Improved Citation Residue To 3
+
+ID: P0-019
+Corpus entry: `regression-pr54-weyl`
+Review id: `9dc53304-6085-4d3b-8009-293ebeebf686`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: F1 contract/provider integration for citation; F4 cascades for Haskell/Lean/PR/policy.
+NEVER-event: none. Citation artifact was non-empty; external actions were disabled and `pr_url=null`.
+Symptom: structured-title lookup improved the live Tier R citation residue from `unverified=5` to `unverified=3`, but the expected threshold is `<= 2`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T042403Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T042403Z/regression-pr54-weyl/exit.status`
+Artifact paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/9dc53304-6085-4d3b-8009-293ebeebf686/review_loop/citation_validation_report.json`
+Observed counts: `checked=53`, `unverified=3`, `unresolved=0`, `transient_unknown=0`.
+Unverified keys: `March`, `March`, `Weyl`.
+Root cause: live zbMATH requests used `_structured_search?query=...`, which the public API treated as a bad/no-parameter request. Direct diagnostics showed `_search?search_string=Zur%20Infinitesimalgeometrie...` returns the Weyl record with `zbmath_url=https://zbmath.org/2603060`.
+Owning code: `agenthero/apps/grokrxiv/crates/verifier/src/citation.rs`
+Fix plan: add a red fixture for zbMATH `_search?search_string=...` object-shaped title results, then update the provider URL and parser.
+Attempts: 1 after P0-004e.
+Escalation status: none; fixed by P0-004f.
+
+## P0-004f Resolution: zbMATH Search Contract
+
+Status: fixed locally and proven by affected Tier R rerun, 2026-06-13T05:25Z.
+Evidence:
+- Added `zbmath_search_string_resolves_object_title_results`.
+- The fixture first failed with `status 404 Not Found`, leaving the Weyl title `unverified`.
+- The verifier now defaults zbMATH to `https://api.zbmath.org/v1/document/_search`.
+- The zbMATH provider URL now sends `search_string=<title>&results_per_page=5`.
+- The parser now accepts object-shaped `title.title` payloads and preserves `zbmath_url` as `resolved_url`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier zbmath_search_string_resolves_object_title_results -- --nocapture`: pass, 1 test.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 37 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked`: pass.
+- Affected safe rerun `20260613T045516Z` completed as review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3` with product exit 0, `external_actions_enabled=false`, and `pr_url=null`.
+- `review_loop/citation_validation_report.json` for review `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3` reports `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`. This satisfies Tier R `citation_needs_review <= 2`.
+Residual:
+- No full corpus-green claim. The affected run still fails Haskell typed-IR/semantic validation, Lean/proof obligation cascade, semantic adequacy, PR fixer timeout, and policy gate.
+- The two remaining citation residues are both March references. They are within the Tier R threshold, so do not work them before higher-priority P0 gate defects unless the corpus tightens.
+
+## P0-020: Review-Loop Math Source Collector Drops Extracted Theorem Artifacts
+
+ID: P0-020
+Corpus entry: `regression-pr54-weyl`
+Review id: `3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: F1 contract/artifact wiring
+NEVER-event: related to N1/Tier R extraction completeness, but review did not proceed on an empty body.
+Symptom: the persisted paper extraction cache has recovered theorem/equation artifacts, but the review-loop math source artifact drops them. Current cache evidence for `2606.00799`: `body.md` 117,247 bytes, `sections.json` 8 sections, `equations.json` 903 entries, `theorem_graph.json` 41 nodes. The affected review-loop artifact `paper_math_sources.json` recorded `theorem_graph.nodes=[]` with `reason="not_loaded"` and only three equations, while stderr summarized `theorem_nodes=0 equations=0 sources=1`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T045516Z/regression-pr54-weyl/run.log`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/body.md`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/equations.json`
+- `/Users/mlong/Documents/Development/grokrxiv-data/papers/2606.00799/theorem_graph.json`
+Artifact paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/3619ff6a-1a72-4aa0-bb0f-c8bbcacd8cc3/review_loop/paper_math_sources.json`
+Root cause: not yet diagnosed. Likely review-loop collector/input wiring is reading only review input/body snippets or not resolving persisted `equations.json` and `theorem_graph.json` artifact paths from the extraction cache.
+Owning code: review-loop paper math source collector in the GrokRxiv app runtime / review-loop crate; inspect before patching.
+Fix plan:
+1. Add a failing fixture where persisted extraction artifacts include non-empty equations and theorem graph, and `paper_math_source_collector` must preserve them in `paper_math_sources.json`.
+2. Fix collector/input path resolution so review-loop math sources load the same artifacts proven by P0-007.
+3. Re-run the affected Tier R entry and require the review-loop artifact to carry non-empty theorem/equation sources.
+Attempts: 1 live affected run after P0-004f exposed this gap.
+Escalation status: none.
+
 ## P0-016 Review-Loop Triage After Guardrail Fixes
 
 Corpus entry: `regression-pr54-weyl`

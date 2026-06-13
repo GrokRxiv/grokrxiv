@@ -968,7 +968,7 @@ fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
         ),
         BibliographicProvider::new(
             "zbmath",
-            "https://api.zbmath.org/v1/document/_structured_search",
+            "https://api.zbmath.org/v1/document/_search",
             BibliographicProviderKind::ZbMath,
         ),
     ];
@@ -1133,7 +1133,10 @@ fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> Str
             )
         }
         BibliographicProviderKind::ZbMath => {
-            format!("{}?query={encoded}&results_per_page=5", provider.base_url)
+            format!(
+                "{}?search_string={encoded}&results_per_page=5",
+                provider.base_url
+            )
         }
         BibliographicProviderKind::GeminiGroundedEndpoint => {
             format!("{}?query={encoded}", provider.base_url)
@@ -1374,10 +1377,10 @@ fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            let title =
-                string_field(item, "title").or_else(|| item.get("title").and_then(first_string))?;
+            let title = zbmath_title(item)?;
             let doi = string_field(item, "doi").and_then(|doi| normalize_doi(&doi));
-            let url = string_field(item, "url")
+            let url = string_field(item, "zbmath_url")
+                .or_else(|| string_field(item, "url"))
                 .or_else(|| string_field(item, "id"))
                 .or_else(|| {
                     string_field(item, "zbl_id").map(|id| format!("https://zbmath.org/{id}"))
@@ -1385,6 +1388,12 @@ fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
             Some(BibliographicHit { title, doi, url })
         })
         .collect()
+}
+
+fn zbmath_title(item: &serde_json::Value) -> Option<String> {
+    string_field(item, "title")
+        .or_else(|| item.get("title").and_then(first_string))
+        .or_else(|| item.get("title").and_then(|title| string_field(title, "title")))
 }
 
 fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
@@ -2346,6 +2355,94 @@ mod tests {
         assert_eq!(r.notes["resolved_via_bibliographic_query"], 1);
         assert_eq!(r.notes["entries"][0]["status"], "resolved");
         assert_eq!(r.notes["entries"][0]["verified_via"], "openalex");
+    }
+
+    #[tokio::test]
+    async fn zbmath_search_string_resolves_object_title_results() {
+        let server = MockServer::start().await;
+        let title =
+            "Zur Infinitesimalgeometrie: Einordnung der projektiven und der konformen Auffassung";
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ads/v1/search/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "response": {"docs": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/inspire/api/literature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": {"hits": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zbmath/v1/document/_search"))
+            .and(query_param("search_string", title))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": [{
+                    "title": {
+                        "title": "Zur Infinitesimalgeometrie: Einordnung der projektiven und der konformen Auffassung."
+                    },
+                    "identifier": "48.0844.04",
+                    "zbmath_url": "https://zbmath.org/2603060",
+                    "year": "1921"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_search", server.uri()),
+        );
+        let paper = paper_with(vec![classic_ref("weyl1921", title, 1921)]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Pass), "{:?}", r);
+        assert_eq!(r.notes["resolved_via_bibliographic_query"], 1);
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["source"], "zbmath");
+        assert_eq!(
+            r.notes["entries"][0]["resolved_url"],
+            "https://zbmath.org/2603060"
+        );
     }
 
     #[tokio::test]
