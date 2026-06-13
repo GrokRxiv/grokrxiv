@@ -90,11 +90,34 @@
         "key": { "type": "string" },
         "source": {
           "type": "string",
-          "enum": ["crossref", "openalex", "arxiv", "corpus"]
+          "enum": [
+            "crossref",
+            "crossref_bibliographic",
+            "doi_resolver",
+            "openalex",
+            "arxiv",
+            "corpus",
+            "semantic_scholar",
+            "ads",
+            "inspire_hep",
+            "zbmath",
+            "gemini_grounded",
+            "citation_waterfall"
+          ]
         },
         "status": {
           "type": "string",
-          "enum": ["verified", "unresolved", "conflict", "not_checked"]
+          "enum": [
+            "verified",
+            "unresolved",
+            "unverified",
+            "transient_unknown",
+            "malformed",
+            "conflict",
+            "not_checked",
+            "retracted",
+            "not_found"
+          ]
         },
         "resolved_doi": { "type": ["string", "null"] },
         "resolved_url": { "type": ["string", "null"] },

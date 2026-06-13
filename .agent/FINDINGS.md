@@ -399,6 +399,30 @@ Fix plan: add Weyl-classics citation fixture, implement deterministic waterfall/
 Attempts: 1
 Escalation status: none.
 
+## P0-004 Progress: PR-54 Classics Resolver Waterfall
+
+Status: partially fixed locally, 2026-06-13T01:47Z.
+Evidence:
+- Added `bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results`.
+- The fixture first failed before implementation because `CitationVerifier::with_bibliographic_provider_bases` did not exist.
+- Plain references now keep Crossref first, then try OpenAlex, Semantic Scholar, NASA ADS, INSPIRE-HEP, and zbMATH in order.
+- Provider lookups use a bounded per-provider timeout and tolerant JSON extraction for title, DOI, and URL/bibcode evidence.
+- Final per-reference results are cached and emitted in the existing citation verifier `entries[]` with `source`, `verified_via`, `status`, `resolved_doi`, `resolved_url`, and `reason`.
+- The PR-54 classics fixture resolves Cartan/Ehlers/Kunzle-style references via ADS and Trautman via zbMATH, leaves exactly two residues as `unverified`, and emits a non-empty partial-result artifact shape.
+- Added `citation_validation_report_preserves_waterfall_resolver_sources` to protect waterfall resolver sources in deterministic citation-validation reports.
+- `citation_validation_report.schema.json` now admits waterfall resolver sources and statuses, and the report builder preserves resolver `resolved_doi`, `resolved_url`, and evidence.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results -- --nocapture`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-verifier`: pass, 30 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation_validation -- --nocapture`: pass, 3 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1 --nocapture`: pass, 273 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+Residual:
+- No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint, so Tier R is not green yet.
+- Retraction screening is still not implemented in this verifier path.
+- Gemini-grounded fallback/quorum for unresolved residue is still not implemented.
+- Provider authentication/header handling for production ADS/Semantic Scholar deployments still needs a focused pass if local env requires keys.
+
 ## P0-005: PR Fixer Timed Out After 360 Seconds
 
 ID: P0-005

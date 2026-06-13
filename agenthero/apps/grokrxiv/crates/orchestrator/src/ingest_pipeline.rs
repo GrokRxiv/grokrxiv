@@ -1884,7 +1884,9 @@ fn build_citation_validation_report(references: &Value) -> Value {
                     }
                 });
             let status = match raw_status {
-                "verified" | "unresolved" | "conflict" | "not_checked" => raw_status,
+                "resolved" | "verified" => "verified",
+                "unresolved" | "unverified" | "transient_unknown" | "malformed" | "conflict"
+                | "not_checked" | "retracted" | "not_found" => raw_status,
                 _ => "not_checked",
             };
             let evidence = validation
@@ -1894,19 +1896,38 @@ fn build_citation_validation_report(references: &Value) -> Value {
                 .unwrap_or_default();
             let source = validation
                 .get("source")
+                .or_else(|| validation.get("verified_via"))
                 .and_then(Value::as_str)
                 .map(|source| source.to_ascii_lowercase())
                 .unwrap_or_else(|| "crossref".to_string());
             let source = match source.as_str() {
-                "openalex" | "arxiv" | "corpus" => source,
+                "crossref"
+                | "crossref_bibliographic"
+                | "doi_resolver"
+                | "openalex"
+                | "arxiv"
+                | "corpus"
+                | "semantic_scholar"
+                | "ads"
+                | "inspire_hep"
+                | "zbmath"
+                | "gemini_grounded"
+                | "citation_waterfall" => source,
                 _ => "crossref".to_string(),
             };
             json!({
                 "key": key,
                 "source": source,
                 "status": status,
-                "resolved_doi": citation.get("doi").cloned().unwrap_or(Value::Null),
-                "resolved_url": Value::Null,
+                "resolved_doi": validation
+                    .get("resolved_doi")
+                    .cloned()
+                    .or_else(|| citation.get("doi").cloned())
+                    .unwrap_or(Value::Null),
+                "resolved_url": validation
+                    .get("resolved_url")
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 "evidence": evidence,
             })
         })
@@ -3546,6 +3567,74 @@ mod a4_tests {
             .expect("remediations")
             .iter()
             .any(|item| item["key"] == "missing2026"));
+    }
+
+    #[test]
+    fn citation_validation_report_preserves_waterfall_resolver_sources() {
+        let references = json!({
+            "citations": [
+                {
+                    "key": "cartan1922",
+                    "raw": "@article{cartan1922,title={Relativitaetstheorie und Mathematik}}",
+                    "title": "Relativitaetstheorie und Mathematik",
+                    "authors": ["E. Cartan"],
+                    "venue": null,
+                    "year": 1922,
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true,
+                    "contexts": [{"section": "Related Work"}],
+                    "validation": {
+                        "source": "ads",
+                        "status": "verified",
+                        "resolved_doi": "10.ads/cartan",
+                        "resolved_url": "https://ui.adsabs.harvard.edu/abs/1922JRAM..146...16C/abstract",
+                        "evidence": ["ADS bibcode 1922JRAM..146...16C"]
+                    }
+                },
+                {
+                    "key": "trautman1966",
+                    "raw": "@article{trautman1966,title={Foundations and Current Problems of General Relativity}}",
+                    "title": "Foundations and Current Problems of General Relativity",
+                    "authors": ["A. Trautman"],
+                    "venue": null,
+                    "year": 1966,
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true,
+                    "contexts": [{"section": "Related Work"}],
+                    "validation": {
+                        "source": "zbmath",
+                        "status": "verified",
+                        "resolved_doi": "10.zbmath/trautman",
+                        "resolved_url": "https://zbmath.org/trautman",
+                        "evidence": ["zbMATH Open match"]
+                    }
+                }
+            ],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+        assert!(validator.validate(&report).is_ok(), "{report:#}");
+        assert_eq!(report["status"], "verified");
+        assert_eq!(report["resolver_results"][0]["source"], "ads");
+        assert_eq!(
+            report["resolver_results"][0]["resolved_doi"],
+            "10.ads/cartan"
+        );
+        assert_eq!(report["resolver_results"][1]["source"], "zbmath");
+        assert_eq!(
+            report["resolver_results"][1]["resolved_url"],
+            "https://zbmath.org/trautman"
+        );
     }
 
     #[test]

@@ -4,10 +4,10 @@
 //!   - `Citation.doi`        → `GET {crossref_base}/{doi}` (metadata only).
 //!   - `Citation.arxiv_id`   → batched `GET {arxiv_base}?id_list=ID1,ID2,...`
 //!                             with explicit `max_results` for each page.
-//!   - Plain refs (no DOI, no arxiv_id) → crossref free-text bibliographic
-//!                             query against `Citation.raw`; the top hit
-//!                             counts as resolved when its score crosses the
-//!                             threshold below.
+//!   - Plain refs (no DOI, no arxiv_id) → Crossref free-text bibliographic
+//!                             query first, then OpenAlex, Semantic Scholar,
+//!                             NASA ADS, INSPIRE-HEP, and zbMATH Open for
+//!                             pre-DOI classics.
 //!
 //! Results are memoised in-process by lookup URL so a paper with repeated
 //! citations only spends one network round-trip per unique key. The verifier
@@ -19,6 +19,7 @@ use parking_lot::Mutex;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{Verifier, VerifierContext};
 
@@ -30,6 +31,37 @@ const FAIL_FRACTION: f32 = 0.30;
 /// rule-of-thumb floor where the result is meaningfully relevant.
 const BIBLIOGRAPHIC_MATCH_SCORE_MIN: f64 = 60.0;
 const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
+const BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS: u64 = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BibliographicProviderKind {
+    OpenAlex,
+    SemanticScholar,
+    Ads,
+    InspireHep,
+    ZbMath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BibliographicProvider {
+    source: &'static str,
+    base_url: String,
+    kind: BibliographicProviderKind,
+}
+
+impl BibliographicProvider {
+    fn new(
+        source: &'static str,
+        base_url: impl Into<String>,
+        kind: BibliographicProviderKind,
+    ) -> Self {
+        Self {
+            source,
+            base_url: base_url.into(),
+            kind,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CitationLookupStatus {
@@ -133,6 +165,8 @@ pub struct CitationVerifier {
     arxiv_base: String,
     /// Base URL for DOI resolver fallback checks.
     doi_resolver_base: String,
+    /// Ordered bibliographic resolver waterfall after Crossref misses.
+    bibliographic_providers: Vec<BibliographicProvider>,
     cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
     /// Resolved bibliographic queries keyed by raw reference string.
     biblio_cache: Arc<Mutex<HashMap<String, CitationLookup>>>,
@@ -151,6 +185,7 @@ impl CitationVerifier {
             crossref_base: "https://api.crossref.org/works".to_string(),
             arxiv_base: "https://export.arxiv.org/api/query".to_string(),
             doi_resolver_base: "https://doi.org".to_string(),
+            bibliographic_providers: default_bibliographic_providers(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -163,6 +198,7 @@ impl CitationVerifier {
             crossref_base: crossref_base.into(),
             arxiv_base: "https://export.arxiv.org/api/query".to_string(),
             doi_resolver_base: "https://doi.org".to_string(),
+            bibliographic_providers: Vec::new(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -175,6 +211,7 @@ impl CitationVerifier {
             crossref_base: crossref_base.into(),
             arxiv_base: arxiv_base.into(),
             doi_resolver_base: "https://doi.org".to_string(),
+            bibliographic_providers: Vec::new(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -190,6 +227,52 @@ impl CitationVerifier {
             crossref_base: crossref_base.into(),
             arxiv_base: arxiv_base.into(),
             doi_resolver_base: doi_resolver_base.into(),
+            bibliographic_providers: Vec::new(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            biblio_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Construct a verifier with every network base overridden. This keeps the
+    /// PR-54 resolver-waterfall tests hermetic while production uses the real
+    /// provider defaults from [`CitationVerifier::new`].
+    pub fn with_bibliographic_provider_bases(
+        crossref_base: impl Into<String>,
+        arxiv_base: impl Into<String>,
+        doi_resolver_base: impl Into<String>,
+        openalex_base: impl Into<String>,
+        semantic_scholar_base: impl Into<String>,
+        ads_base: impl Into<String>,
+        inspire_hep_base: impl Into<String>,
+        zbmath_base: impl Into<String>,
+    ) -> Self {
+        Self {
+            crossref_base: crossref_base.into(),
+            arxiv_base: arxiv_base.into(),
+            doi_resolver_base: doi_resolver_base.into(),
+            bibliographic_providers: vec![
+                BibliographicProvider::new(
+                    "openalex",
+                    openalex_base,
+                    BibliographicProviderKind::OpenAlex,
+                ),
+                BibliographicProvider::new(
+                    "semantic_scholar",
+                    semantic_scholar_base,
+                    BibliographicProviderKind::SemanticScholar,
+                ),
+                BibliographicProvider::new("ads", ads_base, BibliographicProviderKind::Ads),
+                BibliographicProvider::new(
+                    "inspire_hep",
+                    inspire_hep_base,
+                    BibliographicProviderKind::InspireHep,
+                ),
+                BibliographicProvider::new(
+                    "zbmath",
+                    zbmath_base,
+                    BibliographicProviderKind::ZbMath,
+                ),
+            ],
             cache: Arc::new(Mutex::new(HashMap::new())),
             biblio_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -356,9 +439,11 @@ impl CitationVerifier {
         out
     }
 
-    /// Free-text crossref bibliographic lookup for refs that carry neither a
-    /// DOI nor an arxiv_id. Returns the resolved DOI when crossref's top hit
-    /// scores above `BIBLIOGRAPHIC_MATCH_SCORE_MIN`. Cached by `raw` string.
+    /// Free-text bibliographic lookup for refs that carry neither a DOI nor an
+    /// arxiv_id. Crossref runs first; weak/noisy Crossref hits flow into the
+    /// app-local provider waterfall so pre-DOI classics can resolve through
+    /// OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH without losing partial
+    /// per-reference evidence.
     async fn resolve_bibliographic(&self, http: &reqwest::Client, raw: &str) -> CitationLookup {
         if raw.trim().is_empty() {
             return CitationLookup::malformed("crossref_bibliographic", "empty bibliographic text");
@@ -366,10 +451,73 @@ impl CitationVerifier {
         if let Some(v) = self.biblio_cache.lock().get(raw).cloned() {
             return v;
         }
+        let query_text = bibliographic_query_text(raw);
+        let crossref_lookup = self.resolve_crossref_bibliographic(http, raw).await;
+        if crossref_lookup.status == CitationLookupStatus::Resolved
+            || self.bibliographic_providers.is_empty()
+        {
+            if crossref_lookup.status != CitationLookupStatus::TransientUnknown {
+                self.biblio_cache
+                    .lock()
+                    .insert(raw.to_string(), crossref_lookup.clone());
+            }
+            return crossref_lookup;
+        }
+
+        let mut reasons: Vec<String> = Vec::new();
+        let mut transient_count = 0usize;
+        let mut non_transient_count = 0usize;
+        record_bibliographic_attempt(
+            &mut reasons,
+            &mut transient_count,
+            &mut non_transient_count,
+            &crossref_lookup,
+        );
+
+        for provider in &self.bibliographic_providers {
+            let lookup = self
+                .resolve_provider_bibliographic(http, provider, &query_text)
+                .await;
+            if lookup.status == CitationLookupStatus::Resolved {
+                self.biblio_cache
+                    .lock()
+                    .insert(raw.to_string(), lookup.clone());
+                return lookup;
+            }
+            record_bibliographic_attempt(
+                &mut reasons,
+                &mut transient_count,
+                &mut non_transient_count,
+                &lookup,
+            );
+        }
+
+        let reason = format!(
+            "not verified by resolver waterfall (Crossref -> OpenAlex -> Semantic Scholar -> NASA ADS -> INSPIRE-HEP -> zbMATH); {}",
+            reasons.join("; ")
+        );
+        let resolved = if non_transient_count == 0 && transient_count > 0 {
+            CitationLookup::unknown("citation_waterfall", reason)
+        } else {
+            CitationLookup::unverified("citation_waterfall", reason)
+        };
+        if resolved.status != CitationLookupStatus::TransientUnknown {
+            self.biblio_cache
+                .lock()
+                .insert(raw.to_string(), resolved.clone());
+        }
+        resolved
+    }
+
+    async fn resolve_crossref_bibliographic(
+        &self,
+        http: &reqwest::Client,
+        raw: &str,
+    ) -> CitationLookup {
         let url = format!("{}?rows=1&query.bibliographic=", self.crossref_base);
         let encoded = url_form_encode(raw);
         let full = format!("{url}{encoded}");
-        let resolved = match send_json_with_retry(http, &full).await {
+        match send_json_with_retry(http, &full).await {
             JsonLookup::Ok(v) => {
                 if let Some(doi) = top_doi_if_scored(&v, BIBLIOGRAPHIC_MATCH_SCORE_MIN) {
                     CitationLookup::resolved(
@@ -390,13 +538,30 @@ impl CitationVerifier {
             JsonLookup::Transient(reason) => {
                 CitationLookup::unknown("crossref_bibliographic", reason)
             }
-        };
-        if resolved.status != CitationLookupStatus::TransientUnknown {
-            self.biblio_cache
-                .lock()
-                .insert(raw.to_string(), resolved.clone());
         }
-        resolved
+    }
+
+    async fn resolve_provider_bibliographic(
+        &self,
+        http: &reqwest::Client,
+        provider: &BibliographicProvider,
+        query_text: &str,
+    ) -> CitationLookup {
+        let url = provider_query_url(provider, query_text);
+        match send_json_with_timeout(http, &url).await {
+            JsonLookup::Ok(v) => {
+                if let Some(hit) = provider_hit_if_title_matches(&v, provider.kind, query_text) {
+                    CitationLookup::resolved(provider.source, hit.doi, hit.url)
+                } else {
+                    CitationLookup::unverified(
+                        provider.source,
+                        "no title match in provider response",
+                    )
+                }
+            }
+            JsonLookup::Unresolved(reason) => CitationLookup::unverified(provider.source, reason),
+            JsonLookup::Transient(reason) => CitationLookup::unknown(provider.source, reason),
+        }
     }
 
     /// Check that an arXiv id has a syntactically valid shape WITHOUT making a
@@ -546,6 +711,7 @@ impl Verifier for CitationVerifier {
                 "resolved_doi": lookup.resolved_doi,
                 "resolved_url": lookup.resolved_url,
                 "source": lookup.source,
+                "verified_via": lookup.source,
                 "reason": lookup.reason,
             }));
         }
@@ -607,6 +773,324 @@ enum JsonLookup {
     Ok(serde_json::Value),
     Unresolved(String),
     Transient(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BibliographicHit {
+    title: String,
+    doi: Option<String>,
+    url: Option<String>,
+}
+
+fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
+    vec![
+        BibliographicProvider::new(
+            "openalex",
+            "https://api.openalex.org/works",
+            BibliographicProviderKind::OpenAlex,
+        ),
+        BibliographicProvider::new(
+            "semantic_scholar",
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            BibliographicProviderKind::SemanticScholar,
+        ),
+        BibliographicProvider::new(
+            "ads",
+            "https://api.adsabs.harvard.edu/v1/search/query",
+            BibliographicProviderKind::Ads,
+        ),
+        BibliographicProvider::new(
+            "inspire_hep",
+            "https://inspirehep.net/api/literature",
+            BibliographicProviderKind::InspireHep,
+        ),
+        BibliographicProvider::new(
+            "zbmath",
+            "https://api.zbmath.org/v1/document/_structured_search",
+            BibliographicProviderKind::ZbMath,
+        ),
+    ]
+}
+
+fn record_bibliographic_attempt(
+    reasons: &mut Vec<String>,
+    transient_count: &mut usize,
+    non_transient_count: &mut usize,
+    lookup: &CitationLookup,
+) {
+    let reason = lookup
+        .reason
+        .as_deref()
+        .unwrap_or_else(|| lookup.status.as_str());
+    reasons.push(format!("{}: {reason}", lookup.source));
+    match lookup.status {
+        CitationLookupStatus::TransientUnknown => *transient_count += 1,
+        CitationLookupStatus::Unresolved
+        | CitationLookupStatus::Unverified
+        | CitationLookupStatus::Malformed => *non_transient_count += 1,
+        CitationLookupStatus::Resolved => {}
+    }
+}
+
+fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> String {
+    let encoded = url_form_encode(query_text);
+    match provider.kind {
+        BibliographicProviderKind::OpenAlex => {
+            format!("{}?search={encoded}&per-page=5", provider.base_url)
+        }
+        BibliographicProviderKind::SemanticScholar => format!(
+            "{}?query={encoded}&limit=5&fields=title,externalIds,url,year,venue",
+            provider.base_url
+        ),
+        BibliographicProviderKind::Ads => {
+            format!(
+                "{}?q={encoded}&fl=title,doi,bibcode,identifier&rows=5",
+                provider.base_url
+            )
+        }
+        BibliographicProviderKind::InspireHep => {
+            format!(
+                "{}?q={encoded}&size=5&fields=titles,dois,urls",
+                provider.base_url
+            )
+        }
+        BibliographicProviderKind::ZbMath => {
+            format!("{}?query={encoded}&results_per_page=5", provider.base_url)
+        }
+    }
+}
+
+fn bibliographic_query_text(raw: &str) -> String {
+    bib_field(raw, "title").unwrap_or_else(|| clean_bib_text(raw))
+}
+
+fn provider_hit_if_title_matches(
+    body: &serde_json::Value,
+    kind: BibliographicProviderKind,
+    query_text: &str,
+) -> Option<BibliographicHit> {
+    let hits = match kind {
+        BibliographicProviderKind::OpenAlex => openalex_hits(body),
+        BibliographicProviderKind::SemanticScholar => semantic_scholar_hits(body),
+        BibliographicProviderKind::Ads => ads_hits(body),
+        BibliographicProviderKind::InspireHep => inspire_hep_hits(body),
+        BibliographicProviderKind::ZbMath => zbmath_hits(body),
+    };
+    hits.into_iter()
+        .find(|hit| title_matches(query_text, &hit.title))
+}
+
+fn title_matches(query_text: &str, candidate: &str) -> bool {
+    let query = normalize_title_text(query_text);
+    let candidate = normalize_title_text(candidate);
+    if query.is_empty() || candidate.is_empty() {
+        return false;
+    }
+    if query == candidate || query.contains(&candidate) || candidate.contains(&query) {
+        return true;
+    }
+    let query_tokens: Vec<&str> = query
+        .split_whitespace()
+        .filter(|token| token.len() > 2)
+        .collect();
+    let candidate_tokens: Vec<&str> = candidate
+        .split_whitespace()
+        .filter(|token| token.len() > 2)
+        .collect();
+    if query_tokens.is_empty() || candidate_tokens.is_empty() {
+        return false;
+    }
+    let matches = query_tokens
+        .iter()
+        .filter(|token| candidate_tokens.contains(token))
+        .count();
+    matches * 2 >= query_tokens.len().max(candidate_tokens.len())
+}
+
+fn normalize_title_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_space = true;
+    for ch in raw.chars().flat_map(char::to_lowercase) {
+        match ch {
+            '\u{00e4}' => {
+                out.push_str("ae");
+                last_space = false;
+            }
+            '\u{00f6}' => {
+                out.push_str("oe");
+                last_space = false;
+            }
+            '\u{00fc}' => {
+                out.push_str("ue");
+                last_space = false;
+            }
+            '\u{00df}' => {
+                out.push_str("ss");
+                last_space = false;
+            }
+            c if c.is_ascii_alphanumeric() => {
+                out.push(c);
+                last_space = false;
+            }
+            _ if !last_space => {
+                out.push(' ');
+                last_space = true;
+            }
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|field| field.as_str())
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+}
+
+fn first_string(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .find(|field| !field.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn first_http_string(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    first_string(value).filter(|field| field.starts_with("http"))
+}
+
+fn normalize_doi(raw: &str) -> Option<String> {
+    let doi = raw
+        .trim()
+        .trim_start_matches("https://doi.org/")
+        .trim_start_matches("http://doi.org/")
+        .trim_start_matches("https://dx.doi.org/")
+        .trim_start_matches("http://dx.doi.org/")
+        .trim_start_matches("doi:")
+        .trim()
+        .trim_end_matches('.');
+    (doi.starts_with("10.") && doi.contains('/')).then(|| doi.to_string())
+}
+
+fn openalex_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    body.get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let title =
+                string_field(item, "display_name").or_else(|| string_field(item, "title"))?;
+            let doi = string_field(item, "doi").and_then(|doi| normalize_doi(&doi));
+            let url = item
+                .get("primary_location")
+                .and_then(|location| string_field(location, "landing_page_url"))
+                .or_else(|| string_field(item, "id"));
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
+}
+
+fn semantic_scholar_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    body.get("data")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let title = string_field(item, "title")?;
+            let doi = item
+                .get("externalIds")
+                .and_then(|ids| string_field(ids, "DOI"))
+                .and_then(|doi| normalize_doi(&doi));
+            let url = string_field(item, "url");
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
+}
+
+fn ads_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    body.get("response")
+        .and_then(|v| v.get("docs"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let title = first_string(item.get("title")?)?;
+            let doi = item
+                .get("doi")
+                .and_then(first_string)
+                .and_then(|doi| normalize_doi(&doi));
+            let url = first_http_string(item.get("identifier")).or_else(|| {
+                string_field(item, "bibcode")
+                    .map(|bibcode| format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract"))
+            });
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
+}
+
+fn inspire_hep_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    body.get("hits")
+        .and_then(|v| v.get("hits"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|hit| {
+            let metadata = hit.get("metadata").unwrap_or(hit);
+            let title = metadata
+                .get("titles")
+                .and_then(|titles| titles.as_array())
+                .and_then(|titles| titles.first())
+                .and_then(|title| string_field(title, "title"))?;
+            let doi = metadata
+                .get("dois")
+                .and_then(|dois| dois.as_array())
+                .and_then(|dois| dois.first())
+                .and_then(|doi| string_field(doi, "value"))
+                .and_then(|doi| normalize_doi(&doi));
+            let url = metadata
+                .get("urls")
+                .and_then(|urls| urls.as_array())
+                .and_then(|urls| urls.first())
+                .and_then(|url| string_field(url, "value"))
+                .or_else(|| string_field(hit, "links"));
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
+}
+
+fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
+    body.get("result")
+        .or_else(|| body.get("results"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let title =
+                string_field(item, "title").or_else(|| item.get("title").and_then(first_string))?;
+            let doi = string_field(item, "doi").and_then(|doi| normalize_doi(&doi));
+            let url = string_field(item, "url")
+                .or_else(|| string_field(item, "id"))
+                .or_else(|| {
+                    string_field(item, "zbl_id").map(|id| format!("https://zbmath.org/{id}"))
+                });
+            Some(BibliographicHit { title, doi, url })
+        })
+        .collect()
 }
 
 async fn send_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
@@ -727,6 +1211,20 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
         }
     }
     JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn send_json_with_timeout(http: &reqwest::Client, url: &str) -> JsonLookup {
+    match tokio::time::timeout(
+        Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
+        send_json_with_retry(http, url),
+    )
+    .await
+    {
+        Ok(lookup) => lookup,
+        Err(_) => JsonLookup::Transient(format!(
+            "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
+        )),
+    }
 }
 
 fn is_transient_status(status: reqwest::StatusCode) -> bool {
@@ -881,6 +1379,15 @@ mod tests {
             figures: vec![],
             bibliography: cites,
             source_format: None,
+        }
+    }
+
+    fn classic_ref(key: &str, title: &str, year: u16) -> Citation {
+        Citation {
+            raw: format!("@article{{{key}, title = {{{title}}}, year = {{{year}}}}}"),
+            doi: None,
+            arxiv_id: None,
+            title: Some(title.to_string()),
         }
     }
 
@@ -1139,6 +1646,132 @@ mod tests {
         assert_eq!(r.notes["unverified"].as_array().unwrap().len(), 1);
         assert_eq!(r.notes["entries"][0]["status"], "unverified");
         assert_eq!(r.notes["entries"][0]["exists"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn bibliographic_waterfall_resolves_pr54_classics_and_keeps_partial_results() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {
+                    "items": [{
+                        "DOI": "10.weak/crossref",
+                        "score": 8.0,
+                        "title": ["Weak unrelated match"],
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/openalex/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ads/v1/search/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "response": {
+                    "docs": [
+                        {
+                            "title": ["Relativitaetstheorie und Mathematik"],
+                            "doi": ["10.ads/cartan"],
+                            "bibcode": "1922JRAM..146...16C",
+                            "identifier": ["https://ui.adsabs.harvard.edu/abs/1922JRAM..146...16C/abstract"]
+                        },
+                        {
+                            "title": ["Survey of General Relativity Theory"],
+                            "bibcode": "1962ctgr.book.....E",
+                            "identifier": ["https://ui.adsabs.harvard.edu/abs/1962ctgr.book.....E/abstract"]
+                        },
+                        {
+                            "title": ["Galilei and Lorentz Structures on Space-Time"],
+                            "doi": ["10.ads/kunzle"],
+                            "bibcode": "1972AnPhy..72..445K"
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/inspire/api/literature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": {
+                    "hits": []
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/zbmath/v1/document/_structured_search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": [
+                    {
+                        "title": "Foundations and Current Problems of General Relativity",
+                        "doi": "10.zbmath/trautman",
+                        "url": "https://zbmath.org/trautman"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bibliographic_provider_bases(
+            format!("{}/works", server.uri()),
+            format!("{}/api/query", server.uri()),
+            format!("{}/doi", server.uri()),
+            format!("{}/openalex/works", server.uri()),
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            format!("{}/ads/v1/search/query", server.uri()),
+            format!("{}/inspire/api/literature", server.uri()),
+            format!("{}/zbmath/v1/document/_structured_search", server.uri()),
+        );
+        let paper = paper_with(vec![
+            classic_ref("cartan1922", "Relativitaetstheorie und Mathematik", 1922),
+            classic_ref("ehlers1962", "Survey of General Relativity Theory", 1962),
+            classic_ref(
+                "kunzle1972",
+                "Galilei and Lorentz Structures on Space-Time",
+                1972,
+            ),
+            classic_ref(
+                "trautman1966",
+                "Foundations and Current Problems of General Relativity",
+                1966,
+            ),
+            classic_ref("reichenbach1928", "Philosophie der Raum-Zeit-Lehre", 1928),
+            classic_ref("unknown1901", "A deliberately unresolved classic", 1901),
+        ]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert!(matches!(r.status, VerifierStatus::Warn), "{:?}", r);
+        assert_eq!(r.notes["checked"], 6);
+        assert_eq!(r.notes["entries"].as_array().unwrap().len(), 6);
+        assert_eq!(r.notes["unresolved"].as_array().unwrap().len(), 0);
+        assert_eq!(r.notes["unverified"].as_array().unwrap().len(), 2);
+        let sources: Vec<&str> = r.notes["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["status"] == "resolved")
+            .filter_map(|entry| entry["verified_via"].as_str())
+            .collect();
+        assert!(sources.contains(&"ads"), "sources={sources:?}");
+        assert!(sources.contains(&"zbmath"), "sources={sources:?}");
     }
 
     #[test]
