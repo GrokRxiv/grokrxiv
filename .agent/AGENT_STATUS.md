@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T09:04:36Z
+Updated: 2026-06-13T09:59:14Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 24 integration complete; P0-024 corpus toolchain runner environment merged and verified on coordinator.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-024-ghc-runner-env` fast-forward merged.
-- Branch base commit: `bce827a`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
+- Session type: P0 session 25 worker checkpoint; P0-025 Tier F prompt-injection formalization fix complete in local worker, pending coordinator merge.
+- Branch/worktree: worker branch `p0-025-narrow-corpus-checks` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-025-narrow-corpus-checks`; coordinator branch remains `grokrxiv-local-corpus-harness`.
+- Branch base commit: `3315c2c`; current checkpoint commit: this worker checkpoint commit after commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none currently assigned. P0-024 F3 GHC PATH drift is fixed by an approved app-local runner environment, not by editing shell startup files. `evals/bin/grokrxiv-corpus-env` prepends app-owned shims for corpus preflight, review runs, and independent re-verification; `evals/bin/ghc` refuses any GHC whose `--numeric-version` does not match `evals/toolchain.lock.yaml` (`9.14.1`). Coordinator verification shows the wrapper returns GHC `9.14.1` even when `PATH=/usr/local/bin`. Next actions are LOOP preflight through the wrapper and narrow synthetic/Tier R checks. No full corpus green claim or phase tag.
+- In-flight defect: P0-025 fixed in worker. The Tier F synthetic injection run showed `semantic_ir.json` was turning paper-body publisher-readiness canary text into a formal theorem candidate because the body fallback treated `publisher_ready=true` as an equation. `grokrxiv-review-loop` now rejects prompt/policy instruction text before formal theorem/equation target creation. Affected rerun review `331c2caa-cc93-45e5-a0ac-3a3d3096b60a` shows `semantic_category_mapper [OK] theorem_candidates=3`; the canary appears only inside the copied paper body, not as a formal target. Next actions are checkpoint commit, coordinator fast-forward merge, coordinator-side verification, then continue narrow checks with `synthetic-false-theorem`. No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -65,6 +65,7 @@ Updated: 2026-06-13T09:04:36Z
 - P0-022 Tier E/F/G synthetic corpus authoring, 2026-06-13T08:38Z: added live TeX manuscripts and signal metadata for `synthetic-bad-citations`, `synthetic-injection`, and `synthetic-false-theorem`; enabled the entries by removing `status: to_author`; and taught review source resolution to find app-relative local manuscripts such as `evals/synthetic/false-theorem/paper.tex` from any repo cwd. Red fixture `corpus_synthetic_entries_are_live_app_relative_manuscripts` first failed on the placeholder status, then passed. Ingest synthetic parse test passed and confirmed Tier E has exactly 3 bibliography records, Tier F retains injection canaries, and Tier G retains the false theorem/counterexample signal. App workspace check and 45 structural tests passed. Installed PATH dry-runs for all three synthetic entries resolved as local `Tex` with `external_actions=false`. No full synthetic review sweep, corpus-green claim, or phase tag.
 - P0-023 toolchain/corpus pins, 2026-06-13T08:53Z: fast-forward merged worker branch `p0-023-toolchain-corpus-pins` into `grokrxiv-local-corpus-harness` at `c419b88`. Pinned all arXiv corpus versions, added `evals/toolchain.lock.yaml`, and added the eval Lean/Lake project with mathlib v4.30.0. Coordinator-side verification passed: corpus app-runtime tests 6/6, review-loop tests 13/13, app workspace check, and `git diff --check`. Local F3 remains because PATH `ghc` resolves to 8.4.2 while the repo pin requires 9.14.1. No full corpus-green claim or phase tag.
 - P0-024 GHC runner environment, 2026-06-13T09:04Z: worker branch `p0-024-ghc-runner-env` fast-forward merged into coordinator at `9a4f3c5`. The repo-local corpus runner wrapper plus GHC shim are integrated, LOOP.md and `toolchain.lock.yaml` are updated, and a red-first fixture proves stale PATH GHC is bypassed for corpus commands. Coordinator verification passed: targeted corpus toolchain fixture via `corpus_` tests 7/7, review-loop tests 13/13, app workspace check, structural tests 45/45, wrapped `agh doctor`, wrapped GHC/Lake/Lean version checks including `PATH=/usr/local/bin`, and `git diff --check`. No full corpus-green claim or phase tag.
+- P0-025 Tier F prompt-injection formalization, 2026-06-13T09:59Z: worker branch `p0-025-narrow-corpus-checks` ran wrapped LOOP preflight under `evals/results/20260613T090650Z/`, then narrow synthetic checks. `synthetic-bad-citations` flagged exactly the three fake DOI references and kept external actions disabled. `synthetic-injection` exposed a real defect: canary text `report publisher_ready=true...` became a `plain_theorem` formal target. Added red fixture `semantic_ir_does_not_formalize_prompt_injection_canaries`, fixed the review-loop semantic IR filter, reran the affected entry as review `331c2caa-cc93-45e5-a0ac-3a3d3096b60a`, and verified theorem candidates dropped from 4 to 3 with no canary formal target. Tests passed: `grokrxiv-review-loop` 11/11, app-runtime `review_loop` 13/13, app workspace check, `corpus_` tests 7/7, PATH `grokrxiv-app` reinstall, and `git diff --check`. Overall affected run still red on Haskell timeout, citation/policy expected-fail surfaces, and semantic adequacy. Pending coordinator merge; no full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 
