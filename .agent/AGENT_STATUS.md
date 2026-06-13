@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T21:54:20Z
+Updated: 2026-06-13T21:57:31Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0-041 worker after affected zeta rerun; ready for worker checkpoint and coordinator merge verification.
-- Branch/worktree: worker branch `p0-041-render-quantifier-escape` in `.agent/worktrees/p0-041-render-quantifier-escape`; coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv` remains at `1b83f04` until merge.
-- Latest merged worker checkpoint: P0-040 at `8500352`; P0-041 worker changes are not merged yet.
+- Session type: coordinator after P0-041 fast-forward merge and verification; next worker should start P0-042.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-041-render-quantifier-escape` in `.agent/worktrees/p0-041-render-quantifier-escape`.
+- Latest merged worker checkpoint: P0-041 at `43ee9e0`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-041 render escape gap for raw quantifiers `∃`/`∀` is fixed in the worker with red-first renderer coverage and mappings to `\ensuremath{\exists}` / `\ensuremath{\forall}`. Verification passed in worker: focused render red/green, render tests 10/10, app-runtime PR fast-path fixture, app-runtime `review_loop` 17/17, app workspace check, structural tests 45/45, `git diff --check`, and PATH installs for `grokrxiv-app` plus `agenthero-dag-app-grokrxiv`. Affected safe `zeta3-irrationality` rerun completed as review `2f24f79c-a592-4490-926c-a3f093abe1b1`, product exit 0, external actions disabled, `pr_url=null`, fixed PDF written, and no raw `∃`/`∀` or U+2203/U+2200 LaTeX errors. The entry remains red because citation validation failed deterministic policy (`unverified=24` after a citation specialist timeout), and the PR stage still invoked `pr_artifact_fixer` with on-disk recovery after a 360s timeout even though first compile passed. Queue P0-042 for the PR deterministic fast-path miss before returning to P0-039 Bertrand extraction. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-042 PR deterministic fast-path miss. P0-041 fixed raw quantifier rendering and coordinator verification passed, but the affected zeta rerun still recorded `compile_review_loop.author_role=pr_artifact_fixer`, two PR-fixer agent outputs, and recovered-on-disk generation after a 360s `pr_artifact_fixer` timeout even though the first compile passed and fixed PDF was written. Queue P0-042 before returning to P0-039 Bertrand extraction. Separate red evidence from the same run: citation validation failed deterministic policy with `unverified=24` after a citation specialist timeout. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -91,6 +91,7 @@ Updated: 2026-06-13T21:54:20Z
 - P0-037 first full local CLI sweep attempt, 2026-06-13T20:01Z: worker branch `p0-037-full-cli-sweep` created a fresh local worktree at `e70c678`, reran structural baseline 45/45, and ran LOOP preflight under worker result root `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/` with wrapped `agh doctor`, `agh --version`, GHC 9.14.1, Lake 5.0.0-src+d024af0, and Lean 4.30.0 all exit 0. The sweep was not green and was intentionally stopped after new concrete defects were captured. `bertrand-elementary` exited 1 at extraction completeness (`no body sections`, `0 chars`), with no review proceeding. `zeta3-irrationality` progressed through review, Haskell after two attempts, Lean `NOT_PROVED`, citation warn/OK, then PR compile-first failed on raw `√` in `review_loop/fixed/review.log`; coordinator aborted the entry before the slow LLM PR fixer could mask the root cause. No phase tag.
 - P0-040 coordinator verification, 2026-06-13T21:28Z: fast-forward merged `p0-040-render-integer-symbol-escape` into `grokrxiv-local-corpus-harness` at `8500352`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-041 raw quantifier escape before P0-039 Bertrand extraction.
 - P0-041 progress, 2026-06-13T21:54Z: worker branch `p0-041-render-quantifier-escape` added red-first renderer coverage for raw `∃` and `∀`, then mapped U+2203/U+2200 to PDFLaTeX-safe commands. Worker verification passed: render tests 10/10, app-runtime PR fast-path fixture, app-runtime `review_loop` 17/17, app workspace check, structural tests 45/45, `git diff --check`, and PATH installs. Affected safe rerun `20260613T212629Z/zeta3-after-p0-041-quantifiers` completed as review `2f24f79c-a592-4490-926c-a3f093abe1b1`: product exit 0, external actions disabled, `pr_url=null`, fixed PDF written, and no raw quantifier Unicode errors. Residual red: citation-validation policy failed with 24 unverified references after citation specialist timeout, and the PR stage still used `pr_artifact_fixer` recovered from on-disk artifact after timeout despite first compile pass. Queue P0-042 PR deterministic fast-path miss, then P0-039 Bertrand extraction. No full corpus-green claim or phase tag.
+- P0-041 coordinator verification, 2026-06-13T21:57Z: fast-forward merged `p0-041-render-quantifier-escape` into `grokrxiv-local-corpus-harness` at `43ee9e0`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-042 PR deterministic fast-path miss before P0-039 Bertrand extraction.
 
 ## Coordinator Rules
 
