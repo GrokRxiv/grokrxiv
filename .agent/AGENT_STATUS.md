@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T22:45:06Z
+Updated: 2026-06-13T22:48:18Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: worker P0-039 after app-local version-pin handling fix and corpus-pin diagnosis.
-- Branch/worktree: worker branch `p0-039-bertrand-extraction-completeness` in `.agent/worktrees/p0-039-bertrand-extraction-completeness`; coordinator branch `grokrxiv-local-corpus-harness` remains in `/Users/mlong/Documents/Development/grokrxiv`.
-- Latest merged worker checkpoint: P0-042 at `7240b2d`.
+- Session type: coordinator after P0-039 fast-forward merge and verification.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-039-bertrand-extraction-completeness` in `.agent/worktrees/p0-039-bertrand-extraction-completeness`.
+- Latest merged worker checkpoint: P0-039 at `1aeab11`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-039 Bertrand extraction completeness is split. App-local bug fixed in this worker: versioned arXiv review inputs now preserve `vN` through CLI parsing and historical PDF metadata URL construction, verified by red-first tests and installed dry-run. Remaining blocker is corpus ground truth: `bertrand-elementary` is pinned to `2407.07620v5`, but arXiv v5 returns 404 for both PDF and e-print and the abs page marks the submission withdrawn/no PDF; v1-v4 are retrievable. Do not edit the corpus version or expected block without human sign-off. Separate residual from zeta: citation validation failed deterministic policy after citation specialist timeout (`checked=32`, `unverified=24`); queue that separately if it repeats in the next sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-039 app-local version-pin handling is merged and coordinator-verified. Remaining blocker is corpus ground truth: `bertrand-elementary` is pinned to `2407.07620v5`, but arXiv v5 returns 404 for both PDF and e-print and the abs page marks the submission withdrawn/no PDF; v1-v4 are retrievable. Do not edit the corpus version or expected block without human sign-off. Separate residual from zeta: citation validation failed deterministic policy after citation specialist timeout (`checked=32`, `unverified=24`); queue that separately if it repeats in the next sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

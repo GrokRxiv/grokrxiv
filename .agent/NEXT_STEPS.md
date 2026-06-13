@@ -2,13 +2,13 @@
 
 Continue exactly from here:
 
-## P0-039 App Fix Merge and Bertrand Corpus Decision
+## P0-039 Bertrand Corpus Decision
 
 Current coordinator:
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
 - P0-039 worker branch: `p0-039-bertrand-extraction-completeness`
-- Status: P0-039 worker is ready to checkpoint and merge. It fixes app-local arXiv version preservation and records a human-signoff corpus blocker for `bertrand-elementary`.
+- Status: P0-039 worker is merged at `1aeab11` and coordinator verification passed. App-local arXiv version preservation is fixed. `bertrand-elementary` remains blocked on human corpus sign-off.
 
 P0-039 worker evidence:
 - App bug fixed: `parse_arxiv_source` now preserves valid modern `vN` suffixes for review ingest.
@@ -27,15 +27,13 @@ P0-039 evidence from the P0-037 sweep:
 - Updated interpretation: N1 behaved correctly. The remaining corpus issue is that Tier A expects `full_body` for pinned `v5`, but live arXiv returns 404 for both PDF and e-print at `v5`; v1-v4 are retrievable. This is not safe to fix by editing corpus ground truth without human sign-off.
 
 Expected next session shape:
-1. In the P0-039 worker, run final `git status`, add files, and commit: `codex checkpoint: P0 - preserve arxiv version pins`.
-2. Return to coordinator `/Users/mlong/Documents/Development/grokrxiv`, fast-forward merge `p0-039-bertrand-extraction-completeness`.
-3. Re-run coordinator checks: ingest focused/full as appropriate, app-runtime parser/review-loop, app workspace check, structural tests, and `git diff --check`.
-4. Ask for human decision on `bertrand-elementary`:
+1. Ask for human decision on `bertrand-elementary`:
    - approve changing corpus pin from `v5` to latest retrievable `v4`, then rerun safely;
    - replace the Tier A Bertrand entry with a retrievable source;
    - or explicitly change expected extraction semantics for withdrawn `v5`.
-5. If no human corpus decision is available, stop the P0-039 thread and continue only with a separate queued defect such as P0-043 zeta citation timeout.
-6. Do not tag P0 green; a full corpus/both-runner sweep is still required.
+2. If human approves `v4`, make that corpus version change in a fresh worker with explicit sign-off recorded, rerun `bertrand-elementary` safely, and do not weaken any expected block.
+3. If no human corpus decision is available, stop the P0-039 thread and continue only with a separate queued defect such as P0-043 zeta citation timeout.
+4. Do not tag P0 green; a full corpus/both-runner sweep is still required.
 
 Guardrails:
 - Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.

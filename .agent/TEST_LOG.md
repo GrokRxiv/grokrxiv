@@ -842,3 +842,34 @@ Installed dry-run evidence:
 Residuals:
 - No affected `bertrand-elementary` green rerun was executed because the corpus remains pinned to unavailable `v5`; a run would remain red without a human-approved corpus pin change.
 - No phase tag or full P0 green claim.
+
+## P0-039 Coordinator Verification
+
+Time UTC: 2026-06-13T22:48:18Z
+Branch: `grokrxiv-local-corpus-harness`
+Merged worker: `p0-039-bertrand-extraction-completeness`
+Merge result: fast-forward from `3e2f525` to `1aeab11`
+
+Commands passed after fast-forward merge:
+
+```bash
+git merge --ff-only p0-039-bertrand-extraction-completeness
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest abs_metadata_preserves_requested_pdf_version --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime arxiv_review_source_parsing_preserves_version_suffix --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+git diff --check
+grokrxiv-app review https://arxiv.org/abs/2407.07620v4 --loop --debug --no-external-actions --dry-run --json
+```
+
+Pass counts:
+- Focused version tests: 1/1 each.
+- Ingest lib: 46/46.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Residuals:
+- No full corpus-green claim.
+- `bertrand-elementary` remains blocked on human corpus pin decision because pinned `v5` is withdrawn/unavailable.
