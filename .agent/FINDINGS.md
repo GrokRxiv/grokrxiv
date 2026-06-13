@@ -32,6 +32,46 @@ Fix plan:
 Attempts: 1
 Escalation status: none.
 
+## P0-035c - CLI Acceptance With Truncated-Statement Semantic Gaps
+
+ID: P0-035c
+Corpus entry: `regression-pr54-weyl`
+Review id: `e97e30a8-08ba-4741-a7f4-d3e4b5ee2a75`
+Runner: normal wrapped local `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: product `run.log` records `ok=true` and `output.status=0`; wrapper exited 1 after product completion due zsh read-only `status=$?` assignment, documented in `STATUS_RECOVERY.md`.
+finish_reason: P0-035 acceptance passed; later review-loop gates remain red.
+Bucket: F1/F2 app-local Haskell scaffold fidelity fixed; residual PR fixer timeout and Lean adequacy red are separate.
+NEVER-event: none. External actions stayed disabled, `pr_url=null`, and Lean did not report `PROVED`.
+Symptom:
+- Prior deterministic scaffold trusted extraction-truncated statements containing `=` and emitted fabricated `Equals` propositions.
+- Haskell reviewer correctly rejected those as invented structure.
+Root cause:
+- `theorem_ir_from_statement` parsed any statement with `=` as an equality even when the extraction source ended with `...`.
+- The deterministic Haskell generator then treated those partial statements as ordinary formal obligations.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/review-loop/src/lib.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Resolution:
+1. Added red-first fixture `semantic_ir_marks_truncated_theorem_statements_partial`.
+2. `theorem_ir_from_statement` now marks extraction-truncated statements as `unknown_prop` with reason `statement_truncated_by_extraction`.
+3. Deterministic Haskell generation preserves theorem metadata and emits partial/truncated statements as `SemanticGap` while retaining source spans and Lean target declarations.
+Evidence:
+- Red-first truncation fixture failed before implementation with `typed_transcription.status = transcribed`; passed after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib -- --nocapture`: pass, 15 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture`: pass, 17 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- PATH installs for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`: pass.
+- Normal CLI affected rerun `20260613T181916Z/regression-pr54-weyl-cli-after-p0-035-truncated-gap`: product `output.status=0`, external actions disabled, `pr_url=null`.
+- Haskell artifact: `status=pass`, attempt 1 `generation_recovery.status=deterministic_local_author`, GHC compile exit 0, semantic validation pass, independent Haskell reviewer pass.
+- `proof_obligation_generator`: `theorem_obligations=10`.
+- Citation validation: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`, `malformed=0`.
+Residual:
+- Not a full Tier R green claim. Lean remains `NOT_PROVED`/`FAILED`, semantic adequacy remains `OVERCLAIMED`, and `pr_artifact_fixer` timed out after 360s despite external actions disabled.
+Attempts: 1
+Escalation status: none.
+
 ## P0-001 Resolution
 
 Status: fixed locally, 2026-06-12T23:27Z.

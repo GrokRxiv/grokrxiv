@@ -679,14 +679,14 @@ pub fn validate_haskell_semantic_model_code(
                     .to_string(),
             );
         }
-        let raw_theorem_conclusion = contains_normalized(&["conclusion = PRaw", "thmConclusion = PRaw"])
-            || contains_compact(&["conclusion=PRaw", "thmConclusion=PRaw"]);
+        let raw_theorem_conclusion =
+            contains_normalized(&["conclusion = PRaw", "thmConclusion = PRaw"])
+                || contains_compact(&["conclusion=PRaw", "thmConclusion=PRaw"]);
         let empty_binders = contains_normalized(&["binders = []", "thmBinders = []"])
             || contains_compact(&["binders=[]", "thmBinders=[]"]);
-        let empty_assumptions = contains_normalized(&[
-            "theoremAssumptions = []",
-            "thmAssumptions = []",
-        ]) || contains_compact(&["theoremAssumptions=[]", "thmAssumptions=[]"]);
+        let empty_assumptions =
+            contains_normalized(&["theoremAssumptions = []", "thmAssumptions = []"])
+                || contains_compact(&["theoremAssumptions=[]", "thmAssumptions=[]"]);
         if raw_theorem_conclusion && (empty_binders || empty_assumptions) {
             issues.push(
                 "SemanticModel.hs must not map paper theorem candidates to PRaw conclusions with empty binders or assumptions."
@@ -799,10 +799,7 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
                 .or_else(|| node.get("section"))
                 .cloned()
                 .unwrap_or_else(|| json!(null));
-            let depends_on = node
-                .get("depends_on")
-                .cloned()
-                .unwrap_or_else(|| json!([]));
+            let depends_on = node.get("depends_on").cloned().unwrap_or_else(|| json!([]));
             Some(PaperMathSource {
                 artifact: "theorem_graph.json",
                 id,
@@ -819,7 +816,9 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
     sources
 }
 
-fn collect_body_section_math_sources(paper_math_sources: &serde_json::Value) -> Vec<PaperMathSource> {
+fn collect_body_section_math_sources(
+    paper_math_sources: &serde_json::Value,
+) -> Vec<PaperMathSource> {
     let sections = paper_math_sources
         .get("body")
         .and_then(|body| body.get("sections"))
@@ -840,14 +839,20 @@ fn collect_body_section_math_sources(paper_math_sources: &serde_json::Value) -> 
             .or_else(|| section.get("body"))
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        for (statement_idx, statement) in split_candidate_math_sentences(body).into_iter().enumerate() {
+        for (statement_idx, statement) in
+            split_candidate_math_sentences(body).into_iter().enumerate()
+        {
             let lower = statement.to_ascii_lowercase();
             if !looks_like_formal_math_statement(statement, &lower) {
                 continue;
             }
             out.push(PaperMathSource {
                 artifact: "body.md",
-                id: format!("{}_math_{}", lean_identifier(&section_id), statement_idx + 1),
+                id: format!(
+                    "{}_math_{}",
+                    lean_identifier(&section_id),
+                    statement_idx + 1
+                ),
                 kind: formal_math_kind(statement, &lower).to_string(),
                 statement: statement.to_string(),
                 section_id: json!(section_id),
@@ -940,6 +945,19 @@ fn theorem_ir_from_statement(
     statement: &str,
     source_span: &serde_json::Value,
 ) -> serde_json::Value {
+    if statement_has_extraction_truncation(statement) {
+        return json!({
+            "theorem_name": theorem_name,
+            "source_span": source_span.clone(),
+            "binders": [],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "unknown_prop",
+                "reason": "statement_truncated_by_extraction",
+                "text": statement.trim(),
+            },
+        });
+    }
     let (binders, conclusion) = parse_statement_to_typed_parts(statement);
     json!({
         "theorem_name": theorem_name,
@@ -948,6 +966,10 @@ fn theorem_ir_from_statement(
         "assumptions": [],
         "conclusion": conclusion,
     })
+}
+
+fn statement_has_extraction_truncation(statement: &str) -> bool {
+    statement.trim_end().ends_with("...")
 }
 
 fn legacy_theorem_ir(lean_declaration: &str, theorem: &serde_json::Value) -> serde_json::Value {
@@ -1120,7 +1142,11 @@ fn emit_lean_theorem_statement(declaration: &str, theorem_ir: &serde_json::Value
                 .iter()
                 .filter_map(|binder| {
                     let name = binder.get("name").and_then(|v| v.as_str())?;
-                    let ty = emit_type(binder.get("type").unwrap_or(&json!({"kind": "unknown_type"})));
+                    let ty = emit_type(
+                        binder
+                            .get("type")
+                            .unwrap_or(&json!({"kind": "unknown_type"})),
+                    );
                     Some(format!(" ({name} : {ty})"))
                 })
                 .collect::<String>()
@@ -1465,7 +1491,10 @@ fn lean_status_diagnostics(lean_results: &serde_json::Value) -> String {
         }
     }
     for pointer in ["/skip_reason", "/status"] {
-        if let Some(value) = lean_results.pointer(pointer).and_then(|value| value.as_str()) {
+        if let Some(value) = lean_results
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+        {
             parts.push(value);
         }
     }
@@ -1907,6 +1936,52 @@ end GrokRxiv
     }
 
     #[test]
+    fn semantic_ir_marks_truncated_theorem_statements_partial() {
+        let review_id = Uuid::parse_str("53ceda2d-0c7d-42b5-b7de-7f8a19bbf420").unwrap();
+        let paper_math = json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": []
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": []
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": [
+                    {
+                        "id": "thm-truncated",
+                        "type": "theorem",
+                        "statement": "Two connections are equivalent if and only if D^rho_(mu nu) = delta^rho_(mu eta^...",
+                        "section_id": "sec-truncated",
+                        "depends_on": []
+                    }
+                ]
+            }
+        });
+
+        let semantic_ir = build_semantic_ir_from_paper_math(
+            review_id,
+            &paper_math,
+            &json!({"claims": []}),
+            &json!({"nodes": [], "edges": []}),
+        );
+        let theorem = &semantic_ir["theorem_candidates"][0];
+
+        assert_eq!(theorem["typed_transcription"]["status"], "partial");
+        assert_eq!(theorem["theorem_ir"]["conclusion"]["kind"], "unknown_prop");
+        assert_eq!(
+            theorem["theorem_ir"]["conclusion"]["reason"],
+            "statement_truncated_by_extraction"
+        );
+        assert_eq!(
+            theorem["formalization_target"]["lean_declaration"],
+            "thm_truncated"
+        );
+    }
+
+    #[test]
     fn semantic_ir_keeps_extracted_equations_as_context_not_lean_targets() {
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let paper_math = json!({
@@ -2112,7 +2187,9 @@ end GrokRxiv
 
         let issues = validate_lean_proof_code(narrowed, &obligations);
 
-        assert!(issues.iter().any(|issue| issue.contains("must not alter emitted statement")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("must not alter emitted statement")));
     }
 
     #[test]

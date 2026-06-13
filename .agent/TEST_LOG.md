@@ -357,6 +357,7 @@ cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
 git diff --check
 cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked
 cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
 ```
 
 Focused evidence:
@@ -406,6 +407,37 @@ Affected reruns:
 - `20260613T163854Z/regression-pr54-weyl-api-after-p0-035-haskell-filter`: API override, review `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`; product exit 0; external actions disabled; `pr_url=null`; Haskell `status=pass`, attempt 1 `status=pass`, `generation_recovery.status=deterministic_local_author`, compile pass, reviewer pass, and `theorem_obligations=10`.
 - Citation for `dad9153a-778c-4c4b-b2f3-f096a4c0ed21`: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
 - Scrubbed CLI probes before and after the fix still failed with stdout JSON `api_error_status=429` and reset `11:20am (America/Costa_Rica)`.
+
+## P0-035c - 2026-06-13T18:48:52Z
+
+Commands passed:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop semantic_ir_marks_truncated_theorem_statements_partial --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop semantic_ir --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_deterministic_haskell_author --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Focused pass counts:
+- `grokrxiv-review-loop` full lib suite: pass, 15 tests.
+- App-runtime `review_loop` subset: pass, 17 tests.
+- App workspace check: pass.
+- Structural tests: pass, 45 tests.
+
+Affected rerun:
+- Result dir: `agenthero/apps/grokrxiv/evals/results/20260613T181916Z/regression-pr54-weyl-cli-after-p0-035-truncated-gap`.
+- Product command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`.
+- Product `run.log`: `ok=true`, `output.status=0`.
+- Wrapper note: the shell wrapper exited 1 after product completion because `status=$?` is read-only in zsh; `exit.status`, `wrapper.status`, and `STATUS_RECOVERY.md` record the recovered product/wrapper status split.
+- Review `e97e30a8-08ba-4741-a7f4-d3e4b5ee2a75`: external actions disabled, `pr_url=null`, Haskell `status=pass`, attempt 1 `generation_recovery.status=deterministic_local_author`, GHC compile exit 0, semantic validation pass, independent reviewer pass, proof obligations generated (`theorem_obligations=10`).
+- Citation remained within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
+- Residual red: Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, and `pr_artifact_fixer` timeout after 360s.
 
 Residuals:
 - No full Tier R green claim. The API affected rerun is red on missing API `gemini` provider for novelty plus Lean `NOT_PROVED`/`FAILED` and semantic adequacy `OVERCLAIMED`.
