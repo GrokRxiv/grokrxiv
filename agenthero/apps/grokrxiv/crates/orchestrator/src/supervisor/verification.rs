@@ -58,6 +58,37 @@ pub(super) fn specialist_failure_output(role: &str, error: &str) -> serde_json::
     }
 }
 
+pub(super) fn specialist_failure_verifier_result(
+    role: &str,
+    error: &str,
+    verifier_notes: Option<serde_json::Value>,
+) -> (
+    Option<grokrxiv_schemas::VerifierStatus>,
+    Option<serde_json::Value>,
+) {
+    let mut notes = match verifier_notes {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = serde_json::Map::new();
+            map.insert("verifier_notes".to_string(), other);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    notes.insert(
+        "agent_execution".to_string(),
+        json!({
+            "status": "failed",
+            "role": role,
+            "reason": error,
+        }),
+    );
+    (
+        Some(grokrxiv_schemas::VerifierStatus::Fail),
+        Some(serde_json::Value::Object(notes)),
+    )
+}
+
 fn summary_failure_output(error: &str) -> serde_json::Value {
     json!({
         "tldr": "Summary reviewer failed before producing a normal review.",

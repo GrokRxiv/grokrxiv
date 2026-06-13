@@ -1182,6 +1182,32 @@ mod tests {
     }
 
     #[test]
+    fn specialist_failure_verifier_result_records_status_role_and_reason() {
+        let existing_notes = serde_json::json!({
+            "json_schema": {
+                "status": "pass",
+                "notes": {}
+            }
+        });
+
+        let (status, notes) = verification::specialist_failure_verifier_result(
+            "summary",
+            "CliRunner timed out after 270s for role summary",
+            Some(existing_notes),
+        );
+
+        assert_eq!(status, Some(grokrxiv_schemas::VerifierStatus::Fail));
+        let notes = notes.expect("failure verifier notes");
+        assert_eq!(notes["json_schema"]["status"], "pass");
+        assert_eq!(notes["agent_execution"]["status"], "failed");
+        assert_eq!(notes["agent_execution"]["role"], "summary");
+        assert!(notes["agent_execution"]["reason"]
+            .as_str()
+            .expect("reason string")
+            .contains("timed out after 270s"));
+    }
+
+    #[test]
     fn meta_failure_output_is_schema_valid_major_revision() {
         let output = meta_failure_output("`claude` exited with Some(1)");
         assert_eq!(output["recommendation"], "major_revision");

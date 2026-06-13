@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T00:49:21Z
+Updated: 2026-06-13T00:59:37Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 6, P0-007 theorem/equation recovery.
-- Branch/worktree: `p0-007-theorem-equation` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-007-theorem-equation`.
-- Branch base commit: `392d3b4`.
+- Session type: P0 session 7, P0-008 explicit specialist-failure artifacts.
+- Branch/worktree: `p0-008-specialist-artifacts` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-008-specialist-artifacts`.
+- Branch base commit: `61c1004`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-007 fixed locally for theorem/equation recovery. `regression-pr54-weyl` no-cache/no-VLM extraction now preserves raw TeX theorem/equation environments via `raw_tex_markdown_fallback`, emits 117,247-byte `body.md`, 903 equations, and 41 theorem nodes. The affected extraction command still exits 1 after local artifact materialization because the configured `grokrxiv-data` remote push fails with `unsupported URL protocol`; no full corpus green claim yet.
+- In-flight defect: P0-008 fixed locally for N2 specialist failure artifacts. Runner failures/timeouts now force `review_agents.verifier_status=fail` and persist `verifier_notes.agent_execution={status,role,reason}` while keeping role outputs schema-valid. No full affected review-loop rerun was executed in this checkpoint; no full corpus green claim yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -42,6 +42,7 @@ Updated: 2026-06-13T00:49:21Z
 - P0-003 fix, 2026-06-13T00:10Z: added an app-runtime extraction-completeness gate before review row creation/specialist launch. Safe affected-entry rerun exits 1 at `[2/6] Extract [FAIL] extraction completeness failed`; no `pr_url`, GitHub URL, Review DAG, specialist, or external action output appears in the log.
 - P0-006 fix, 2026-06-13T00:28Z: TeX bundle parsing now fails closed when Pandoc/LaTeXML produce no Markdown, source-to-body reports `failed` when `body.md` is empty, and extraction audit treats failed stages as failures. No-cache, no-VLM affected extraction regenerated local artifacts with `body.md` 50,697 bytes and 5 sections; command still exits 1 later on configured data-repo SSH push (`unsupported URL protocol`), which is not fixed in this patch.
 - P0-007 fix, 2026-06-13T00:49Z: raw TeX fallback recovers reviewable Markdown from TeX document bodies after converter failure, canonicalizes `\newtheorem` aliases, includes `construction` theorem-like blocks, and reports `source_to_body.tool=raw_tex_markdown_fallback`. Affected extraction for `2606.00799` materialized local artifacts with `body.md` 117,247 bytes, `equations.json` 903 entries, and `theorem_graph.json` 41 nodes. `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
+- P0-008 fix, 2026-06-13T00:59Z: specialist runner failures now carry an execution-failure marker through review DAG persistence, force verifier status `fail`, and add structured `agent_execution.status=failed`, `role`, and `reason` notes to the rendered agent artifact envelope. `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture` passed, 263 tests; `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` passed.
 
 ## Coordinator Rules
 

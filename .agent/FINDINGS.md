@@ -202,6 +202,48 @@ Residual:
 - Tier R is still not full green until the safe review-loop run verifies all specialists, citation partial results, and citation `needs_review <= 2`.
 - The data-repo push failure is environment/tooling outside this defect and remains unresolved.
 
+## P0-008: Specialist Runner Failure Could Be Persisted As Schema-Valid Output
+
+ID: P0-008
+Corpus entry: `regression-pr54-weyl` / NEVER-event `N2_silent_specialist_loss`
+Runner: `cli`
+Command: targeted local tests; no full affected review-loop rerun in this checkpoint
+Exit code: targeted validation passed after fix
+finish_reason: local TDD fixture reproduced missing explicit failure marker before implementation
+Bucket: F1 contract
+NEVER-event: N2_silent_specialist_loss
+Symptom: runner failures are caught and converted into role-schema-valid fallback JSON, but the persisted verifier status previously depended on the normal verifier ladder. For non-citation roles, a schema-valid fallback with enough prose can be marked usable by schema/support/tone checks instead of being recorded as a failed specialist artifact with status and reason.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor/verification.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor/review_flow.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor.rs`
+Root cause:
+- `specialist_failure_output` intentionally emits closed-schema-valid fallback outputs, but the review-flow result tuple did not remember that the output came from a runner failure.
+- `review_agents.verifier_status` and the rendered `agents/<role>.json.verifier` envelope therefore had no guaranteed `fail` status or structured execution-failure reason for those synthetic outputs.
+Fix plan:
+1. Add a failing fixture asserting specialist execution failures force verifier status `fail` and record `agent_execution.status`, `role`, and `reason` while preserving normal verifier ladder notes.
+2. Thread an optional execution-failure reason through `specialist_results`.
+3. After the normal verifier ladder runs, override synthetic failure rows to `VerifierStatus::Fail` and merge `agent_execution` notes into `verifier_notes`.
+4. Keep the role output JSON schema-valid by storing status/reason in the artifact envelope verifier notes, not inside the closed role output schema.
+Attempts: 1
+Escalation status: none.
+
+## P0-008 Resolution
+
+Status: fixed locally for explicit specialist-failure artifacts, 2026-06-13T00:59Z.
+Evidence:
+- Added `specialist_failure_verifier_result` in `agenthero/apps/grokrxiv/crates/orchestrator/src/supervisor/verification.rs`.
+- `run_review_dag_inner_with_context` now carries `Option<String>` execution-failure reasons for specialist runner errors and join failures.
+- Synthetic specialist failure rows now persist `verifier_status=fail` plus `verifier_notes.agent_execution.status=failed`, `role`, and `reason`; rendered `agents/<role>.json` artifacts include the same verifier envelope.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_failure_verifier_result_records_status_role_and_reason -- --nocapture`: expected compile fail before helper, then pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime specialist_failure -- --nocapture`: pass, 3 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime gate -- --nocapture`: pass, 11 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --nocapture`: pass, 263 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+Residual:
+- No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint because it invokes the full multi-agent loop rather than cheaply isolating the N2 failure path.
+- Tier R still needs a safe `--no-external-actions` review-loop run to verify `paper_review: all_specialists_complete`, citation partial-result emission, and `needs_review <= 2`.
+
 ## P0-004: Citation Waterfall Not Wired For PR-54 Classics
 
 ID: P0-004

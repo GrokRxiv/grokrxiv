@@ -13,11 +13,12 @@ use super::prompts::{
 use super::rendering::render_to_disk;
 use super::verification::{
     meta_failure_output, role_status_label, specialist_failure_output,
-    validate_role_output_after_merge, verifier_status_mark, verify_artifact,
+    specialist_failure_verifier_result, validate_role_output_after_merge, verifier_status_mark,
+    verify_artifact,
 };
 use super::{MAX_RETRIES, MIN_SPECIALIST_QUORUM};
-use crate::cli_status::StatusMark;
 use crate::agents::grokrxiv_agent_context;
+use crate::cli_status::StatusMark;
 use crate::state::AppState;
 use agenthero_dag_runtime::{DagManifest, DagNodeKind};
 use serde_json::json;
@@ -803,6 +804,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                             hit.model,
                             hit.runner,
                             true,
+                            None::<String>,
                         ));
                     }
                 }
@@ -841,6 +843,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                 run.model,
                 run.runner,
                 false,
+                None::<String>,
             ))
         })));
     }
@@ -854,6 +857,7 @@ pub(super) async fn run_review_dag_inner_with_context(
         String, // model actually used
         AgentRunnerKind,
         bool,   // cache hit
+        Option<String>, // specialist execution failure reason
     )> = Vec::with_capacity(specialist_roles.len());
     for (role, role_model, role_runner, h) in handles {
         match h.await {
@@ -876,6 +880,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                     role_model,
                     role_runner,
                     false,
+                    Some(error),
                 ));
             }
             Err(e) => {
@@ -896,6 +901,7 @@ pub(super) async fn run_review_dag_inner_with_context(
                     role_model,
                     role_runner,
                     false,
+                    Some(error),
                 ));
             }
         }
@@ -906,10 +912,22 @@ pub(super) async fn run_review_dag_inner_with_context(
     // for the quorum gate before meta-review synthesis.
     let mut specialist_verifier_status: Vec<(String, Option<VerifierStatus>)> =
         Vec::with_capacity(specialist_results.len());
-    for (role, output, tokens_in, tokens_out, latency_ms, used_model, used_runner, cache_hit) in
-        &specialist_results
+    for (
+        role,
+        output,
+        tokens_in,
+        tokens_out,
+        latency_ms,
+        used_model,
+        used_runner,
+        cache_hit,
+        execution_failure,
+    ) in &specialist_results
     {
-        let (v_status, v_notes) = verify_artifact(state, &extract_arc, role, output).await;
+        let (mut v_status, mut v_notes) = verify_artifact(state, &extract_arc, role, output).await;
+        if let Some(error) = execution_failure.as_deref() {
+            (v_status, v_notes) = specialist_failure_verifier_result(role, error, v_notes);
+        }
         let cfg = state
             .agent_configs
             .get(role)
@@ -1041,7 +1059,9 @@ pub(super) async fn run_review_dag_inner_with_context(
 
     // Meta-review synthesis receives only specialist outputs keyed by role slug.
     let mut specialists_map = serde_json::Map::new();
-    for (role, output, _ti, _to, _lat, _model, _runner, _cache_hit) in &specialist_results {
+    for (role, output, _ti, _to, _lat, _model, _runner, _cache_hit, _failure) in
+        &specialist_results
+    {
         specialists_map.insert(role.clone(), output.clone());
     }
     let meta_input = json!({
