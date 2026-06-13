@@ -763,3 +763,30 @@ Residuals:
 - No phase tag or full P0 green claim.
 - Citation validation failed deterministic policy after citation specialist timeout: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`.
 - P0-039 Bertrand extraction completeness is next; if the zeta citation timeout repeats in the next sweep, queue it separately as P0-043.
+
+## P0-042 Coordinator Verification
+
+Time UTC: 2026-06-13T22:29:27Z
+Branch: `grokrxiv-local-corpus-harness`
+Merged worker: `p0-042-pr-deterministic-fast-path`
+Merge result: fast-forward from `150655a` to `7240b2d`
+
+Commands passed after fast-forward merge:
+
+```bash
+git merge --ff-only p0-042-pr-deterministic-fast-path
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+```
+
+Pass counts:
+- Render tests: 10/10.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Residuals:
+- No phase tag or full P0 green claim.
+- P0-039 Bertrand extraction completeness is next.

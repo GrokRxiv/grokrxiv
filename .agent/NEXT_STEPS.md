@@ -4,15 +4,11 @@ Continue exactly from here:
 
 ## P0-039 Tier A Bertrand Extraction Completeness
 
-Current worker:
-- Branch: `p0-042-pr-deterministic-fast-path`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-042-pr-deterministic-fast-path`
-- Status: P0-042 is ready to checkpoint, merge to coordinator, and run coordinator verification.
-
-After P0-042 merge:
-- Coordinator branch: `grokrxiv-local-corpus-harness`
-- Coordinator worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Start a fresh worker branch/worktree, for example `p0-039-bertrand-extraction-completeness`.
+Current coordinator:
+- Branch: `grokrxiv-local-corpus-harness`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- P0-042 worker branch: `p0-042-pr-deterministic-fast-path`
+- Status: P0-042 is merged at `7240b2d` and coordinator verification passed. Start a fresh worker branch/worktree, for example `p0-039-bertrand-extraction-completeness`.
 
 P0-042 evidence:
 - Result root: `agenthero/apps/grokrxiv/evals/results/20260613T220435Z/zeta3-after-p0-042-nr-symbols`
@@ -30,15 +26,14 @@ P0-039 evidence from the P0-037 sweep:
 - Interpretation: N1 behaved correctly by stopping review, but Tier A expects `full_body`; this is an extraction/source staging defect, not a gate defect.
 
 Expected next session shape:
-1. Commit and merge P0-042 if not already merged; run coordinator verification.
-2. Start fresh worker `p0-039-bertrand-extraction-completeness` from the verified coordinator.
-3. Inspect the P0-037 Bertrand result artifacts, data-repo artifacts, and source archive staging for `2407.07620v5`.
-4. Add a red-first fixture that reproduces the empty Bertrand body/sections failure without a live corpus run.
-5. Fix the app-local extraction path so Bertrand reaches a non-empty reviewable body and section list without weakening extraction completeness.
-6. Run focused ingest/extraction tests, app-runtime review/extraction gate tests, app workspace check, structural tests, and `git diff --check`.
-7. Reinstall `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the worker.
-8. Re-run `bertrand-elementary` safely with `--no-external-actions`; verify extraction completeness reaches the review context expected by Tier A.
-9. Do not tag P0 green; a full corpus/both-runner sweep is still required.
+1. Start fresh worker `p0-039-bertrand-extraction-completeness` from the verified coordinator.
+2. Inspect the P0-037 Bertrand result artifacts, data-repo artifacts, and source archive staging for `2407.07620v5`.
+3. Add a red-first fixture that reproduces the empty Bertrand body/sections failure without a live corpus run.
+4. Fix the app-local extraction path so Bertrand reaches a non-empty reviewable body and section list without weakening extraction completeness.
+5. Run focused ingest/extraction tests, app-runtime review/extraction gate tests, app workspace check, structural tests, and `git diff --check`.
+6. Reinstall `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the worker.
+7. Re-run `bertrand-elementary` safely with `--no-external-actions`; verify extraction completeness reaches the review context expected by Tier A.
+8. Do not tag P0 green; a full corpus/both-runner sweep is still required.
 
 Guardrails:
 - Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
