@@ -244,6 +244,47 @@ Residual:
 - No full affected `regression-pr54-weyl` review-loop rerun was executed in this checkpoint because it invokes the full multi-agent loop rather than cheaply isolating the N2 failure path.
 - Tier R still needs a safe `--no-external-actions` review-loop run to verify `paper_review: all_specialists_complete`, citation partial-result emission, and `needs_review <= 2`.
 
+## P0-034: Haskell Semantic IR Emits Tautological Raw Propositions
+
+ID: P0-034
+Corpus entry: `regression-pr54-weyl`
+Review id: `4bd37a7a-9452-476b-911d-9d75cfc37c51`
+Runner: `cli`
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: F2 fidelity
+NEVER-event: none triggered; Lean reported `verdict=NOT_PROVED` and `proof_status=SEMANTIC_GAP`.
+Symptom: P0-032 semantic target scoping held in the live Tier R rerun, but Haskell round 2 was rejected by the independent `haskell_code_reviewer`. The generated module compiles and passes shallow semantic validation, yet `renderProp` emits `PRaw` propositions as `True /- raw: ... -/`, and `paperTheoremClaim` maps all paper-derived theorem conclusions to `PRaw` with empty binders and assumptions. That would make theorem obligations tautological metadata comments instead of theorem-level statements.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T130722Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T130722Z/regression-pr54-weyl/exit.status`
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/4bd37a7a-9452-476b-911d-9d75cfc37c51/review_loop/haskell/results.json`
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/4bd37a7a-9452-476b-911d-9d75cfc37c51/review_loop/semantic_ir.json`
+- `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/4bd37a7a-9452-476b-911d-9d75cfc37c51/review_loop/semantic_adequacy.json`
+Evidence details:
+- `exit.status` is `0`, and product JSON reports `external_actions_enabled=false`, `pr_url=null`, and `gate_verdict="fail"`.
+- `semantic_ir.json`: `theorem_candidates=10`, all sourced from `theorem_graph.json`; `supporting_equations=903`, all sourced from `equations.json`.
+- `citation_validation_report.json`: `checked=53`, `unverified=1`, `unresolved=0`, `transient_unknown=0`, so Tier R citation remains within threshold.
+- `haskell/results.json`: attempt 1 compiled but failed semantic validation for 10 missing Lean target declarations; attempt 2 compiled with `exit_code=0` and semantic validation `pass`, then reviewer returned `status="fail"` with two blocking issues on `renderProp`/`paperTheoremClaim`.
+- `lean/results.json`: `status="fail"`, `verdict="NOT_PROVED"`, `proof_status="SEMANTIC_GAP"`, `skip_reason="Haskell mathematical IR generation did not pass; Lean verification is blocked."`
+- `semantic_adequacy.json`: all 10 theorem candidates are `OVERCLAIMED` because no emitted/verified Lean statements are available.
+Root cause: not patched in this session. The current Haskell author/fixer prompt and/or semantic validation contract allows raw paper theorem text to be represented as proof-irrelevant comments over `True`. The reviewer catches this, so the safety gate works, but the generated IR is not faithful enough for the review-loop integrity gate.
+Owning code/surface:
+- `agenthero/apps/grokrxiv/agents/review-loop/haskell_semantic_author.yaml`
+- `agenthero/apps/grokrxiv/agents/review-loop/haskell_code_fixer.yaml`
+- `agenthero/apps/grokrxiv/agents/review-loop/haskell_code_reviewer.yaml`
+- `agenthero/apps/grokrxiv/prompts/review-loop/`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/review_loop/`
+- `agenthero/apps/grokrxiv/crates/review-loop/`
+Fix plan:
+1. Add a failing fixture that feeds a minimal `semantic_ir` theorem candidate through the Haskell semantic validation/review contract and rejects `PRaw` rendered as `True`, empty theorem binders/assumptions for paper theorem candidates, or theorem obligations whose Lean statement is only a comment.
+2. Tighten the Haskell author/fixer prompt and deterministic validation so unknown theorem content must surface as an explicit semantic gap / uninterpreted predicate with paper-span provenance, never as `True`.
+3. Preserve the current safety behavior: if a faithful statement cannot be emitted, Lean must remain `NOT_PROVED`/`SEMANTIC_GAP`; never convert the failure into `PROVED`.
+4. Re-run the affected Tier R entry safely after the fixture passes.
+Attempts: 1
+Escalation status: none; this is below the 3-strike threshold and did not trigger N5.
+
 ## P0-004b: Citation Verifier Did Not Screen Crossref Retraction Metadata
 
 ID: P0-004b

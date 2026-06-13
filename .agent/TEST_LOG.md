@@ -320,6 +320,7 @@
 | 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_contract_files_define_formalization_policy_surface --lib` | pass after coordinator merge | chat transcript |
 | 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after coordinator merge | chat transcript |
 | 2026-06-13T13:05:01Z | `2c64ac8` | `grokrxiv-local-corpus-harness` | `git diff --check && git status --short` | pass, clean before state-only integration update | chat transcript |
+| 2026-06-13T13:31:34Z | `2a6352d` | `p0-033-tier-r-after-target-scope` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799v1 --loop --debug --no-external-actions` | product exit 0 but deterministic review-loop fail; external actions disabled, `pr_url=null`, target scoping held (`theorem_candidates=10` from `theorem_graph.json`, `supporting_equations=903` from `equations.json`), citation within Tier R threshold (`unverified=1`), new top F2 failure is tautological Haskell `PRaw -> True` with empty theorem binders/assumptions | `agenthero/apps/grokrxiv/evals/results/20260613T130722Z/regression-pr54-weyl/run.log` |
 
 ## Logging Rule
 
