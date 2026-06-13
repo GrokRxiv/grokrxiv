@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T10:01:43Z
+Updated: 2026-06-13T10:42:26Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 25 integration complete; P0-025 Tier F prompt-injection formalization fix merged and verified on coordinator.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-025-narrow-corpus-checks` fast-forward merged.
-- Branch base commit: `3315c2c`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
+- Session type: P0 session 26 worker complete; P0-026 false-theorem corpus-liveness fix is ready for coordinator merge.
+- Branch/worktree: worker branch `p0-026-false-theorem-n5-check` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-026-false-theorem-n5-check`.
+- Branch base commit: `26f80c4`; current checkpoint commit: pending P0-026 worker checkpoint.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none currently assigned. P0-025 is integrated: the Tier F synthetic injection run showed `semantic_ir.json` was turning paper-body publisher-readiness canary text into a formal theorem candidate because the body fallback treated `publisher_ready=true` as an equation. `grokrxiv-review-loop` now rejects prompt/policy instruction text before formal theorem/equation target creation. Affected rerun review `331c2caa-cc93-45e5-a0ac-3a3d3096b60a` shows `semantic_category_mapper [OK] theorem_candidates=3`; the canary appears only inside the copied paper body, not as a formal target. Next action is the narrow `synthetic-false-theorem` check because it is the live N5 safety test. No full corpus green claim or phase tag.
+- In-flight defect: P0-026 fixed the `synthetic-false-theorem` corpus fixture liveness defect. Before the fix, the narrow run failed at extraction with `body text is too small for review context (741 chars)`, so it could not exercise N5. The synthetic manuscript now parses above the extraction-completeness threshold and the liveness test asserts parsed body length. Affected rerun review `7ac26d88-9e8a-457f-bce0-a6425a42ad33` reached review-loop theorem mapping with `theorem_candidates=2`; Lean did not report `PROVED`, so N5 did not trigger. The entry remains red because `haskell_code_fixer` timed out after 360s and Lean was skipped with `Haskell mathematical IR generation did not pass; Lean verification is blocked.` No full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -66,6 +66,7 @@ Updated: 2026-06-13T10:01:43Z
 - P0-023 toolchain/corpus pins, 2026-06-13T08:53Z: fast-forward merged worker branch `p0-023-toolchain-corpus-pins` into `grokrxiv-local-corpus-harness` at `c419b88`. Pinned all arXiv corpus versions, added `evals/toolchain.lock.yaml`, and added the eval Lean/Lake project with mathlib v4.30.0. Coordinator-side verification passed: corpus app-runtime tests 6/6, review-loop tests 13/13, app workspace check, and `git diff --check`. Local F3 remains because PATH `ghc` resolves to 8.4.2 while the repo pin requires 9.14.1. No full corpus-green claim or phase tag.
 - P0-024 GHC runner environment, 2026-06-13T09:04Z: worker branch `p0-024-ghc-runner-env` fast-forward merged into coordinator at `9a4f3c5`. The repo-local corpus runner wrapper plus GHC shim are integrated, LOOP.md and `toolchain.lock.yaml` are updated, and a red-first fixture proves stale PATH GHC is bypassed for corpus commands. Coordinator verification passed: targeted corpus toolchain fixture via `corpus_` tests 7/7, review-loop tests 13/13, app workspace check, structural tests 45/45, wrapped `agh doctor`, wrapped GHC/Lake/Lean version checks including `PATH=/usr/local/bin`, and `git diff --check`. No full corpus-green claim or phase tag.
 - P0-025 Tier F prompt-injection formalization, 2026-06-13T10:01Z: worker branch `p0-025-narrow-corpus-checks` fast-forward merged into coordinator at `d119b2c`. Wrapped LOOP preflight ran under `evals/results/20260613T090650Z/`; `synthetic-bad-citations` flagged exactly the three fake DOI references; `synthetic-injection` exposed and then verified the fix for canary text becoming a `plain_theorem` formal target. Coordinator verification passed: `grokrxiv-review-loop` 11/11, app-runtime `review_loop` 13/13, `corpus_` tests 7/7, app workspace check, and `git diff --check`. Overall affected run still red on Haskell timeout, citation/policy expected-fail surfaces, and semantic adequacy. No full corpus-green claim or phase tag.
+- P0-026 false-theorem corpus liveness, 2026-06-13T10:42Z: worker branch `p0-026-false-theorem-n5-check` expanded the Tier G synthetic false-theorem manuscript and tightened `corpus_synthetic_entries_are_live_app_relative_manuscripts` to parse synthetic TeX sources and assert extracted body length meets the 1,000-character review gate. Red fixture failed first with `synthetic-false-theorem parsed body must pass extraction completeness gate, got 741 chars`, then passed. Affected rerun `20260613T102058Z` completed as review `7ac26d88-9e8a-457f-bce0-a6425a42ad33`: product exit 0, external actions disabled, semantic mapper found 2 theorem candidates, semantic adequacy returned `OVERCLAIMED`, policy/publish stayed non-publisher-ready, and Lean did not report `PROVED`. Remaining red: Haskell code fixer timed out after 360s, so proof obligations and Lean are blocked; `lean_review_fix_code` is still not the expected `NOT_PROVED`. Worker checks passed: `corpus_` tests 7/7, app-runtime `review_loop` 13/13, app workspace check, structural tests 45/45, and `git diff --check`.
 
 ## Coordinator Rules
 

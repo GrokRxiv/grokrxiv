@@ -12447,6 +12447,30 @@ mod tests {
                 }
                 other => panic!("{id} resolved to unexpected source: {other:?}"),
             }
+
+            let prepared = grokrxiv_ingest::prepare_review_source(
+                grokrxiv_ingest::ReviewSourceSpec::LocalFile {
+                    path: expected_path,
+                    format: Some(grokrxiv_ingest::LocalSourceFormat::Tex),
+                    title: None,
+                    authors: Vec::new(),
+                    field: None,
+                },
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{id} source must parse for review: {err}"));
+            let body_chars = prepared
+                .extract
+                .sections
+                .iter()
+                .map(|section| {
+                    section.heading.chars().count() + section.body_markdown.chars().count()
+                })
+                .sum::<usize>();
+            assert!(
+                body_chars >= 1_000,
+                "{id} parsed body must pass extraction completeness gate, got {body_chars} chars"
+            );
         }
     }
 

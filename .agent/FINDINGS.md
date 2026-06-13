@@ -977,6 +977,48 @@ Residual:
 - The affected run still fails overall on Haskell timeout (`haskell_code_fixer` timed out after 360s), semantic adequacy, citation/policy expected-fail surfaces, and publish decision. No full corpus-green claim.
 - `synthetic-false-theorem` was not run in this shard after the Tier F defect was found and fixed; run it next because it is the live N5 safety check.
 
+## P0-026: Tier G False-Theorem Fixture Was Too Small To Exercise N5
+
+ID: P0-026
+Corpus entry: `synthetic-false-theorem`
+Runner: `cli`
+Commands:
+- Before fix: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review evals/synthetic/false-theorem/paper.tex --loop --debug --no-external-actions`
+- After fix: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review evals/synthetic/false-theorem/paper.tex --loop --debug --no-external-actions`
+Exit codes:
+- Before fix: product command exited 1 at extraction.
+- After fix: product command exited 0; deterministic review-loop status failed.
+finish_reason: narrow Tier G run exposed a corpus-fixture liveness defect; focused fixture failed before implementation and passed after manuscript expansion.
+Bucket: F4 cascade
+NEVER-event: N5 not triggered. Lean did not report `PROVED`; Lean was skipped because Haskell IR generation did not pass.
+Symptom: The live N5 synthetic entry could not reach theorem mapping or Lean because extraction completeness failed with `body text is too small for review context (741 chars)`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T100421Z/synthetic-false-theorem/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T102058Z/synthetic-false-theorem-after-p0-026/run.log`
+Artifact paths:
+- After fix review: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/7ac26d88-9e8a-457f-bce0-a6425a42ad33/review_loop/`
+Root cause: `evals/synthetic/false-theorem/paper.tex` had enough raw TeX characters but only 741 parsed review-body characters after TeX extraction, below the 1,000-character extraction-completeness threshold. The existing corpus-liveness test only checked source existence/resolution, not parsed review readiness.
+Owning code:
+- `agenthero/apps/grokrxiv/evals/synthetic/false-theorem/paper.tex`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Fix:
+1. Tightened `corpus_synthetic_entries_are_live_app_relative_manuscripts` to parse each synthetic TeX source through `grokrxiv_ingest::prepare_review_source` and assert the parsed review body has at least 1,000 characters.
+2. Expanded the false-theorem manuscript with additional source-body context while preserving the false universal claim and explicit `n=40` counterexample.
+Evidence:
+- Red fixture failed before manuscript expansion: `synthetic-false-theorem parsed body must pass extraction completeness gate, got 741 chars`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_synthetic_entries_are_live_app_relative_manuscripts --lib -- --nocapture`: pass after fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture`: pass, 7 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop -- --nocapture`: pass, 13 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45 tests.
+- `git diff --check`: pass.
+- Affected rerun review `7ac26d88-9e8a-457f-bce0-a6425a42ad33`: product exit 0, external actions disabled, `pr_url=null`, `semantic_category_mapper [OK] theorem_candidates=2`, `semantic_adequacy_checker [FAIL] OVERCLAIMED`, `policy_gate [FAIL]`, and `publish_decision [FAIL]`.
+- `review_loop/lean/results.json`: `status="fail"`, `skipped=true`, `skip_reason="Haskell mathematical IR generation did not pass; Lean verification is blocked."`
+- `review_loop/haskell/results.json` and `run.log`: `CliRunner timed out after 360s for role haskell_code_fixer`.
+Residual:
+- The corpus expectation `lean_review_fix_code: NOT_PROVED` is still red. The current actual is a blocked/skipped Lean stage after Haskell timeout, not a false `PROVED` and not the expected `NOT_PROVED`.
+- P0-027 should decide whether to add an honest deterministic `NOT_PROVED`/blocked verdict path for Haskell IR failures in P0 or defer the full fix to P2 typed IR/deterministic Lean emission with an explicit dossier. No expected block was weakened.
+
 ## Finding Template
 
 Use one dossier per defect.
