@@ -32,6 +32,53 @@ Fix plan:
 Attempts: 1
 Escalation status: none.
 
+## P0-039 - Bertrand Extraction Completeness / arXiv Version Pin
+
+ID: P0-039
+Corpus entry: `bertrand-elementary`
+Pinned source: `arxiv:2407.07620`, `version: v5`
+Worker branch: `p0-039-bertrand-extraction-completeness`
+Bucket: F1 app-local version-pin handling fixed; corpus pin requires human sign-off
+NEVER-event: none. N1 correctly stopped review before specialists/verdicts.
+
+Symptom:
+- P0-037 full CLI sweep ran `bertrand-elementary` as `https://arxiv.org/abs/2407.07620v5`.
+- Product exited 1 at extraction completeness before review.
+- Raw run log: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z/bertrand-elementary/run.log`.
+- Error: `no body sections` and `body text is too small for review context (0 chars)`.
+- Data repo artifacts for `papers/2407.07620/` had `body.md` 0 bytes, `sections.json` with an empty `sections` array, and empty equation/theorem/reference artifacts.
+
+Root cause:
+1. The corpus pin is not currently reviewable: live arXiv checks on 2026-06-13 showed `https://arxiv.org/pdf/2407.07620v1` through `v4` return HTTP 200 and `https://arxiv.org/e-print/2407.07620v1` through `v4` return HTTP 200, but `v5` returns HTTP 404 for both PDF and e-print. The current abs page says no PDF is available and marks the latest version withdrawn.
+2. The app also stripped valid `vN` suffixes in `parse_arxiv_source`, so even a human-approved move to `v4` would have fetched the latest/current version. arXiv abs metadata for historical pages also emits an unversioned `citation_pdf_url`, which must be rewritten to the requested version.
+
+Fix applied:
+- Preserve valid modern arXiv `vN` suffixes in review source parsing.
+- Keep review-extracted DB lookup on the base arXiv id so existing stored rows still resolve.
+- Rewrite unversioned arXiv `citation_pdf_url` values to the requested version when the operator supplied a versioned id, for example `2407.07620v4`.
+- Did not edit `evals/corpus.yaml` and did not weaken `expected.extraction: full_body`.
+
+Red-first evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest abs_metadata_preserves_requested_pdf_version --lib -- --nocapture` failed before the fix because the parsed PDF URL was `https://arxiv.org/pdf/2407.07620` instead of `https://arxiv.org/pdf/2407.07620v4`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime arxiv_review_source_parsing_preserves_version_suffix --lib -- --nocapture` failed before the fix because `parse_arxiv_source("2407.07620v4")` returned `2407.07620`.
+
+Green evidence:
+- Focused red tests passed after the fix.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib`: pass, 46 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib`: pass, 17 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45 tests.
+- `git diff --check`: pass.
+- PATH installs passed for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`.
+- Installed dry-run `grokrxiv-app review https://arxiv.org/abs/2407.07620v4 --loop --debug --no-external-actions --dry-run --json` reported `GrokRxiv review 2407.07620v4` and JSON plan id `2407.07620v4`.
+
+Residual:
+- P0-039 cannot make `bertrand-elementary` green while the corpus remains pinned to withdrawn/unavailable `v5` and still expects `full_body`.
+- Human sign-off is required to change the corpus pin to the latest retrievable version (`v4`), replace the Tier A entry with a retrievable Bertrand source, or intentionally change this entry's expected extraction semantics. Do not make that corpus change autonomously.
+
+Attempts: 1
+Escalation status: human sign-off required for corpus pin.
+
 ## P0-036 - PR Artifact Fixer Timeout / Checkmark Escape
 
 ID: P0-036

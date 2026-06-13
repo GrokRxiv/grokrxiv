@@ -94,7 +94,8 @@ pub async fn fetch_metadata_from_abs(arxiv_id: &str) -> Result<ArxivMeta> {
 pub fn parse_abs_html(arxiv_id: &str, html: &str) -> Result<ArxivMeta> {
     let title = scrape_meta(html, "citation_title").unwrap_or_default();
     let abstract_text = scrape_meta(html, "citation_abstract").unwrap_or_default();
-    let pdf_url = scrape_meta(html, "citation_pdf_url");
+    let pdf_url = scrape_meta(html, "citation_pdf_url")
+        .map(|url| preserve_requested_pdf_version(arxiv_id, &url));
     let date_str =
         scrape_meta(html, "citation_date").or_else(|| scrape_meta(html, "citation_online_date"));
     let submitted_date = date_str.as_deref().and_then(|d| {
@@ -331,6 +332,35 @@ pub fn parse_atom(arxiv_id: &str, xml: &str) -> Result<ArxivMeta> {
     Ok(meta)
 }
 
+fn preserve_requested_pdf_version(arxiv_id: &str, pdf_url: &str) -> String {
+    let Some((base, suffix)) = modern_arxiv_version(arxiv_id) else {
+        return pdf_url.to_string();
+    };
+    if let Some(prefix) = pdf_url.strip_suffix(&format!("/{base}")) {
+        return format!("{prefix}/{base}v{suffix}");
+    }
+    if let Some(prefix) = pdf_url.strip_suffix(&format!("/{base}.pdf")) {
+        return format!("{prefix}/{base}v{suffix}.pdf");
+    }
+    pdf_url.to_string()
+}
+
+fn modern_arxiv_version(arxiv_id: &str) -> Option<(&str, &str)> {
+    let (base, suffix) = arxiv_id.rsplit_once('v')?;
+    if suffix.is_empty() || suffix.chars().any(|ch| !ch.is_ascii_digit()) {
+        return None;
+    }
+    let (prefix, number) = base.split_once('.')?;
+    if prefix.len() < 4
+        || number.len() < 4
+        || prefix.chars().any(|ch| !ch.is_ascii_digit())
+        || number.chars().any(|ch| !ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((base, suffix))
+}
+
 fn push_text(dst: &mut String, text: &str) {
     if !dst.is_empty() && !dst.ends_with(' ') {
         dst.push(' ');
@@ -359,4 +389,27 @@ fn parse_date_prefix(text: &str) -> Option<NaiveDate> {
     text.split('T')
         .next()
         .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abs_metadata_preserves_requested_pdf_version() {
+        let html = r#"
+            <meta name="citation_title" content="An Elementary proof for Bertrand&#39;s Postulate" />
+            <meta name="citation_author" content="Sharma, Pranav Narayan" />
+            <meta name="citation_pdf_url" content="https://arxiv.org/pdf/2407.07620" />
+            <meta name="citation_abstract" content="In this paper we give an elementary proof." />
+        "#;
+
+        let meta = parse_abs_html("2407.07620v4", html).expect("parse abs metadata");
+
+        assert_eq!(
+            meta.pdf_url.as_deref(),
+            Some("https://arxiv.org/pdf/2407.07620v4")
+        );
+        assert_eq!(meta.arxiv_id, "2407.07620v4");
+    }
 }

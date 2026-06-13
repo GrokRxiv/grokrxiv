@@ -3909,12 +3909,13 @@ async fn resolve_extracted_paper(
         .fetch_optional(pool)
         .await?
     } else if let Some(arxiv_id) = parse_arxiv_source(source) {
+        let lookup_arxiv_id = strip_arxiv_version(&arxiv_id).to_string();
         sqlx::query_as(
             "select p.id, p.arxiv_id, p.title, pa.extraction_status, pa.git_path \
                  from papers p left join paper_assets pa on pa.paper_id = p.id \
                  where p.arxiv_id = $1",
         )
-        .bind(arxiv_id)
+        .bind(lookup_arxiv_id)
         .fetch_optional(pool)
         .await?
     } else {
@@ -4026,6 +4027,7 @@ fn parse_bare_modern(s: &str) -> Option<String> {
     // YYMM.NNNNN with optional version
     let mut parts = s.splitn(2, 'v');
     let base = parts.next()?;
+    let version_suffix = parts.next();
     let (a, b) = base.split_once('.')?;
     if a.len() < 4 || a.chars().any(|c| !c.is_ascii_digit()) {
         return None;
@@ -4033,7 +4035,14 @@ fn parse_bare_modern(s: &str) -> Option<String> {
     if b.len() < 4 || b.chars().any(|c| !c.is_ascii_digit()) {
         return None;
     }
-    Some(base.to_string())
+    if let Some(suffix) = version_suffix {
+        if suffix.is_empty() || suffix.chars().any(|c| !c.is_ascii_digit()) {
+            return None;
+        }
+        Some(format!("{base}v{suffix}"))
+    } else {
+        Some(base.to_string())
+    }
 }
 
 fn parse_arxiv_url(s: &str) -> Option<String> {
@@ -13375,6 +13384,22 @@ mod tests {
         assert_eq!(
             context.expected_recommendation.as_deref(),
             Some("reject_or_major_revision")
+        );
+    }
+
+    #[test]
+    fn arxiv_review_source_parsing_preserves_version_suffix() {
+        assert_eq!(
+            parse_arxiv_source("2407.07620v4").as_deref(),
+            Some("2407.07620v4")
+        );
+        assert_eq!(
+            parse_arxiv_source("https://arxiv.org/abs/2407.07620v4").as_deref(),
+            Some("2407.07620v4")
+        );
+        assert_eq!(
+            parse_arxiv_source("https://arxiv.org/pdf/2407.07620v4.pdf").as_deref(),
+            Some("2407.07620v4")
         );
     }
 

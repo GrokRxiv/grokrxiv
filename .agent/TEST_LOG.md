@@ -790,3 +790,55 @@ Pass counts:
 Residuals:
 - No phase tag or full P0 green claim.
 - P0-039 Bertrand extraction completeness is next.
+
+## P0-039 Worker Verification
+
+Time UTC: 2026-06-13T22:45:06Z
+Branch: `p0-039-bertrand-extraction-completeness`
+
+Diagnosis:
+- P0-037 `bertrand-elementary` failed N1 extraction completeness with `body.md` 0 bytes and `sections.json` empty.
+- Live arXiv HEAD checks showed `2407.07620v1` through `v4` return HTTP 200 for PDF and e-print, while `v5` returns HTTP 404 for both. The abs page marks the current version withdrawn/no PDF.
+- App-local bug found: review source parsing stripped `vN`, so version-pinned review inputs fetched the current/latest paper. Historical abs pages also expose unversioned `citation_pdf_url`, requiring app-side version preservation.
+
+Red-first evidence:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest abs_metadata_preserves_requested_pdf_version --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime arxiv_review_source_parsing_preserves_version_suffix --lib -- --nocapture
+```
+
+Failures before fix:
+- Ingest metadata test parsed `https://arxiv.org/pdf/2407.07620` instead of `https://arxiv.org/pdf/2407.07620v4`.
+- App-runtime parser test parsed `2407.07620v4` as `2407.07620`.
+
+Commands passed after fix:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest abs_metadata_preserves_requested_pdf_version --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime arxiv_review_source_parsing_preserves_version_suffix --lib -- --nocapture
+cargo run --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --bin grokrxiv-app -- review https://arxiv.org/abs/2407.07620v4 --loop --debug --no-external-actions --dry-run --json
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+grokrxiv-app review https://arxiv.org/abs/2407.07620v4 --loop --debug --no-external-actions --dry-run --json
+```
+
+Pass counts:
+- Focused red-first tests: 1/1 each after fix.
+- Ingest lib: 46/46.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Installed dry-run evidence:
+- Header: `GrokRxiv review 2407.07620v4`.
+- JSON plan: `{ "kind": "arxiv", "id": "2407.07620v4" }`.
+- External actions disabled.
+
+Residuals:
+- No affected `bertrand-elementary` green rerun was executed because the corpus remains pinned to unavailable `v5`; a run would remain red without a human-approved corpus pin change.
+- No phase tag or full P0 green claim.
