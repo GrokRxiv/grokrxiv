@@ -712,3 +712,54 @@ Pass counts:
 Residuals:
 - No phase tag or full P0 green claim.
 - P0-042 PR deterministic fast-path miss is next before P0-039 Bertrand extraction completeness.
+
+## P0-042 Worker Verification
+
+Time UTC: 2026-06-13T22:26:24Z
+Branch: `p0-042-pr-deterministic-fast-path`
+Commit before checkpoint: pending worker commit
+
+Diagnosis correction:
+- Source inspection showed `try_compile_existing_pr_artifact` already returns before the LLM PR path when the original rendered TeX compiles.
+- Scratch compile of the original P0-041 rendered zeta `review.tex` failed with `Unicode character ℕ (U+2115)`; the same line also contained `ℝ`.
+- Scratch compile of the same source with only `ℕ`/`ℝ` replaced by `\ensuremath{\mathbb{N}}` / `\ensuremath{\mathbb{R}}` exited 0 and wrote `review.pdf`.
+
+Red-first evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture`
+- Failed before implementation with `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol 'ℕ'`.
+
+Commands passed after mapping U+2115/U+211D:
+
+```bash
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render latex_maps_unicode_math_symbols_to_pdftex_safe_commands --test render -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-render --test render
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_accepts_compilable_rendered_tex_without_agent --lib -- --nocapture
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+git diff --check
+cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked
+cargo install --path agenthero/apps/grokrxiv/rust --force --locked
+```
+
+Pass counts:
+- Focused render test: 1/1 after red.
+- Render tests: 10/10.
+- App-runtime PR fast-path fixture: 1/1.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
+Affected safe rerun:
+- Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+- Raw log: `agenthero/apps/grokrxiv/evals/results/20260613T220435Z/zeta3-after-p0-042-nr-symbols/run.log`
+- Product status: `0`
+- Review id: `21dd04be-2bc6-475c-9621-c877aefc9db8`
+- External actions: disabled; `pr_url=null`.
+- PR evidence: `pr_fixes.status=pass`, `compile_review_loop.author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, first compile exit 0, and no `agent_outputs/pr_fixer` files.
+- Fixed PDF evidence: `review_loop/fixed/review.log` contains `Output written on review.pdf (32 pages, 210819 bytes)`.
+- Unicode evidence: grep found no `Unicode character`, `U+2115`, `U+211D`, raw `ℕ`, raw `ℝ`, `LaTeX Error`, or `Fatal error` in fixed TeX/log.
+
+Residuals:
+- No phase tag or full P0 green claim.
+- Citation validation failed deterministic policy after citation specialist timeout: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`.
+- P0-039 Bertrand extraction completeness is next; if the zeta citation timeout repeats in the next sweep, queue it separately as P0-043.

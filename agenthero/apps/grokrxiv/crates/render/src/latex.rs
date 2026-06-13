@@ -260,6 +260,8 @@ fn latex_escape(input: &str) -> String {
             '\u{03a6}' => out.push_str("\\ensuremath{\\Phi}"),
             '\u{03a8}' => out.push_str("\\ensuremath{\\Psi}"),
             '\u{03a9}' => out.push_str("\\ensuremath{\\Omega}"),
+            '\u{2115}' => out.push_str("\\ensuremath{\\mathbb{N}}"),
+            '\u{211d}' => out.push_str("\\ensuremath{\\mathbb{R}}"),
             '\u{2124}' => out.push_str("\\ensuremath{\\mathbb{Z}}"),
             '\u{2212}' => out.push_str("\\ensuremath{-}"),
             '\u{223c}' => out.push_str("\\ensuremath{\\sim}"),

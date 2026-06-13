@@ -2,31 +2,43 @@
 
 Continue exactly from here:
 
-## P0-042 PR Deterministic Fast-Path Miss
+## P0-039 Tier A Bertrand Extraction Completeness
 
-Current coordinator:
-- Branch: `grokrxiv-local-corpus-harness`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- P0-041 worker branch: `p0-041-render-quantifier-escape`
-- Status: P0-041 is merged at `43ee9e0` and coordinator verification passed. Start a fresh worker branch/worktree, for example `p0-042-pr-deterministic-fast-path`.
+Current worker:
+- Branch: `p0-042-pr-deterministic-fast-path`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-042-pr-deterministic-fast-path`
+- Status: P0-042 is ready to checkpoint, merge to coordinator, and run coordinator verification.
 
-P0-041 evidence:
-- Result root: `agenthero/apps/grokrxiv/evals/results/20260613T212629Z/zeta3-after-p0-041-quantifiers`
-- Review id: `2f24f79c-a592-4490-926c-a3f093abe1b1`
+After P0-042 merge:
+- Coordinator branch: `grokrxiv-local-corpus-harness`
+- Coordinator worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Start a fresh worker branch/worktree, for example `p0-039-bertrand-extraction-completeness`.
+
+P0-042 evidence:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260613T220435Z/zeta3-after-p0-042-nr-symbols`
+- Review id: `21dd04be-2bc6-475c-9621-c877aefc9db8`
 - Product exit: `0`
 - External actions: disabled; `pr_url=null`
-- Fixed by P0-041: no `Unicode character ∃`, `Unicode character ∀`, `U+2203`, `U+2200`, raw `∃`, or raw `∀` failure remains in `review_loop/fixed/review.log`; fixed `review.pdf` was written.
-- Residual red 1: citation specialist timed out after 360s, citation validation failed deterministic policy with `unverified=24`; no full corpus-green claim.
-- Residual red 2, next defect: `review_loop/pr_fixes.json` has `status=pass` and first compile exit 0, but still reports `compile_review_loop.author_role=pr_artifact_fixer`, `compile_review_loop.agent_output_audit_summary.total=2`, and recovered on-disk output after `CliRunner timed out after 360s for role pr_artifact_fixer`. That means an already-compilable rendered artifact still invoked the timeout-prone LLM PR fixer/reviewer path.
+- Fixed by P0-042: original rendered zeta review no longer fails deterministic PR compile-first on raw `ℕ`/`ℝ`; `pr_fixes.json` has `author_role=deterministic_pr_artifact_compiler`, zero PR-fixer agent outputs, first compile exit 0, and fixed PDF written.
+- Residual red: citation specialist timed out after 360s and citation validation failed deterministic policy with `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`. Reconfirm in the next sweep; if repeated, queue a separate citation-timeout/evidence defect. Do not raise timeouts blindly.
+
+P0-039 evidence from the P0-037 sweep:
+- Entry: `bertrand-elementary`
+- Source: `https://arxiv.org/abs/2407.07620v5`
+- P0-037 result root: `.agent/worktrees/p0-037-full-cli-sweep/agenthero/apps/grokrxiv/evals/results/20260613T193033Z`
+- Symptom: product exited 1 at extraction completeness before review; `body.md` had 0 chars and `sections.json` had no body sections.
+- Interpretation: N1 behaved correctly by stopping review, but Tier A expects `full_body`; this is an extraction/source staging defect, not a gate defect.
 
 Expected next session shape:
-1. Start fresh worker `p0-042-pr-deterministic-fast-path` from the verified coordinator.
-2. Add a red-first app-runtime/review-loop fixture proving that a rendered review which compiles on the first deterministic PR attempt records `author_role=deterministic_pr_artifact_compiler` and zero PR-fixer agent outputs, including the live path that currently recovers from on-disk output after `pr_artifact_fixer` timeout.
-3. Fix the PR artifact stage so successful compile-first bypasses `pr_artifact_fixer` and `pr_artifact_reviewer` entirely instead of running the LLM path and accepting recovered files.
-4. Run focused test, app-runtime `review_loop`, app workspace check, structural tests, and `git diff --check`.
-5. Reinstall `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the worker.
-6. Re-run `zeta3-irrationality` safely with `--no-external-actions`; verify `pr_fixes.json` has deterministic author role, zero agent outputs, compile exit 0, fixed PDF, and no Unicode errors.
-7. Keep P0-039 Bertrand extraction failure queued separately; do not tag P0 green.
+1. Commit and merge P0-042 if not already merged; run coordinator verification.
+2. Start fresh worker `p0-039-bertrand-extraction-completeness` from the verified coordinator.
+3. Inspect the P0-037 Bertrand result artifacts, data-repo artifacts, and source archive staging for `2407.07620v5`.
+4. Add a red-first fixture that reproduces the empty Bertrand body/sections failure without a live corpus run.
+5. Fix the app-local extraction path so Bertrand reaches a non-empty reviewable body and section list without weakening extraction completeness.
+6. Run focused ingest/extraction tests, app-runtime review/extraction gate tests, app workspace check, structural tests, and `git diff --check`.
+7. Reinstall `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the worker.
+8. Re-run `bertrand-elementary` safely with `--no-external-actions`; verify extraction completeness reaches the review context expected by Tier A.
+9. Do not tag P0 green; a full corpus/both-runner sweep is still required.
 
 Guardrails:
 - Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.

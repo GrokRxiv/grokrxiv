@@ -298,6 +298,71 @@ Residual:
 Attempts: 1
 Escalation status: none.
 
+## P0-042 - PR Render Unicode Natural/Real Symbol Escape
+
+ID: P0-042
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `2f24f79c-a592-4490-926c-a3f093abe1b1`
+Review id after fix: `21dd04be-2bc6-475c-9621-c877aefc9db8`
+Runner: local CLI
+Command: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0 after fix
+finish_reason: affected rerun completed; original rendered review now takes deterministic PR compile-first and bypasses PR-fixer agents.
+Bucket: F1 app-local artifact/rendering contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-041 fixed raw `∃`/`∀`, but the affected rerun still fell into `pr_artifact_fixer` and recovered after timeout.
+- Source inspection showed the deterministic fast-path already returns before the LLM path when the original rendered TeX compiles.
+- Scratch compilation of the original P0-041 rendered `review.tex` failed on `Unicode character ℕ (U+2115) not set up for use with LaTeX`; the same Lean-snippet line contained `ℝ`.
+
+Raw evidence paths:
+- Before: `.agent/worktrees/p0-041-render-quantifier-escape/agenthero/apps/grokrxiv/evals/results/20260613T212629Z/zeta3-after-p0-041-quantifiers/`
+- After: `agenthero/apps/grokrxiv/evals/results/20260613T220435Z/zeta3-after-p0-042-nr-symbols/`
+
+Artifact paths:
+- Before rendered TeX: `.agent/worktrees/p0-041-render-quantifier-escape/agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2f24f79c-a592-4490-926c-a3f093abe1b1/review.tex`
+- After PR fixes: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/21dd04be-2bc6-475c-9621-c877aefc9db8/review_loop/pr_fixes.json`
+- After fixed TeX/log/PDF: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/21dd04be-2bc6-475c-9621-c877aefc9db8/review_loop/fixed/`
+- After citation validation: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/21dd04be-2bc6-475c-9621-c877aefc9db8/review_loop/citation_validation_report.json`
+
+Root cause:
+- Rendered review evidence can include Lean/math blackboard-bold Unicode (`ℕ`, `ℝ`) in code-like snippets.
+- `latex_escape` covered `ℤ` but omitted U+2115 and U+211D.
+- The PR fast-path was correctly falling through because original rendered TeX did not compile; the later passing compile belonged to recovered `pr_artifact_fixer` output.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/render/src/latex.rs`
+- `agenthero/apps/grokrxiv/crates/render/tests/render.rs`
+
+Resolution:
+1. Added red-first render coverage to `latex_maps_unicode_math_symbols_to_pdftex_safe_commands` for raw `ℕ` and `ℝ`.
+2. Mapped `\u{2115}` to `\ensuremath{\mathbb{N}}` and `\u{211d}` to `\ensuremath{\mathbb{R}}` in `latex_escape`.
+3. Verified a scratch copy of the P0-041 rendered `review.tex`, with only `ℕ`/`ℝ` replaced by the new commands, compiles under `latexmk`.
+4. Reinstalled local `grokrxiv-app` and `agenthero-dag-app-grokrxiv` from the P0-042 worker before the affected rerun.
+
+Evidence:
+- Scratch compile before fix: `latexmk` exit 12, `Unicode character ℕ (U+2115)` in original P0-041 rendered review.
+- Red-first test failed before implementation: `rendered LaTeX must not contain raw PDFLaTeX-hostile symbol 'ℕ'`.
+- Focused render test passed after implementation.
+- Full render tests passed 10/10.
+- App-runtime PR fixer fast-path test passed.
+- App-runtime `review_loop` passed 17/17.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs replaced P0-041 binaries with P0-042 worker builds.
+- Affected rerun `20260613T220435Z/zeta3-after-p0-042-nr-symbols`: product exit 0, review `21dd04be-2bc6-475c-9621-c877aefc9db8`, external actions disabled, `pr_url=null`, `pr_fixes.status=pass`, `compile_review_loop.author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, first compile exit 0, no PR-fixer agent-output sidecars, fixed PDF present, and `review_loop/fixed/review.log` contains `Output written on review.pdf (32 pages, 210819 bytes)`.
+- Grep found no raw `ℕ`/`ℝ`, `U+2115`/`U+211D`, `Unicode character`, `LaTeX Error`, or `Fatal error` in the fixed TeX/log.
+
+Residual:
+- Citation validation still failed deterministic policy after citation specialist timeout: `checked=32`, `unverified=24`, `unresolved=0`, `transient_unknown=0`, `malformed=0`.
+- Return to P0-039 Bertrand extraction before opening a separate P0-043 citation-timeout/evidence defect, unless the next sweep reconfirms the zeta citation timeout.
+- No full P0 green claim. This was an affected single-entry rerun, not a full corpus sweep and not a both-runner/two-consecutive sweep exit gate.
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-003: N1 Extraction Completeness Gate Did Not Fire
 
 ID: P0-003
