@@ -3,7 +3,7 @@
 Continue exactly from here:
 
 ```text
-Phase 0, session 20: continue local-only P0 from the P0-005 PR fixer checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
+Phase 0, session 21: continue local-only P0 from the P0-021 policy-gate checkpoint. Do not use Codex Cloud, cloud apply, or cloud task state.
 
 Read:
 - agenthero/apps/grokrxiv/evals/corpus.yaml
@@ -23,21 +23,23 @@ Current state:
 - P0-004 citation reliability is green for Tier R on local CLI.
 - P0-020 math-source artifact preservation is green for Tier R on local CLI.
 - P0-005 PR fixer timeout is green for Tier R on local CLI.
-- Latest affected run: 20260613T072256Z, review `c0f0e300-2654-4e85-b26c-a50d530e24f0`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
+- P0-021 policy gate honest recommendation is green for Tier R on local CLI.
+- Latest affected run: 20260613T080031Z, review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`, product exit 0, `external_actions_enabled=false`, `pr_url=null`.
 - Citation report: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`. Remaining residues are both March references and are within the Tier R `<= 2` threshold.
 - Paper math sources: `paper_math_source_collector [OK] theorem_nodes=41 equations=903 sources=6 warnings=0`.
 - PR fixer: `pr_fixer [OK]`, `pr_review_fix_code [OK]`; `review_loop/pr_fixes.json` has `status=pass`, `compile_review_loop.status=pass`, `author_role=deterministic_pr_artifact_compiler`, `agent_output_audit_summary.total=0`, and fixed artifacts `review_loop/fixed/review.tex` plus `review_loop/fixed/review.pdf`.
+- Policy gate: `policy_gate.json` has `recommendation_policy.status=honest_non_publishing_recommendation`, `expected_recommendation=honest`, `actual_recommendation=major_revision`, `recommendation_policy.integrity_ready=true`, `publisher_ready=false`; the accept-only meta-review reason is not in `blocking_issues`.
 - No full corpus-green claim and no phase tag.
 
-Next queue item: policy gate Tier R recommendation semantics.
-- Add a focused fixture for `expected.recommendation: honest` before changing behavior.
-- Current `policy_gate` requires meta-review recommendation `accept`; the Tier R corpus entry explicitly leaves the verdict unpinned and asserts review integrity rather than acceptance.
-- Make the policy gate distinguish integrity-ready/honest-negative outcomes from publisher-ready accept outcomes without weakening NEVER-events or corpus expected blocks.
-- Re-run the affected Tier R entry after the fix and require the policy artifact/report to show an honest non-publishing verdict rather than blocking solely because `recommendation=major_revision`.
+Next queue item: Tier E/F/G synthetic corpus authoring.
+- Author and enable the fake-citation, prompt-injection, and false-theorem synthetic papers referenced by `evals/corpus.yaml`.
+- Keep expected blocks/NEVER-events monotonic; do not weaken existing expectations.
+- The false-theorem entry is safety-critical because it makes N5 live: Lean `PROVED` on a Tier G false theorem must halt with an escalation dossier.
+- Add fixtures before implementation where practical: corpus files exist, parse, are discoverable by the loop, and produce the expected fraud/injection/falsehood signals.
 
-Known red stages after P0-005:
-- Lean proof-author timeout and semantic adequacy `OVERCLAIMED` remain. Keep deterministic typed-IR/Lean emission under P2 unless P0 explicitly narrows this gate.
-- Policy gate requires `accept`; this is the next P0 item because Tier R only requires `expected.recommendation: honest`.
+Known red stages after P0-021:
+- Haskell code-fixer timed out after 360s in the latest affected run, so proof obligations and Lean were blocked by Haskell. Keep deterministic typed-IR/Lean emission under P2 unless P0 explicitly narrows this gate.
+- Semantic adequacy remains `OVERCLAIMED`.
 
 Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 Do not weaken `expected:` blocks or NEVER-events.

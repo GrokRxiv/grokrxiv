@@ -3982,6 +3982,7 @@ struct ReviewLoopCorpusContext {
     id: String,
     tier: String,
     source: String,
+    expected_recommendation: Option<String>,
 }
 
 fn review_loop_stage_plan() -> anyhow::Result<Vec<ReviewLoopStage>> {
@@ -4927,10 +4928,16 @@ fn review_loop_corpus_contexts_from_yaml(
             .get("source")
             .and_then(|value| value.as_str())
             .ok_or_else(|| anyhow::anyhow!("corpus entry `{id}` missing source"))?;
+        let expected_recommendation = entry
+            .get("expected")
+            .and_then(|value| value.get("recommendation"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         contexts.push(ReviewLoopCorpusContext {
             id: id.to_string(),
             tier: tier.to_string(),
             source: source.to_string(),
+            expected_recommendation,
         });
     }
     Ok(contexts)
@@ -4986,6 +4993,53 @@ fn review_loop_n5_false_proof_halt(
         },
         "operator_instruction": "Stop the loop. Do not continue fixing autonomously. Attach this dossier and the Lean artifacts to the escalation."
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewLoopPublicationGatePolicy {
+    publisher_ready: bool,
+    integrity_ready: bool,
+    blocking_issue: Option<String>,
+    status: String,
+}
+
+fn review_loop_publication_gate_policy(
+    corpus_context: Option<&ReviewLoopCorpusContext>,
+    publication_gate: &crate::review_gate::PublicationGate,
+) -> ReviewLoopPublicationGatePolicy {
+    if publication_gate.verdict == crate::review_gate::GateVerdict::Pass {
+        return ReviewLoopPublicationGatePolicy {
+            publisher_ready: true,
+            integrity_ready: true,
+            blocking_issue: None,
+            status: "publisher_ready".to_string(),
+        };
+    }
+
+    if corpus_context
+        .and_then(|context| context.expected_recommendation.as_deref())
+        == Some("honest")
+        && publication_gate.verdict == crate::review_gate::GateVerdict::Fail
+        && matches!(
+            publication_gate.recommendation.as_str(),
+            "minor_revision" | "major_revision" | "reject"
+        )
+        && publication_gate.reason.contains("not `accept`")
+    {
+        return ReviewLoopPublicationGatePolicy {
+            publisher_ready: false,
+            integrity_ready: true,
+            blocking_issue: None,
+            status: "honest_non_publishing_recommendation".to_string(),
+        };
+    }
+
+    ReviewLoopPublicationGatePolicy {
+        publisher_ready: false,
+        integrity_ready: false,
+        blocking_issue: Some(publication_gate.reason.clone()),
+        status: format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
+    }
 }
 
 fn normalized_corpus_source(value: &str) -> String {
@@ -6698,8 +6752,9 @@ async fn run_review_loop_for_review(
             .unwrap_or("no theorem adequacy verdicts"),
     );
 
-    if let Some(corpus_context) = load_review_loop_corpus_context(pool, paper_id).await? {
-        if let Some(dossier) = review_loop_n5_false_proof_halt(&corpus_context, &theorem_map) {
+    let corpus_context = load_review_loop_corpus_context(pool, paper_id).await?;
+    if let Some(corpus_context) = corpus_context.as_ref() {
+        if let Some(dossier) = review_loop_n5_false_proof_halt(corpus_context, &theorem_map) {
             return halt_review_loop_for_n5(
                 pool,
                 review_id,
@@ -6908,9 +6963,11 @@ async fn run_review_loop_for_review(
     let bundle_completeness_pass = bundle_completeness["status"] == "pass";
 
     let (_, publication_gate, _) = load_publication_gate_context(pool, review_id).await?;
+    let publication_policy =
+        review_loop_publication_gate_policy(corpus_context.as_ref(), &publication_gate);
     let mut blocking_issues = Vec::new();
-    if publication_gate.verdict != crate::review_gate::GateVerdict::Pass {
-        blocking_issues.push(publication_gate.reason.clone());
+    if let Some(issue) = publication_policy.blocking_issue.clone() {
+        blocking_issues.push(issue);
     }
     if !bundle_completeness_pass {
         let issue = bundle_completeness["failures"]
@@ -6944,11 +7001,22 @@ async fn run_review_loop_for_review(
         blocking_issues
             .push("PR fixer did not produce compile-reviewed corrected artifacts.".to_string());
     }
-    let publisher_ready = blocking_issues.is_empty();
-    let deterministic_status = if publisher_ready { "pass" } else { "fail" }.to_string();
+    let integrity_ready = publication_policy.integrity_ready && blocking_issues.is_empty();
+    let publisher_ready = publication_policy.publisher_ready && integrity_ready;
+    let deterministic_status = if integrity_ready { "pass" } else { "fail" }.to_string();
     let policy_gate = serde_json::json!({
         "deterministic_status": deterministic_status,
+        "integrity_ready": integrity_ready,
         "publisher_ready": publisher_ready,
+        "recommendation_policy": {
+            "status": publication_policy.status,
+            "expected_recommendation": corpus_context
+                .as_ref()
+                .and_then(|context| context.expected_recommendation.as_deref()),
+            "actual_recommendation": publication_gate.recommendation,
+            "publisher_ready": publication_policy.publisher_ready,
+            "integrity_ready": publication_policy.integrity_ready,
+        },
         "score_thresholds": {
             "haskell_compile": "pass",
             "lean_theorem_formalization": "proved",
@@ -6956,11 +7024,12 @@ async fn run_review_loop_for_review(
             "citation_validation": "pass_or_warn",
             "pr_artifacts": "fixed_tex_and_pdf_present",
             "artifact_bundle": "all_declared_outputs_present_or_explicitly_skipped",
-            "publication_gate": "pass"
+            "recommendation_policy": "publisher_ready_accept_or_corpus_expected_honest"
         },
         "blocking_issues": blocking_issues,
         "component_status": {
             "publication_gate": format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
+            "recommendation_policy": publication_policy.status,
             "bundle_completeness": bundle_completeness["status"],
             "haskell": if haskell_pass { "pass" } else { "fail" },
             "lean": if lean_pass { "pass" } else { "fail" },
@@ -6988,7 +7057,7 @@ async fn run_review_loop_for_review(
         &stages,
         "policy_gate",
         policy_gate.clone(),
-        if publisher_ready {
+        if integrity_ready {
             VerifierStatus::Pass
         } else {
             VerifierStatus::Fail
@@ -6998,7 +7067,7 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "policy_gate",
-        publisher_ready,
+        integrity_ready,
         "review_loop/policy_gate.json",
         debug_output,
         blocking_issues
@@ -7070,7 +7139,7 @@ async fn run_review_loop_for_review(
         &stages,
         "review_loop_report",
         report.clone(),
-        if publisher_ready {
+        if integrity_ready {
             VerifierStatus::Pass
         } else {
             VerifierStatus::Fail
@@ -7083,7 +7152,7 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "review_loop_report",
-        publisher_ready,
+        integrity_ready,
         "review_loop/review_loop_report.json",
         debug_output,
         if bundle_completeness_pass {
@@ -7105,7 +7174,7 @@ async fn run_review_loop_for_review(
         &stages,
         "publish_decision",
         publish_decision,
-        if publisher_ready {
+        if integrity_ready {
             VerifierStatus::Pass
         } else {
             VerifierStatus::Fail
@@ -7115,11 +7184,13 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "publish_decision",
-        publisher_ready,
+        integrity_ready,
         "review_loop/publish_decision.json",
         debug_output,
         if publisher_ready {
             "auto-publish allowed"
+        } else if integrity_ready {
+            "honest non-publishing verdict; left in review"
         } else {
             "left in review with blocking issues"
         },
@@ -12217,6 +12288,7 @@ mod tests {
             id: "blum-pvnp".to_string(),
             tier: "C".to_string(),
             source: "arxiv:1708.03486".to_string(),
+            expected_recommendation: Some("reject_or_major_revision".to_string()),
         };
         let theorem_map = serde_json::json!({
             "status": "PROVED",
@@ -12260,6 +12332,26 @@ mod tests {
 
         assert_eq!(context.id, "blum-pvnp");
         assert_eq!(context.tier, "C");
+        assert_eq!(
+            context.expected_recommendation.as_deref(),
+            Some("reject_or_major_revision")
+        );
+    }
+
+    #[test]
+    fn review_loop_corpus_context_carries_tier_r_honest_recommendation() {
+        let contexts =
+            review_loop_corpus_contexts_from_yaml(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus contexts parse");
+        let mut candidates = BTreeSet::new();
+        add_review_loop_source_candidate(&mut candidates, Some("arxiv:2606.00799v1"));
+
+        let context = review_loop_corpus_context_for_candidates(&contexts, &candidates)
+            .expect("PR-54 Weyl regression corpus context");
+
+        assert_eq!(context.id, "regression-pr54-weyl");
+        assert_eq!(context.tier, "R");
+        assert_eq!(context.expected_recommendation.as_deref(), Some("honest"));
     }
 
     #[test]
@@ -12291,6 +12383,7 @@ mod tests {
             id: "bertrand-elementary".to_string(),
             tier: "A".to_string(),
             source: "arxiv:2407.07620".to_string(),
+            expected_recommendation: Some("accept".to_string()),
         };
         let theorem_map = serde_json::json!({
             "status": "PROVED",
@@ -12303,6 +12396,29 @@ mod tests {
         });
 
         assert!(review_loop_n5_false_proof_halt(&corpus_context, &theorem_map).is_none());
+    }
+
+    #[test]
+    fn tier_r_honest_recommendation_is_integrity_ready_without_publisher_ready() {
+        let corpus_context = ReviewLoopCorpusContext {
+            id: "regression-pr54-weyl".to_string(),
+            tier: "R".to_string(),
+            source: "arxiv:2606.00799".to_string(),
+            expected_recommendation: Some("honest".to_string()),
+        };
+        let publication_gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+
+        let policy =
+            review_loop_publication_gate_policy(Some(&corpus_context), &publication_gate);
+
+        assert!(policy.integrity_ready);
+        assert!(!policy.publisher_ready);
+        assert_eq!(policy.blocking_issue, None);
+        assert_eq!(policy.status, "honest_non_publishing_recommendation");
     }
 
     #[test]

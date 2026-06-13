@@ -760,6 +760,45 @@ Residual:
 - Overall affected run still fails Lean proof-author timeout, semantic adequacy `OVERCLAIMED`, and policy gate requiring `accept` despite Tier R `expected.recommendation: honest`.
 - No full corpus-green claim and no phase tag.
 
+## P0-021: Tier R Honest Recommendation Was Treated As Accept-Only Publication Gate Failure
+
+ID: P0-021
+Corpus entry: `regression-pr54-weyl`
+Review id before fix: `c0f0e300-2654-4e85-b26c-a50d530e24f0`
+Review id after fix: `d18f023f-d9ce-4788-b81c-de7f3ba57c16`
+Runner: `cli`
+Command: `agh --json app run grokrxiv review https://arxiv.org/abs/2606.00799 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: product command completed with review-loop `deterministic_status=fail`
+Bucket: F1 contract
+NEVER-event: none.
+Symptom: Tier R expected `recommendation: honest` with verdict unpinned, but the review-loop policy gate added `Meta-review recommendation is `major_revision`, not `accept`.` as a blocking issue. That conflated publisher readiness with corpus integrity and kept the PR-54 regression red for the wrong reason.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T072256Z/regression-pr54-weyl/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T080031Z/regression-pr54-weyl/run.log`
+Artifact paths:
+- Before: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/c0f0e300-2654-4e85-b26c-a50d530e24f0/review_loop/policy_gate.json`
+- After: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/d18f023f-d9ce-4788-b81c-de7f3ba57c16/review_loop/policy_gate.json`
+Root cause: `ReviewLoopCorpusContext` only carried id/tier/source, so `run_review_loop_for_review` could not see `expected.recommendation: honest`. Policy assembly treated any non-`Pass` `PublicationGate` as a corpus-blocking issue, even when the corpus expectation was an honest non-publishing review rather than acceptance.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+Fix:
+1. Carried `expected.recommendation` from `evals/corpus.yaml` into `ReviewLoopCorpusContext`.
+2. Added `review_loop_publication_gate_policy`, separating `publisher_ready` from review-loop `integrity_ready`.
+3. For corpus entries with `expected.recommendation: honest`, a valid non-accept recommendation (`minor_revision`, `major_revision`, or `reject`) no longer contributes an accept-only publication-gate blocking issue, while `publisher_ready` remains false.
+4. Added `recommendation_policy` evidence to `policy_gate.json`.
+Evidence:
+- Red fixture `tier_r_honest_recommendation_is_integrity_ready_without_publisher_ready` failed before implementation with missing `expected_recommendation` and `review_loop_publication_gate_policy`.
+- Green review-loop test group: `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop`: pass, 13 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- PATH installs passed for `agh`, `agenthero-dag-app-grokrxiv`, and `grokrxiv-app`.
+- Affected safe run `agenthero/apps/grokrxiv/evals/results/20260613T080031Z/regression-pr54-weyl/run.log`: product exit 0; review `d18f023f-d9ce-4788-b81c-de7f3ba57c16`; external actions disabled; `pr_url=null`.
+- `review_loop/policy_gate.json` for review `d18f023f-d9ce-4788-b81c-de7f3ba57c16` reports `recommendation_policy.status=honest_non_publishing_recommendation`, `expected_recommendation=honest`, `actual_recommendation=major_revision`, `recommendation_policy.integrity_ready=true`, and `publisher_ready=false`.
+- `review_loop_report.json` blocking issues no longer include the accept-only meta-review recommendation reason; remaining issues are Haskell, Lean, and semantic adequacy.
+Residual:
+- Overall affected run remains red: `haskell_code_fixer` timed out after 360s, proof obligations and Lean were blocked by Haskell, and semantic adequacy remained `OVERCLAIMED`.
+- No full corpus-green claim and no phase tag.
+
 ## Finding Template
 
 Use one dossier per defect.
