@@ -439,6 +439,23 @@ Affected rerun:
 - Citation remained within Tier R: `checked=53`, `unverified=2`, `unresolved=0`, `transient_unknown=0`.
 - Residual red: Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, and `pr_artifact_fixer` timeout after 360s.
 
+## P0-035 Coordinator Merge - 2026-06-13T18:51:16Z
+
+Commands passed after fast-forward merge to `grokrxiv-local-corpus-harness` at `1caf62d`:
+
+```bash
+git merge --ff-only p0-035-haskell-author-timeout
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib
+cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib
+cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace
+cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract
+```
+
+Pass counts:
+- `grokrxiv-review-loop`: 15/15.
+- App-runtime `review_loop`: 17/17.
+- Structural tests: 45/45.
+
 Residuals:
 - No full Tier R green claim. The API affected rerun is red on missing API `gemini` provider for novelty plus Lean `NOT_PROVED`/`FAILED` and semantic adequacy `OVERCLAIMED`.
 - Normal CLI affected rerun remains the next acceptance check after local Claude quota reset.
