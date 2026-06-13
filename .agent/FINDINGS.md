@@ -1020,6 +1020,53 @@ Residual:
 - The corpus expectation `lean_review_fix_code: NOT_PROVED` is still red. The current actual is a blocked/skipped Lean stage after Haskell timeout, not a false `PROVED` and not the expected `NOT_PROVED`.
 - P0-027 should decide whether to add an honest deterministic `NOT_PROVED`/blocked verdict path for Haskell IR failures in P0 or defer the full fix to P2 typed IR/deterministic Lean emission with an explicit dossier. No expected block was weakened.
 
+## P0-027: False-Theorem Lean Verdict Was Not Machine-Explicit
+
+ID: P0-027
+Corpus entry: `synthetic-false-theorem`
+Runner: `cli`
+Commands:
+- Before proof-status classifier fix: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review evals/synthetic/false-theorem/paper.tex --loop --debug --no-external-actions`
+- After fix: `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review evals/synthetic/false-theorem/paper.tex --loop --debug --no-external-actions`
+Exit code: product command exited 0; deterministic review-loop status failed.
+finish_reason: narrow Tier G run exposed that failed/skipped Lean proof-loop artifacts lacked an explicit machine `NOT_PROVED` verdict, and that theorem-map proof-status classification could be contaminated by reviewer prose.
+Bucket: F1 contract
+NEVER-event: N5 not triggered. `lean/theorem_map.json` has status `FAILED`; no theorem-map entry is `PROVED`.
+Symptom:
+- P0-026 rerun reached theorem mapping but skipped Lean after Haskell timeout, leaving `lean/results.json` without the expected `NOT_PROVED` verdict.
+- First P0-027 rerun review `2ade7a22-3e35-43a0-9f46-c639ad1c3a91` ran Lean but the theorem map classified a failed attempt as `USES_SORRY` because reviewer feedback text mentioned `sorry`.
+Raw evidence paths:
+- `agenthero/apps/grokrxiv/evals/results/20260613T105236Z/synthetic-false-theorem-after-p0-027/run.log`
+- `agenthero/apps/grokrxiv/evals/results/20260613T111624Z/synthetic-false-theorem-after-p0-027b/run.log`
+Artifact paths:
+- First P0-027 review: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/2ade7a22-3e35-43a0-9f46-c639ad1c3a91/review_loop/`
+- After fix review: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/5c2b0a1f-4ef8-4cba-96ae-16630b57931c/review_loop/`
+Root cause:
+1. `review_loop/lean/results.json` reused the generic review-fix-code result shape, so failed/skipped proof runs did not expose corpus-checkable `verdict`, `proof_status`, or theorem-map `entries`.
+2. `lean_entry_status` classified failure type by stringifying the entire Lean result JSON. That included reviewer guidance such as "Do not replace this with sorry", so reviewer prose could incorrectly drive proof-status classification.
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- `agenthero/apps/grokrxiv/crates/review-loop/src/lib.rs`
+Fix:
+1. Added `annotate_lean_review_fix_code_results`, which builds a theorem map from proof obligations plus Lean results, writes `verdict="PROVED"` only when the theorem map status is `PROVED`, otherwise writes `verdict="NOT_PROVED"`, and includes `proof_status` plus theorem-map `entries`.
+2. Updated review-loop debug summaries to print `status`, `verdict`, `proof_status`, and reason for failed Lean proof-loop artifacts.
+3. Narrowed `lean_entry_status` diagnostics to final generated Lean code, final compile stdout/stderr, semantic-validation issue text, and top-level skip/status fields.
+Evidence:
+- Red-first `skipped_lean_review_fix_code_reports_not_proved_semantic_gap`: failed before implementation because skipped Lean results had no `NOT_PROVED` verdict; passed after annotation.
+- Red-first `theorem_map_classifies_final_lean_code_not_reviewer_prose`: failed before implementation with `USES_SORRY`; passed after diagnostics were narrowed.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib`: pass, 12 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib review_loop -- --nocapture`: pass, 13 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture`: pass, 7 tests.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45 tests.
+- `git diff --check`: pass.
+- Affected rerun review `5c2b0a1f-4ef8-4cba-96ae-16630b57931c`: product exit 0, external actions disabled, `pr_url=null`, `lean_review_fix_code [FAIL] artifact=review_loop/lean/results.json status=fail verdict=NOT_PROVED proof_status=FAILED reason=review-fix-code loop did not prove the target`.
+- `review_loop/lean/results.json`: `status="fail"`, `verdict="NOT_PROVED"`, `proof_status="FAILED"`, with two failed theorem-formalization entries.
+- `review_loop/lean/theorem_map.json`: `status="FAILED"` and no `PROVED` entries.
+Residual:
+- The affected corpus entry still fails overall on semantic adequacy (`OVERCLAIMED`), citation-validation policy, and publication policy. This patch only makes the Lean false-theorem verdict honest and mechanically checkable; it does not claim full Tier G green or Phase 0 green.
+- P2 still owns deterministic typed-IR/Lean statement emission. P0-027 adds the P0 safety contract that failed or blocked proof loops cannot silently omit a machine `NOT_PROVED` verdict.
+
 ## Finding Template
 
 Use one dossier per defect.

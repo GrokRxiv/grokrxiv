@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T10:45:15Z
+Updated: 2026-06-13T11:45:21Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: P0 session 26 integration complete; P0-026 false-theorem corpus-liveness fix merged and verified on coordinator.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-026-false-theorem-n5-check` fast-forward merged.
-- Branch base commit: `26f80c4`; current checkpoint commit: this state-only integration commit, the current branch HEAD.
+- Session type: P0 session 27 worker complete; P0-027 false-theorem Lean verdict fix verified and ready for coordinator merge.
+- Branch/worktree: worker branch `p0-027-false-theorem-lean-verdict` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-027-false-theorem-lean-verdict`; coordinator branch `grokrxiv-local-corpus-harness` remains in `/Users/mlong/Documents/Development/grokrxiv`.
+- Branch base commit: `a839cb3`; current checkpoint commit: pending P0-027 worker checkpoint commit.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none currently assigned. P0-026 is integrated: the `synthetic-false-theorem` corpus fixture now clears extraction and reaches theorem mapping. Affected rerun review `7ac26d88-9e8a-457f-bce0-a6425a42ad33` reached `semantic_category_mapper [OK] theorem_candidates=2`; Lean did not report `PROVED`, so N5 did not trigger. The entry remains red because `haskell_code_fixer` timed out after 360s and Lean was skipped with `Haskell mathematical IR generation did not pass; Lean verification is blocked.` Next action is P0-027: classify or fix the false-theorem `lean_review_fix_code: NOT_PROVED` verdict path without weakening the corpus expectation. No full corpus green claim or phase tag.
+- In-flight defect: P0-027 worker ready for merge. Failed/skipped Lean proof-loop artifacts now expose a machine verdict derived from theorem-map status: `PROVED` only when the theorem map proves all obligations, otherwise `NOT_PROVED`. The theorem-map classifier now inspects final Lean code/compile diagnostics instead of reviewer prose, avoiding false proof-status classifications caused by corrective review text. Affected rerun review `5c2b0a1f-4ef8-4cba-96ae-16630b57931c` reached `lean_review_fix_code [FAIL] ... verdict=NOT_PROVED proof_status=FAILED`; `lean/theorem_map.json` has status `FAILED` and no `PROVED` entries. External actions stayed disabled. The entry remains red on semantic adequacy/citation/policy surfaces; no full corpus green claim or phase tag.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

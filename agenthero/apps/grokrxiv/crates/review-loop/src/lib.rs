@@ -1407,7 +1407,7 @@ fn lean_entry_status(kind: &str, lean_results: &serde_json::Value) -> &'static s
     if lean_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
         return "PROVED";
     }
-    let diagnostics = lean_results.to_string().to_ascii_lowercase();
+    let diagnostics = lean_status_diagnostics(lean_results);
     if diagnostics.contains("sorry") {
         "USES_SORRY"
     } else if diagnostics.contains("axiom") {
@@ -1425,6 +1425,32 @@ fn lean_entry_status(kind: &str, lean_results: &serde_json::Value) -> &'static s
     } else {
         "FAILED"
     }
+}
+
+fn lean_status_diagnostics(lean_results: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(attempt) = lean_results
+        .get("attempts")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.last())
+    {
+        for pointer in [
+            "/generation/code",
+            "/compile/stdout",
+            "/compile/stderr",
+            "/semantic_validation/issues/0",
+        ] {
+            if let Some(value) = attempt.pointer(pointer).and_then(|value| value.as_str()) {
+                parts.push(value);
+            }
+        }
+    }
+    for pointer in ["/skip_reason", "/status"] {
+        if let Some(value) = lean_results.pointer(pointer).and_then(|value| value.as_str()) {
+            parts.push(value);
+        }
+    }
+    parts.join("\n").to_ascii_lowercase()
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -1907,6 +1933,50 @@ end GrokRxiv
         let issues = validate_lean_proof_code(narrowed, &obligations);
 
         assert!(issues.iter().any(|issue| issue.contains("must not alter emitted statement")));
+    }
+
+    #[test]
+    fn theorem_map_classifies_final_lean_code_not_reviewer_prose() {
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_false_claim",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "false_claim",
+                    "statement": "A false theorem candidate."
+                }
+            ]
+        });
+        let lean_results = json!({
+            "status": "fail",
+            "attempts": [
+                {
+                    "attempt": 2,
+                    "generation": {
+                        "code": "namespace GrokRxiv\n\ntheorem false_claim : True := by\n  skip\n\nend GrokRxiv\n"
+                    },
+                    "compile": {
+                        "status": "fail",
+                        "stdout": "GrokRxiv/Proofs.lean:3:32: error: unsolved goals\n⊢ True\n",
+                        "stderr": ""
+                    },
+                    "codex_review": {
+                        "status": "fail",
+                        "issues": [
+                            {
+                                "severity": "blocking",
+                                "message": "Do not replace this with sorry or admit."
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let theorem_map = build_theorem_map(&obligations, &lean_results);
+
+        assert_eq!(theorem_map["status"], "TYPE_ERROR");
+        assert_eq!(theorem_map["entries"][0]["status"], "TYPE_ERROR");
     }
 
     #[test]

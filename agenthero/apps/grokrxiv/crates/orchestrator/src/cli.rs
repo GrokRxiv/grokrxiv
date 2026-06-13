@@ -6259,6 +6259,24 @@ fn review_fix_loop_summary(results: &serde_json::Value) -> String {
     if results.get("status").and_then(|value| value.as_str()) == Some("pass") {
         return format!("attempts={}", attempts.len());
     }
+    if let Some(verdict) = results.get("verdict").and_then(|value| value.as_str()) {
+        let status = results
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("fail");
+        let proof_status = results
+            .get("proof_status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let reason = results
+            .get("skip_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("review-fix-code loop did not prove the target");
+        return truncate(
+            &format!("status={status} verdict={verdict} proof_status={proof_status} reason={reason}"),
+            260,
+        );
+    }
     for attempt in attempts.iter().rev() {
         if let Some(error) = attempt.get("author_error").and_then(|value| value.as_str()) {
             return truncate(error, 260);
@@ -6700,6 +6718,7 @@ async fn run_review_loop_for_review(
         .await;
         skipped_review_fix_code_results(&lean_task, &lean_final_path, reason)
     };
+    let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
@@ -7576,6 +7595,34 @@ fn skipped_review_fix_code_results(
         "skip_reason": reason,
         "final_path": final_path.display().to_string(),
     })
+}
+
+fn annotate_lean_review_fix_code_results(
+    mut results: serde_json::Value,
+    proof_obligations: &serde_json::Value,
+) -> serde_json::Value {
+    let theorem_map = grokrxiv_review_loop::build_theorem_map(proof_obligations, &results);
+    let proof_status = theorem_map
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("FAILED");
+    let verdict = if proof_status == "PROVED" {
+        "PROVED"
+    } else {
+        "NOT_PROVED"
+    };
+    if let Some(object) = results.as_object_mut() {
+        object.insert("verdict".to_string(), serde_json::json!(verdict));
+        object.insert("proof_status".to_string(), serde_json::json!(proof_status));
+        object.insert(
+            "entries".to_string(),
+            theorem_map
+                .get("entries")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        );
+    }
+    results
 }
 
 fn emit_review_loop_node_debug(
@@ -12868,6 +12915,99 @@ mod tests {
             summary["by_role"]["haskell_code_reviewer"]["rejected"],
             1
         );
+    }
+
+    #[test]
+    fn skipped_lean_review_fix_code_reports_not_proved_semantic_gap() {
+        let task = ReviewFixCodeTask {
+            target_id: "lean",
+            language: "lean",
+            filename: "GrokRxiv/Proofs.lean",
+            author_role: "lean_proof_author",
+            reviewer_role: "lean_code_reviewer",
+            fixer_role: "lean_code_fixer",
+            compile_program: "lake",
+            compile_args: vec![
+                "env".to_string(),
+                "lean".to_string(),
+                "GrokRxiv/Proofs.lean".to_string(),
+            ],
+            compile_timeout_secs: 1800,
+            forbidden_terms: vec!["sorry", "admit", "axiom"],
+            max_attempts: 2,
+        };
+        let proof_obligations = serde_json::json!({
+            "obligations": [
+                {
+                    "id": "semantic_gap_haskell_model_failed",
+                    "kind": "semantic_gap",
+                    "statement": "Haskell mathematical IR generation did not pass; Lean verification is blocked.",
+                    "lean_declaration": null,
+                    "source_claim_id": null
+                }
+            ]
+        });
+
+        let skipped = skipped_review_fix_code_results(
+            &task,
+            std::path::Path::new("review_loop/lean/GrokRxiv/Proofs.lean"),
+            "Haskell mathematical IR generation did not pass; Lean verification is blocked.",
+        );
+        let results = annotate_lean_review_fix_code_results(skipped, &proof_obligations);
+
+        assert_eq!(results["status"], "fail");
+        assert_eq!(results["verdict"], "NOT_PROVED");
+        assert_eq!(results["proof_status"], "SEMANTIC_GAP");
+        assert_eq!(results["entries"][0]["status"], "SEMANTIC_GAP");
+        assert!(review_fix_loop_summary(&results).contains("verdict=NOT_PROVED"));
+    }
+
+    #[test]
+    fn failed_lean_review_fix_code_reports_not_proved_type_error() {
+        let proof_obligations = serde_json::json!({
+            "obligations": [
+                {
+                    "id": "formalize_false_claim",
+                    "kind": "theorem_formalization",
+                    "statement": "A false theorem candidate.",
+                    "lean_declaration": "false_claim",
+                    "source_claim_id": "false_claim"
+                }
+            ]
+        });
+        let results = serde_json::json!({
+            "status": "fail",
+            "attempts": [
+                {
+                    "attempt": 2,
+                    "generation": {
+                        "code": "namespace GrokRxiv\n\ntheorem false_claim : True := by\n  skip\n\nend GrokRxiv\n"
+                    },
+                    "compile": {
+                        "status": "fail",
+                        "stdout": "GrokRxiv/Proofs.lean:3:32: error: unsolved goals\n⊢ True\n",
+                        "stderr": ""
+                    },
+                    "codex_review": {
+                        "status": "fail",
+                        "issues": [
+                            {
+                                "severity": "blocking",
+                                "message": "Do not replace this with sorry."
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let annotated = annotate_lean_review_fix_code_results(results, &proof_obligations);
+
+        assert_eq!(annotated["status"], "fail");
+        assert_eq!(annotated["verdict"], "NOT_PROVED");
+        assert_eq!(annotated["proof_status"], "TYPE_ERROR");
+        assert_eq!(annotated["entries"][0]["status"], "TYPE_ERROR");
+        assert!(review_fix_loop_summary(&annotated).contains("verdict=NOT_PROVED"));
     }
 
     #[test]
