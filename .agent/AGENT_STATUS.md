@@ -129,3 +129,17 @@ Updated: 2026-06-14T06:39:30Z
 - Active run state: no corpus or PFR run active.
 - Cleanup completed: `.agent` reduced to durable markdown files only (~480K); removed `.agent/worktrees/*`; removed `agenthero/apps/c2rust/target`; removed `agenthero/apps/grokrxiv/target`.
 - Phase state: P0 still has no full corpus green baseline and no phase tag. Next runtime validation should be only the failed non-skipped PFR entry, not the full corpus.
+
+## P0-053 Single-File Loop Check
+
+Updated: 2026-06-14T07:03:09Z
+
+- User redirected away from the full corpus; no full corpus sweep was run.
+- Ran exactly one ad hoc source through the local loop: `https://arxiv.org/abs/2606.13517`.
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/`.
+- Review id: `959b4087-f8c6-41ea-8337-01855c2bc2c2`.
+- Wrapper status: `classification=completed`, `exit_code=0`, `elapsed_ms=1155011`.
+- Working surfaces: fetch/extraction persisted artifacts; five specialist reviewers completed; rendered artifacts written; Haskell semantic stage passed in one deterministic local attempt; citation validation emitted counts; PR PDF compiled; external actions stayed disabled with `pr_url=null`.
+- Non-green surfaces: Lean returned `NOT_PROVED` / `FAILED`; semantic adequacy marked the extracted theorem targets `OVERCLAIMED`; citation validation was only `warn` with `checked=50`, `unverified=34`; policy left the review in `revision_needed` with `publisher_ready=false`.
+- App-local defects exposed by the single file: bibliography title normalization still leaves many references titled only by citation keys such as `Aki01`; theorem target filtering still allows section-heading prose to become Lean proof obligations; some agent payloads are large enough to make one-file runs slow.
+- Next action: fix one of those concrete defects and rerun only `2606.13517`.

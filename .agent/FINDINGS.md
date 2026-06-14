@@ -2445,3 +2445,48 @@ Evidence:
 Residual:
 - The PFR affected runtime acceptance was stopped; no corpus-green claim.
 - Next runtime validation should run only `pfr-marton` with `--no-external-actions`, not the full corpus.
+
+## P0-053 - Single-File Loop Check for arXiv 2606.13517
+
+ID: P0-053
+Source: `https://arxiv.org/abs/2606.13517`
+Runner: local CLI through `grokrxiv-run-with-timeout`
+Bucket: F1/F2 app-local single-paper reliability findings
+NEVER-event: none observed.
+
+Command:
+
+```sh
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
+  --timeout-secs 1800 \
+  --idle-timeout-secs 600 \
+  --status-json agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/run-status.json \
+  --log agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/run.log \
+  -- \
+  agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review https://arxiv.org/abs/2606.13517 --loop --debug --no-external-actions
+```
+
+Evidence:
+- `run-status.json`: `classification=completed`, `exit_code=0`, `elapsed_ms=1155011`.
+- Review id: `959b4087-f8c6-41ea-8337-01855c2bc2c2`.
+- Fetch/extraction completed and persisted paper artifacts.
+- Specialist review completed: summary `OK`, technical correctness `WARN`, novelty `OK`, reproducibility `OK`, citation `WARN`, meta-review `OK`.
+- Review-loop artifacts were written under `.agenthero/artifacts/grokrxiv/reviews/959b4087-f8c6-41ea-8337-01855c2bc2c2/review_loop/`.
+- Haskell semantic stage passed attempt 1 with `generation_recovery.status=deterministic_local_author`, GHC `exit_code=0`, and reviewer `status=pass`.
+- Citation validation emitted a non-empty deterministic artifact with `checked=50`, `unresolved=0`, `transient_unknown=0`, `unverified=34`, `status=warn`.
+- PR artifact fixing used the deterministic compiler path: `pr_fixes.status=pass`, `author_role=deterministic_pr_artifact_compiler`, `agent_outputs=0`, and `review_loop/fixed/review.pdf` exists.
+- External actions stayed disabled: `pr_url=null`, `external_actions_enabled=false`.
+
+Failures / defects:
+- Lean failed honestly: `lean/results.json` has `status=fail`, `verdict=NOT_PROVED`, `proof_status=FAILED`.
+- The Lean target was bad input: `thm_4` came from section-heading prose, not a theorem statement. The generated Lean failed on an equality between prose-derived identifiers.
+- Semantic adequacy failed with three `OVERCLAIMED` verdicts for `thm-2`, `thm-3`, and `thm-4`.
+- Citation reliability is only partial: the resolver checked 50 references but left 34 unverified. Evidence shows many normalized citation titles are keys such as `Aki01`, `BMS67`, `Bro82`, rather than the quoted bibliography titles in the raw references.
+- Policy gate correctly refused publication: `deterministic_status=fail`, `integrity_ready=false`, `publisher_ready=false`, blockers are major revision, failed Lean proof obligations, and semantic overclaim.
+- Runtime latency issue: this one file completed in about 19.25 minutes. Slow spots were technical-correctness review, HTML quality over a full rendered HTML prompt, and Lean repair/review payloads around 1.3 MB.
+
+Next targeted fixes:
+1. Normalize bibliography titles for `Label: Author, ``Title'', ...` references so citation validation uses titles instead of keys.
+2. Tighten theorem/proof-obligation filtering so section-heading prose does not become a Lean target.
+3. Reduce post-render and Lean-review payloads; pass artifact paths/summaries instead of embedding full HTML or multi-MB Lean review inputs where possible.

@@ -329,3 +329,36 @@ Acceptance focus for PFR:
 `.agent/worktrees/*`, `agenthero/apps/c2rust/target`, and
 `agenthero/apps/grokrxiv/target` were removed on 2026-06-14. Durable `.agent/*.md`
 files were preserved.
+
+## Current Next Step After Single-File Run
+
+Do not run the full corpus next.
+
+The active single-file target is `https://arxiv.org/abs/2606.13517`, result root
+`agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/`,
+review `959b4087-f8c6-41ea-8337-01855c2bc2c2`.
+
+Work one defect at a time, then rerun only this same source with
+`--no-external-actions`:
+
+1. Fix normalized bibliography title extraction for references whose raw text is
+   `Key: Author, ``Title'', ...`; current citation validation checked 50 refs
+   but left 34 unverified because many titles are just keys like `Aki01`.
+2. Fix theorem target filtering so section-heading prose is not promoted into a
+   Lean proof obligation; current Lean failed honestly on `thm_4` derived from
+   section-heading prose.
+3. Then address agent payload latency if still needed: HTML quality receives the
+   full rendered HTML and Lean review receives >1 MB inputs on this paper.
+
+Rerun shape:
+
+```sh
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
+  --timeout-secs 1800 \
+  --idle-timeout-secs 600 \
+  --status-json agenthero/apps/grokrxiv/evals/results/<ts>/arxiv-2606-13517-after-fix/run-status.json \
+  --log agenthero/apps/grokrxiv/evals/results/<ts>/arxiv-2606-13517-after-fix/run.log \
+  -- \
+  agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review https://arxiv.org/abs/2606.13517 --loop --debug --no-external-actions
+```
