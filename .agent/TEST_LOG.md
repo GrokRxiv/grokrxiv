@@ -1204,3 +1204,28 @@ Residual:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action: start P0-050 capset recommendation policy semantics.
+
+## 2026-06-14 P0-050 Capset Recommendation Policy Semantics
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T04:33:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture` | red-first failure before implementation: `assertion failed: policy.integrity_ready` | terminal |
+| 2026-06-14T04:34:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T04:35:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T04:36:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T04:36:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T04:36:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T04:36:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all` | pass | terminal |
+| 2026-06-14T04:36:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `git diff --check` | pass | terminal |
+| 2026-06-14T04:38:00Z | `eca2b48` | `p0-050-capset-recommendation-policy` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, installed worker `grokrxiv-app`; locked yanked-zip warning only | terminal |
+| 2026-06-14T04:49:51Z | `eca2b48` | `p0-050-capset-recommendation-policy` | bounded capset affected rerun through `grokrxiv-run-with-timeout` with `--no-external-actions` | pass, wrapper exit 0; `classification=completed`, `elapsed_ms=765023`; review `f94e1367-8924-426c-aaa7-5db84d4dea5b` | `agenthero/apps/grokrxiv/evals/results/20260614T043642Z/capset-after-p0-050-recommendation-policy/run.log` |
+
+Acceptance evidence:
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `recommendation_policy.status=unpinned_non_publishing_recommendation`.
+- `citation_validation_report.json`: `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`.
+- `proof_obligations.json` and `lean/results.json` kept `skip_reason=no_math_targets` and `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`.
+- External actions stayed disabled and `pr_url=null`.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action after coordinator merge verification: resume the bounded full local CLI corpus sweep.

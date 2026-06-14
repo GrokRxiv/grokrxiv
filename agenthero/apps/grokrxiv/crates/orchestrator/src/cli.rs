@@ -5147,21 +5147,32 @@ fn review_loop_publication_gate_policy(
         };
     }
 
-    if corpus_context.and_then(|context| context.expected_recommendation.as_deref())
-        == Some("honest")
-        && publication_gate.verdict == crate::review_gate::GateVerdict::Fail
+    if publication_gate.verdict == crate::review_gate::GateVerdict::Fail
         && matches!(
             publication_gate.recommendation.as_str(),
             "minor_revision" | "major_revision" | "reject"
         )
         && publication_gate.reason.contains("not `accept`")
     {
-        return ReviewLoopPublicationGatePolicy {
-            publisher_ready: false,
-            integrity_ready: true,
-            blocking_issue: None,
-            status: "honest_non_publishing_recommendation".to_string(),
-        };
+        match corpus_context.and_then(|context| context.expected_recommendation.as_deref()) {
+            Some("honest") => {
+                return ReviewLoopPublicationGatePolicy {
+                    publisher_ready: false,
+                    integrity_ready: true,
+                    blocking_issue: None,
+                    status: "honest_non_publishing_recommendation".to_string(),
+                };
+            }
+            None if corpus_context.is_some() => {
+                return ReviewLoopPublicationGatePolicy {
+                    publisher_ready: false,
+                    integrity_ready: true,
+                    blocking_issue: None,
+                    status: "unpinned_non_publishing_recommendation".to_string(),
+                };
+            }
+            _ => {}
+        }
     }
 
     ReviewLoopPublicationGatePolicy {
@@ -8638,7 +8649,7 @@ async fn run_review_loop_for_review(
             "citation_validation": "pass_or_warn",
             "pr_artifacts": "fixed_tex_and_pdf_present",
             "artifact_bundle": "all_declared_outputs_present_or_explicitly_skipped",
-            "recommendation_policy": "publisher_ready_accept_or_corpus_expected_honest"
+            "recommendation_policy": "publisher_ready_accept_or_corpus_expected_honest_or_unpinned_non_publishing"
         },
         "blocking_issues": blocking_issues,
         "component_status": {
@@ -14613,6 +14624,34 @@ mod tests {
         assert!(!policy.publisher_ready);
         assert_eq!(policy.blocking_issue, None);
         assert_eq!(policy.status, "honest_non_publishing_recommendation");
+    }
+
+    #[test]
+    fn unpinned_recommendation_is_integrity_ready_without_publisher_ready() {
+        let corpus_context = ReviewLoopCorpusContext {
+            id: "capset-ellenberg-gijswijt".to_string(),
+            tier: "B".to_string(),
+            source: "arxiv:1605.09223".to_string(),
+            version: Some("v1".to_string()),
+            status: None,
+            expected_recommendation: None,
+            expected_source_status: None,
+            expected_extraction: None,
+            expected_review_loop: None,
+            expected_skip_reason: None,
+        };
+        let publication_gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+
+        let policy = review_loop_publication_gate_policy(Some(&corpus_context), &publication_gate);
+
+        assert!(policy.integrity_ready);
+        assert!(!policy.publisher_ready);
+        assert_eq!(policy.blocking_issue, None);
+        assert_eq!(policy.status, "unpinned_non_publishing_recommendation");
     }
 
     #[test]

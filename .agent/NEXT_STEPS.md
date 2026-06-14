@@ -2,12 +2,12 @@
 
 Continue exactly from here.
 
-## Current Coordinator State
+## Current Worker State
 
-- Branch: `grokrxiv-local-corpus-harness`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Branch: `p0-050-capset-recommendation-policy`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-050-capset-recommendation-policy`
 - Latest merged worker checkpoint: `8cc7686` (`codex checkpoint: P0 - capset amsrefs bibliography`), fast-forward merged from `p0-049-capset-bibliography`
-- Pending worker checkpoint: none.
+- Pending worker checkpoint: P0-050 capset recommendation policy semantics, ready to commit and merge to coordinator.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -89,33 +89,47 @@ Next action: start P0-050.
 
 ### 2. P0-050 Capset Recommendation Policy Semantics
 
-Status: queued.
+Status: accepted in worker; coordinator merge verification pending.
 
-Acceptance:
+Evidence:
 
-- Do not weaken the capset corpus expected block just to make red green.
-- Add a red-first policy fixture for an entry with no pinned `expected.recommendation` and a meta-review recommendation such as `major_revision`.
-- Corpus integrity should not require `accept` unless the corpus explicitly pins that recommendation or a publication action is requested.
-- `publisher_ready` may remain false for non-accept recommendations.
-- `integrity_ready` should be allowed to pass when deterministic evidence, artifacts, citation validation, proof skip/status, and blocking issues are otherwise clean.
-- Affected capset rerun must keep citation validation `checked=7`/pass, proof stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF`, external actions disabled, and remove the accept-only integrity blocker if no expected recommendation is pinned.
+- Red-first fixture `unpinned_recommendation_is_integrity_ready_without_publisher_ready` failed before implementation at `assertion failed: policy.integrity_ready`, then passed after the policy change.
+- `review_loop_publication_gate_policy` now treats unpinned corpus recommendation expectations as non-publishing integrity passes when the only publication-gate failure is a non-accept meta-review.
+- Real publishing remains strict: `publisher_ready=false` unless the publication gate passes.
+- Affected result root: `agenthero/apps/grokrxiv/evals/results/20260614T043642Z/capset-after-p0-050-recommendation-policy`.
+- Review id: `f94e1367-8924-426c-aaa7-5db84d4dea5b`.
+- Wrapper exit: 0; `run-status.json` says `classification=completed`, `reason=process_exit`, `exit_code=0`, `elapsed_ms=765023`.
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `recommendation_policy.status=unpinned_non_publishing_recommendation`, `actual_recommendation=major_revision`, `expected_recommendation=null`.
+- `citation_validation_report.json`: `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, `malformed=0`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `proof_status=SKIPPED`, `verdict=NOT_PROVED`.
+- External actions stayed disabled and `pr_url=null`.
+
+Worker verification:
+
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture`: red then pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, installed worker binary for affected rerun.
+
+Residual:
+
+- No full corpus-green claim and no phase tag.
+- The next step is coordinator merge verification, then resume the first bounded full local CLI corpus sweep.
 
 Suggested worker setup:
 
 ```bash
 cd /Users/mlong/Documents/Development/grokrxiv
-git worktree add .agent/worktrees/p0-050-capset-recommendation-policy -b p0-050-capset-recommendation-policy
-cd .agent/worktrees/p0-050-capset-recommendation-policy
+git merge --ff-only p0-050-capset-recommendation-policy
+# run coordinator verification, refresh PATH grokrxiv-app, update .agent, commit if needed
 ```
 
-Then follow TDD:
-
-1. Add a failing app-runtime policy fixture for no pinned expected recommendation plus non-accept meta-review.
-2. Fix the review-loop policy gate so corpus integrity and publisher readiness remain separate.
-3. Run focused fixture, app-runtime `review_loop`, app workspace check, and structural tests.
-4. Reinstall `grokrxiv-app` if app CLI/runtime code changed.
-5. Rerun capset through `grokrxiv-run-with-timeout` with `--no-external-actions`.
-6. Update `.agent/*` and `LEDGER.md`, checkpoint commit, then coordinator merge.
+Then resume the bounded full local CLI sweep from `evals/LOOP.md`.
 
 ### 3. P0-044 Acceptance / Merge
 

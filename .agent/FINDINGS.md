@@ -1,5 +1,58 @@
 # GrokRxiv Local Harness Findings
 
+## P0-050 - Capset Recommendation Policy Semantics
+
+ID: P0-050
+Corpus entry: `capset-ellenberg-gijswijt`
+Pinned source: `arxiv:1605.09223v1`
+Runner: local CLI through `evals/bin/grokrxiv-run-with-timeout`
+Worker branch: `p0-050-capset-recommendation-policy`
+Bucket: F1 app-local review-loop policy semantics
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- After P0-049, capset had deterministic citation evidence and explicit no-math proof skips, but the review-loop policy still reported `deterministic_status=fail`.
+- The only blocking issue was `Meta-review recommendation is major_revision, not accept`.
+- The capset corpus expected block does not pin `expected.recommendation`, so that non-accept recommendation should block publication, not corpus integrity.
+
+Root cause:
+- `review_loop_publication_gate_policy` had a special integrity-ready non-publishing path only for `expected.recommendation: honest`.
+- When the corpus context had no expected recommendation, the function treated the publication gate failure as an integrity failure even if all deterministic evidence and artifacts were clean.
+- This collapsed `publisher_ready` and corpus `integrity_ready`, contrary to the narrowed P0 contract.
+
+Fix applied:
+- Added red-first fixture `unpinned_recommendation_is_integrity_ready_without_publisher_ready`.
+- Changed `review_loop_publication_gate_policy` so a corpus entry with no pinned recommendation treats a non-accept meta-review as `status=unpinned_non_publishing_recommendation`, `integrity_ready=true`, `publisher_ready=false`, and no blocking issue.
+- Left normal publication strict: no corpus context and `expected.recommendation: accept` still require `accept` for publishing/integrity.
+- Updated the policy report threshold label to mention unpinned non-publishing recommendations.
+
+Evidence:
+- Red-first fixture failed before implementation at `assertion failed: policy.integrity_ready`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture`: pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all`: pass.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass; installed worker binary for affected rerun.
+
+Affected rerun:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T043642Z/capset-after-p0-050-recommendation-policy`.
+- Review id: `f94e1367-8924-426c-aaa7-5db84d4dea5b`.
+- Wrapper result: `classification=completed`, `reason=process_exit`, `exit_code=0`, `elapsed_ms=765023`.
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `recommendation_policy.status=unpinned_non_publishing_recommendation`, `actual_recommendation=major_revision`, `expected_recommendation=null`.
+- `citation_validation_report.json`: `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, `malformed=0`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `proof_status=SKIPPED`, `verdict=NOT_PROVED`.
+- `review_loop_report.json`: `deterministic_status=pass`, `publisher_ready=false`, `blocking_issues=[]`.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Resume the bounded full local CLI corpus sweep to discover the next red entry.
+
+Escalation status: none. This is app-local and mechanically testable.
+
 ## P0-049 - Capset Normalized Bibliography / Citation Evidence
 
 ID: P0-049

@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T04:30:52Z
+Updated: 2026-06-14T04:49:51Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local coordinator after P0-049 capset bibliography merge verification.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Session type: local P0-050 worker checkpoint after capset recommendation-policy affected rerun.
+- Branch/worktree: worker branch `p0-050-capset-recommendation-policy` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-050-capset-recommendation-policy`.
 - Latest merged worker checkpoint in coordinator: `8cc7686` (`codex checkpoint: P0 - capset amsrefs bibliography`), fast-forward merged from `p0-049-capset-bibliography`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-050 capset recommendation policy semantics. P0-049 is merged and coordinator-verified: capset `amsrefs` bibliography extraction now feeds deterministic citation validation, which checks 7 references and passes while Haskell/Lean remain explicit no-math skips. Capset is still red on a separate policy issue: meta-review recommendation `major_revision` is treated as an accept-only integrity blocker when the corpus expected block does not pin `recommendation`. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-050 capset recommendation policy semantics is accepted in the worker and ready for coordinator merge verification. The review-loop policy now treats an unpinned corpus recommendation as a non-publishing integrity pass when the only publication-gate failure is a non-accept meta-review. Affected capset rerun `20260614T043642Z/capset-after-p0-050-recommendation-policy` completed as review `f94e1367-8924-426c-aaa7-5db84d4dea5b`: `policy_gate.deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `recommendation_policy.status=unpinned_non_publishing_recommendation`, citation validation `checked=7`/pass, proof stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF`, and external actions disabled. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Reference-readiness clarification: the active P0 queue now treats the product publishing question as `reference_ready`, meaning the report is good enough for another reader to use as a public reference. Missing required LLM inputs must fail before the LLM unless an explicit typed skip or partial-status contract tells the agent what to do.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
