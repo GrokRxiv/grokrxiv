@@ -1160,3 +1160,29 @@ Residual:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action: P0-049 normalized bibliography/reference extraction for capset, then resume the bounded full CLI sweep.
+
+## 2026-06-14 P0-049 Capset Normalized Bibliography
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T04:12:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture` | red-first failure before implementation: `citations=[]`, `left: 0`, `right: 2` | terminal |
+| 2026-06-14T04:13:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T04:16:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib -- --nocapture` | pass, 48 tests | terminal |
+| 2026-06-14T04:17:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | terminal |
+| 2026-06-14T04:18:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T04:19:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T04:20:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T04:20:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T04:21:00Z | `e159179` | `p0-049-capset-bibliography` | `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all` | pass | terminal |
+| 2026-06-14T04:21:00Z | `e159179` | `p0-049-capset-bibliography` | `git diff --check` | pass | terminal |
+| 2026-06-14T04:21:00Z | `e159179` | `p0-049-capset-bibliography` | `jq '{classification,reason,exit_code,elapsed_ms}' agenthero/apps/grokrxiv/evals/results/20260614T041258Z/capset-after-p0-049-amsrefs/run-status.json` | pass, `classification=completed`, `reason=process_exit`, `exit_code=0`, `elapsed_ms=507718` | terminal |
+| 2026-06-14T04:21:00Z | `e159179` | `p0-049-capset-bibliography` | `jq '{status,checked,unresolved,transient_unknown,unverified,malformed}' .../review_loop/citation_validation_report.json` | pass, `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, `malformed=0` | terminal |
+
+Acceptance evidence:
+- P0-049 fixed the capset citation-loss defect: deterministic citation validation now checks 7 extracted references instead of 0.
+- The affected capset rerun kept the conditional proof contract intact: Haskell passed with no theorem targets, proof obligations and Lean skipped with `skip_reason=no_math_targets`, and operator status remained `NOT_CONDUCIVE_TO_LEAN_PROOF`.
+- External actions stayed disabled and `pr_url=null`.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Capset remains red on P0-050 recommendation policy semantics: meta-review `major_revision` is still treated as an accept-only integrity blocker when the corpus expected block does not pin `recommendation`.

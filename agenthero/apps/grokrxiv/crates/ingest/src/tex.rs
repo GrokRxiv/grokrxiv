@@ -981,6 +981,7 @@ fn strip_md_inline(s: &str) -> String {
 
 fn collect_bibliography(raw_main: &str, files: &HashMap<String, String>) -> Vec<Citation> {
     let mut out = parse_bibitems(raw_main);
+    out.extend(parse_amsrefs_biblist(raw_main));
     for (name, contents) in files {
         if !name.to_lowercase().ends_with(".bib") {
             continue;
@@ -1183,6 +1184,68 @@ fn parse_bblfile(src: &str) -> Vec<Citation> {
     out
 }
 
+fn parse_amsrefs_biblist(src: &str) -> Vec<Citation> {
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = src[search_from..].find("\\bib") {
+        let bib_start = search_from + rel;
+        let after_bib = bib_start + "\\bib".len();
+        if src[after_bib..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic())
+        {
+            search_from = after_bib;
+            continue;
+        }
+
+        let Some((key, key_end)) = parse_next_braced_value(src, after_bib) else {
+            search_from = after_bib;
+            continue;
+        };
+        let Some((_entry_type, type_end)) = parse_next_braced_value(src, key_end) else {
+            search_from = key_end;
+            continue;
+        };
+        let Some((body, body_end)) = parse_next_braced_value(src, type_end) else {
+            search_from = type_end;
+            continue;
+        };
+        search_from = body_end;
+
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let raw_clean = sanitize_bib_value(&body);
+        let (sniffed_doi, sniffed_arxiv_id) = sniff_identifiers(&raw_clean);
+        let doi = extract_amsrefs_field(&body, "doi").or(sniffed_doi);
+        let arxiv_id = extract_amsrefs_field(&body, "eprint")
+            .filter(|value| looks_like_arxiv_id(value))
+            .or(sniffed_arxiv_id);
+        let title = extract_amsrefs_field(&body, "title");
+        out.push(Citation {
+            raw: if raw_clean.is_empty() {
+                key.to_string()
+            } else {
+                format!("{key}: {raw_clean}")
+            },
+            doi,
+            arxiv_id,
+            title: title.or_else(|| Some(key.to_string())),
+        });
+    }
+    out
+}
+
+fn parse_next_braced_value(src: &str, start: usize) -> Option<(String, usize)> {
+    let open_rel = src[start..].find('{')?;
+    let open = start + open_rel;
+    let value = parse_balanced_braced_content(src, open + 1)?;
+    let end = open + 1 + value.len() + 1;
+    Some((value, end))
+}
+
 fn extract_bbl_field(body: &str, field: &str) -> Option<String> {
     let needle = format!("\\field{{{field}}}{{");
     let start = body.find(&needle)? + needle.len();
@@ -1253,6 +1316,15 @@ fn dedupe_citations(citations: Vec<Citation>) -> Vec<Citation> {
 
 fn extract_bib_field(body: &str, field: &str) -> Option<String> {
     bib_field_value(body, field).map(|value| sanitize_bib_value(&value))
+}
+
+fn extract_amsrefs_field(body: &str, field: &str) -> Option<String> {
+    let pattern = format!(r"(?m)\b{}\s*=\s*\{{", regex::escape(field));
+    let re = Regex::new(&pattern).ok()?;
+    let m = re.find(body)?;
+    let value = parse_balanced_braced_content(body, m.end())?;
+    let value = sanitize_bib_value(&value);
+    (!value.is_empty()).then_some(value)
 }
 
 fn bib_field_value(raw: &str, name: &str) -> Option<String> {
@@ -1832,6 +1904,62 @@ Atle Selberg.
             citations[0].raw.starts_with("selberg1949elementary:"),
             "raw reference should preserve the bibitem key for traceability: {}",
             citations[0].raw
+        );
+    }
+
+    #[test]
+    fn capset_amsrefs_biblist_entries_are_preserved() {
+        let raw_main = r#"\documentclass[12pt]{amsart}
+\usepackage[alphabetic,abbrev,lite]{amsrefs}
+\begin{document}
+\section{Introduction}
+We use the polynomial method of Croot, Lev, and Pach~\cite{CLP}.
+\begin{bibdiv}
+\begin{biblist}
+\bib{bateman}{article}{
+    title={New bounds on cap sets},
+    author={Bateman, Michael},
+    author={Katz, Nets}
+    journal={Journal of the American Mathematical Society},
+    volume={25},
+    number={2},
+    pages={585--613},
+    year={2012}
+}
+\bib{CLP}{article}{
+    title={Progression-free sets in $\mathbf{Z}_4^n$ are exponentially small},
+    author={Croot,Ernie},
+    author={Lev,Vsevolod},
+    author={Pach,P'{e}ter P\'{a}l},
+    note={arXiv preprint 1605.01506}
+    year={2016}
+}
+\end{biblist}
+\end{bibdiv}
+\end{document}
+"#;
+        let files = HashMap::new();
+
+        let citations = collect_bibliography(raw_main, &files);
+
+        assert_eq!(citations.len(), 2, "citations={citations:?}");
+        assert!(
+            citations.iter().any(|citation| {
+                citation.raw.starts_with("bateman:")
+                    && citation.title.as_deref() == Some("New bounds on cap sets")
+            }),
+            "expected Bateman/Katz cap-set reference, got {citations:?}"
+        );
+        assert!(
+            citations.iter().any(|citation| {
+                citation.raw.starts_with("CLP:")
+                    && citation.arxiv_id.as_deref() == Some("1605.01506")
+                    && citation
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| title.contains("Progression-free sets"))
+            }),
+            "expected CLP arXiv reference, got {citations:?}"
         );
     }
 

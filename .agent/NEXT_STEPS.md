@@ -2,12 +2,12 @@
 
 Continue exactly from here.
 
-## Current Coordinator State
+## Current Worker State
 
-- Branch: `grokrxiv-local-corpus-harness`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Branch: `p0-049-capset-bibliography`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-049-capset-bibliography`
 - Latest merged worker checkpoint: `e159179` (`codex checkpoint: P0 - capset formal target hygiene`), fast-forward merged at `e159179`
-- Pending worker checkpoint: none.
+- Pending worker checkpoint: P0-049 normalized bibliography/reference extraction, ready to commit and merge to coordinator.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -37,65 +37,73 @@ Rules:
 
 ## Immediate Queue
 
-### 1. P0-048 Capset Formal Target Hygiene
+### 1. P0-049 Normalized Bibliography / Citation Evidence
 
-Status: accepted and merged to coordinator.
+Status: accepted in worker; coordinator merge verification pending.
 
 Evidence:
 
-- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T-p0-048-capset-no-body-fallback/capset-ellenberg-gijswijt`.
-- Review id: `38a720cd-5964-4822-9cd1-ab44e5b9a7e9`.
-- Wrapper exit: 0; `run-status.json` says `classification=completed`, `reason=process_exit`, `elapsed_ms=957185`.
+- Root cause: capset uses `amsrefs` `\bib{key}{type}{body}` bibliography entries; previous normalized extraction handled `\bibitem`, `.bib`, and `.bbl` only.
+- Code changed: `agenthero/apps/grokrxiv/crates/ingest/src/tex.rs` now parses `amsrefs` bibliography entries, extracting raw text, title, DOI, and arXiv identifiers.
+- Red-first fixture: `capset_amsrefs_biblist_entries_are_preserved` failed before implementation with `citations=[]`, then passed.
+- Affected result root: `agenthero/apps/grokrxiv/evals/results/20260614T041258Z/capset-after-p0-049-amsrefs`.
+- Review id: `f06df5dc-5610-4d4f-a565-3cfccb5a9fe3`.
+- Wrapper exit: 0; `run-status.json` says `classification=completed`, `reason=process_exit`, `exit_code=0`, `elapsed_ms=507718`.
 - `semantic_ir.json`: `theorem_candidates=0`, `supporting_equations=190`, limitation `no_paper_math_transcribed`.
 - Haskell: pass in one deterministic local attempt.
 - `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
 - `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`.
-- `policy_gate.json`: formal status `not_conducive_to_lean_proof`; Haskell pass, Lean skipped, semantic adequacy skipped.
+- `citation_validation_report.json`: `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, `malformed=0`.
 
 Residual:
 
 - Capset is not green. Policy still has `deterministic_status=fail`, `integrity_ready=false`, `publisher_ready=false`.
-- Citation validation failed structurally: deterministic normalized bibliography had `checked=0`, while `agents/citation.json.output.entries` contains 7 citation entries inferred by the citation specialist.
-- Meta-review recommends `major_revision`, which also keeps `publisher_ready=false`.
+- The remaining blocker is policy recommendation semantics: meta-review recommends `major_revision`, and the policy currently treats that as an accept-only integrity failure even though the capset corpus expected block does not specify `expected.recommendation`.
 - No full corpus-green claim and no phase tag.
 
-Coordinator verification:
+Worker verification:
 
-- `git merge --ff-only p0-048-bounded-cli-sweep`: pass, fast-forward to `e159179`.
-- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop -- --nocapture`: pass, 18/18.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture`: pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib -- --nocapture`: pass, 48/48.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21/21.
 - `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
 - `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
 - `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
 - `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
-- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, refreshed PATH `grokrxiv-app` from merged coordinator checkout.
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all`: pass.
+- `git diff --check`: pass.
 
-Next action: start P0-049.
+Next action: commit worker checkpoint, fast-forward merge to coordinator, rerun coordinator-side verification, then start P0-050.
 
-### 2. P0-049 Normalized Bibliography / Citation Evidence
+### 2. P0-050 Capset Recommendation Policy Semantics
 
 Status: queued.
 
 Acceptance:
 
-- Add a red-first fixture from the capset TeX/bundle path proving normalized content currently loses bibliography entries.
-- Preserve bibliography/reference entries in normalized content for capset.
-- Deterministic citation validation must check more than 0 entries.
-- The citation specialist may summarize citation quality, but publication/reference readiness must rely on deterministic citation evidence or explicit unresolved statuses.
-- Affected capset rerun must keep formal stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF` and improve citation validation from structural fail to pass/warn/fail with real checked entries.
+- Do not weaken the capset corpus expected block just to make red green.
+- Add a red-first policy fixture for an entry with no pinned `expected.recommendation` and a meta-review recommendation such as `major_revision`.
+- Corpus integrity should not require `accept` unless the corpus explicitly pins that recommendation or a publication action is requested.
+- `publisher_ready` may remain false for non-accept recommendations.
+- `integrity_ready` should be allowed to pass when deterministic evidence, artifacts, citation validation, proof skip/status, and blocking issues are otherwise clean.
+- Affected capset rerun must keep citation validation `checked=7`/pass, proof stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF`, external actions disabled, and remove the accept-only integrity blocker if no expected recommendation is pinned.
 
 Suggested worker setup:
 
 ```bash
-git worktree add .agent/worktrees/p0-049-capset-bibliography -b p0-049-capset-bibliography
-cd .agent/worktrees/p0-049-capset-bibliography
+cd /Users/mlong/Documents/Development/grokrxiv
+git merge --ff-only p0-049-capset-bibliography
+# run coordinator verification, update .agent, commit if needed
+git worktree add .agent/worktrees/p0-050-capset-recommendation-policy -b p0-050-capset-recommendation-policy
+cd .agent/worktrees/p0-050-capset-recommendation-policy
 ```
 
 Then follow TDD:
 
-1. Add a failing ingest/app-runtime fixture proving capset bibliography extraction currently yields zero normalized bibliography entries.
-2. Fix the owning extraction/normalization code.
-3. Run focused fixture, ingest tests, app-runtime citation/review-loop tests, app workspace check, and structural tests.
-4. Reinstall `grokrxiv-app`.
+1. Add a failing app-runtime policy fixture for no pinned expected recommendation plus non-accept meta-review.
+2. Fix the review-loop policy gate so corpus integrity and publisher readiness remain separate.
+3. Run focused fixture, app-runtime `review_loop`, app workspace check, and structural tests.
+4. Reinstall `grokrxiv-app` if app CLI/runtime code changed.
 5. Rerun capset through `grokrxiv-run-with-timeout` with `--no-external-actions`.
 6. Update `.agent/*` and `LEDGER.md`, checkpoint commit, then coordinator merge.
 

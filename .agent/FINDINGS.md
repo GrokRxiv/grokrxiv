@@ -1,5 +1,58 @@
 # GrokRxiv Local Harness Findings
 
+## P0-049 - Capset Normalized Bibliography / Citation Evidence
+
+ID: P0-049
+Corpus entry: `capset-ellenberg-gijswijt`
+Pinned source: `arxiv:1605.09223v1`
+Runner: local CLI through `evals/bin/grokrxiv-run-with-timeout`
+Worker branch: `p0-049-capset-bibliography`
+Bucket: F1 app-local extraction/normalization citation channel
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-048 made capset stop inventing theorem candidates from body/equation snippets, but the entry still had a structural citation failure.
+- The citation specialist could infer 7 citation entries, while deterministic citation validation reported zero checked references because normalized bibliography extraction returned no entries.
+- That violated the reference-readiness bar: citation validation must run on extracted references or explicitly report unresolved/partial statuses, not silently validate an empty bibliography.
+
+Root cause:
+- The capset source uses the `amsrefs` package with `\begin{bibdiv}\begin{biblist}` and `\bib{key}{type}{body}` bibliography entries.
+- `collect_bibliography` parsed `\bibitem`, `.bib`, and `.bbl` inputs, but did not parse `amsrefs` `\bib` entries in the main TeX source.
+
+Fix applied:
+- Added `parse_amsrefs_biblist` in `agenthero/apps/grokrxiv/crates/ingest/src/tex.rs`.
+- `collect_bibliography` now extends extracted references with `amsrefs` entries from the main TeX source.
+- The parser extracts raw bibliography text, structured title fields, DOI fields, `eprint`/arXiv identifiers, and sniffed DOI/arXiv IDs from sanitized raw text.
+- It skips alphabetic continuations so `\bibitem`, `\bibdiv`, `\biblist`, and `\bibliography` are not mistaken for `amsrefs` entries.
+
+Evidence:
+- Red-first fixture `capset_amsrefs_biblist_entries_are_preserved` failed before implementation with `citations=[]`, `left: 0`, `right: 2`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture`: pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib -- --nocapture`: pass, 48/48.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21/21.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all`: pass.
+- `git diff --check`: pass.
+
+Affected rerun:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T041258Z/capset-after-p0-049-amsrefs`.
+- Review id: `f06df5dc-5610-4d4f-a565-3cfccb5a9fe3`.
+- Wrapper result: `classification=completed`, `reason=process_exit`, `exit_code=0`, `elapsed_ms=507718`.
+- `citation_validation_report.json`: `status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, `malformed=0`.
+- `semantic_ir.json`: `theorem_candidates=0`, `supporting_equations=190`, limitation `no_paper_math_transcribed`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `proof_status=SKIPPED`, `verdict=NOT_PROVED`.
+
+Residual:
+- Capset is still red. `policy_gate.json` reports `deterministic_status=fail`, `integrity_ready=false`, `publisher_ready=false`, and blocking issue `Meta-review recommendation is major_revision, not accept`.
+- The capset corpus expected block does not pin `expected.recommendation`, so this is queued as P0-050 policy recommendation semantics rather than part of the citation defect.
+- No full corpus-green claim and no phase tag.
+
+Escalation status: none. This is app-local and mechanically testable.
+
 ## P0-048 - Capset Formal Target Hygiene / Normalized Bibliography Gap
 
 ID: P0-048
