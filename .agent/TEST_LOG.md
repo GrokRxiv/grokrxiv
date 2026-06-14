@@ -1072,3 +1072,24 @@ Acceptance evidence:
 Residual:
 - No full corpus-green claim.
 - Next worker: P0-046 harness timeout/stall detection before the next full sweep.
+
+## 2026-06-14 P0-045b Coordinator Verification
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-045b-llm-input-contract` | pass, fast-forward from `985e463` to `6700d28` | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1` | pass, 295 tests | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass; replaced worker-installed binary with coordinator binary | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass; replaced worker-installed adapter with coordinator binary | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `cargo install --path crates/orchestrator --bin agh --force --locked` | pass; replaced worker-installed `agh` with coordinator binary | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --version` | pass, `agh 0.1.0` | terminal |
+| 2026-06-14T01:40:48Z | `6700d28` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions --dry-run` | pass, product status 0; `external_actions.enabled=false` | terminal |
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next worker: P0-046 harness timeout/stall detection before the next full sweep.

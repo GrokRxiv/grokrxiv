@@ -6,8 +6,8 @@ Continue exactly from here.
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `eaaf4d4` (`codex checkpoint: P0 - no-math proof skip`)
-- Pending worker checkpoint: P0-045b on branch `p0-045b-llm-input-contract` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-045b-llm-input-contract`.
+- Latest merged worker checkpoint: `6700d28` (`codex checkpoint: P0 - llm input contract gate`)
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -101,16 +101,17 @@ Next action: start a fresh local worker for P0-045b.
 
 ### 2b. P0-045b LLM Input Contract Gate
 
-Status: implemented in worker, pending checkpoint commit and coordinator merge.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
 - Red-first fixture `review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent` failed before implementation with missing helper, then passed.
 - Missing Haskell semantic IR now blocks before deterministic Haskell generation or LLM runner invocation with `stage=haskell_review_fix_code`, `missing_artifact=review_loop/semantic_ir.json`, and remediation `rerun semantic_category_mapper`.
 - Review-loop code-agent payloads include `input_contract` with `missing_required_input_policy=fail_before_llm_call`.
-- Worker verification passed: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, `git diff --check`, and full app-runtime lib serial 295/295.
+- Worker verification passed: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, `git diff --check`, full app-runtime lib serial 295/295, PATH installs, and wrapped dry-run.
+- Coordinator verification passed after fast-forward merge to `6700d28`: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, full app-runtime lib serial 295/295, `git diff --check`, PATH installs, `agh --version`, and wrapped dry-run with `external_actions.enabled=false`.
 
-Next action: checkpoint this worker, merge it back to coordinator, rerun coordinator-side verification, install PATH binaries, then start P0-046.
+Next action: start P0-046.
 
 ### 3. P0-046 Harness Timeout Detection
 
@@ -152,7 +153,7 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Merge the P0-045b worker if it is still pending, then start P0-046 harness
-timeout/stall detection from the latest coordinator checkpoint. Do not weaken
-corpus expected blocks or NEVER-events. Do not run external publishing actions.
+Start P0-046 harness timeout/stall detection from coordinator `6700d28` or the
+latest state-only checkpoint after it. Do not weaken corpus expected blocks or
+NEVER-events. Do not run external publishing actions.
 ```
