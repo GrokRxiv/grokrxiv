@@ -108,6 +108,34 @@ one defect -> failing fixture test -> minimal fix -> affected corpus entry rerun
 
 Full sweeps are reserved for phase-entry validation, suspected phase completion, and coordinator integration checkpoints; narrow worker loops rerun the affected fixture and corpus entry first.
 
+## Near-Term Vertical Slice
+
+The immediate P0/P2 bridge is narrower than the full roadmap. The app must first make this path reliable:
+
+```text
+file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report
+```
+
+Stage contracts:
+
+1. Source pull: resolve the requested file, local TeX/PDF, or pinned arXiv version. If the requested source is withdrawn/unavailable and the corpus expects `skipped_withdrawn_source`, skip before review with that reason. Otherwise, a source that cannot produce body content fails at extraction completeness before any review verdict.
+2. Normalize/extract: produce reviewable document content with body text, sections, references, equations, theorem-like blocks, and provenance. The extraction report must say what was recovered and what was not.
+3. Math eligibility: decide from normalized content whether there are formal math targets. Equations, bibliography snippets, review prose, prompt-injection text, and semantic gaps are context unless promoted by a theorem-like source with enough structure.
+4. Haskell semantic map: when math targets exist, mechanically build the semantic map from extracted content and run GHC/reviewer checks. When no math targets exist, skip Haskell with an explicit `skip_reason` and continue the document review path.
+5. Lean proof verdict: when Haskell emits proof obligations, run Lean and emit a machine verdict. When no math targets exist, skip Lean with an explicit `skip_reason` and continue the document review path.
+6. LLM review/PR loop: always review the document content and verifier artifacts. The loop may produce a PR-ready artifact/report, but corpus runs must not publish or open PRs.
+7. Git/web report: produce durable artifacts showing which stages passed, failed, or were skipped, with raw evidence paths and no hidden side effects.
+
+Proof-stage verdict meanings:
+
+- `PROVED`: a formal target existed and Lean proved it without forbidden terms.
+- `NOT_PROVED`: a formal target existed, but Lean did not prove it.
+- `NOT_CONDUCIVE_TO_LEAN_PROOF`: normalized content has no extractable formal math target, so Haskell/Lean are intentionally skipped and the PR/review path continues.
+- `USES_SORRY`, `USES_UNAPPROVED_AXIOM`, or equivalent unsafe proof statuses: a formal target exists, but the proof is not acceptable.
+- `FAILED`: toolchain, schema, timeout, or runtime failure; this is not a mathematical verdict.
+
+Until every artifact schema has an explicit `NOT_CONDUCIVE_TO_LEAN_PROOF` enum, the implementation may encode the condition as proof-stage skip artifacts with `skip_reason: no_math_targets`. That compatibility shim must be visible in the git/web report and should be removed once the schema is widened.
+
 ## Baseline Context
 
 Already landed before this phased plan: app-sdk extraction, retry/backoff hardening, review-loop crate extraction, AgentInput purge, and paper-math IR sourcing in flight. Treat these as baseline context, not active phase scope, and verify current files before relying on any prior implementation detail.

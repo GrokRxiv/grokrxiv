@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T23:21:32Z
+Updated: 2026-06-14T00:12:06Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: coordinator after P0-043 fast-forward merge and verification.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-043-zeta-citation-timeout` in `.agent/worktrees/p0-043-zeta-citation-timeout`.
-- Latest merged worker checkpoint: P0-043 at `347d858`.
+- Session type: coordinator narrowing P0 to the vertical review-pipeline slice and refreshing handoff state.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-043-zeta-citation-timeout` is merged, and unmerged worker branch `p0-044-zeta-haskell-target-hygiene` is clean in `.agent/worktrees/p0-044-zeta-haskell-target-hygiene` at `2273503`.
+- Latest merged worker checkpoint: P0-043 at `347d858`; latest coordinator checkpoint before this state update is `beddef4`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-043 is merged and coordinator-verified. `parse_bibitems` now extracts the first bibliographic `\newblock` title instead of using the bibitem key as the title, so deterministic citation lookup searches real titles. Affected rerun `c393d134-a7e1-4275-bbde-4d85cbfb63c4` changed citation validation from policy-blocking failure to non-blocking warning (`checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`); policy no longer has a citation-validation blocking issue. Remaining red from that run is separate P0-044 Haskell/Lean/semantic target hygiene, where bibliography/math snippets were still formalized as partial proof obligations. P0-039 remains blocked on human corpus sign-off for withdrawn/unavailable `bertrand-elementary` v5. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is now narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved: withdrawn/unavailable `bertrand-elementary` v5 is now an expected skip before review, not an empty-body review. P0-044 has an unmerged worker fix for zeta Haskell target hygiene, but its affected rerun stalled before Haskell artifacts and remains inconclusive F3 until a bounded rerun or harness timeout detector classifies it. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -96,6 +96,8 @@ Updated: 2026-06-13T23:21:32Z
 - P0-042 coordinator verification, 2026-06-13T22:29Z: fast-forward merged `p0-042-pr-deterministic-fast-path` into `grokrxiv-local-corpus-harness` at `7240b2d`. Coordinator-side render tests passed 10/10, app-runtime `review_loop` tests passed 17/17, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next queued item is P0-039 Bertrand extraction completeness.
 - P0-043 progress, 2026-06-13T23:17Z: worker branch `p0-043-zeta-citation-timeout` fixed zeta citation title extraction. Red fixture `bibitem_newblock_title_uses_bibliographic_title_not_key` failed before implementation when title was `selberg1949elementary`, then passed after `parse_bibitems` extracted the first bibliographic `\newblock` title. Full ingest lib tests passed 47/47, app workspace check passed, structural tests passed 45/45, `git diff --check` passed, PATH `grokrxiv-app` and `agenthero-dag-app-grokrxiv` installs passed, and installed dry-run passed. Affected no-cache rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`: product exit 0, external actions disabled, `pr_url=null`, versioned references have `key_title_count=0`, citation validation is `status=warn` with `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`, and policy has no citation-validation blocking issue. Remaining red is queued separately as P0-044 Haskell semantic target hygiene; no full corpus-green claim or phase tag.
 - P0-043 coordinator verification, 2026-06-13T23:21Z: fast-forward merged `p0-043-zeta-citation-timeout` into `grokrxiv-local-corpus-harness` at `347d858`. Coordinator-side ingest lib tests passed 47/47, app workspace check passed, structural tests passed 45/45, and `git diff --check` passed. No full corpus-green claim or phase tag. Next choices: human decision for P0-039 Bertrand v5, or fresh worker for P0-044 zeta Haskell semantic target hygiene.
+- P0 vertical-slice narrowing, 2026-06-14T00:12Z: coordinator updated `PHASES.md`, `LOOP.md`, `.agent/PATCH_PLAN.md`, and `.agent/NEXT_STEPS.md` to make the near-term acceptance target explicit: reliable file/source pull, normalized extraction, semantic math map, conditional Haskell/Lean proof stages, LLM review/PR artifact, and git/web evidence report. Documents with no formal math targets must skip Haskell and Lean with `skip_reason: no_math_targets` and continue through the review/PR path; operator-facing status is `NOT_CONDUCIVE_TO_LEAN_PROOF` until schemas expose an exact enum. P0-044 remains unmerged at worker commit `2273503` pending bounded acceptance or F3 stall classification.
+- P0-039 corpus sign-off, 2026-06-14T00:12Z: human approved skipping withdrawn/unavailable sources instead of reviewing them. Updated `bertrand-elementary` expected block to keep pinned `2407.07620v5` but require `source_status: withdrawn_unavailable`, `extraction: skipped_withdrawn_source`, `review_loop: skipped_before_review`, and `skip_reason: withdrawn_or_unavailable_source`. This entry must not launch review/Haskell/Lean/PR work while v5 remains unavailable.
 
 ## Coordinator Rules
 

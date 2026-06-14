@@ -37,23 +37,19 @@ never_events:
              If it does, halt the loop immediately and escalate to human."
 
 entries:
-  # ---- Tier A: must pass end-to-end --------------------------------------
+  # ---- Tier A: must pass end-to-end when the pinned source is reviewable ---
   - id: bertrand-elementary
     source: arxiv:2407.07620
     version: v5
     tier: A
-    ground_truth: "Main theorem already in Mathlib.NumberTheory.Bertrand"
+    status: skipped_withdrawn_source
+    ground_truth: "Requested v5 is withdrawn/unavailable on arXiv; do not review an empty body."
     expected:
-      extraction: full_body            # sections nonempty, theorem envs found
-      paper_review: pass_6_of_6
-      claim_extractor: nonempty_with_paper_spans
-      semantic_category_mapper: theorem_candidates_nonempty
-      haskell_review_fix_code: pass
-      proof_obligation_generator: theorem_formalization_obligations
-      lean_review_fix_code: PROVED_all   # mathlib closes it
-      citation_validation: pass
-      policy_gate: pass
-      recommendation: accept
+      source_status: withdrawn_unavailable
+      extraction: skipped_withdrawn_source
+      review_loop: skipped_before_review
+      skip_reason: withdrawn_or_unavailable_source
+    note: "Human sign-off 2026-06-14: skip withdrawn/unavailable pinned sources; do not review or replace with v4 without a separate corpus decision."
 
   - id: zeta3-irrationality
     source: arxiv:2503.07625

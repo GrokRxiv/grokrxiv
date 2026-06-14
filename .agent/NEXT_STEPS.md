@@ -1,56 +1,109 @@
 # GrokRxiv Local Harness Next Steps
 
-Continue exactly from here:
+Continue exactly from here.
 
 ## Current Coordinator State
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest coordinator checkpoint: P0-043 merged at `347d858`
-- Status: P0-043 is merged and coordinator-verified.
+- Latest coordinator checkpoint before this state update: `beddef4` (`codex checkpoint: P0 - P0-043 coordinator merge`)
+- Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
+- Baseline tag: none.
+- Last green full sweep: none.
+- Run model: local Codex only; do not use Codex Cloud.
 
-P0-043 summary:
-- TeX `\bibitem` parsing now extracts the first bibliographic `\newblock` title instead of using the bibitem key as `Citation.title`.
-- Affected no-cache zeta rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`.
-- External actions stayed disabled and `pr_url=null`.
-- Versioned references have `key_title_count=0`.
-- Citation validation is now non-blocking warning: `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`.
-- Policy gate no longer has a citation-validation blocking issue.
-- Coordinator verification passed: ingest lib 47/47, app workspace check, structural tests 45/45, `git diff --check`.
+## Narrow Acceptance Contract
 
-## Next Work Choice
+The near-term goal is:
 
-### Option 1: P0-039 Human Corpus Decision
+```text
+file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report
+```
 
-Current status:
-- App-local arXiv version preservation is fixed and merged.
-- `bertrand-elementary` remains blocked because the corpus pins `2407.07620v5`, which is withdrawn/unavailable, while `expected.extraction=full_body`.
-- v1-v4 are retrievable.
+Rules:
 
-Allowed human decisions:
-- approve changing corpus pin from `v5` to latest retrievable `v4`, then rerun safely;
-- replace the Tier A Bertrand entry with a retrievable source;
-- or explicitly change expected extraction semantics for withdrawn `v5`.
+- Source and extraction must be reliable. Missing body content fails before any verdict.
+- Normalized content must preserve body text, sections, references, math/context artifacts, and provenance.
+- Haskell/Lean are conditional proof stages, not universal document stages.
+- If normalized content has no formal math targets, Haskell and Lean must be explicit skips with `skip_reason: no_math_targets`; the review/PR artifact path still runs.
+- Use `NOT_CONDUCIVE_TO_LEAN_PROOF` as the operator-facing label for the no-math proof skip. Until schemas expose that exact enum, encode it as visible skip artifacts.
+- If formal math targets exist, Haskell/Lean must run and emit `PROVED`, `NOT_PROVED`, unsafe proof status, or a classified F1-F5 failure.
+- Corpus runs must keep `--no-external-actions`; never invoke approve, request-revisions, publisher, close, withdraw, merge, or PR-opening actions.
 
-Do not edit the corpus version or expected block without explicit sign-off.
+## Immediate Queue
 
-### Option 2: P0-044 Zeta Haskell Semantic Target Hygiene
+### 1. P0-044 Acceptance / Merge
 
-Trigger:
-- After P0-043, zeta citation validation no longer blocks policy.
-- The affected rerun remains red because Haskell/Lean/semantic adequacy block on partial proof obligations from bibliography/math snippets such as `body_math_41` and `body_math_67`.
+Worker:
 
-Expected defect loop:
-1. Create a fresh worker from the coordinator:
-   `git worktree add .agent/worktrees/p0-044-zeta-haskell-target-hygiene -b p0-044-zeta-haskell-target-hygiene`
-2. Add a failing fixture proving bibliography/reference math snippets and `SemanticGap`/`StatusPartial` entries do not become required Haskell/Lean proof obligations.
-3. Fix the app-owned semantic target selection, not by raising timeouts or weakening corpus expectations.
-4. Rerun `zeta3-irrationality` safely with `--no-external-actions`.
-5. Commit the worker and merge only after focused tests, app workspace check, structural tests, and `git diff --check` pass.
+```text
+.agent/worktrees/p0-044-zeta-haskell-target-hygiene
+```
 
-Guardrails:
-- Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
-- Do not weaken `expected:` blocks or NEVER-events.
-- Do not raise token caps or timeouts without a diagnosed cause.
-- Keep structural tests green.
-- Do not tag P0 green; a full corpus/both-runner sweep is still required.
+Status:
+
+- Worker branch is clean at `2273503` (`codex checkpoint: P0 - P0-044 Haskell target hygiene`).
+- It prevents bibliography/reference math snippets and partial semantic gaps from becoming required proof obligations.
+- Worker tests passed before commit, but the affected zeta rerun stalled before Haskell artifacts. Treat the rerun as inconclusive F3, not pass/fail.
+
+Next action:
+
+1. In the worker, run a bounded affected rerun for `zeta3-irrationality` with `--no-external-actions`.
+2. If it stalls again, write an F3 stall dossier and move to P0-046 before merge.
+3. If it completes, verify Haskell/Lean only receive real theorem targets, then coordinator-merge and rerun focused tests.
+
+### 2. P0-045 No-Math Proof Skip
+
+Add fixture coverage for a non-math document:
+
+- normalize/extract succeeds;
+- semantic math map reports no formal targets;
+- Haskell artifact exists as an explicit skip with `skip_reason: no_math_targets`;
+- Lean artifact exists as an explicit skip with `skip_reason: no_math_targets`;
+- review/PR artifact still builds under `--no-external-actions`;
+- git/web report shows proof stages as `NOT_CONDUCIVE_TO_LEAN_PROOF` or the schema-compatible skip equivalent.
+
+### 3. P0-046 Harness Timeout Detection
+
+Add bounded run/stall detection so a stuck corpus run self-classifies as F3 with:
+
+- command;
+- PID/process state when killed;
+- elapsed time;
+- last log line or artifact timestamp;
+- exit code or signal;
+- raw log path.
+
+Do this before the next full sweep.
+
+### 4. P0-039 Withdrawn Bertrand Source
+
+Resolved by human sign-off on 2026-06-14:
+
+- Keep `bertrand-elementary` pinned to withdrawn/unavailable `2407.07620v5`.
+- Do not review it.
+- Treat the expected outcome as a source/extraction skip:
+  `source_status: withdrawn_unavailable`,
+  `extraction: skipped_withdrawn_source`,
+  `review_loop: skipped_before_review`,
+  `skip_reason: withdrawn_or_unavailable_source`.
+
+A retrievable `v4` replacement can be added later as a separate corpus decision.
+
+## Resume Prompt
+
+```text
+Read .agent/AGENT_STATUS.md, .agent/FINDINGS.md, .agent/PATCH_PLAN.md,
+.agent/TEST_LOG.md, .agent/NEXT_STEPS.md,
+agenthero/apps/grokrxiv/evals/PHASES.md,
+agenthero/apps/grokrxiv/evals/LOOP.md, and
+agenthero/apps/grokrxiv/evals/results/LEDGER.md.
+
+Continue the local-only P0 vertical slice:
+file/source -> normalized content -> semantic math map -> conditional
+Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
+
+Start with P0-044 acceptance. If a run stalls, classify it as F3 and move to
+P0-046 harness timeout detection. Do not weaken corpus expected blocks or
+NEVER-events. Do not run external publishing actions.
+```
