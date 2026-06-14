@@ -2,12 +2,12 @@
 
 Continue exactly from here.
 
-## Current Worker State
+## Current Coordinator State
 
-- Branch: `p0-049-capset-bibliography`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-049-capset-bibliography`
-- Latest merged worker checkpoint: `e159179` (`codex checkpoint: P0 - capset formal target hygiene`), fast-forward merged at `e159179`
-- Pending worker checkpoint: P0-049 normalized bibliography/reference extraction, ready to commit and merge to coordinator.
+- Branch: `grokrxiv-local-corpus-harness`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Latest merged worker checkpoint: `8cc7686` (`codex checkpoint: P0 - capset amsrefs bibliography`), fast-forward merged from `p0-049-capset-bibliography`
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -39,7 +39,7 @@ Rules:
 
 ### 1. P0-049 Normalized Bibliography / Citation Evidence
 
-Status: accepted in worker; coordinator merge verification pending.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -73,7 +73,19 @@ Worker verification:
 - `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all`: pass.
 - `git diff --check`: pass.
 
-Next action: commit worker checkpoint, fast-forward merge to coordinator, rerun coordinator-side verification, then start P0-050.
+Coordinator verification:
+
+- `git merge --ff-only p0-049-capset-bibliography`: pass, fast-forward to `8cc7686`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture`: pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib -- --nocapture`: pass, 48/48.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 21/21.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, refreshed PATH `grokrxiv-app` from merged coordinator checkout.
+
+Next action: start P0-050.
 
 ### 2. P0-050 Capset Recommendation Policy Semantics
 
@@ -92,8 +104,6 @@ Suggested worker setup:
 
 ```bash
 cd /Users/mlong/Documents/Development/grokrxiv
-git merge --ff-only p0-049-capset-bibliography
-# run coordinator verification, update .agent, commit if needed
 git worktree add .agent/worktrees/p0-050-capset-recommendation-policy -b p0-050-capset-recommendation-policy
 cd .agent/worktrees/p0-050-capset-recommendation-policy
 ```

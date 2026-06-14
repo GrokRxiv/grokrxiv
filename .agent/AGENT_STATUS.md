@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T04:25:22Z
+Updated: 2026-06-14T04:30:52Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local P0-049 worker checkpoint after capset bibliography affected rerun.
-- Branch/worktree: worker branch `p0-049-capset-bibliography` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-049-capset-bibliography`.
-- Latest merged worker checkpoint in coordinator: `e159179` (`codex checkpoint: P0 - capset formal target hygiene`), fast-forward merged at `e159179`.
+- Session type: local coordinator after P0-049 capset bibliography merge verification.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Latest merged worker checkpoint in coordinator: `8cc7686` (`codex checkpoint: P0 - capset amsrefs bibliography`), fast-forward merged from `p0-049-capset-bibliography`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-049 normalized bibliography/reference extraction for `capset-ellenberg-gijswijt` is accepted in the worker and ready for coordinator merge verification. The capset source uses `amsrefs` `\bib{...}{...}{...}` entries; previous normalized bibliography parsing handled `\bibitem`, `.bib`, and `.bbl`, so deterministic citation validation checked 0 references. P0-049 adds app-local `amsrefs` extraction and a capset-shaped regression fixture. Affected capset rerun now reports `citation_validation.status=pass`, `checked=7`, `unresolved=0`, `transient_unknown=0`, `unverified=0`, while Haskell/Lean remain explicit no-math skips. Capset is still red on a separate policy issue: meta-review recommendation `major_revision` is treated as an accept-only integrity blocker when the corpus expected block does not pin `recommendation`. Queue that as P0-050. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-050 capset recommendation policy semantics. P0-049 is merged and coordinator-verified: capset `amsrefs` bibliography extraction now feeds deterministic citation validation, which checks 7 references and passes while Haskell/Lean remain explicit no-math skips. Capset is still red on a separate policy issue: meta-review recommendation `major_revision` is treated as an accept-only integrity blocker when the corpus expected block does not pin `recommendation`. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Reference-readiness clarification: the active P0 queue now treats the product publishing question as `reference_ready`, meaning the report is good enough for another reader to use as a public reference. Missing required LLM inputs must fail before the LLM unless an explicit typed skip or partial-status contract tells the agent what to do.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.

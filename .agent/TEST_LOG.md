@@ -1186,3 +1186,21 @@ Acceptance evidence:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Capset remains red on P0-050 recommendation policy semantics: meta-review `major_revision` is still treated as an accept-only integrity blocker when the corpus expected block does not pin `recommendation`.
+
+## 2026-06-14 P0-049 Coordinator Verification
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-049-capset-bibliography` | pass, fast-forward from `ba53e12` to `8cc7686` | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest capset_amsrefs_biblist_entries_are_preserved -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-ingest --lib -- --nocapture` | pass, 48 tests | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 21 tests | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T04:30:52Z | `8cc7686` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced worker-installed PATH binary with coordinator binary; locked yanked-zip warning only | terminal |
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action: start P0-050 capset recommendation policy semantics.
