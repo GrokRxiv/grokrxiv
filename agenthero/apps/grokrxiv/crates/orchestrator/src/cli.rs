@@ -5276,6 +5276,34 @@ fn compact_review_fix_code_base_artifact(
         if let Some(claims) = obj.get("claims").cloned() {
             obj.insert("claims".to_string(), summarize_review_loop_claims(&claims));
         }
+        if let Some(knowledge_graph) = obj.get("knowledge_graph").cloned() {
+            obj.insert(
+                "knowledge_graph".to_string(),
+                summarize_review_loop_knowledge_graph(&knowledge_graph),
+            );
+        }
+        obj.insert(
+            "haskell_semantic_contract".to_string(),
+            serde_json::json!({
+                "canonical_formal_sources": [
+                    "semantic_ir.theorem_candidates",
+                    "semantic_ir.definitions",
+                    "semantic_ir.assumptions"
+                ],
+                "empty_theorem_candidates_expected_output": {
+                    "theoremTargets": [],
+                    "claims": [],
+                    "allProofObligations": []
+                },
+                "omitted_sources_must_not_be_modeled": [
+                    "claims",
+                    "knowledge_graph",
+                    "semantic_ir.nonformal_review_claims",
+                    "semantic_ir.supporting_equations",
+                    "paper_math_sources"
+                ]
+            }),
+        );
     }
     compact
 }
@@ -5384,8 +5412,29 @@ fn summarize_review_loop_claims(value: &serde_json::Value) -> serde_json::Value 
     serde_json::json!({
         "artifact_ref": "review_loop/claims.json",
         "omitted_from_code_author_payload": true,
+        "must_not_be_modeled_as_haskell_claims": true,
+        "reason": "review claims are audit/review evidence; only semantic_ir theorem_candidates become Haskell ClaimIR values",
         "claims": value
             .get("claims")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+    })
+}
+
+fn summarize_review_loop_knowledge_graph(value: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "artifact_ref": "review_loop/knowledge_graph.json",
+        "omitted_from_code_author_payload": true,
+        "must_not_be_modeled_as_haskell_claims": true,
+        "reason": "knowledge graph nodes may include nonformal review claims; the canonical formal theorem targets are semantic_ir.theorem_candidates only",
+        "nodes": value
+            .get("nodes")
+            .and_then(|items| items.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+        "edges": value
+            .get("edges")
             .and_then(|items| items.as_array())
             .map(Vec::len)
             .unwrap_or(0),
@@ -5446,6 +5495,11 @@ fn deterministic_haskell_semantic_model_code(base_artifact: &serde_json::Value) 
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let limitations = semantic_ir
+        .get("limitations")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     let mut out = String::from(
         "module SemanticModel where\n\n\
@@ -5456,14 +5510,14 @@ data Proposition = SemanticGap SourceSpan String | UninterpretedPredicate String
 data Binder = Binder { binderName :: String, binderType :: MathType, binderSpan :: SourceSpan } deriving (Eq, Show)\n\n\
 data Definition = Definition { definitionId :: String, definitionStatement :: String, definitionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
 data Assumption = Assumption { assumptionId :: String, assumptionStatement :: String, assumptionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
+data Limitation = Limitation { limitationId :: String, limitationKind :: String, limitationStatement :: String, limitationSpan :: SourceSpan } deriving (Eq, Show)\n\n\
 data LeanTarget = LeanTarget { targetDeclaration :: String, targetExpectedShape :: String, targetSource :: SourceSpan } deriving (Eq, Show)\n\n\
 data SemanticCategory = SemCatEquivalence | SemCatPlainTheorem | SemCatInvariantPreservation | SemCatOther String deriving (Eq, Show)\n\n\
 data TheoremKind = KindEquivalence | KindTheorem | KindInvariant | KindEquation | KindOther String deriving (Eq, Show)\n\n\
 data FormalizationClass = FormalMath | InformalProse | FCOther String deriving (Eq, Show)\n\n\
 data TranscriptionStatus = StatusTranscribed | StatusPartial | StatusUntranscribed | StatusOther String deriving (Eq, Show)\n\n\
-data ReviewCategory = RCFormalMath | RCSummary | RCNovelty | RCCitation | RCMetaReviewer | RCTechnicalCorrectness | RCReproducibility | RCReviewerRecommendation | RCPublisherReadiness | RCPolicyGate | RCOther String deriving (Eq, Show)\n\n\
 data TheoremIR = TheoremIR { theoremId :: String, theoremStatement :: String, theoremSpan :: SourceSpan, theoremBinders :: [Binder], theoremAssumptions :: [Proposition], theoremConclusion :: Proposition, theoremTarget :: LeanTarget, theoremKind :: TheoremKind, theoremSemanticCategory :: SemanticCategory, theoremFormalizationClass :: FormalizationClass, theoremTranscriptionStatus :: TranscriptionStatus } deriving (Eq, Show)\n\n\
-data ClaimIR = ClaimIR { claimId :: String, claimRawText :: String, claimSource :: SourceSpan, claimReviewCategory :: ReviewCategory, claimTheorem :: Maybe TheoremIR } deriving (Eq, Show)\n\n\
+data ClaimIR = ClaimIR { claimId :: String, claimRawText :: String, claimSource :: SourceSpan, claimSemanticCategory :: SemanticCategory, claimTheorem :: Maybe TheoremIR } deriving (Eq, Show)\n\n\
 data ProofObligation = ProofObligation { obligationId :: String, obligationStatement :: Proposition, obligationSource :: SourceSpan, obligationLean :: LeanTarget } deriving (Eq, Show)\n\n",
     );
 
@@ -5511,6 +5565,36 @@ data ProofObligation = ProofObligation { obligationId :: String, obligationState
                         "unknown assumption",
                     )),
                     haskell_source_span_literal(assumption, &format!("assumption_{}", idx + 1))
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
+    out.push_str("\n\n");
+
+    out.push_str("limitations :: [Limitation]\nlimitations =\n");
+    out.push_str(&haskell_list(
+        limitations
+            .iter()
+            .enumerate()
+            .map(|(idx, limitation)| {
+                format!(
+                    "Limitation {} {} {} {}",
+                    haskell_string_literal(&json_string_or_fallback(
+                        limitation,
+                        &["id", "limitation_id"],
+                        &format!("limitation_{}", idx + 1),
+                    )),
+                    haskell_string_literal(&json_string_or_fallback(
+                        limitation,
+                        &["kind"],
+                        "semantic_gap",
+                    )),
+                    haskell_string_literal(&json_string_or_fallback(
+                        limitation,
+                        &["statement", "message"],
+                        "semantic limitation",
+                    )),
+                    haskell_source_span_literal(limitation, &format!("limitation_{}", idx + 1))
                 )
             })
             .collect::<Vec<_>>(),
@@ -5664,33 +5748,36 @@ data ProofObligation = ProofObligation { obligationId :: String, obligationState
             .iter()
             .enumerate()
             .map(|(idx, name)| {
-                let review_category = haskell_review_category_literal(&theorem_candidates[idx]);
+                let semantic_category = haskell_semantic_category_literal(
+                    &json_string_or_fallback(
+                        &theorem_candidates[idx],
+                        &["semantic_category", "kind"],
+                        "other",
+                    ),
+                );
+                let semantic_category_arg = haskell_constructor_arg(&semantic_category);
                 format!(
-                    "ClaimIR (theoremId {name}) (theoremStatement {name}) (theoremSpan {name}) {review_category} (Just {name})"
+                    "ClaimIR (theoremId {name}) (theoremStatement {name}) (theoremSpan {name}) {semantic_category_arg} (Just {name})"
                 )
             })
             .collect::<Vec<_>>(),
     ));
-    out.push_str("\n\nisNonFormalReview :: ReviewCategory -> Bool\n");
-    out.push_str("isNonFormalReview RCSummary = True\n");
-    out.push_str("isNonFormalReview RCNovelty = True\n");
-    out.push_str("isNonFormalReview RCCitation = True\n");
-    out.push_str("isNonFormalReview RCMetaReviewer = True\n");
-    out.push_str("isNonFormalReview RCReviewerRecommendation = True\n");
-    out.push_str("isNonFormalReview RCPublisherReadiness = True\n");
-    out.push_str("isNonFormalReview RCPolicyGate = True\n");
-    out.push_str("isNonFormalReview _ = False\n\n");
-    out.push_str("categoryToObligations :: ClaimIR -> [ProofObligation]\n");
-    out.push_str("categoryToObligations claim\n");
-    out.push_str("  | isNonFormalReview (claimReviewCategory claim) = []\n");
-    out.push_str("  | otherwise = claimToObligations claim\n\n");
+    out.push_str("\n\ncategoryToObligations :: ClaimIR -> [ProofObligation]\n");
+    out.push_str("categoryToObligations = claimToObligations\n\n");
+    out.push_str("isProofReadyConclusion :: Proposition -> Bool\n");
+    out.push_str("isProofReadyConclusion (SemanticGap _ _) = False\n");
+    out.push_str("isProofReadyConclusion _ = True\n\n");
+    out.push_str("isProofReadyTheorem :: TheoremIR -> Bool\n");
+    out.push_str("isProofReadyTheorem theorem =\n");
+    out.push_str("  theoremTranscriptionStatus theorem == StatusTranscribed\n");
+    out.push_str("    && isProofReadyConclusion (theoremConclusion theorem)\n\n");
     out.push_str("claimToObligations :: ClaimIR -> [ProofObligation]\n");
     out.push_str("claimToObligations claim =\n");
     out.push_str("  case claimTheorem claim of\n");
     out.push_str("    Nothing -> []\n");
     out.push_str("    Just theorem ->\n");
     out.push_str("      case theoremFormalizationClass theorem of\n");
-    out.push_str("        FormalMath ->\n");
+    out.push_str("        FormalMath | isProofReadyTheorem theorem ->\n");
     out.push_str("          [ ProofObligation\n");
     out.push_str("              (theoremId theorem)\n");
     out.push_str("              (theoremConclusion theorem)\n");
@@ -5757,32 +5844,11 @@ fn haskell_transcription_status_literal(raw: &str) -> String {
     }
 }
 
-fn haskell_review_category_literal(value: &serde_json::Value) -> String {
-    let raw = value
-        .get("review_category")
-        .or_else(|| value.get("claim_category"))
-        .or_else(|| value.get("role"))
-        .and_then(|item| item.as_str());
-    match raw.map(haskell_normalized_tag).as_deref() {
-        Some("summary") => "RCSummary".to_string(),
-        Some("novelty") => "RCNovelty".to_string(),
-        Some("citation") => "RCCitation".to_string(),
-        Some("meta_reviewer") => "RCMetaReviewer".to_string(),
-        Some("technical_correctness") => "RCTechnicalCorrectness".to_string(),
-        Some("reproducibility") => "RCReproducibility".to_string(),
-        Some("reviewer_recommendation") => "RCReviewerRecommendation".to_string(),
-        Some("publisher_readiness") => "RCPublisherReadiness".to_string(),
-        Some("policy_gate") => "RCPolicyGate".to_string(),
-        Some(other) => format!("RCOther {}", haskell_string_literal(other)),
-        None if haskell_normalized_tag(&json_string_or_fallback(
-            value,
-            &["formalization_class"],
-            "formal_math",
-        )) == "formal_math" =>
-        {
-            "RCFormalMath".to_string()
-        }
-        None => "RCOther \"unclassified\"".to_string(),
+fn haskell_constructor_arg(value: &str) -> String {
+    if value.contains(char::is_whitespace) {
+        format!("({value})")
+    } else {
+        value.to_string()
     }
 }
 
@@ -7536,6 +7602,7 @@ async fn run_review_loop_for_review(
                 "The Haskell file is a checked consumer/round-trip artifact derived from canonical IR JSON; do not invent theorem statements outside that IR.",
                 "Define SourceSpan, MathType, Term, Proposition, Binder, Definition, Assumption, TheoremIR, ClaimIR, ProofObligation, and LeanTarget types.",
                 "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir theorem_candidates/definitions/assumptions; use paper_math_sources only as provenance/count context in this compact code-author payload.",
+                "If semantic_ir.theorem_candidates is empty, emit empty theoremTargets, claims, and proof obligations while preserving semantic_ir.limitations; do not backfill from claims or knowledge_graph summaries.",
                 "Treat semantic categories as annotations over typed mathematical transcription, not as replacements for the math.",
                 "Do not turn summary, novelty, citation, reviewer recommendation, or publisher-readiness claims into Lean obligations.",
                 "Do not model this as review roles, category counts, claimCount, or publisherReadyLowerBound.",
@@ -13904,6 +13971,17 @@ obligationToLean = LeanTarget\n";
             "review_id": "11111111-1111-1111-1111-111111111111",
             "task": "Generate Haskell IR",
             "requirements": ["retain formal theorem targets"],
+            "claims": {
+                "claims": [
+                    {"id": "claim_1", "statement": "review metadata must not become Haskell"}
+                ]
+            },
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "claim_1", "label": "review metadata must not become Haskell"}
+                ],
+                "edges": []
+            },
             "paper_math_sources": {
                 "equations": {
                     "equations": [
@@ -13971,7 +14049,20 @@ obligationToLean = LeanTarget\n";
             compact["paper_math_sources"]["artifact_ref"],
             "review_loop/paper_math_sources.json"
         );
+        assert_eq!(
+            compact["claims"]["must_not_be_modeled_as_haskell_claims"],
+            true
+        );
+        assert_eq!(
+            compact["knowledge_graph"]["omitted_from_code_author_payload"],
+            true
+        );
+        assert_eq!(
+            compact["haskell_semantic_contract"]["canonical_formal_sources"][0],
+            "semantic_ir.theorem_candidates"
+        );
         assert!(!compact_text.contains("bulk supporting equation text"));
+        assert!(!compact_text.contains("review metadata must not become Haskell"));
         assert!(compact_text.len() < 12_000, "len={}", compact_text.len());
     }
 
@@ -14158,20 +14249,179 @@ obligationToLean = LeanTarget\n";
         assert!(code.contains("data SemanticCategory"));
         assert!(code.contains("data FormalizationClass"));
         assert!(code.contains("data TranscriptionStatus"));
-        assert!(code.contains("data ReviewCategory"));
+        assert!(!code.contains("data ReviewCategory"));
+        assert!(!code.contains("claimReviewCategory"));
+        assert!(!code.contains("RCSummary"));
         assert!(code.contains("theoremSemanticCategory = SemCatPlainTheorem"));
         assert!(code.contains("theoremFormalizationClass = FormalMath"));
         assert!(code.contains("theoremTranscriptionStatus = StatusPartial"));
-        assert!(code.contains("claimReviewCategory :: ReviewCategory"));
-        assert!(code.contains("RCFormalMath (Just"));
+        assert!(code.contains("claimSemanticCategory :: SemanticCategory"));
+        assert!(code.contains("SemCatPlainTheorem (Just"));
         assert!(code.contains("categoryToObligations :: ClaimIR -> [ProofObligation]"));
-        assert!(code.contains("isNonFormalReview RCCitation = True"));
+        assert!(code.contains("categoryToObligations = claimToObligations"));
+        assert!(!code.contains("isNonFormalReview"));
         assert!(code.contains("SemanticGap span \"statement not structurally typed\""));
         assert!(!code.contains("UninterpretedPredicate \"unknown_prop\" []"));
-        assert!(!code.contains("SemanticGap _ _ -> []"));
-        assert!(code.contains("FormalMath ->"));
+        assert!(code.contains("isProofReadyConclusion :: Proposition -> Bool"));
+        assert!(code.contains("isProofReadyConclusion (SemanticGap _ _) = False"));
+        assert!(code.contains("theoremTranscriptionStatus theorem == StatusTranscribed"));
+        assert!(code.contains("FormalMath | isProofReadyTheorem theorem ->"));
         assert!(code.contains("(theoremConclusion theorem)"));
         assert!(code.contains("allProofObligations = concatMap categoryToObligations claims"));
+        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
+    }
+
+    #[test]
+    fn review_loop_deterministic_haskell_author_does_not_emit_obligations_for_partial_semantic_gaps(
+    ) {
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+        let base = compact_review_fix_code_base_artifact(
+            &task,
+            serde_json::json!({
+                "semantic_ir": {
+                    "schema_version": "1.0.0",
+                    "theorem_candidates": [
+                        {
+                            "id": "thm_structured",
+                            "formalization_class": "formal_math",
+                            "statement": "For all n, n + 0 = n.",
+                            "theorem_ir": {
+                                "assumptions": [],
+                                "binders": [],
+                                "conclusion": {
+                                    "kind": "equals",
+                                    "lhs": {"kind": "var", "name": "n + 0"},
+                                    "rhs": {"kind": "var", "name": "n"}
+                                }
+                            },
+                            "typed_transcription": {
+                                "status": "transcribed"
+                            },
+                            "formalization_target": {
+                                "lean_declaration": "thm_structured",
+                                "expected_shape": "theorem"
+                            }
+                        },
+                        {
+                            "id": "body_math_41",
+                            "formalization_class": "formal_math",
+                            "statement": "\\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models",
+                            "theorem_ir": {
+                                "assumptions": [],
+                                "binders": [],
+                                "conclusion": {
+                                    "kind": "unknown_prop",
+                                    "text": "\\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models"
+                                }
+                            },
+                            "typed_transcription": {
+                                "status": "partial"
+                            },
+                            "formalization_target": {
+                                "lean_declaration": "body_math_41",
+                                "expected_shape": "theorem"
+                            }
+                        }
+                    ],
+                    "definitions": [],
+                    "assumptions": [],
+                    "supporting_equations": [],
+                    "paper_math_sources": {}
+                }
+            }),
+        );
+
+        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
+            .expect("deterministic haskell run");
+        let code = run.output["code"].as_str().expect("code output");
+
+        assert!(code.contains("isProofReadyTheorem :: TheoremIR -> Bool"));
+        assert!(code.contains("theoremTranscriptionStatus theorem == StatusTranscribed"));
+        assert!(code.contains("isProofReadyConclusion (SemanticGap _ _) = False"));
+        assert!(code.contains("FormalMath | isProofReadyTheorem theorem ->"));
+        assert!(
+            !code.contains("FormalMath ->\n          [ ProofObligation"),
+            "formal math must not bypass transcription/conclusion readiness checks"
+        );
+        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
+    }
+
+    #[test]
+    fn review_loop_deterministic_haskell_author_keeps_empty_targets_when_ir_has_only_limitations() {
+        let task = ReviewFixCodeTask {
+            target_id: "haskell",
+            language: "haskell",
+            filename: "SemanticModel.hs",
+            author_role: "haskell_semantic_author",
+            reviewer_role: "haskell_code_reviewer",
+            fixer_role: "haskell_code_fixer",
+            compile_program: "ghc",
+            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
+            compile_timeout_secs: 900,
+            forbidden_terms: Vec::new(),
+            max_attempts: 2,
+        };
+        let base = compact_review_fix_code_base_artifact(
+            &task,
+            serde_json::json!({
+                "claims": {
+                    "claims": [
+                        {"id": "claim_1", "statement": "First Lean 4 proof of zeta(3) irrationality."}
+                    ]
+                },
+                "knowledge_graph": {
+                    "nodes": [
+                        {"id": "claim_1", "label": "First Lean 4 proof of zeta(3) irrationality."}
+                    ],
+                    "edges": []
+                },
+                "semantic_ir": {
+                    "schema_version": "1.0.0",
+                    "theorem_candidates": [],
+                    "definitions": [],
+                    "assumptions": [],
+                    "supporting_equations": [],
+                    "nonformal_review_claims": [
+                        {"id": "claim_1", "statement": "First Lean 4 proof of zeta(3) irrationality."}
+                    ],
+                    "limitations": [
+                        {
+                            "id": "no_paper_math_transcribed",
+                            "kind": "semantic_gap",
+                            "statement": "No paper-derived theorem sources were transcribed into typed IR.",
+                            "source_span": {
+                                "artifact": "paper_math_sources",
+                                "claim_id": "paper_math_sources"
+                            }
+                        }
+                    ]
+                }
+            }),
+        );
+
+        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
+            .expect("deterministic haskell run");
+        let code = run.output["code"].as_str().expect("code output");
+
+        assert!(code.contains("data Limitation"));
+        assert!(code.contains("limitations :: [Limitation]"));
+        assert!(code.contains("no_paper_math_transcribed"));
+        assert!(code.contains("theoremTargets =\n  []"));
+        assert!(code.contains("claims =\n  []"));
+        assert!(!code.contains("First Lean 4 proof of zeta(3) irrationality"));
+        assert!(!code.contains("ReviewCategory"));
         assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
     }
 

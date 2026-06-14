@@ -20,6 +20,12 @@ Materialize only formal mathematical statements as `ClaimIR` / `TheoremIR`
 values. Do not turn summary, novelty, citation, reviewer recommendation, or
 publisher-readiness claims into Lean obligations.
 
+If `semantic_ir.theorem_candidates` is empty, emit empty `theoremTargets`,
+`claims`, and proof obligations while preserving the explicit semantic
+limitations. Do not backfill from summarized `claims`, `knowledge_graph`, or
+`nonformal_review_claims`; those are review evidence, not formal theorem
+targets.
+
 Do not define review-role histograms, `claimCount`, `categoryCounts`, or
 `publisherReadyLowerBound`. Those are metadata checks, not semantic modeling.
 

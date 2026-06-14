@@ -5,7 +5,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 ## Seeded Queue
 
 1. P0-039 human corpus decision: `bertrand-elementary` is pinned to withdrawn/unavailable `2407.07620v5`, while v1-v4 are retrievable. Human sign-off is required before changing the corpus pin to v4, replacing the entry, or changing expected extraction semantics. Do not edit `expected:` or the version pin autonomously.
-2. P0-044 zeta Haskell semantic target hygiene / bibliography snippets: after P0-043, citation validation is no longer policy-blocking, but the affected zeta rerun remains red because bibliography/math snippets such as `body_math_41` and `body_math_67` are formalized as partial proof obligations. Add a fixture that prevents bibliography/reference math snippets and `SemanticGap`/`StatusPartial` entries from becoming required proof obligations, then rerun `zeta3-irrationality` safely.
+2. P0-044 zeta Haskell semantic target hygiene / bibliography snippets: code fix is implemented and locally verified in worker branch `p0-044-zeta-haskell-target-hygiene`, but affected rerun evidence is still pending. The first final affected rerun stalled before Haskell artifacts and was recorded as inconclusive/F3, not as a corpus verdict. Next action is to rerun `zeta3-irrationality` safely after confirming the local runner is not stuck; accept P0-044 only when the rerun reaches Haskell and proves bibliography snippets/nonformal review claims are not proof obligations.
 
 ## Completed Queue Items
 

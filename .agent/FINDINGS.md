@@ -32,6 +32,68 @@ Fix plan:
 Attempts: 1
 Escalation status: none.
 
+## P0-044 - Zeta Haskell Semantic Target Hygiene / Bibliography Snippets
+
+ID: P0-044
+Corpus entry: `zeta3-irrationality`
+Review id before fix: `c393d134-a7e1-4275-bbde-4d85cbfb63c4`
+Runner: local CLI
+Worker branch: `p0-044-zeta-haskell-target-hygiene`
+Bucket: F1 app-local semantic target selection / F2 Haskell IR contract
+NEVER-event: none. External actions stayed disabled in dry-run and affected rerun attempt.
+
+Symptom:
+- After P0-043, zeta citation validation no longer blocked policy, but Haskell/Lean/semantic adequacy remained red.
+- Prior artifact `semantic_ir.json` emitted bibliography snippets as theorem candidates, including `body_math_41` with `\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models` and `body_math_67` with ITP proceedings metadata.
+- The deterministic Haskell generator also allowed `StatusPartial` / `SemanticGap` formal math entries to become proof obligations.
+- A subsequent no-cache rerun showed the bibliography issue fixed live, but the Haskell reviewer then contradicted the contract by requiring nonformal review claims to be modeled as Haskell `ClaimIR`.
+
+Root cause:
+1. `collect_paper_theorem_sources` fell back to raw body-section scanning when theorem graph nodes were empty.
+2. `collect_body_section_math_sources` scanned through bibliography/reference sections and admitted `\newblock` bibliographic metadata as formal math.
+3. Deterministic Haskell code used review-category plumbing that made it easy for a fixer/reviewer to backfill summary/novelty/citation/meta-reviewer claims into Haskell.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/review-loop/src/lib.rs`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_semantic_author.md`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_code_reviewer.md`
+- `agenthero/apps/grokrxiv/prompts/review-loop/haskell_code_fixer.md`
+
+Resolution:
+1. Added bibliography-section truncation and bibliography-metadata filtering before body fallback math statements can become theorem candidates.
+2. Added deterministic Haskell readiness guards: only `StatusTranscribed` theorem candidates with non-`SemanticGap` conclusions can emit proof obligations.
+3. Compact Haskell code-author payload now marks raw `claims`, `knowledge_graph`, `nonformal_review_claims`, `supporting_equations`, and raw `paper_math_sources` as omitted from code-author payload.
+4. Removed `ReviewCategory` from the deterministic Haskell scaffold; `ClaimIR` is now only a wrapper around formal theorem candidates and their `SemanticCategory`.
+5. Empty theorem candidates now preserve explicit `limitations` and produce empty `theoremTargets`, `claims`, and `allProofObligations` rather than backfilling review prose.
+6. Prompt contracts now state that omitted review/knowledge evidence must not be imported into Haskell claims or proof obligations.
+
+Evidence:
+- Red-first fixture `semantic_ir_does_not_promote_bibliography_newblocks_to_theorems` failed before implementation with bibliography-derived `body_math_*` candidates, then passed.
+- Red-first deterministic Haskell fixture for partial semantic gaps failed before implementation, then passed with `isProofReadyTheorem`.
+- Red-first payload/scaffold fixtures failed before implementation because review/knowledge evidence remained modelable and `ReviewCategory` was emitted, then passed.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib`: pass, 16/16.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture`: pass, 19/19.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45/45.
+- `git diff --check`: pass.
+- PATH installs passed for `grokrxiv-app` and `agenthero-dag-app-grokrxiv`.
+- Installed dry-run passed with cache disabled and `external_actions.enabled=false`.
+
+Affected rerun status:
+- First final affected rerun path: `agenthero/apps/grokrxiv/evals/results/20260613T235903Z/zeta3-after-p0-044-haskell-target-contract/`.
+- It reached specialist verification and meta-review synthesis, then stalled before review-loop Haskell artifacts were produced.
+- The process chain was terminated manually after stale progress; no `exit.status` was produced.
+- Treat this rerun as inconclusive F3 runner/stall evidence, not a corpus pass/fail verdict.
+
+Residual:
+- Rerun `zeta3-irrationality` safely to collect live P0-044 acceptance evidence.
+- Add a separate harness-timeout/stall-detection worker so future live runs classify F3 quickly.
+- No full P0 green claim and no phase tag.
+
+Attempts: 1
+Escalation status: none.
+
 ## P0-039 - Bertrand Extraction Completeness / arXiv Version Pin
 
 ID: P0-039

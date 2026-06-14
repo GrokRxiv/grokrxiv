@@ -1,54 +1,54 @@
 # GrokRxiv Local Harness Next Steps
 
-Continue exactly from here:
+Continue exactly from here.
 
-## Current Coordinator State
+## Current Worker State
 
-- Branch: `grokrxiv-local-corpus-harness`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest coordinator checkpoint: P0-043 merged at `347d858`
-- Status: P0-043 is merged and coordinator-verified.
+- Branch: `p0-044-zeta-haskell-target-hygiene`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-044-zeta-haskell-target-hygiene`
+- Base checkpoint: coordinator `beddef4`
+- Status: P0-044 code fix implemented and locally verified; affected rerun still pending because the first final rerun stalled before Haskell.
 
-P0-043 summary:
-- TeX `\bibitem` parsing now extracts the first bibliographic `\newblock` title instead of using the bibitem key as `Citation.title`.
-- Affected no-cache zeta rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`.
-- External actions stayed disabled and `pr_url=null`.
-- Versioned references have `key_title_count=0`.
-- Citation validation is now non-blocking warning: `checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`.
-- Policy gate no longer has a citation-validation blocking issue.
-- Coordinator verification passed: ingest lib 47/47, app workspace check, structural tests 45/45, `git diff --check`.
+## P0-044 Summary
 
-## Next Work Choice
+- Bibliography/reference sections are no longer scanned into theorem candidates.
+- Deterministic Haskell author payload marks `claims`, `knowledge_graph`, `nonformal_review_claims`, `supporting_equations`, and raw `paper_math_sources` as omitted from code-author payload.
+- Deterministic Haskell scaffold no longer defines `ReviewCategory` or imports nonformal review evidence into `ClaimIR`.
+- `StatusPartial` / `SemanticGap` theorem candidates cannot emit proof obligations.
+- Empty theorem candidates preserve `semantic_ir.limitations`, with empty `theoremTargets`, `claims`, and `allProofObligations`.
+- Verification passed locally: focused red/green tests, `grokrxiv-review-loop` 16/16, app-runtime `review_loop` 19/19, app workspace check, structural tests 45/45, `git diff --check`, PATH installs, and installed dry-run.
+- Affected rerun `20260613T235903Z/zeta3-after-p0-044-haskell-target-contract` was terminated as inconclusive/F3 after stalling before Haskell; no corpus-green or P0-044 acceptance claim.
 
-### Option 1: P0-039 Human Corpus Decision
+## Exact Next Action
 
-Current status:
-- App-local arXiv version preservation is fixed and merged.
-- `bertrand-elementary` remains blocked because the corpus pins `2407.07620v5`, which is withdrawn/unavailable, while `expected.extraction=full_body`.
-- v1-v4 are retrievable.
+Rerun the affected zeta entry safely after confirming no stale child process remains:
 
-Allowed human decisions:
-- approve changing corpus pin from `v5` to latest retrievable `v4`, then rerun safely;
-- replace the Tier A Bertrand entry with a retrievable source;
-- or explicitly change expected extraction semantics for withdrawn `v5`.
+```bash
+cd /Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-044-zeta-haskell-target-hygiene
+GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 \
+  agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 \
+  --loop --debug --no-external-actions
+```
 
-Do not edit the corpus version or expected block without explicit sign-off.
+Acceptance for P0-044:
 
-### Option 2: P0-044 Zeta Haskell Semantic Target Hygiene
+- run reaches `semantic_category_mapper` and `haskell_review_fix_code`;
+- bibliography snippets such as prior `body_math_41`/`body_math_67` are absent from theorem candidates;
+- if theorem candidates are empty, Haskell passes with explicit limitations and empty proof obligations, not backfilled review claims;
+- if real theorem candidates are present, only `StatusTranscribed` non-`SemanticGap` formal math emits proof obligations;
+- external actions remain disabled and `pr_url=null`.
 
-Trigger:
-- After P0-043, zeta citation validation no longer blocks policy.
-- The affected rerun remains red because Haskell/Lean/semantic adequacy block on partial proof obligations from bibliography/math snippets such as `body_math_41` and `body_math_67`.
+After acceptance, update state files, commit the worker, then merge to coordinator and rerun coordinator-side checks.
 
-Expected defect loop:
-1. Create a fresh worker from the coordinator:
-   `git worktree add .agent/worktrees/p0-044-zeta-haskell-target-hygiene -b p0-044-zeta-haskell-target-hygiene`
-2. Add a failing fixture proving bibliography/reference math snippets and `SemanticGap`/`StatusPartial` entries do not become required Haskell/Lean proof obligations.
-3. Fix the app-owned semantic target selection, not by raising timeouts or weakening corpus expectations.
-4. Rerun `zeta3-irrationality` safely with `--no-external-actions`.
-5. Commit the worker and merge only after focused tests, app workspace check, structural tests, and `git diff --check` pass.
+## Faster Parallel Lanes
 
-Guardrails:
+- Run P0-044 affected rerun acceptance in this worker.
+- In a separate worker, add sweep-harness timeout/stall detection so stuck live runs classify as F3 quickly instead of burning wall-clock.
+- Once the user signs off, run the P0-039 Bertrand v4/replacement corpus decision in another worker.
+
+## Guardrails
+
 - Do not run approve, request-revisions, publisher, close, withdraw, or merge actions from the corpus loop.
 - Do not weaken `expected:` blocks or NEVER-events.
 - Do not raise token caps or timeouts without a diagnosed cause.

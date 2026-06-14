@@ -839,10 +839,14 @@ fn collect_body_section_math_sources(
             .or_else(|| section.get("body"))
             .and_then(|v| v.as_str())
             .unwrap_or_default();
+        let body = body_before_bibliography(body);
         for (statement_idx, statement) in
             split_candidate_math_sentences(body).into_iter().enumerate()
         {
             let lower = statement.to_ascii_lowercase();
+            if looks_like_bibliography_metadata(statement, &lower) {
+                continue;
+            }
             if !looks_like_formal_math_statement(statement, &lower) {
                 continue;
             }
@@ -866,11 +870,15 @@ fn collect_body_section_math_sources(
             .and_then(|body| body.get("text"))
             .and_then(|v| v.as_str())
         {
+            let body_text = body_before_bibliography(body_text);
             for (statement_idx, statement) in split_candidate_math_sentences(body_text)
                 .into_iter()
                 .enumerate()
             {
                 let lower = statement.to_ascii_lowercase();
+                if looks_like_bibliography_metadata(statement, &lower) {
+                    continue;
+                }
                 if !looks_like_formal_math_statement(statement, &lower) {
                     continue;
                 }
@@ -886,6 +894,32 @@ fn collect_body_section_math_sources(
         }
     }
     out
+}
+
+fn body_before_bibliography(body: &str) -> &str {
+    let lower = body.to_ascii_lowercase();
+    for marker in [
+        "\\begin{thebibliography}",
+        "\n# references",
+        "\n## references",
+        "\n# bibliography",
+        "\n## bibliography",
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            return &body[..idx];
+        }
+    }
+    body
+}
+
+fn looks_like_bibliography_metadata(statement: &str, lower: &str) -> bool {
+    let trimmed = statement.trim_start();
+    let lower = lower.trim_start();
+    lower.starts_with("\\bibitem")
+        || lower.starts_with("\\newblock")
+        || lower.starts_with("\\begin{thebibliography}")
+        || lower.starts_with("\\end{thebibliography}")
+        || trimmed.starts_with('[') && lower.contains("doi:")
 }
 
 fn split_candidate_math_sentences(body: &str) -> Vec<&str> {
@@ -2048,6 +2082,43 @@ end GrokRxiv
         assert_eq!(
             supporting_equations[1]["reason"],
             "equation_extracted_as_supporting_math_not_standalone_theorem_target"
+        );
+    }
+
+    #[test]
+    fn semantic_ir_does_not_promote_bibliography_newblocks_to_theorems() {
+        let review_id = Uuid::parse_str("a91e0f07-819c-4e2e-a9e0-2ea4e299b9c6").unwrap();
+        let paper_math = json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": [],
+                "text": "## Conclusion\n\nWe have formalized the result in Lean.\n\n\\begin{thebibliography}{199}\n\\bibitem{lean-dojo}\nKaiyu Yang.\n\\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models.\n\\newblock In \\emph{Interactive Theorem Proving: 5th International Conference, ITP 2014}, pages 160--176, 2014.\n\\end{thebibliography}"
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": []
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": []
+            }
+        });
+
+        let semantic_ir = build_semantic_ir_from_paper_math(
+            review_id,
+            &paper_math,
+            &json!({"claims": []}),
+            &json!({"nodes": [], "edges": []}),
+        );
+        let theorem_candidates = semantic_ir["theorem_candidates"].as_array().unwrap();
+
+        assert!(
+            theorem_candidates.is_empty(),
+            "bibliography newblock snippets must not become Lean theorem targets: {theorem_candidates:?}"
+        );
+        assert_eq!(
+            semantic_ir["limitations"][0]["id"],
+            "no_paper_math_transcribed"
         );
     }
 

@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-13T23:21:32Z
+Updated: 2026-06-14T00:05:30Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: coordinator after P0-043 fast-forward merge and verification.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; completed worker branch `p0-043-zeta-citation-timeout` in `.agent/worktrees/p0-043-zeta-citation-timeout`.
-- Latest merged worker checkpoint: P0-043 at `347d858`.
+- Session type: local worker for P0-044 zeta Haskell semantic target hygiene.
+- Branch/worktree: worker branch `p0-044-zeta-haskell-target-hygiene` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-044-zeta-haskell-target-hygiene`.
+- Worker base checkpoint: coordinator `beddef4` after P0-043 merge.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-043 is merged and coordinator-verified. `parse_bibitems` now extracts the first bibliographic `\newblock` title instead of using the bibitem key as the title, so deterministic citation lookup searches real titles. Affected rerun `c393d134-a7e1-4275-bbde-4d85cbfb63c4` changed citation validation from policy-blocking failure to non-blocking warning (`checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`); policy no longer has a citation-validation blocking issue. Remaining red from that run is separate P0-044 Haskell/Lean/semantic target hygiene, where bibliography/math snippets were still formalized as partial proof obligations. P0-039 remains blocked on human corpus sign-off for withdrawn/unavailable `bertrand-elementary` v5. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-044 code fix is implemented and locally verified, but affected rerun acceptance is still pending. `build_semantic_ir_from_paper_math` no longer scans bibliography/reference sections into theorem candidates, and the deterministic Haskell scaffold now treats only `semantic_ir.theorem_candidates`, definitions, and assumptions as formal Haskell sources. Nonformal review claims and knowledge-graph counts are summarized as omitted evidence, `ReviewCategory` is removed from the scaffold, `StatusPartial` / `SemanticGap` candidates cannot emit proof obligations, and empty theorem candidates preserve explicit `limitations` rather than backfilling review prose. Worker verification passed: `grokrxiv-review-loop` 16/16, app-runtime `review_loop` 19/19, app workspace check, structural tests 45/45, `git diff --check`, PATH installs, and installed dry-run. Affected no-cache zeta rerun `20260613T235903Z/zeta3-after-p0-044-haskell-target-contract` was terminated as inconclusive/F3 after it stalled before Haskell artifacts were produced. P0-039 remains blocked on human corpus sign-off for withdrawn/unavailable `bertrand-elementary` v5. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
