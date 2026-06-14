@@ -345,8 +345,19 @@ pub fn build_proof_obligations(
         .cloned()
         .unwrap_or_default();
     let mut obligations = Vec::new();
+    let mut skipped_targets = Vec::new();
     for theorem in theorem_candidates {
         if theorem.get("formalization_class").and_then(|v| v.as_str()) != Some("formal_math") {
+            continue;
+        }
+        if let Some(reason) = theorem_candidate_proof_target_issue(&theorem) {
+            skipped_targets.push(json!({
+                "id": theorem.get("id").cloned().unwrap_or_else(|| json!("theorem")),
+                "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
+                "source_span": theorem.get("source_span").cloned().unwrap_or_else(|| json!(null)),
+                "statement": theorem.get("statement").cloned().unwrap_or_else(|| json!("")),
+                "reason": reason,
+            }));
             continue;
         }
         let theorem_id = theorem
@@ -381,16 +392,28 @@ pub fn build_proof_obligations(
         }));
     }
     if obligations.is_empty() {
+        let (skip_reason, message) = if skipped_targets.is_empty() {
+            (
+                "no_math_targets",
+                "No paper-derived formal mathematical statements were extracted for Lean verification.",
+            )
+        } else {
+            (
+                "no_proof_ready_math_targets",
+                "Paper-derived mathematical statements were extracted, but none were reliable theorem-level targets for Lean verification.",
+            )
+        };
         return json!({
             "schema_version": "1.0.0",
             "review_id": review_id,
             "source": "review_loop/semantic_ir.json",
             "haskell_status": haskell_status,
             "status": "skipped",
-            "skip_reason": "no_math_targets",
+            "skip_reason": skip_reason,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
-            "message": "No paper-derived formal mathematical statements were extracted for Lean verification.",
+            "message": message,
             "obligations": [],
+            "skipped_targets": skipped_targets,
         });
     }
     json!({
@@ -400,6 +423,7 @@ pub fn build_proof_obligations(
         "haskell_status": haskell_status,
         "status": "ready",
         "obligations": obligations,
+        "skipped_targets": skipped_targets,
     })
 }
 
@@ -415,17 +439,22 @@ pub fn proof_obligations_require_lean(proof_obligations: &serde_json::Value) -> 
         .unwrap_or(false)
 }
 
+pub fn proof_obligations_skip_lean(proof_obligations: &serde_json::Value) -> bool {
+    matches!(
+        proof_obligations
+            .get("skip_reason")
+            .and_then(|value| value.as_str()),
+        Some("no_math_targets" | "no_proof_ready_math_targets")
+    )
+}
+
 pub fn build_lean_targets(proof_obligations: &serde_json::Value) -> serde_json::Value {
-    if proof_obligations
-        .get("skip_reason")
-        .and_then(|v| v.as_str())
-        == Some("no_math_targets")
-    {
+    if proof_obligations_skip_lean(proof_obligations) {
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/proof_obligations.json",
             "status": "skipped",
-            "skip_reason": "no_math_targets",
+            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "targets": [],
         });
@@ -461,17 +490,13 @@ pub fn build_theorem_map(
     proof_obligations: &serde_json::Value,
     lean_results: &serde_json::Value,
 ) -> serde_json::Value {
-    if proof_obligations
-        .get("skip_reason")
-        .and_then(|v| v.as_str())
-        == Some("no_math_targets")
-    {
+    if proof_obligations_skip_lean(proof_obligations) {
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/proof_obligations.json",
             "lean_results": "review_loop/lean/results.json",
             "status": "SKIPPED",
-            "skip_reason": "no_math_targets",
+            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "entries": [],
         });
@@ -540,15 +565,13 @@ pub fn build_semantic_adequacy(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if theorem_candidates.is_empty()
-        && theorem_map.get("skip_reason").and_then(|v| v.as_str()) == Some("no_math_targets")
-    {
+    if proof_map_skips_lean(theorem_map) {
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/semantic_ir.json",
             "theorem_map": "review_loop/lean/theorem_map.json",
             "status": "skipped",
-            "skip_reason": "no_math_targets",
+            "skip_reason": theorem_map.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "verdicts": [],
         });
@@ -814,7 +837,7 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut sources = nodes
+    nodes
         .into_iter()
         .enumerate()
         .filter_map(|(idx, node)| {
@@ -856,124 +879,7 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
                 depends_on,
             })
         })
-        .collect::<Vec<_>>();
-    if sources.is_empty() {
-        sources.extend(collect_body_section_math_sources(paper_math_sources));
-    }
-    sources
-}
-
-fn collect_body_section_math_sources(
-    paper_math_sources: &serde_json::Value,
-) -> Vec<PaperMathSource> {
-    let sections = paper_math_sources
-        .get("body")
-        .and_then(|body| body.get("sections"))
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for (section_idx, section) in sections.into_iter().enumerate() {
-        let section_id = section
-            .get("id")
-            .or_else(|| section.get("heading"))
-            .and_then(|v| v.as_str())
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("section_{}", section_idx + 1));
-        let body = section
-            .get("body_markdown")
-            .or_else(|| section.get("body"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let body = body_before_bibliography(body);
-        for (statement_idx, statement) in
-            split_candidate_math_sentences(body).into_iter().enumerate()
-        {
-            let lower = statement.to_ascii_lowercase();
-            if looks_like_bibliography_metadata(statement, &lower) {
-                continue;
-            }
-            if !looks_like_formal_math_statement(statement, &lower) {
-                continue;
-            }
-            out.push(PaperMathSource {
-                artifact: "body.md",
-                id: format!(
-                    "{}_math_{}",
-                    lean_identifier(&section_id),
-                    statement_idx + 1
-                ),
-                kind: formal_math_kind(statement, &lower).to_string(),
-                statement: statement.to_string(),
-                section_id: json!(section_id),
-                depends_on: json!([]),
-            });
-        }
-    }
-    if out.is_empty() {
-        if let Some(body_text) = paper_math_sources
-            .get("body")
-            .and_then(|body| body.get("text"))
-            .and_then(|v| v.as_str())
-        {
-            let body_text = body_before_bibliography(body_text);
-            for (statement_idx, statement) in split_candidate_math_sentences(body_text)
-                .into_iter()
-                .enumerate()
-            {
-                let lower = statement.to_ascii_lowercase();
-                if looks_like_bibliography_metadata(statement, &lower) {
-                    continue;
-                }
-                if !looks_like_formal_math_statement(statement, &lower) {
-                    continue;
-                }
-                out.push(PaperMathSource {
-                    artifact: "body.md",
-                    id: format!("body_math_{}", statement_idx + 1),
-                    kind: formal_math_kind(statement, &lower).to_string(),
-                    statement: statement.to_string(),
-                    section_id: json!(null),
-                    depends_on: json!([]),
-                });
-            }
-        }
-    }
-    out
-}
-
-fn body_before_bibliography(body: &str) -> &str {
-    let lower = body.to_ascii_lowercase();
-    for marker in [
-        "\\begin{thebibliography}",
-        "\n# references",
-        "\n## references",
-        "\n# bibliography",
-        "\n## bibliography",
-    ] {
-        if let Some(idx) = lower.find(marker) {
-            return &body[..idx];
-        }
-    }
-    body
-}
-
-fn looks_like_bibliography_metadata(statement: &str, lower: &str) -> bool {
-    let trimmed = statement.trim_start();
-    let lower = lower.trim_start();
-    lower.starts_with("\\bibitem")
-        || lower.starts_with("\\newblock")
-        || lower.starts_with("\\begin{thebibliography}")
-        || lower.starts_with("\\end{thebibliography}")
-        || trimmed.starts_with('[') && lower.contains("doi:")
-}
-
-fn split_candidate_math_sentences(body: &str) -> Vec<&str> {
-    body.split(['\n', '.'])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect()
+        .collect::<Vec<_>>()
 }
 
 fn collect_paper_equation_sources(paper_math_sources: &serde_json::Value) -> Vec<PaperMathSource> {
@@ -1198,6 +1104,59 @@ fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
 
 fn has_unknown_prop(value: &serde_json::Value) -> bool {
     value.get("kind").and_then(|v| v.as_str()) == Some("unknown_prop")
+}
+
+fn theorem_candidate_proof_target_issue(theorem: &serde_json::Value) -> Option<&'static str> {
+    if theorem
+        .get("source_span")
+        .and_then(|span| span.get("artifact"))
+        .and_then(|value| value.as_str())
+        != Some("theorem_graph.json")
+    {
+        return Some("not_from_reliable_theorem_graph");
+    }
+    if theorem
+        .get("typed_transcription")
+        .and_then(|typed| typed.get("status"))
+        .and_then(|value| value.as_str())
+        != Some("transcribed")
+    {
+        return Some("typed_transcription_not_transcribed");
+    }
+    let Some(theorem_ir) = theorem.get("theorem_ir") else {
+        return Some("missing_theorem_ir");
+    };
+    if contains_unknown_math_node(
+        theorem_ir
+            .get("conclusion")
+            .unwrap_or(&serde_json::Value::Null),
+    ) {
+        return Some("typed_transcription_contains_unknown_math");
+    }
+    None
+}
+
+fn contains_unknown_math_node(value: &serde_json::Value) -> bool {
+    if matches!(
+        value.get("kind").and_then(|kind| kind.as_str()),
+        Some("unknown_prop" | "unknown_term" | "raw_term")
+    ) {
+        return true;
+    }
+    match value {
+        serde_json::Value::Array(items) => items.iter().any(contains_unknown_math_node),
+        serde_json::Value::Object(map) => map.values().any(contains_unknown_math_node),
+        _ => false,
+    }
+}
+
+fn proof_map_skips_lean(theorem_map: &serde_json::Value) -> bool {
+    matches!(
+        theorem_map
+            .get("skip_reason")
+            .and_then(|value| value.as_str()),
+        Some("no_math_targets" | "no_proof_ready_math_targets")
+    )
 }
 
 fn semantic_category_for_statement(_text: &str, lower: &str) -> &'static str {
@@ -1845,6 +1804,23 @@ publisherReadyLowerBound = claimCount == 43
                     "formalization_class": "formal_math",
                     "statement": "For all n in N, n + 0 = n.",
                     "source_claim_id": "claim_1",
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "claim_1"},
+                    "typed_transcription": {"status": "transcribed"},
+                    "theorem_ir": {
+                        "theorem_name": "add_zero_claim",
+                        "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "claim_1"},
+                        "binders": [{"name": "n", "type": {"kind": "nat"}}],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "equals",
+                            "lhs": {
+                                "kind": "add",
+                                "lhs": {"kind": "var", "name": "n"},
+                                "rhs": {"kind": "nat_lit", "value": 0}
+                            },
+                            "rhs": {"kind": "var", "name": "n"}
+                        }
+                    },
                     "formalization_target": {
                         "lean_declaration": "add_zero_claim",
                         "expected_shape": "theorem"
@@ -1867,6 +1843,89 @@ publisherReadyLowerBound = claimCount == 43
         assert_eq!(obligation_items.len(), 1);
         assert_eq!(obligation_items[0]["kind"], "theorem_formalization");
         assert_eq!(obligation_items[0]["lean_declaration"], "add_zero_claim");
+    }
+
+    #[test]
+    fn proof_obligations_skip_body_fragments_and_partial_targets() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_body_fragment",
+                    "kind": "equation",
+                    "formalization_class": "formal_math",
+                    "statement": "The proof of Proposition [2](#pr:clp){reference-type=\"ref\"",
+                    "source_claim_id": "body_math_89",
+                    "source_span": {"artifact": "body.md", "paper_source_id": "body_math_89"},
+                    "typed_transcription": {"status": "transcribed"},
+                    "theorem_ir": {
+                        "theorem_name": "body_math_89",
+                        "source_span": {"artifact": "body.md", "paper_source_id": "body_math_89"},
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "equals",
+                            "lhs": {"kind": "var", "name": "The_proof_of_Proposition_2"},
+                            "rhs": {"kind": "var", "name": "ref"}
+                        }
+                    },
+                    "formalization_target": {
+                        "lean_declaration": "body_math_89",
+                        "expected_shape": "theorem"
+                    }
+                },
+                {
+                    "id": "theorem_partial",
+                    "kind": "theorem",
+                    "formalization_class": "formal_math",
+                    "statement": "For all odd",
+                    "source_claim_id": "thm-partial",
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "thm-partial"},
+                    "typed_transcription": {"status": "partial"},
+                    "theorem_ir": {
+                        "theorem_name": "thm_partial",
+                        "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "thm-partial"},
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "unknown_prop",
+                            "reason": "statement_truncated_by_extraction",
+                            "text": "For all odd"
+                        }
+                    },
+                    "formalization_target": {
+                        "lean_declaration": "thm_partial",
+                        "expected_shape": "theorem"
+                    }
+                }
+            ]
+        });
+
+        let obligations =
+            build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
+
+        assert_eq!(obligations["status"], "skipped");
+        assert_eq!(obligations["skip_reason"], "no_proof_ready_math_targets");
+        assert_eq!(
+            obligations["operator_status"],
+            "NOT_CONDUCIVE_TO_LEAN_PROOF"
+        );
+        assert!(obligations["obligations"].as_array().unwrap().is_empty());
+        assert_eq!(obligations["skipped_targets"].as_array().unwrap().len(), 2);
+        assert!(!proof_obligations_require_lean(&obligations));
+
+        let lean_targets = build_lean_targets(&obligations);
+        assert_eq!(lean_targets["status"], "skipped");
+        assert_eq!(lean_targets["skip_reason"], "no_proof_ready_math_targets");
+
+        let theorem_map = build_theorem_map(&obligations, &json!({"status": "skipped"}));
+        assert_eq!(theorem_map["status"], "SKIPPED");
+        assert_eq!(theorem_map["skip_reason"], "no_proof_ready_math_targets");
+
+        let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
+        assert_eq!(adequacy["status"], "skipped");
+        assert_eq!(adequacy["skip_reason"], "no_proof_ready_math_targets");
     }
 
     #[test]
@@ -2250,23 +2309,9 @@ end GrokRxiv
         );
         let theorem_candidates = semantic_ir["theorem_candidates"].as_array().unwrap();
 
-        assert_eq!(theorem_candidates.len(), 1);
-        assert_eq!(
-            theorem_candidates[0]["source_claim_id"],
-            "math_content_math_1"
-        );
-        assert_eq!(
-            theorem_candidates[0]["statement"],
-            "For all n : Nat, n + 0 = n"
-        );
         assert!(
-            theorem_candidates.iter().all(|candidate| {
-                let statement = candidate["statement"].as_str().unwrap_or_default();
-                !statement.contains("publisher_ready")
-                    && !statement.contains("prompt injection")
-                    && !statement.contains("SYSTEM OVERRIDE")
-            }),
-            "prompt injection canary must not become a formal theorem candidate: {theorem_candidates:?}"
+            theorem_candidates.is_empty(),
+            "body fallback text must not become a formal theorem candidate: {theorem_candidates:?}"
         );
     }
 
@@ -2284,6 +2329,7 @@ end GrokRxiv
                     "source_claim_id": "thm-add-zero",
                     "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "thm-add-zero"},
                     "semantic_category": "plain_theorem",
+                    "typed_transcription": {"status": "transcribed"},
                     "theorem_ir": {
                         "theorem_name": "thm_add_zero",
                         "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "thm-add-zero"},

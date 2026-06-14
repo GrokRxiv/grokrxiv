@@ -8155,11 +8155,12 @@ async fn run_review_loop_for_review(
     write_loop_json(&artifact_dir.join("lean_targets.json"), &lean_targets).await?;
     let proof_obligations_ready =
         grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
-    let no_math_targets_skip = proof_obligations
+    let proof_targets_skip = grokrxiv_review_loop::proof_obligations_skip_lean(&proof_obligations);
+    let proof_skip_reason = proof_obligations
         .get("skip_reason")
         .and_then(|value| value.as_str())
-        == Some("no_math_targets");
-    let proof_obligations_accepted = proof_obligations_ready || no_math_targets_skip;
+        .unwrap_or("no_math_targets");
+    let proof_obligations_accepted = proof_obligations_ready || proof_targets_skip;
     record_review_loop_node(
         pool,
         review_id,
@@ -8182,8 +8183,8 @@ async fn run_review_loop_for_review(
                 .map(Vec::len)
                 .unwrap_or(0)
         )
-    } else if no_math_targets_skip {
-        "skip_reason=no_math_targets operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF".to_string()
+    } else if proof_targets_skip {
+        format!("skip_reason={proof_skip_reason} operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF")
     } else {
         proof_obligations["obligations"]
             .as_array()
@@ -8252,7 +8253,7 @@ async fn run_review_loop_for_review(
             debug_output,
         )
         .await
-    } else if no_math_targets_skip {
+    } else if proof_targets_skip {
         let reason = proof_obligations
             .get("message")
             .and_then(|value| value.as_str())
@@ -8267,7 +8268,7 @@ async fn run_review_loop_for_review(
             &lean_final_path,
             reason,
             "skipped",
-            "no_math_targets",
+            proof_skip_reason,
         )
     } else {
         let reason = proof_obligations["obligations"]
@@ -8287,7 +8288,7 @@ async fn run_review_loop_for_review(
     };
     let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
-    let lean_accepted = lean_pass || no_math_targets_skip;
+    let lean_accepted = lean_pass || proof_targets_skip;
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
     if !lean_final_path.is_file() {
@@ -8330,7 +8331,8 @@ async fn run_review_loop_for_review(
     let semantic_adequacy_skip = semantic_adequacy
         .get("skip_reason")
         .and_then(|value| value.as_str())
-        == Some("no_math_targets");
+        .map(|reason| matches!(reason, "no_math_targets" | "no_proof_ready_math_targets"))
+        .unwrap_or(false);
     let semantic_adequacy_pass = semantic_adequacy["status"] == "pass" || semantic_adequacy_skip;
     record_review_loop_node(
         pool,
@@ -8592,7 +8594,7 @@ async fn run_review_loop_for_review(
     if !haskell_pass {
         blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
     }
-    if theorem_candidate_count == 0 && !no_math_targets_skip {
+    if theorem_candidate_count == 0 && !proof_targets_skip {
         blocking_issues.push(
             "Semantic IR did not extract theorem candidates for Lean formalization.".to_string(),
         );
@@ -8646,7 +8648,7 @@ async fn run_review_loop_for_review(
             "haskell": if haskell_pass { "pass" } else { "fail" },
             "lean": if lean_pass {
                 "pass"
-            } else if no_math_targets_skip {
+            } else if proof_targets_skip {
                 "skipped"
             } else {
                 "fail"
@@ -8658,7 +8660,7 @@ async fn run_review_loop_for_review(
         "publishability_vector": {
             "formal": if lean_pass {
                 "proved"
-            } else if no_math_targets_skip {
+            } else if proof_targets_skip {
                 "not_conducive_to_lean_proof"
             } else {
                 "failed"
@@ -9213,11 +9215,7 @@ fn annotate_lean_review_fix_code_results(
     if let Some(object) = results.as_object_mut() {
         object.insert("verdict".to_string(), serde_json::json!(verdict));
         object.insert("proof_status".to_string(), serde_json::json!(proof_status));
-        if proof_obligations
-            .get("skip_reason")
-            .and_then(|value| value.as_str())
-            == Some("no_math_targets")
-        {
+        if grokrxiv_review_loop::proof_obligations_skip_lean(proof_obligations) {
             object.insert(
                 "operator_status".to_string(),
                 serde_json::json!("NOT_CONDUCIVE_TO_LEAN_PROOF"),

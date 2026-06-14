@@ -1114,7 +1114,11 @@ fn combine_subprocess_error_log(stderr: &str, stdout: &str, built: &BuiltCommand
 
 fn subprocess_failure_detail(stderr: &str, stdout: &str, built: &BuiltCommand) -> String {
     let cli_log = cli_log_from_args(built).unwrap_or_default();
-    for (label, body) in [("stderr", stderr), ("stdout", stdout), ("log", cli_log.as_str())] {
+    for (label, body) in [
+        ("stderr", stderr),
+        ("stdout", stdout),
+        ("log", cli_log.as_str()),
+    ] {
         let trimmed = body.trim();
         if !trimmed.is_empty() {
             let snippet: String = trimmed.chars().take(600).collect();

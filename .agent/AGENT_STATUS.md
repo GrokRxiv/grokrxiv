@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T02:13:10Z
+Updated: 2026-06-14T03:53:30Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local coordinator after P0-047 withdrawn-source runtime skip merge verification.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Session type: local worker P0-048 bounded CLI sweep plus capset formal-target hygiene.
+- Branch/worktree: worker branch `p0-048-bounded-cli-sweep` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-048-bounded-cli-sweep`.
 - Latest merged worker checkpoint: `42b5f8f` (`codex checkpoint: P0 - withdrawn source runtime skip`), merged at `1f26c05`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. The public-use bar is `reference_ready`: the review must be good enough for another reader to use as a reference, with traceable claims, explicit limitations, readable PR/web artifacts, and no overclaimed confidence. Required missing/empty/stale/schema-invalid data must fail before an LLM call unless an explicit skip/partial status tells the agent what to do. P0-039 human sign-off is resolved, and P0-047 now makes the withdrawn Bertrand v5 entry skip before database, extraction, review, Haskell, Lean, or PR work. Active next queue item is the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-048 found and patched a formal-target hygiene bug during the bounded CLI sweep. `capset-ellenberg-gijswijt` had no reliable theorem graph targets, but the app promoted body/equation/prose snippets into theorem candidates and then asked Haskell/Lean to formalize junk. The worker now only promotes `theorem_graph.json` nodes into theorem candidates and requires proof-ready typed theorem IR before Lean obligations. The affected capset rerun completed with `theorem_candidates=0`, Haskell pass in one deterministic attempt, proof obligations skipped with `skip_reason=no_math_targets`, Lean skipped, and formal status `NOT_CONDUCIVE_TO_LEAN_PROOF`. The entry is still red, correctly, because normalized bibliography extraction produced zero deterministic references while the citation specialist inferred seven entries from prose; citation validation checked 0 entries and policy blocked publication. Next queue item is P0-049 normalized bibliography/reference extraction for capset before resuming the full sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -105,6 +105,7 @@ Updated: 2026-06-14T02:13:10Z
 - P0-045b coordinator verification, 2026-06-14T01:40Z: fast-forward merged `p0-045b-llm-input-contract` at `6700d28`. Coordinator-side verification passed: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, full app-runtime lib serial 295/295, `git diff --check`, PATH installs for `grokrxiv-app`/adapter/`agh`, `agh --version`, and wrapped GrokRxiv dry-run with `external_actions.enabled=false`. No full corpus-green claim or phase tag.
 - P0-046 coordinator verification, 2026-06-14T01:55Z: fast-forward merged `p0-046-harness-timeout` at `d373291`. Coordinator-side verification passed: corpus-focused app-runtime tests 11/11, app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, `git diff --check`, and successful-wrapper smoke. No full corpus-green claim or phase tag.
 - P0-047 coordinator verification, 2026-06-14T02:13Z: merged `p0-047-withdrawn-source-skip` at `1f26c05`. The CLI now reads the withdrawn-source corpus expected block and short-circuits matching pinned arXiv versions before DB/supervisor/extraction/review work. Coordinator focused test passed, worker corpus tests passed 12/12, worker app workspace check passed, worker structural tests passed 45/45, PATH installs for `grokrxiv-app`/adapter/`agh` passed, and wrapped merged PATH acceptance for `https://arxiv.org/abs/2407.07620v5` exited 0 with `source_status=withdrawn_unavailable`, `extraction=skipped_withdrawn_source`, `review_loop=skipped_before_review`, `skip_reason=withdrawn_or_unavailable_source`, and no extraction/review markers. No full corpus-green claim or phase tag.
+- P0-048 bounded CLI sweep, 2026-06-14T03:53Z: worker branch `p0-048-bounded-cli-sweep` ran preflight successfully, confirmed `bertrand-elementary` skips before review, accepted `zeta3-irrationality` with no formal proof targets, and exposed `capset-ellenberg-gijswijt`. First capset run timed out after promoting 40 body fragments into formal targets. P0-048 patch removed body fallback theorem promotion and added proof-ready target checks. Final capset affected rerun completed as review `38a720cd-5964-4822-9cd1-ab44e5b9a7e9`: wrapper exit 0, `semantic_ir.theorem_candidates=0`, `supporting_equations=190`, Haskell pass, `proof_obligations.status=skipped`, `lean.status=skipped`, policy `integrity_ready=false` due only to citation-validation evidence failure and meta-review `major_revision`. Citation specialist output had 7 entries, but deterministic normalized bibliography had 0 entries, so citation validation reported `status=fail`, `checked=0`. This is a new app-local extraction/normalization defect, not a publishable result.
 
 ## Coordinator Rules
 

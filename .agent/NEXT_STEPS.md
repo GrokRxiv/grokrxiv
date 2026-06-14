@@ -7,7 +7,7 @@ Continue exactly from here.
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
 - Latest merged worker checkpoint: `42b5f8f` (`codex checkpoint: P0 - withdrawn source runtime skip`), merged at `1f26c05`
-- Pending worker checkpoint: none.
+- Pending worker checkpoint: `p0-048-bounded-cli-sweep` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-048-bounded-cli-sweep`; merge after checkpoint commit and coordinator verification.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -37,7 +37,48 @@ Rules:
 
 ## Immediate Queue
 
-### 1. P0-044 Acceptance / Merge
+### 1. P0-048 Capset Formal Target Hygiene
+
+Status: fixed in worker; checkpoint/merge pending.
+
+Evidence:
+
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T-p0-048-capset-no-body-fallback/capset-ellenberg-gijswijt`.
+- Review id: `38a720cd-5964-4822-9cd1-ab44e5b9a7e9`.
+- Wrapper exit: 0; `run-status.json` says `classification=completed`, `reason=process_exit`, `elapsed_ms=957185`.
+- `semantic_ir.json`: `theorem_candidates=0`, `supporting_equations=190`, limitation `no_paper_math_transcribed`.
+- Haskell: pass in one deterministic local attempt.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`.
+- `policy_gate.json`: formal status `not_conducive_to_lean_proof`; Haskell pass, Lean skipped, semantic adequacy skipped.
+
+Residual:
+
+- Capset is not green. Policy still has `deterministic_status=fail`, `integrity_ready=false`, `publisher_ready=false`.
+- Citation validation failed structurally: deterministic normalized bibliography had `checked=0`, while `agents/citation.json.output.entries` contains 7 citation entries inferred by the citation specialist.
+- Meta-review recommends `major_revision`, which also keeps `publisher_ready=false`.
+- No full corpus-green claim and no phase tag.
+
+Next action:
+
+1. Commit the worker checkpoint after final status checks.
+2. Merge `p0-048-bounded-cli-sweep` back to `grokrxiv-local-corpus-harness`.
+3. Run coordinator verification: `grokrxiv-review-loop` tests, app-runtime `review_loop` tests, app workspace check, structural tests 45/45, `git diff --check`, and PATH `grokrxiv-app` install.
+4. Start P0-049: normalized bibliography/reference extraction for capset.
+
+### 2. P0-049 Normalized Bibliography / Citation Evidence
+
+Status: queued.
+
+Acceptance:
+
+- Add a red-first fixture from the capset TeX/bundle path proving normalized content currently loses bibliography entries.
+- Preserve bibliography/reference entries in normalized content for capset.
+- Deterministic citation validation must check more than 0 entries.
+- The citation specialist may summarize citation quality, but publication/reference readiness must rely on deterministic citation evidence or explicit unresolved statuses.
+- Affected capset rerun must keep formal stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF` and improve citation validation from structural fail to pass/warn/fail with real checked entries.
+
+### 3. P0-044 Acceptance / Merge
 
 Status: accepted and merged to coordinator.
 

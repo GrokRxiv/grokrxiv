@@ -523,7 +523,10 @@ mod tests {
             "claude-sonnet-test",
         );
         let mut role_yaml = RoleYamlMap::new();
-        role_yaml.insert(role.to_string(), Some(test_agent_config(AgentRunnerKind::Cli)));
+        role_yaml.insert(
+            role.to_string(),
+            Some(test_agent_config(AgentRunnerKind::Cli)),
+        );
         let mut schemas = AgentSchemaMap::new();
         let schema = Arc::new(serde_json::json!({ "type": "object" }));
         schemas.insert(role.to_string(), schema.clone());

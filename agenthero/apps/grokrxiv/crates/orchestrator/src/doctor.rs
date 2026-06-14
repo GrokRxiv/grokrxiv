@@ -838,7 +838,9 @@ fn check_extraction_agent_yaml_with(report: &mut DoctorReport, config: &Extracti
                         &agenthero_dag_runtime::AgentKind::Extractor,
                         &agent_config,
                     ) {
-                        Ok(()) => CheckResult::ok(format!("{} parses and validates", candidate.display())),
+                        Ok(()) => {
+                            CheckResult::ok(format!("{} parses and validates", candidate.display()))
+                        }
                         Err(e) => CheckResult::fail(format!("{}: {e}", candidate.display())),
                     }
                 }

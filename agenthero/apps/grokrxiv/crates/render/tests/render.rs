@@ -220,7 +220,10 @@ fn latex_maps_unicode_math_symbols_to_pdftex_safe_commands() {
 
     let tex = render_latex(&meta, &paper, &agents);
 
-    for raw in ['ρ', 'μ', 'ν', 'τ', 'δ', 'λ', 'ϕ', '∼', '−', '²', '½', '⊗', '∘', '·', '∈', '∧', '✓', '√', 'ℤ', '∃', '∀', 'ℕ', 'ℝ', '\u{030c}', '\u{0303}', '\u{0302}'] {
+    for raw in [
+        'ρ', 'μ', 'ν', 'τ', 'δ', 'λ', 'ϕ', '∼', '−', '²', '½', '⊗', '∘', '·', '∈', '∧', '✓', '√',
+        'ℤ', '∃', '∀', 'ℕ', 'ℝ', '\u{030c}', '\u{0303}', '\u{0302}',
+    ] {
         assert!(
             !tex.contains(raw),
             "rendered LaTeX must not contain raw PDFLaTeX-hostile symbol `{raw}`"

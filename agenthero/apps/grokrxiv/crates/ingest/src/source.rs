@@ -298,9 +298,12 @@ pub async fn prepare_git_repo_source_with_corpus(
     let tmp = TempDir::new().context("create temp dir for git source")?;
     let checkout = tmp.path().join("repo");
 
-    run_git(&["clone", "--quiet", "--", repo, path_str(&checkout)?], None)
-        .await
-        .with_context(|| format!("clone git source {repo}"))?;
+    run_git(
+        &["clone", "--quiet", "--", repo, path_str(&checkout)?],
+        None,
+    )
+    .await
+    .with_context(|| format!("clone git source {repo}"))?;
     if let Some(rev) = rev {
         run_git(&["checkout", "--quiet", rev], Some(&checkout))
             .await
@@ -368,9 +371,12 @@ pub async fn scan_git_repo_corpus(
 
     let tmp = TempDir::new().context("create temp dir for git corpus scan")?;
     let checkout = tmp.path().join("repo");
-    run_git(&["clone", "--quiet", "--", repo, path_str(&checkout)?], None)
-        .await
-        .with_context(|| format!("clone git corpus source {repo}"))?;
+    run_git(
+        &["clone", "--quiet", "--", repo, path_str(&checkout)?],
+        None,
+    )
+    .await
+    .with_context(|| format!("clone git corpus source {repo}"))?;
     if let Some(rev) = rev {
         run_git(&["checkout", "--quiet", rev], Some(&checkout))
             .await
@@ -962,7 +968,9 @@ mod tests {
         ] {
             let err = validate_git_repo_source(repo)
                 .expect_err("unsafe git repository source should be rejected");
-            assert!(err.to_string().contains("unsupported git repository source"));
+            assert!(err
+                .to_string()
+                .contains("unsupported git repository source"));
         }
 
         validate_git_repo_source("https://github.com/example/paper.git")
@@ -976,8 +984,8 @@ mod tests {
     #[test]
     fn git_revision_validation_rejects_option_like_revision() {
         for rev in ["--orphan", "-b", "feature/../main", "main -- file"] {
-            let err = validate_git_revision(rev)
-                .expect_err("unsafe git revision should be rejected");
+            let err =
+                validate_git_revision(rev).expect_err("unsafe git revision should be rejected");
             assert!(err.to_string().contains("unsafe git revision"));
         }
 

@@ -1393,7 +1393,10 @@ fn zbmath_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {
 fn zbmath_title(item: &serde_json::Value) -> Option<String> {
     string_field(item, "title")
         .or_else(|| item.get("title").and_then(first_string))
-        .or_else(|| item.get("title").and_then(|title| string_field(title, "title")))
+        .or_else(|| {
+            item.get("title")
+                .and_then(|title| string_field(title, "title"))
+        })
 }
 
 fn gemini_grounded_hits(body: &serde_json::Value) -> Vec<BibliographicHit> {

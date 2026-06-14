@@ -1,5 +1,55 @@
 # GrokRxiv Local Harness Findings
 
+## P0-048 - Capset Formal Target Hygiene / Normalized Bibliography Gap
+
+ID: P0-048
+Corpus entry: `capset-ellenberg-gijswijt`
+Pinned source: `arxiv:1605.09223v1`
+Runner: local CLI through `evals/bin/grokrxiv-run-with-timeout`
+Worker branch: `p0-048-bounded-cli-sweep`
+Bucket: F1 app-local semantic target selection; residual F1 extraction/normalization citation channel
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- First capset affected run timed out at the wrapper wall cap after `paper_math_source_collector` reported `theorem_nodes=0`, `equations=190`, but `semantic_category_mapper` manufactured 40 theorem candidates from body/equation/prose fragments.
+- Lean then received malformed targets such as `theorem body_math_32 : True := by` and body-derived equality snippets, while the Lean reviewer rejected Unit/rfl-style placeholder proof attempts.
+- This violated the `reference_ready` standard: body snippets and supporting equations are review context, not proof obligations. The app must not invent formal targets when normalized extraction did not produce reliable theorem nodes.
+
+Root cause:
+1. `collect_paper_theorem_sources` fell back to body-section sentence scanning when `theorem_graph.nodes` was empty.
+2. Proof obligations accepted formal-math candidates even when they were not sourced from `theorem_graph.json`, did not have `typed_transcription.status=transcribed`, were missing `theorem_ir`, or contained `unknown_prop`/`unknown_term`/`raw_term`.
+3. The proof skip contract recognized only `no_math_targets`, so partial or non-proof-ready targets did not consistently propagate as explicit proof-stage skips.
+
+Fix applied:
+- Removed body-section fallback theorem promotion. Only `theorem_graph.json` nodes can create theorem candidates for Haskell/Lean.
+- Added proof-target readiness checks before Lean obligation generation.
+- Added `skip_reason=no_proof_ready_math_targets` for extracted but non-proof-ready theorem candidates, while preserving `skip_reason=no_math_targets` when no reliable theorem nodes exist.
+- Updated Lean target generation, theorem-map generation, semantic adequacy, Lean result annotation, and policy handling to treat both skip reasons as `NOT_CONDUCIVE_TO_LEAN_PROOF`.
+
+Evidence:
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop -- --nocapture`: pass, 18/18.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked`: pass, refreshed PATH `grokrxiv-app`; existing locked yanked-zip warning only.
+- Affected rerun root: `agenthero/apps/grokrxiv/evals/results/20260614T-p0-048-capset-no-body-fallback/capset-ellenberg-gijswijt`.
+- Review id: `38a720cd-5964-4822-9cd1-ab44e5b9a7e9`.
+- Wrapper result: `classification=completed`, `exit_code=0`, `elapsed_ms=957185`.
+- `semantic_ir.json`: `theorem_candidates=0`, `supporting_equations=190`, limitation `no_paper_math_transcribed`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`.
+- `policy_gate.json`: formal vector `not_conducive_to_lean_proof`; `haskell=pass`, `lean=skipped`, `semantic_adequacy=skipped`.
+
+Residual:
+- The capset entry remains red and must not be published. `policy_gate.json` reports `deterministic_status=fail`, `integrity_ready=false`, and blockers:
+  - `Meta-review recommendation is major_revision, not accept.`
+  - `Citation-validation evidence failed deterministic policy.`
+- The citation blocker is structural: deterministic normalized bibliography has zero entries, so `citation_validation_report.json` reports `status=fail`, `checked=0`, while `agents/citation.json.output.entries` contains 7 citation entries inferred by the citation specialist.
+- The next defect is P0-049: normalized bibliography/reference extraction must preserve bibliography entries for capset and feed deterministic citation validation before any citation-quality claim can be reference-ready.
+
+Escalation status: none. This is app-local and mechanically testable.
+
 ## P0-001: Product Review Loop Cannot Start From PATH Runtime
 
 ID: P0-001

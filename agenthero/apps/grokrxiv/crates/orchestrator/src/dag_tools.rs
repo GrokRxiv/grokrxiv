@@ -107,7 +107,8 @@ const RUST_TOOL_HANDLERS: &[RustToolDescriptor] = &[
     RustToolDescriptor {
         handler: "review_loop::semantic_adequacy_checker",
         module: "review_loop",
-        description: "Compare theorem claims against proved Lean declarations to detect overclaims.",
+        description:
+            "Compare theorem claims against proved Lean declarations to detect overclaims.",
     },
     RustToolDescriptor {
         handler: "review_loop::pr_fixer",

@@ -115,11 +115,15 @@ fn app_runtime_rls_migration_locks_down_generic_tables() {
         "agent_output_cache",
     ] {
         assert!(
-            sql.contains(&format!("alter table if exists {table} enable row level security")),
+            sql.contains(&format!(
+                "alter table if exists {table} enable row level security"
+            )),
             "runtime RLS migration must enable RLS for `{table}`"
         );
         assert!(
-            sql.contains(&format!("drop policy if exists {table}_service_all on {table}")),
+            sql.contains(&format!(
+                "drop policy if exists {table}_service_all on {table}"
+            )),
             "runtime RLS migration must create a service-role policy for `{table}`"
         );
     }
@@ -186,11 +190,15 @@ fn grokrxiv_private_runtime_rls_migration_locks_down_projection_tables() {
         "review_cache",
     ] {
         assert!(
-            sql.contains(&format!("alter table if exists {table} enable row level security")),
+            sql.contains(&format!(
+                "alter table if exists {table} enable row level security"
+            )),
             "GrokRxiv RLS migration must enable RLS for `{table}`"
         );
         assert!(
-            sql.contains(&format!("drop policy if exists {table}_service_all on {table}")),
+            sql.contains(&format!(
+                "drop policy if exists {table}_service_all on {table}"
+            )),
             "GrokRxiv RLS migration must create a service-role policy for `{table}`"
         );
     }
