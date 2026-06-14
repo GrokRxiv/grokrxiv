@@ -1043,3 +1043,32 @@ Residual:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Start P0-045b from the coordinator before the next full sweep.
+
+## 2026-06-14 P0-045b LLM Input Contract Gate
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T01:24:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent --lib -- --nocapture` | red-first failure before implementation: `cannot find function review_loop_agent_input_contract_issue` | terminal |
+| 2026-06-14T01:27:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent --lib -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T01:28:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T01:29:00Z | `985e463` | `p0-045b-llm-input-contract` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:30:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:30:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T01:30:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T01:31:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib` | fail, 294/295; `doctor::tests::cli_runner_check_fails_only_configured_missing_cli_binaries` saw `codex=Ok` instead of `Skipped` during parallel env interaction | terminal |
+| 2026-06-14T01:31:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime doctor::tests::cli_runner_check_fails_only_configured_missing_cli_binaries --lib -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T01:32:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1` | pass, 295 tests | terminal |
+| 2026-06-14T01:36:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass; installed worker `grokrxiv-app` to PATH | terminal |
+| 2026-06-14T01:36:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass; installed worker adapter to PATH | terminal |
+| 2026-06-14T01:37:00Z | `985e463` | `p0-045b-llm-input-contract` | `cargo install --path crates/orchestrator --bin agh --force --locked` | pass; installed worker `agh` to PATH | terminal |
+| 2026-06-14T01:37:00Z | `985e463` | `p0-045b-llm-input-contract` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --version` | pass, `agh 0.1.0` | terminal |
+| 2026-06-14T01:37:00Z | `985e463` | `p0-045b-llm-input-contract` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions --dry-run` | pass, product status 0; `external_actions.enabled=false` | terminal |
+
+Acceptance evidence:
+- Missing Haskell semantic IR now creates a structured input-contract issue before any runner call: `stage=haskell_review_fix_code`, `role=haskell_semantic_author`, `missing_artifact=review_loop/semantic_ir.json`, remediation `rerun semantic_category_mapper`.
+- Haskell generation is guarded before deterministic local scaffold generation, so a missing `semantic_ir` cannot turn into an empty generated scaffold.
+- Review-loop code-agent payloads now include `input_contract` with `missing_required_input_policy=fail_before_llm_call` and explicit agent instruction not to invent missing content.
+
+Residual:
+- No full corpus-green claim.
+- Next worker: P0-046 harness timeout/stall detection before the next full sweep.

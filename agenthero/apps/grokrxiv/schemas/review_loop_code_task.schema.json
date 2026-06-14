@@ -84,6 +84,69 @@
           "minLength": 1
         }
       }
+    },
+    "input_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required_artifacts",
+        "allowed_partial_statuses",
+        "missing_required_input_policy",
+        "partial_input_policy",
+        "agent_instruction"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["json_pointer", "artifact", "reason", "remediation"],
+            "properties": {
+              "json_pointer": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifact": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "remediation": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "allowed_partial_statuses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["skipped", "not_applicable", "needs_review"]
+          }
+        },
+        "missing_required_input_policy": {
+          "type": "string",
+          "const": "fail_before_llm_call"
+        },
+        "partial_input_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_instruction": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "allOf": [

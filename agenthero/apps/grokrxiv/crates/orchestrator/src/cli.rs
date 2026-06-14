@@ -5251,6 +5251,250 @@ impl ReviewLoopGitHarness {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ReviewLoopInputRequirement {
+    json_pointer: &'static str,
+    artifact: &'static str,
+    reason: &'static str,
+    remediation: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewLoopInputContractIssue {
+    stage: String,
+    role: String,
+    phase: String,
+    target: String,
+    missing_artifact: String,
+    json_pointer: String,
+    reason: String,
+    expected_remediation: String,
+}
+
+impl ReviewLoopInputContractIssue {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "stage": self.stage,
+            "role": self.role,
+            "phase": self.phase,
+            "target": self.target,
+            "missing_artifact": self.missing_artifact,
+            "json_pointer": self.json_pointer,
+            "reason": self.reason,
+            "expected_remediation": self.expected_remediation,
+        })
+    }
+
+    fn to_error_message(&self) -> String {
+        format!(
+            "review-loop input contract failed before LLM call: stage={} role={} phase={} target={} missing_artifact={} json_pointer={} reason={} expected_remediation={}",
+            self.stage,
+            self.role,
+            self.phase,
+            self.target,
+            self.missing_artifact,
+            self.json_pointer,
+            self.reason,
+            self.expected_remediation,
+        )
+    }
+}
+
+fn review_loop_agent_input_contract_issue(
+    role: &str,
+    artifact: &serde_json::Value,
+) -> Option<ReviewLoopInputContractIssue> {
+    let phase = artifact
+        .get("phase")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let target = artifact
+        .get("target")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+
+    for requirement in review_loop_agent_input_requirements(target, phase) {
+        let value = artifact.pointer(requirement.json_pointer);
+        if review_loop_contract_value_missing(value) {
+            return Some(ReviewLoopInputContractIssue {
+                stage: review_fix_code_node_id(target).to_string(),
+                role: role.to_string(),
+                phase: phase.to_string(),
+                target: target.to_string(),
+                missing_artifact: requirement.artifact.to_string(),
+                json_pointer: requirement.json_pointer.to_string(),
+                reason: requirement.reason.to_string(),
+                expected_remediation: requirement.remediation.to_string(),
+            });
+        }
+    }
+
+    None
+}
+
+fn review_loop_contract_value_missing(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(text)) => text.trim().is_empty(),
+        Some(serde_json::Value::Array(items)) => items.is_empty(),
+        Some(serde_json::Value::Object(map)) => map.is_empty(),
+        Some(_) => false,
+    }
+}
+
+fn review_loop_agent_input_requirements(
+    target: &str,
+    phase: &str,
+) -> Vec<ReviewLoopInputRequirement> {
+    let mut requirements = vec![
+        ReviewLoopInputRequirement {
+            json_pointer: "/phase",
+            artifact: "review_loop/code_task.phase",
+            reason: "agent payload must declare whether this is a generate or review round",
+            remediation: "reconstruct the review-loop code task payload before invoking the role",
+        },
+        ReviewLoopInputRequirement {
+            json_pointer: "/target",
+            artifact: "review_loop/code_task.target",
+            reason: "agent payload must declare the code target",
+            remediation: "reconstruct the review-loop code task payload before invoking the role",
+        },
+        ReviewLoopInputRequirement {
+            json_pointer: "/base",
+            artifact: "review_loop/code_task.base",
+            reason: "agent payload must include the upstream stage artifact bundle",
+            remediation:
+                "rerun the owning upstream stage or emit an explicit skipped/partial contract",
+        },
+        ReviewLoopInputRequirement {
+            json_pointer: "/harness",
+            artifact: "review_loop/git_harness",
+            reason: "agent payload must include the isolated git harness location",
+            remediation: "rerun review-loop harness preparation before invoking the role",
+        },
+    ];
+
+    match target {
+        "haskell" => requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/semantic_ir",
+                artifact: "review_loop/semantic_ir.json",
+                reason: "Haskell semantic modeling must consume the canonical typed semantic IR, not inferred review prose",
+                remediation: "rerun semantic_category_mapper or emit an explicit skipped/partial contract before haskell_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/paper_math_sources",
+                artifact: "review_loop/paper_math_sources.json",
+                reason: "Haskell semantic modeling needs the normalized extraction provenance for the IR",
+                remediation: "rerun paper_math_source_collector and semantic_category_mapper before haskell_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/haskell_semantic_contract",
+                artifact: "review_loop/haskell_semantic_contract",
+                reason: "the Haskell author needs the explicit rule that only semantic_ir formal sources become proof targets",
+                remediation: "compact the Haskell code-task base artifact before invoking haskell_semantic_author",
+            },
+        ]),
+        "lean" => requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/proof_obligations",
+                artifact: "review_loop/proof_obligations.json",
+                reason: "Lean proof completion must consume deterministic proof obligations",
+                remediation: "rerun proof_obligation_generator or emit skip_reason=no_math_targets before lean_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/lean_targets",
+                artifact: "review_loop/lean_targets.json",
+                reason: "Lean proof completion must preserve the emitted theorem statements",
+                remediation: "rerun proof_obligation_generator before lean_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/semantic_ir",
+                artifact: "review_loop/semantic_ir.json",
+                reason: "Lean proof completion must trace theorem targets back to the typed semantic IR",
+                remediation: "rerun semantic_category_mapper before lean_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/haskell_results",
+                artifact: "review_loop/haskell/results.json",
+                reason: "Lean proof completion depends on the Haskell semantic model status",
+                remediation: "rerun haskell_review_fix_code before lean_review_fix_code",
+            },
+        ]),
+        "pr" => requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/source_tex",
+                artifact: "review_loop/review.tex",
+                reason: "PR artifact repair needs the rendered review text; it must not invent a review from scratch",
+                remediation: "rerun review rendering before pr_fixer",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/compile_command",
+                artifact: "review_loop/pr_compile_command",
+                reason: "PR artifact repair needs the exact compile command used for acceptance",
+                remediation: "rerun PR fixture setup before pr_fixer",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/source_tex_path",
+                artifact: "review_loop/review.tex",
+                reason: "PR artifact repair needs the source artifact path for provenance",
+                remediation: "rerun review rendering before pr_fixer",
+            },
+        ]),
+        _ => {}
+    }
+
+    if phase == "review" {
+        requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/code",
+                artifact: "review_loop/generated_code",
+                reason: "code reviewers need the generated artifact under review",
+                remediation: "rerun the generate round before invoking the code reviewer",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/compile",
+                artifact: "review_loop/compile.json",
+                reason: "code reviewers need compiler or tool output",
+                remediation:
+                    "run the target compile/tool command before invoking the code reviewer",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/semantic_validation",
+                artifact: "review_loop/semantic_validation.json",
+                reason: "code reviewers need deterministic semantic validation results",
+                remediation:
+                    "run deterministic semantic validation before invoking the code reviewer",
+            },
+        ]);
+    }
+
+    requirements
+}
+
+fn review_loop_code_input_contract(target: &str, phase: &str) -> serde_json::Value {
+    let required_artifacts = review_loop_agent_input_requirements(target, phase)
+        .into_iter()
+        .map(|requirement| {
+            serde_json::json!({
+                "json_pointer": requirement.json_pointer,
+                "artifact": requirement.artifact,
+                "reason": requirement.reason,
+                "remediation": requirement.remediation,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "required_artifacts": required_artifacts,
+        "allowed_partial_statuses": ["skipped", "not_applicable", "needs_review"],
+        "missing_required_input_policy": "fail_before_llm_call",
+        "partial_input_policy": "preserve explicit skipped/partial statuses; never infer or invent missing content",
+        "agent_instruction": "Use only the supplied review_input.json artifacts. Do not fabricate missing paper text, citations, math statements, compile output, or proof status. If an upstream stage explicitly marks a skip or partial status, preserve that status and explain its impact.",
+    })
+}
+
 fn compact_review_fix_code_base_artifact(
     task: &ReviewFixCodeTask,
     base_artifact: serde_json::Value,
@@ -6173,7 +6417,45 @@ async fn run_review_fix_code_loop(
             "previous_compile": previous_compile,
             "previous_codex_review": previous_review,
             "harness": harness.as_json(),
+            "input_contract": review_loop_code_input_contract(task.target_id, "generate"),
         });
+        if let Some(issue) = review_loop_agent_input_contract_issue(role, &agent_artifact) {
+            let decision_reason = issue.to_error_message();
+            let audit = write_review_loop_agent_output_audit(
+                &artifact_root,
+                &task,
+                attempt,
+                role,
+                "generate",
+                &agent_artifact,
+                None,
+                None,
+                Some(&issue.as_json()),
+                "rejected",
+                &decision_reason,
+            )
+            .await
+            .unwrap_or_else(|audit_err| {
+                serde_json::json!({
+                    "role": role,
+                    "phase": "generate",
+                    "attempt": attempt,
+                    "decision": {
+                        "status": "rejected",
+                        "reason": format!("input contract failed: {decision_reason}; audit write failed: {audit_err:#}")
+                    }
+                })
+            });
+            attempts.push(serde_json::json!({
+                "attempt": attempt,
+                "status": "fail",
+                "author_role": role,
+                "author_error": decision_reason,
+                "input_contract": issue.as_json(),
+                "agent_output_audits": [audit],
+            }));
+            break;
+        }
         if debug_output {
             cli_status::emit_detail(
                 role,
@@ -6556,36 +6838,60 @@ async fn run_review_fix_code_loop(
             "forbidden_terms": forbidden,
             "base": base_artifact,
             "harness": harness.as_json(),
+            "input_contract": review_loop_code_input_contract(task.target_id, "review"),
         });
-        let (review_output, review_run, review_error) = match run_review_loop_agent(
-            state,
-            paper_id,
-            review_id,
-            task.reviewer_role,
-            reviewer_artifact.clone(),
-            review_loop_code_system_prompt(&task, task.reviewer_role, attempt),
-            review_loop_code_user_prompt(&task, task.reviewer_role, attempt),
-            Some(&harness.path),
-        )
-        .await
-        {
-            Ok(run) => (run.output.clone(), Some(run), None),
-            Err(err) => (
+        let contract_issue =
+            review_loop_agent_input_contract_issue(task.reviewer_role, &reviewer_artifact);
+        let (review_output, review_run, review_error) = if let Some(issue) = contract_issue {
+            let message = issue.to_error_message();
+            (
                 serde_json::json!({
                     "status": "fail",
                     "issues": [
                         {
                             "severity": "blocking",
-                            "message": format!("Codex review agent failed: {err:#}"),
+                            "message": message,
                             "line": null
                         }
                     ],
-                    "summary": "Codex review agent failed.",
-                    "confidence": 1.0
+                    "summary": "Codex review agent input contract failed before runner invocation.",
+                    "confidence": 1.0,
+                    "input_contract": issue.as_json(),
                 }),
                 None,
-                Some(format!("{err:#}")),
-            ),
+                Some(message),
+            )
+        } else {
+            match run_review_loop_agent(
+                state,
+                paper_id,
+                review_id,
+                task.reviewer_role,
+                reviewer_artifact.clone(),
+                review_loop_code_system_prompt(&task, task.reviewer_role, attempt),
+                review_loop_code_user_prompt(&task, task.reviewer_role, attempt),
+                Some(&harness.path),
+            )
+            .await
+            {
+                Ok(run) => (run.output.clone(), Some(run), None),
+                Err(err) => (
+                    serde_json::json!({
+                        "status": "fail",
+                        "issues": [
+                            {
+                                "severity": "blocking",
+                                "message": format!("Codex review agent failed: {err:#}"),
+                                "line": null
+                            }
+                        ],
+                        "summary": "Codex review agent failed.",
+                        "confidence": 1.0
+                    }),
+                    None,
+                    Some(format!("{err:#}")),
+                ),
+            }
         };
         let _ = write_loop_json(&round_dir.join("codex_review.json"), &review_output).await;
 
@@ -6948,6 +7254,9 @@ async fn run_review_loop_agent(
     user_prompt: String,
     source_bundle_path: Option<&Path>,
 ) -> anyhow::Result<AgentRun> {
+    if let Some(issue) = review_loop_agent_input_contract_issue(role, &artifact) {
+        anyhow::bail!("{}", issue.to_error_message());
+    }
     let agent = state
         .agents
         .get(role)
@@ -6995,7 +7304,10 @@ fn review_loop_code_user_prompt(task: &ReviewFixCodeTask, role: &str, attempt: u
          Compile command: {compile}\n\
          Compile timeout seconds: {compile_timeout_secs}\n\
          Max attempts: {max_attempts}\n\n\
-         The canonical task input is in review_input.json. Return strict JSON \
+         The canonical task input is in review_input.json. Its input_contract \
+         names required artifacts and missing/partial-input policy; obey it and \
+         do not invent missing paper text, citations, math, compile output, or proof status. \
+         Return strict JSON \
          matching schema.json. Do not include markdown fences or prose outside JSON.",
         filename = task.filename,
         language = task.language,
@@ -14595,7 +14907,8 @@ obligationToLean = LeanTarget\n";
             "previous_code": null,
             "previous_compile": null,
             "previous_codex_review": null,
-            "harness": {"path": "/tmp/harness", "branch": "review-loop/haskell/abc123"}
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/haskell/abc123"},
+            "input_contract": review_loop_code_input_contract("haskell", "generate")
         });
         validator
             .validate(&valid_generation)
@@ -14613,7 +14926,8 @@ obligationToLean = LeanTarget\n";
             "semantic_validation": {"status": "pass", "issues": []},
             "forbidden_terms": [],
             "base": {},
-            "harness": {"path": "/tmp/harness", "branch": "review-loop/lean/abc123"}
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/lean/abc123"},
+            "input_contract": review_loop_code_input_contract("lean", "review")
         });
         validator
             .validate(&valid_review)
@@ -14625,6 +14939,47 @@ obligationToLean = LeanTarget\n";
             validator.validate(&invalid).is_err(),
             "review_loop_code_task schema must be closed"
         );
+    }
+
+    #[test]
+    fn review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent() {
+        let artifact = serde_json::json!({
+            "phase": "generate",
+            "target": "haskell",
+            "language": "haskell",
+            "filename": "SemanticModel.hs",
+            "attempt": 1,
+            "max_attempts": 2,
+            "base": {
+                "review_id": "11111111-1111-1111-1111-111111111111",
+                "paper_math_sources": {
+                    "artifact_ref": "review_loop/paper_math_sources.json",
+                    "omitted_from_code_author_payload": true
+                },
+                "haskell_semantic_contract": {
+                    "canonical_formal_sources": ["semantic_ir.theorem_candidates"]
+                }
+            },
+            "previous_code": null,
+            "previous_compile": null,
+            "previous_codex_review": null,
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/haskell/abc123"}
+        });
+
+        let issue = review_loop_agent_input_contract_issue("haskell_semantic_author", &artifact)
+            .expect("missing semantic_ir must block the runner");
+        let issue_json = issue.as_json();
+
+        assert_eq!(issue_json["stage"], "haskell_review_fix_code");
+        assert_eq!(issue_json["role"], "haskell_semantic_author");
+        assert_eq!(
+            issue_json["missing_artifact"],
+            "review_loop/semantic_ir.json"
+        );
+        assert!(issue_json["expected_remediation"]
+            .as_str()
+            .unwrap()
+            .contains("rerun semantic_category_mapper"));
     }
 
     #[test]

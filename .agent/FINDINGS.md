@@ -103,6 +103,56 @@ Residual:
 - P0-045b remains queued: LLM-required missing/empty/stale/schema-invalid inputs must fail before a model call unless the stage has an explicit partial/skip contract.
 - P0-046 remains queued: stuck corpus runs need bounded timeout/stall classification before the next full sweep.
 
+## P0-045b - LLM Input Contract Gate
+
+ID: P0-045b
+Corpus entry: cross-cutting review-loop code-agent contract
+Runner: local CLI/unit fixture
+Worker branch: `p0-045b-llm-input-contract`
+Bucket: F1 app-local agent input integrity
+NEVER-event: none. This is a pre-runner guardrail.
+
+Symptom:
+- The narrowed P0 target requires agents to judge whether a review is good enough for public reference use, but the review-loop code-agent boundary did not declare or enforce the required inputs before invoking an agent.
+- Missing or empty upstream artifacts could reach a code author/reviewer/fixer payload without a machine-classified missing artifact, stage, or remediation.
+- The deterministic Haskell attempt-1 path also consumed `semantic_ir` directly; if that input were missing, it could produce an empty scaffold instead of blocking on missing normalized math evidence.
+
+Root cause:
+- `run_review_loop_agent` constructed `AgentInput` directly from a JSON artifact and called the runner without an app-local input contract gate.
+- `run_review_fix_code_loop` built Haskell/Lean/PR generate/review payloads without an explicit `input_contract` telling agents what inputs were required, what partial statuses are allowed, and that missing required data must not be invented.
+
+Owning code:
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs`
+- `agenthero/apps/grokrxiv/schemas/review_loop_code_task.schema.json`
+
+Resolution:
+1. Added `ReviewLoopInputContractIssue` and target-specific required artifact checks for Haskell, Lean, and PR code-agent payloads.
+2. Haskell generate payloads now require `review_loop/semantic_ir.json`, `review_loop/paper_math_sources.json`, and `review_loop/haskell_semantic_contract`; Lean requires proof obligations, Lean targets, semantic IR, and Haskell results; PR repair requires rendered source TeX, compile command, and source path.
+3. Review payloads additionally require generated code, compile output, and semantic validation before invoking the reviewer.
+4. `run_review_fix_code_loop` now blocks missing required generate inputs before deterministic Haskell generation or LLM invocation and records a rejected audit with the missing artifact, stage, JSON pointer, reason, and remediation.
+5. `run_review_loop_agent` also guards direct calls before `agent.run`.
+6. Code-agent artifacts now include `input_contract` with required artifacts, allowed partial statuses, `missing_required_input_policy=fail_before_llm_call`, and explicit agent instructions not to fabricate missing paper text, citations, math, compile output, or proof status.
+7. `review_loop_code_task.schema.json` now declares the `input_contract` shape.
+
+Evidence:
+- Red-first fixture `review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent` failed before implementation with `cannot find function review_loop_agent_input_contract_issue`.
+- The same fixture passed after implementation and asserts:
+  - `stage=haskell_review_fix_code`
+  - `role=haskell_semantic_author`
+  - `missing_artifact=review_loop/semantic_ir.json`
+  - remediation contains `rerun semantic_category_mapper`
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `git diff --check`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime --lib -- --test-threads=1`: pass, 295/295.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Parallel full app-runtime lib run failed once in `doctor::tests::cli_runner_check_fails_only_configured_missing_cli_binaries` because another test/env interaction made `codex` appear `Ok`; the test passed in isolation and in the serial full run. Treat as pre-existing parallel test isolation noise, not a P0-045b regression.
+- P0-046 remains queued: corpus harness timeout/stall detection before the next full sweep.
+
 ## P0-044 - Zeta Haskell Semantic Target Hygiene / Bibliography Snippets
 
 ID: P0-044
