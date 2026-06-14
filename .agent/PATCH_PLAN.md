@@ -2,10 +2,20 @@
 
 P0 audit has raw evidence for the first regression entry. Work this queue top-down, one defect per local session or worker branch.
 
-## Seeded Queue
+## Active Narrow P0 Queue
 
-1. P0-039 human corpus decision: `bertrand-elementary` is pinned to withdrawn/unavailable `2407.07620v5`, while v1-v4 are retrievable. Human sign-off is required before changing the corpus pin to v4, replacing the entry, or changing expected extraction semantics. Do not edit `expected:` or the version pin autonomously.
-2. P0-044 zeta Haskell semantic target hygiene / bibliography snippets: code fix is implemented and locally verified in worker branch `p0-044-zeta-haskell-target-hygiene`, but affected rerun evidence is still pending. The first final affected rerun stalled before Haskell artifacts and was recorded as inconclusive/F3, not as a corpus verdict. Next action is to rerun `zeta3-irrationality` safely after confirming the local runner is not stuck; accept P0-044 only when the rerun reaches Haskell and proves bibliography snippets/nonformal review claims are not proof obligations.
+Current acceptance target:
+
+```text
+file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report
+```
+
+Haskell and Lean are conditional. If normalized content has no formal math targets, both stages must be skipped with `skip_reason: no_math_targets`, the operator-facing report should label that state `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the LLM review/PR artifact path must still run. If formal math targets exist, Haskell/Lean must run or fail with a classified F1-F5 cause.
+
+1. P0-044 acceptance/merge: worker `.agent/worktrees/p0-044-zeta-haskell-target-hygiene` is refreshed with coordinator `fc05277`. It prevents bibliography/reference math snippets and partial semantic gaps from becoming required proof obligations. The affected zeta rerun stalled before Haskell artifacts, so coordinator acceptance still needs a bounded rerun or a stall-classified F3 dossier before merge.
+2. P0-045 no-math proof-stage skip contract: add fixture coverage for a non-math document. Expected behavior: normalize/extract succeeds, semantic math map records no formal targets, Haskell and Lean artifacts are explicit skips with `skip_reason: no_math_targets`, and review/PR artifacts still build under `--no-external-actions`.
+3. P0-046 sweep harness timeout detection: stuck or silent runs must self-classify as F3 with raw process/log evidence instead of burning minutes indefinitely. This should wrap affected reruns before the next full sweep.
+4. Citation timeout robustness for zeta: only reopen this if it reappears after P0-044/P0-046. P0-043 made citation validation non-blocking for the last no-cache zeta rerun.
 
 ## Completed Queue Items
 
@@ -55,6 +65,7 @@ P0 audit has raw evidence for the first regression entry. Work this queue top-do
 - P0-039 app-local arXiv version-pin handling: fixed locally by preserving valid `vN` suffixes through review source parsing and rewriting arXiv abs-page unversioned PDF metadata to the requested historical version. Red-first tests failed before implementation, then passed. Verification passed: ingest lib 46/46, app-runtime `review_loop` 17/17, app workspace check, structural tests 45/45, `git diff --check`, PATH installs, and installed dry-run showing plan id `2407.07620v4`. The Bertrand corpus entry remains blocked on human sign-off because pinned `2407.07620v5` is withdrawn/unavailable while the expected block requires `full_body`; no corpus expectation or version was changed.
 - P0-039 coordinator merge verification: fast-forward merged `p0-039-bertrand-extraction-completeness` into `grokrxiv-local-corpus-harness` at `1aeab11`. Coordinator verification passed: focused version tests, ingest lib 46/46, app-runtime `review_loop` 17/17, app workspace check, structural tests 45/45, `git diff --check`, and installed dry-run showing plan id `2407.07620v4`. No full corpus-green claim.
 - P0-043 zeta bibitem citation title extraction: fixed locally by extracting the first bibliographic `\newblock` title from TeX `\bibitem` entries instead of using the bibitem key as `Citation.title`. Red-first fixture failed with `selberg1949elementary` before implementation and passed after the fix. Verification passed: focused fixture, ingest lib 47/47, app workspace check, structural tests 45/45, `git diff --check`, PATH installs, and installed safe dry-run. Affected no-cache rerun `20260613T230107Z/zeta3-after-p0-043-bibitem-titles` completed as review `c393d134-a7e1-4275-bbde-4d85cbfb63c4`: versioned references have `key_title_count=0`, citation validation is non-blocking warning (`checked=32`, `unverified=5`, `unresolved=0`, `transient_unknown=0`), and policy no longer has a citation-validation blocking issue. Remaining zeta red is queued separately as P0-044 Haskell semantic target hygiene.
+- P0-039 corpus decision resolved by human sign-off, 2026-06-14: `bertrand-elementary` stays pinned to withdrawn/unavailable `2407.07620v5`, but the corpus expected block now says `source_status: withdrawn_unavailable`, `extraction: skipped_withdrawn_source`, `review_loop: skipped_before_review`, and `skip_reason: withdrawn_or_unavailable_source`. Do not review an empty body for this entry. A retrievable v4 replacement is a separate future corpus decision, not the current P0 behavior.
 
 ## Work Rule
 

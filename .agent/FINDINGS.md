@@ -139,7 +139,22 @@ Residual:
 - Human sign-off is required to change the corpus pin to the latest retrievable version (`v4`), replace the Tier A entry with a retrievable Bertrand source, or intentionally change this entry's expected extraction semantics. Do not make that corpus change autonomously.
 
 Attempts: 1
-Escalation status: human sign-off required for corpus pin.
+Escalation status: resolved by human sign-off on 2026-06-14.
+
+Human decision:
+- Keep `bertrand-elementary` pinned to `2407.07620v5`.
+- If the pinned source is withdrawn/unavailable, skip before review.
+- Do not review an empty body and do not substitute `v4` automatically.
+
+Corpus expectation update:
+- `expected.source_status: withdrawn_unavailable`
+- `expected.extraction: skipped_withdrawn_source`
+- `expected.review_loop: skipped_before_review`
+- `expected.skip_reason: withdrawn_or_unavailable_source`
+
+Acceptance:
+- A corpus checker should treat the v5 source failure as a pass only when the run stops before review and records the withdrawn/unavailable skip reason.
+- If review, Haskell, Lean, policy, or PR artifacts run for this entry while v5 remains unavailable, classify it as a defect.
 
 ## P0-043 - Zeta Citation Metadata Uses Bibitem Keys As Titles
 

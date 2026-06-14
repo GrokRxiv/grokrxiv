@@ -13703,6 +13703,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn corpus_withdrawn_sources_are_expected_skips() {
+        let corpus: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus.yaml parses");
+        let entries = corpus
+            .get("entries")
+            .and_then(|value| value.as_sequence())
+            .expect("corpus entries");
+        let bertrand = entries
+            .iter()
+            .find(|entry| {
+                entry.get("id").and_then(|value| value.as_str()) == Some("bertrand-elementary")
+            })
+            .expect("bertrand-elementary entry");
+        assert_eq!(
+            bertrand.get("status").and_then(|value| value.as_str()),
+            Some("skipped_withdrawn_source")
+        );
+        let expected = bertrand
+            .get("expected")
+            .and_then(|value| value.as_mapping())
+            .expect("bertrand expected mapping");
+        let expected_value = |key: &str| {
+            expected
+                .get(serde_yaml::Value::String(key.to_string()))
+                .and_then(|value| value.as_str())
+        };
+        assert_eq!(
+            expected_value("source_status"),
+            Some("withdrawn_unavailable")
+        );
+        assert_eq!(
+            expected_value("extraction"),
+            Some("skipped_withdrawn_source")
+        );
+        assert_eq!(expected_value("review_loop"), Some("skipped_before_review"));
+        assert_eq!(
+            expected_value("skip_reason"),
+            Some("withdrawn_or_unavailable_source")
+        );
+        for forbidden in [
+            "paper_review",
+            "haskell_review_fix_code",
+            "proof_obligation_generator",
+            "lean_review_fix_code",
+            "policy_gate",
+            "recommendation",
+        ] {
+            assert!(
+                expected_value(forbidden).is_none(),
+                "withdrawn source must not carry review/proof expectation `{forbidden}`"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn corpus_toolchain_env_selects_pinned_ghc_over_stale_path() {

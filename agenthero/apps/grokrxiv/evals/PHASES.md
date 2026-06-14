@@ -108,6 +108,79 @@ one defect -> failing fixture test -> minimal fix -> affected corpus entry rerun
 
 Full sweeps are reserved for phase-entry validation, suspected phase completion, and coordinator integration checkpoints; narrow worker loops rerun the affected fixture and corpus entry first.
 
+## Near-Term Vertical Slice
+
+The immediate P0/P2 bridge is narrower than the full roadmap. The app must first make this path reliable:
+
+```text
+file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report
+```
+
+Stage contracts:
+
+1. Source pull: resolve the requested file, local TeX/PDF, or pinned arXiv version. If the requested source is withdrawn/unavailable and the corpus expects `skipped_withdrawn_source`, skip before review with that reason. Otherwise, a source that cannot produce body content fails at extraction completeness before any review verdict.
+2. Normalize/extract: produce reviewable document content with body text, sections, references, equations, theorem-like blocks, and provenance. The extraction report must say what was recovered and what was not.
+3. Math eligibility: decide from normalized content whether there are formal math targets. Equations, bibliography snippets, review prose, prompt-injection text, and semantic gaps are context unless promoted by a theorem-like source with enough structure.
+4. Haskell semantic map: when math targets exist, mechanically build the semantic map from extracted content and run GHC/reviewer checks. When no math targets exist, skip Haskell with an explicit `skip_reason` and continue the document review path.
+5. Lean proof verdict: when Haskell emits proof obligations, run Lean and emit a machine verdict. When no math targets exist, skip Lean with an explicit `skip_reason` and continue the document review path.
+6. LLM review/PR loop: always review the document content and verifier artifacts. The loop may produce a PR-ready artifact/report, but corpus runs must not publish or open PRs.
+7. Git/web report: produce durable artifacts showing which stages passed, failed, or were skipped, with raw evidence paths and no hidden side effects.
+
+Proof-stage verdict meanings:
+
+- `PROVED`: a formal target existed and Lean proved it without forbidden terms.
+- `NOT_PROVED`: a formal target existed, but Lean did not prove it.
+- `NOT_CONDUCIVE_TO_LEAN_PROOF`: normalized content has no extractable formal math target, so Haskell/Lean are intentionally skipped and the PR/review path continues.
+- `USES_SORRY`, `USES_UNAPPROVED_AXIOM`, or equivalent unsafe proof statuses: a formal target exists, but the proof is not acceptable.
+- `FAILED`: toolchain, schema, timeout, or runtime failure; this is not a mathematical verdict.
+
+Until every artifact schema has an explicit `NOT_CONDUCIVE_TO_LEAN_PROOF` enum, the implementation may encode the condition as proof-stage skip artifacts with `skip_reason: no_math_targets`. That compatibility shim must be visible in the git/web report and should be removed once the schema is widened.
+
+## PR And Publishability Target
+
+Corpus green is an integrity target, not automatic publication approval.
+
+The PR/web artifact is acceptable for the corpus when:
+
+- normalized content is complete, or the corpus explicitly expects a source skip;
+- all required specialist outputs exist and are schema-valid, or failed visibly with reason;
+- citations are validated, retracted, unresolved, or `needs_review` with evidence instead of disappearing;
+- Haskell/Lean stages are either proved, honestly not proved, unsafe/failing with evidence, or skipped as not applicable;
+- PR/web artifacts build;
+- `blocking_issues` is empty;
+- zero NEVER-events occurred;
+- corpus runs used `--no-external-actions`.
+
+Use these readiness levels:
+
+- `integrity_ready=true`: the generated review/report is honest enough to be a reliable corpus artifact. It can say accept, reject, not proved, not applicable, or needs review as long as every claim is backed by visible evidence.
+- `publisher_ready=true`: the review may be published without force because the publication gate passed, the recommendation policy allows it, artifacts build, and no blockers remain.
+- Human approval: still required for real approve/request-revisions/publisher actions outside the corpus loop.
+
+Therefore a paper can be corpus-green while not `publisher_ready`. For example, a no-math paper with Haskell/Lean skipped, a flawed paper with `NOT_PROVED`, or an honest negative review can be integrity-ready but should not auto-publish as an accepted/formally verified result.
+
+## Reference-Quality Bar
+
+The product publishing question is: is the report good enough that another reader can use it as a reference?
+
+That is stricter than "the pipeline did not lie" and should be represented as a distinct readiness level:
+
+- `reference_ready=true`: the review/report is clear, complete, traceable to the document, honest about limitations, and useful as a public reference.
+- `publisher_ready=true`: `reference_ready=true` plus the publication policy allows the action.
+
+Reference-ready requires:
+
+- the LLM input contract gate ran before every agent call;
+- no required input artifact was missing, empty, stale, or schema-invalid when passed to an LLM;
+- every missing or partial artifact has a typed status and agent instruction, such as `skip_reason`, `needs_review`, `not_applicable`, or `failed`;
+- the report summarizes the paper's actual content, not only verifier metadata;
+- key claims, proof statuses, citation statuses, and limitations are traceable to source spans or artifact paths;
+- the review distinguishes evidence, interpretation, and unresolved issues;
+- the recommendation is usable by a reader and does not overstate proof, citation, or reproducibility confidence;
+- the PR/web artifact is readable, builds, and includes the pass/fail/skip table.
+
+Agents should never have to infer what to do with missing data from prose. Each agent invocation needs an input manifest that names required artifacts, optional artifacts, completeness flags, provenance, and explicit instructions for missing/partial cases. If a required artifact is absent without an allowed skip, the loop fails before the LLM call.
+
 ## Baseline Context
 
 Already landed before this phased plan: app-sdk extraction, retry/backoff hardening, review-loop crate extraction, AgentInput purge, and paper-math IR sourcing in flight. Treat these as baseline context, not active phase scope, and verify current files before relying on any prior implementation detail.

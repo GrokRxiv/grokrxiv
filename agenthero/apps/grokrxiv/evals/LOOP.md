@@ -69,6 +69,57 @@ Order matters — NEVER-events first:
    - Tier B only: diff emitted Lean statement vs `fidelity_reference`
 5. **Diff vs `expected:`** → write `evals/results/<sweep-ts>/<entry-id>/verdict.json`:
    `PASS` or `FAIL { stage, expected, actual, evidence_paths[] }`.
+6. **Reference-quality check**: the final report must be good enough for a
+   reader to use as a reference. Check that claims and limitations are
+   traceable, unresolved items are explicit, recommendations do not overstate
+   evidence, and the PR/web artifact is readable and buildable.
+
+### Narrow vertical-slice checks
+
+Every entry must also satisfy the near-term review-pipeline slice from
+`PHASES.md`:
+
+1. **Source pull**: requested source/version is visible in provenance. If the
+   source is withdrawn/unavailable and the corpus expects
+   `skipped_withdrawn_source`, the entry passes as a skip before review. Other
+   missing sources fail at extraction completeness before review verdicts.
+2. **Normalized content**: body text, sections, references, equations,
+   theorem-like blocks, and extraction provenance exist or have explicit
+   failure reasons.
+3. **Math eligibility**: `semantic_ir` distinguishes formal theorem targets
+   from context. Bibliography math, equations-only context, review/meta/citation
+   prose, prompt-injection text, and `SemanticGap`/partial entries are not proof
+   obligations by default.
+4. **LLM input contract**: before each LLM agent call, write/check an input
+   manifest naming required artifacts, optional artifacts, completeness flags,
+   provenance, and missing-data instructions. If a required input is missing,
+   empty, stale, or schema-invalid without an allowed skip, fail before calling
+   the LLM.
+5. **Conditional Haskell**:
+   - If formal math targets exist, Haskell runs and the artifact must pass GHC
+     or fail with a classified F1-F5 cause.
+   - If no formal math targets exist, Haskell is skipped with
+     `skip_reason: no_math_targets`; this is not a corpus failure by itself.
+6. **Conditional Lean**:
+   - If Haskell emits proof obligations, Lean runs and emits `PROVED`,
+     `NOT_PROVED`, or an unsafe/failure status.
+   - If Haskell was skipped for `no_math_targets`, Lean is skipped with the same
+     reason and the review/PR path continues.
+7. **Review/PR artifact**: the LLM review and PR artifact/report path still runs
+   for no-math documents, using normalized document content plus verifier
+   artifacts. Corpus loops still use `--no-external-actions`.
+8. **Git/web report**: final artifacts must show pass/fail/skip state for each
+   stage and include evidence paths.
+9. **Readiness**: corpus green requires an integrity-ready report, not automatic
+   publication. `integrity_ready=true`, empty `blocking_issues`, buildable
+   PR/web artifacts, and zero NEVER-events are the corpus target.
+   `publisher_ready=true` is stricter and is only required when the expected
+   outcome is actual publication/acceptance.
+
+Use `NOT_CONDUCIVE_TO_LEAN_PROOF` as the operator-facing label for the no-math
+proof skip. Until the artifact schemas expose that exact enum everywhere,
+represent it as explicit Haskell/Lean skip artifacts with
+`skip_reason: no_math_targets`.
 
 ## Phase 3 — DEV (triage)
 

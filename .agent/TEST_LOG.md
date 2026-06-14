@@ -952,3 +952,12 @@ Residuals:
 - No full corpus-green claim.
 - P0-039 still requires human corpus sign-off for unavailable Bertrand v5.
 - P0-044 remains queued for zeta Haskell semantic target hygiene.
+
+## 2026-06-14 P0 vertical-slice and withdrawn-source corpus contract
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T00:12:06Z | `beddef4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_withdrawn_sources_are_expected_skips --lib -- --nocapture` | pass, 1 test; proved `bertrand-elementary` is an expected withdrawn-source skip and carries no review/proof expectations | chat transcript |
+| 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all` | pass | chat transcript |
+| 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture` | pass, 8 tests | chat transcript |
+| 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | chat transcript |
