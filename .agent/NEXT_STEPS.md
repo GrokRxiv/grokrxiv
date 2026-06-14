@@ -97,7 +97,7 @@ Coordinator verification:
 - PATH installs passed for `grokrxiv-app`, `agenthero-dag-app-grokrxiv`, and `agh`.
 - Wrapped PATH dry-run passed with `external_actions.enabled=false`.
 
-Next action: start a fresh local worker for P0-045b.
+Next action: already completed by P0-045b; start P0-046 next.
 
 ### 2b. P0-045b LLM Input Contract Gate
 
