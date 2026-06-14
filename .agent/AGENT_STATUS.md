@@ -1,6 +1,6 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T00:30:00Z
+Updated: 2026-06-14T00:44:00Z
 
 ## Current State
 
@@ -12,7 +12,7 @@ Updated: 2026-06-14T00:30:00Z
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved: withdrawn/unavailable `bertrand-elementary` v5 is now an expected skip before review, not an empty-body review. P0-044 code is implemented and locally verified, but affected rerun acceptance is still pending: the last no-cache zeta rerun stalled before Haskell artifacts and remains inconclusive F3 until a bounded rerun or harness timeout detector classifies it. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved: withdrawn/unavailable `bertrand-elementary` v5 is now an expected skip before review, not an empty-body review. P0-044 is accepted on the affected zeta rerun: semantic mapper emitted zero theorem candidates, Haskell passed in one attempt with empty targets/claims/proof obligations, bibliography snippets were absent, PR artifacts built, and external actions stayed disabled. Active red is now P0-045: no-formal-target proof stages still become blocking proof/Lean/policy failures instead of explicit `no_math_targets` skips. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

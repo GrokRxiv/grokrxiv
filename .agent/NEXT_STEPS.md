@@ -38,23 +38,23 @@ Rules:
 
 ### 1. P0-044 Acceptance / Merge
 
-Worker:
+Status: accepted in this worker, pending coordinator merge.
 
-```text
-.agent/worktrees/p0-044-zeta-haskell-target-hygiene
-```
+Evidence:
 
-Status:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T003026Z/zeta3-after-p0-044-acceptance`.
+- Review id: `1154e7d0-ea88-48b1-90d5-fd60d5471e59`.
+- Product exit: 0; external actions disabled; `pr_url=null`.
+- `semantic_category_mapper`: `theorem_candidates=0`, `definitions=0`, `assumptions=0`.
+- Haskell: `haskell_review_fix_code [OK]`, `attempts=1`, empty targets/claims/proof obligations in `SemanticModel.hs`.
+- Guard strings absent from semantic/Haskell artifacts: `body_math_41`, `body_math_67`, `ReviewCategory`.
+- PR artifact path completed; citation validation was non-blocking.
 
-- Worker branch has P0-044 code from `2273503` and is refreshed with coordinator `fc05277`.
-- It prevents bibliography/reference math snippets and partial semantic gaps from becoming required proof obligations.
-- Worker tests passed before commit, but the affected zeta rerun stalled before Haskell artifacts. Treat the rerun as inconclusive F3, not pass/fail.
+Coordinator action:
 
-Next action:
-
-1. In the worker, run a bounded affected rerun for `zeta3-irrationality` with `--no-external-actions`.
-2. If it stalls again, write an F3 stall dossier and move to P0-046 before merge.
-3. If it completes, verify Haskell/Lean only receive real theorem targets, then coordinator-merge and rerun focused tests.
+1. Merge this worker to `grokrxiv-local-corpus-harness`.
+2. Rerun focused checks on coordinator.
+3. Start a fresh worker for P0-045.
 
 ### 2. P0-045 No-Math Proof Skip
 
@@ -62,10 +62,10 @@ Add fixture coverage for a non-math document:
 
 - normalize/extract succeeds;
 - semantic math map reports no formal targets;
-- Haskell artifact exists as an explicit skip with `skip_reason: no_math_targets`;
-- Lean artifact exists as an explicit skip with `skip_reason: no_math_targets`;
+- Haskell may pass with empty targets, but proof-obligation and Lean artifacts must become explicit skips with `skip_reason: no_math_targets`;
 - review/PR artifact still builds under `--no-external-actions`;
 - git/web report shows proof stages as `NOT_CONDUCIVE_TO_LEAN_PROOF` or the schema-compatible skip equivalent.
+- policy does not block solely because no formal proof target exists.
 
 ### 2b. P0-045b LLM Input Contract Gate
 
@@ -111,7 +111,7 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Start with P0-044 acceptance. If a run stalls, classify it as F3 and move to
-P0-046 harness timeout detection. Do not weaken corpus expected blocks or
-NEVER-events. Do not run external publishing actions.
+Merge the accepted P0-044 worker, then start P0-045 no-math proof-stage skip.
+Do not weaken corpus expected blocks or NEVER-events. Do not run external
+publishing actions.
 ```

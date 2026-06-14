@@ -961,3 +961,27 @@ Residuals:
 | 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all` | pass | chat transcript |
 | 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ --lib -- --nocapture` | pass, 8 tests | chat transcript |
 | 2026-06-14T00:17:16Z | `beddef4` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | chat transcript |
+
+## 2026-06-14 P0-044 Haskell Target Hygiene Acceptance
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T00:30:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 16 tests | terminal |
+| 2026-06-14T00:31:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 19 tests | terminal |
+| 2026-06-14T00:32:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T00:32:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `git diff --check` | pass | terminal |
+| 2026-06-14T00:34:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass | terminal |
+| 2026-06-14T00:34:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass | terminal |
+| 2026-06-14T00:40:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions` | product exit 0; review `1154e7d0-ea88-48b1-90d5-fd60d5471e59`; P0-044 accepted; P0-045 exposed | `agenthero/apps/grokrxiv/evals/results/20260614T003026Z/zeta3-after-p0-044-acceptance/run.log` |
+| 2026-06-14T00:43:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T00:43:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+
+Acceptance evidence:
+- `semantic_category_mapper` reported `theorem_candidates=0`, `definitions=0`, `assumptions=0`.
+- `haskell_review_fix_code` passed in one attempt.
+- `SemanticModel.hs` had `theoremTargets=[]`, `claims=[]`, and `allProofObligations=[]`.
+- `body_math_41`, `body_math_67`, and `ReviewCategory` were absent from semantic/Haskell artifacts.
+- External actions stayed disabled and `pr_url=null`.
+
+Residual:
+- P0-045 is now active: proof/Lean/adequacy/policy still fail on no formal theorem targets instead of producing explicit `skip_reason: no_math_targets` artifacts.

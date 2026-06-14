@@ -32,6 +32,45 @@ Fix plan:
 Attempts: 1
 Escalation status: none.
 
+## P0-045 - No-Formal-Target Proof Stages Must Skip, Not Fail
+
+ID: P0-045
+Corpus entry: `zeta3-irrationality`
+Review id: `1154e7d0-ea88-48b1-90d5-fd60d5471e59`
+Runner: local CLI
+Command: `GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions`
+Exit code: 0
+finish_reason: affected rerun completed
+Bucket: F1 app-local proof-stage policy contract
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Symptom:
+- P0-044 fixed target hygiene: `semantic_category_mapper` produced `theorem_candidates=0`, and Haskell passed in one deterministic/local attempt with empty theorem targets, empty claims, and empty `allProofObligations`.
+- The downstream proof path still converted the no-target condition into blocking failures:
+  - `proof_obligation_generator [FAIL] ... No paper-derived formal mathematical statements were extracted for Lean verification.`
+  - `lean_review_fix_code [FAIL] ... verdict=NOT_PROVED proof_status=SEMANTIC_GAP`.
+  - `semantic_adequacy_checker [FAIL] ... no theorem adequacy verdicts`.
+  - `policy_gate [FAIL] ... Semantic IR did not extract theorem candidates for Lean formalization.`
+
+Raw evidence:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T003026Z/zeta3-after-p0-044-acceptance`.
+- Haskell artifact: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/1154e7d0-ea88-48b1-90d5-fd60d5471e59/review_loop/haskell/results.json`.
+- Semantic model artifact: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/1154e7d0-ea88-48b1-90d5-fd60d5471e59/review_loop/semantic_model.json`.
+- Proof obligations artifact: `agenthero/apps/grokrxiv/crates/orchestrator/.agenthero/artifacts/grokrxiv/reviews/1154e7d0-ea88-48b1-90d5-fd60d5471e59/review_loop/proof_obligations.json`.
+
+Root cause:
+- The review loop has a semantic-gap path for no theorem candidates, but the proof obligation, Lean, adequacy, and policy stages still classify that state as failure.
+- The product target is conditional proof verification: if no formal math targets exist, Haskell/Lean should be explicit skips and the review/PR/reference report should continue.
+
+Fix plan:
+1. Add a red-first app-runtime fixture for no theorem candidates after semantic mapping.
+2. Change proof obligation generation to emit an explicit skip artifact with `skip_reason: no_math_targets` and zero Lean declarations when `semantic_ir.theorem_candidates` is empty.
+3. Change Lean and semantic adequacy handling to preserve the skip rather than fail.
+4. Change policy/report to surface operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF` or schema-compatible skip text and avoid blocking solely on no formal targets.
+5. Re-run the zeta affected entry and confirm review/PR artifacts still build, external actions stay disabled, and no proof target is fabricated.
+
+Escalation status: none. This is app-local and mechanically testable.
+
 ## P0-044 - Zeta Haskell Semantic Target Hygiene / Bibliography Snippets
 
 ID: P0-044
