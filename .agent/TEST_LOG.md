@@ -1262,3 +1262,17 @@ Notes:
 - The runtime PFR affected run was stopped before acceptance.
 - No full corpus-green claim and no phase tag.
 - After verification, generated build/worker directories were removed: `.agent/worktrees/*`, `agenthero/apps/c2rust/target`, `agenthero/apps/grokrxiv/target`.
+
+## 2026-06-14 P0-054 Single-File Report / No-Code Checkpoint
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T07:08:47Z | `d6453ca` | `grokrxiv-local-corpus-harness` | read existing P0-053 run evidence only | report-only; no code change and no rerun | `agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/run.log` |
+
+Evidence summary:
+- Single source `2606.13517` completed with wrapper `classification=completed`, `exit_code=0`, `elapsed_ms=1155011`.
+- WARN: `technical_correctness` and `citation`.
+- Citation warning: `checked=50`, `unverified=34`, `unresolved=0`, `transient_unknown=0`.
+- FAIL: Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, policy gate fail.
+- External actions disabled and `pr_url=null`.
+- No full corpus run was started.

@@ -14,8 +14,26 @@ Haskell and Lean are conditional. If normalized content has no formal math targe
 
 The publishing question is whether the report is `reference_ready`: good enough that another reader can use it as a public reference. That requires complete or explicitly skipped source content, deterministic evidence for citations and proof status, traceable claims and limitations, buildable PR/web artifacts, and no overclaimed recommendation. LLM agents should not infer missing-data behavior from prose; every agent call must receive an input contract with required artifacts, optional artifacts, completeness flags, provenance, and explicit instructions for allowed skip/partial cases. Missing required data without an allowed skip fails before the LLM call.
 
-1. Resume the first bounded local CLI full-corpus sweep using `evals/bin/grokrxiv-run-with-timeout`. Triage any red entries into F1-F5 with `run-status.json` evidence.
-2. Citation timeout robustness for zeta: only reopen this if it reappears under the bounded wrapper. P0-043 made citation validation non-blocking for the last no-cache zeta rerun.
+1. Do not resume the full corpus until the user explicitly asks. The current budget rule is one source or one focused fixture at a time.
+2. Next coding session should address citation normalization globally, not as a one-off for `2606.13517`.
+3. After the citation fix, rerun only the affected source chosen for the fixture. Do not run all corpus entries.
+
+## Next Citation Plan
+
+Goal: citation validation must verify citations from normalized bibliographic data for all supported paper formats, not from citation keys or lossy verifier-local reconstruction.
+
+Observed on `2606.13517`:
+- Citation specialist selected entries with real titles, for example `Aki01` -> `Homological infiniteness of Torelli groups` and `BMS67` -> `Solution of the congruence subgroup problem ...`.
+- Deterministic verifier evidence still checked `title=Aki01`, `title=BMS67`, etc.
+- Result: `checked=50`, `unverified=34`, `unresolved=0`, `transient_unknown=0`.
+
+Implementation plan for the next coding session:
+1. Add a focused failing test at the citation-verifier input boundary, not just raw TeX parsing. The test should assert that a normalized `\bibitem` with quoted title reaches the resolver as the real title, never the key.
+2. Make the citation verifier consume a canonical normalized reference list with fields `key`, `raw`, `title`, `authors`, `year`, `doi`, `arxiv_id`, `url`, and `venue`.
+3. Preserve the same contract for `\bibitem` with `\newblock`, `\bibitem` with TeX/plain quotes, `amsrefs`, `.bib`, `.bbl`, and Pandoc/HTML bibliography blocks.
+4. Add a guard: when `raw` contains an apparent title and `title == key`, classify it as a normalization defect before resolver lookup.
+5. Keep resolver behavior separate: Crossref/OpenAlex/Semantic Scholar/ADS/INSPIRE/zbMATH/Gemini should receive good citation data; they should not be expected to recover from key-only titles.
+6. Verify with focused tests first, then one single affected run only. No full corpus run.
 
 ## Completed Queue Items
 

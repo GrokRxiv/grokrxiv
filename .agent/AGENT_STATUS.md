@@ -143,3 +143,21 @@ Updated: 2026-06-14T07:03:09Z
 - Non-green surfaces: Lean returned `NOT_PROVED` / `FAILED`; semantic adequacy marked the extracted theorem targets `OVERCLAIMED`; citation validation was only `warn` with `checked=50`, `unverified=34`; policy left the review in `revision_needed` with `publisher_ready=false`.
 - App-local defects exposed by the single file: bibliography title normalization still leaves many references titled only by citation keys such as `Aki01`; theorem target filtering still allows section-heading prose to become Lean proof obligations; some agent payloads are large enough to make one-file runs slow.
 - Next action: fix one of those concrete defects and rerun only `2606.13517`.
+
+## P0-054 Single-File Report / Stop-Coding Checkpoint
+
+Updated: 2026-06-14T07:08:47Z
+
+- User instruction: stop coding after the `2606.13517` review run report. Do not patch citation or theorem-target code in this checkpoint.
+- No new review run was started after P0-053. No full corpus run was started.
+- Current evidence still comes from result root `agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/`, review `959b4087-f8c6-41ea-8337-01855c2bc2c2`.
+- The single-file run completed, but it was too slow for an ad hoc source: `elapsed_ms=1155011` (about 19.25 minutes).
+- WARN/FAIL summary:
+  - Specialist `technical_correctness` warned because it judged key claims partially supported or unsupported, not because the pipeline crashed.
+  - Specialist `citation` warned because deterministic citation verifier evidence had `checked=50`, `unverified=34`, `unresolved=0`, `transient_unknown=0`.
+  - `lean_review_fix_code` failed honestly with `verdict=NOT_PROVED`, `proof_status=FAILED`.
+  - `semantic_adequacy_checker` failed because extracted theorem targets were `OVERCLAIMED`.
+  - `policy_gate` failed because meta-review was `major_revision`, Lean did not prove the obligation, and semantic adequacy found overclaimed statements.
+- Citation diagnosis correction: this is not only a raw LaTeX parser issue. The citation agent output contains real titles for examples like `Aki01` and `BMS67`, but the deterministic verifier evidence path reduces those same entries to `title=Aki01` and `title=BMS67`. The fix must be global across citation ingestion, verifier input construction, and handoff from normalized references to the resolver waterfall.
+- Theorem-target diagnosis: `semantic_ir` promoted section-heading/prose statements such as "In this section we prove Theorem 4..." into formal theorem candidates. That makes Lean fail correctly; the app should not ask Lean to prove prose.
+- Stop state: document-only checkpoint. Next coding session should start from the citation plan, not from another corpus run.

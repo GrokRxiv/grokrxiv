@@ -1,6 +1,6 @@
 # GrokRxiv Local Harness Next Steps
 
-Continue exactly from here.
+Continue exactly from here. Current instruction is report-only after the single-file `2606.13517` run; do not code or rerun until the user asks.
 
 ## Current Coordinator State
 
@@ -12,6 +12,20 @@ Continue exactly from here.
 - Baseline tag: none.
 - Last green full sweep: none.
 - Run model: local Codex only; do not use Codex Cloud.
+- Budget/run rule: do not run the full corpus next. Work one source or one focused fixture at a time.
+
+## Stop Point After P0-054
+
+Do not start a run automatically.
+
+If the user asks to continue coding, use this prompt shape:
+
+```text
+Implement only the global citation normalization fix. Do not run the full corpus.
+Use the P0-054 findings. Add a failing test at the citation-verifier input boundary proving that quoted-title bibitems, newblock bibitems, amsrefs, .bib/.bbl, and Pandoc bibliography entries pass real titles to the resolver, not citation keys. Fix the normalization/handoff contract. Run focused tests only. Then rerun one affected source with --no-external-actions if explicitly requested.
+```
+
+After citation normalization, the second known fix is theorem-target filtering: section-intro prose and truncated statements must not become Lean proof obligations.
 
 ## Narrow Acceptance Contract
 

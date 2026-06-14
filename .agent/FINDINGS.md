@@ -1,5 +1,76 @@
 # GrokRxiv Local Harness Findings
 
+## P0-054 - Single-File `2606.13517` WARN/FAIL Report
+
+ID: P0-054
+Source: `https://arxiv.org/abs/2606.13517`
+Review id: `959b4087-f8c6-41ea-8337-01855c2bc2c2`
+Runner: local CLI through `evals/bin/grokrxiv-run-with-timeout`
+Result root: `agenthero/apps/grokrxiv/evals/results/20260614T064246Z/arxiv-2606-13517-single/`
+Bucket: report only; no code changes in this checkpoint
+NEVER-event: none. External actions stayed disabled and `pr_url=null`.
+
+Run result:
+- Wrapper completed with `classification=completed`, `exit_code=0`, `elapsed_ms=1155011`.
+- This is too slow for a single ad hoc paper and should not be repeated casually.
+- Fetch/extract, five specialist reviewers, meta-review, render, Haskell scaffold/GHC, citation artifact emission, and PR PDF compile all ran.
+
+WARN surfaces:
+1. `technical_correctness [WARN]`
+   - The agent output is substantive but not a clean accept. It marks major claims as partially supported or unsupported, including the need for proof/code evidence for some claims.
+   - This is review-quality signal, not a runtime crash.
+2. `citation [WARN]`
+   - Citation verifier evidence has `checked=50`, `unverified=34`, `unresolved=0`, `transient_unknown=0`, `malformed=0`.
+   - The resolver waterfall did not verify most non-arXiv/classic references.
+
+FAIL surfaces:
+1. `lean_review_fix_code [FAIL]`
+   - `lean/results.json`: `status=fail`, `verdict=NOT_PROVED`, `proof_status=FAILED`.
+   - The only emitted obligation was for `thm-4`, whose source text is section prose: "In this section we prove Theorem 4..."
+   - Lean failed correctly; the bad input is that prose was promoted into a proof obligation.
+2. `semantic_adequacy_checker [FAIL]`
+   - `semantic_adequacy.json` marks `thm-2`, `thm-3`, and `thm-4` as `OVERCLAIMED`.
+   - The statements are truncated or section-intro prose, not faithful formal theorem statements.
+3. `policy_gate [FAIL]`
+   - Blocking issues:
+     - `Meta-review recommendation is major_revision, not accept.`
+     - `Lean proof obligations did not verify cleanly.`
+     - `Semantic adequacy check found unproved or overclaimed theorem statements.`
+   - `deterministic_status=fail`, `integrity_ready=false`, `publisher_ready=false`.
+
+Citation root-cause evidence:
+- `agents/citation.json` contains real structured titles for sample entries such as:
+  - `Aki01` -> `Homological infiniteness of Torelli groups`
+  - `BMS67` -> `Solution of the congruence subgroup problem for ...`
+- The same artifact's verifier notes and `review_loop/citation_validation_report.json` show deterministic verifier evidence using `title=Aki01` and `title=BMS67`.
+- Therefore the defect is a handoff/normalization bug in the deterministic citation-verifier input path, not just "the LLM missed the citation" and not only one paper's LaTeX format.
+
+Required citation fix plan, not implemented in this checkpoint:
+1. Define one canonical `NormalizedCitation` contract used by all citation verifier inputs.
+2. For every citation source form, preserve parsed `key`, `raw`, `title`, `authors`, `year`, `doi`, `arxiv_id`, `url`, and `venue`:
+   - `\bibitem` with `\newblock`
+   - `\bibitem` with TeX quotes or plain quoted titles
+   - `amsrefs` `\bib{...}{...}{...}`
+   - `.bib`
+   - `.bbl`
+   - Pandoc/HTML bibliography blocks
+3. Add a verifier-input invariant: if `raw` contains a real title and `title == key`, fail the fixture before any network resolver call.
+4. Make review DAG citation verifier and review-loop citation validation consume the same normalized references, not a lossy role-local reconstruction.
+5. Add fixture coverage with at least two styles from prior failures:
+   - zeta `\newblock`
+   - capset `amsrefs`
+   - `2606.13517` quoted-title `\bibitem`
+6. Only after those focused tests pass, rerun a single affected source. Do not run the full corpus for this fix.
+
+Theorem-target fix plan, not implemented in this checkpoint:
+1. Reject theorem candidates whose statement is section-intro prose, cross-reference prose, or truncated text ending in ellipses.
+2. Require proof obligations to come from proof-ready typed theorem IR, not partial `unknown_prop` or prose equality parsing.
+3. For math-heavy papers with no proof-ready targets, emit the explicit skip path instead of Lean failure.
+
+Stop state:
+- No code patches were made for P0-054.
+- Next session should implement one defect only, starting with the citation verifier normalization contract.
+
 ## P0-050 - Capset Recommendation Policy Semantics
 
 ID: P0-050
