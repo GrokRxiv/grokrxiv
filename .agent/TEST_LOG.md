@@ -1149,6 +1149,13 @@ Residual:
 | 2026-06-14T03:53:30Z | `P0-048-worker` | `p0-048-bounded-cli-sweep` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
 | 2026-06-14T03:53:30Z | `P0-048-worker` | `p0-048-bounded-cli-sweep` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --force --locked` | pass, refreshed PATH `grokrxiv-app`; locked yanked-zip warning only | terminal |
 | 2026-06-14T03:53:30Z | `P0-048-worker` | `p0-048-bounded-cli-sweep` | affected `capset-ellenberg-gijswijt` rerun after removing body fallback theorem promotion | mixed: wrapper exit 0 and formal path fixed; policy remains red on citation validation checked=0 and meta `major_revision` | `agenthero/apps/grokrxiv/evals/results/20260614T-p0-048-capset-no-body-fallback/capset-ellenberg-gijswijt/run-status.json` |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-048-bounded-cli-sweep` | pass, fast-forward coordinator to P0-048 checkpoint | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop -- --nocapture` | pass, 18 tests | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T04:00:59Z | `e159179` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, refreshed PATH `grokrxiv-app` from merged checkout; locked yanked-zip warning only | terminal |
 
 Residual:
 - No full corpus-green claim and no phase tag.

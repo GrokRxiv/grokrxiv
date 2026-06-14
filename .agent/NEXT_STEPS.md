@@ -6,8 +6,8 @@ Continue exactly from here.
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `42b5f8f` (`codex checkpoint: P0 - withdrawn source runtime skip`), merged at `1f26c05`
-- Pending worker checkpoint: `p0-048-bounded-cli-sweep` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-048-bounded-cli-sweep`; merge after checkpoint commit and coordinator verification.
+- Latest merged worker checkpoint: `e159179` (`codex checkpoint: P0 - capset formal target hygiene`), fast-forward merged at `e159179`
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -39,7 +39,7 @@ Rules:
 
 ### 1. P0-048 Capset Formal Target Hygiene
 
-Status: fixed in worker; checkpoint/merge pending.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -59,12 +59,17 @@ Residual:
 - Meta-review recommends `major_revision`, which also keeps `publisher_ready=false`.
 - No full corpus-green claim and no phase tag.
 
-Next action:
+Coordinator verification:
 
-1. Commit the worker checkpoint after final status checks.
-2. Merge `p0-048-bounded-cli-sweep` back to `grokrxiv-local-corpus-harness`.
-3. Run coordinator verification: `grokrxiv-review-loop` tests, app-runtime `review_loop` tests, app workspace check, structural tests 45/45, `git diff --check`, and PATH `grokrxiv-app` install.
-4. Start P0-049: normalized bibliography/reference extraction for capset.
+- `git merge --ff-only p0-048-bounded-cli-sweep`: pass, fast-forward to `e159179`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop -- --nocapture`: pass, 18/18.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, refreshed PATH `grokrxiv-app` from merged coordinator checkout.
+
+Next action: start P0-049.
 
 ### 2. P0-049 Normalized Bibliography / Citation Evidence
 
@@ -77,6 +82,22 @@ Acceptance:
 - Deterministic citation validation must check more than 0 entries.
 - The citation specialist may summarize citation quality, but publication/reference readiness must rely on deterministic citation evidence or explicit unresolved statuses.
 - Affected capset rerun must keep formal stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF` and improve citation validation from structural fail to pass/warn/fail with real checked entries.
+
+Suggested worker setup:
+
+```bash
+git worktree add .agent/worktrees/p0-049-capset-bibliography -b p0-049-capset-bibliography
+cd .agent/worktrees/p0-049-capset-bibliography
+```
+
+Then follow TDD:
+
+1. Add a failing ingest/app-runtime fixture proving capset bibliography extraction currently yields zero normalized bibliography entries.
+2. Fix the owning extraction/normalization code.
+3. Run focused fixture, ingest tests, app-runtime citation/review-loop tests, app workspace check, and structural tests.
+4. Reinstall `grokrxiv-app`.
+5. Rerun capset through `grokrxiv-run-with-timeout` with `--no-external-actions`.
+6. Update `.agent/*` and `LEDGER.md`, checkpoint commit, then coordinator merge.
 
 ### 3. P0-044 Acceptance / Merge
 
