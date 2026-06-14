@@ -1118,3 +1118,20 @@ Acceptance evidence:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action after coordinator merge: run the first bounded full local CLI corpus sweep.
+
+## 2026-06-14 P0-046 Coordinator Verification
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-046-harness-timeout` | pass, fast-forward from `dcf71c7` to `d373291` | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ -- --nocapture` | pass, 11 tests | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:55:29Z | `d373291` | `grokrxiv-local-corpus-harness` | `grokrxiv-run-with-timeout --timeout-secs 5 --idle-timeout-secs 2 --status-json <tmp>/run-status.json --log <tmp>/run.log -- /bin/sh -c "printf 'ok\n'"` | pass, wrapper status 0; JSON `classification=completed`, `exit_code=0`, `process_state=exited`, `last_log_line=ok` | terminal |
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action: run the first bounded full local CLI corpus sweep.

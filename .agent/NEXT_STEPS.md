@@ -6,8 +6,8 @@ Continue exactly from here.
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `6700d28` (`codex checkpoint: P0 - llm input contract gate`)
-- Pending worker checkpoint: `p0-046-harness-timeout` ready for coordinator merge.
+- Latest merged worker checkpoint: `d373291` (`codex checkpoint: P0 - harness timeout detection`)
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -115,7 +115,7 @@ Next action: start P0-046.
 
 ### 3. P0-046 Harness Timeout Detection
 
-Status: implemented and worker-verified; coordinator merge pending.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -124,11 +124,24 @@ Evidence:
 - Wall timeout emits `bucket=F3`, `classification=timeout`, `reason=wall_timeout`, exit 124.
 - Idle-log stall emits `bucket=F3`, `classification=stall`, `reason=idle_timeout`, exit 124.
 - Status JSON records command, PID, process state, elapsed time, exit code or signal, raw log path, last log line, and log mtime.
-- Focused corpus tests passed 11/11; app-runtime `review_loop` passed 20/20; app workspace check passed; structural tests passed 45/45; `git diff --check` passed.
+- Worker verification passed: focused corpus tests 11/11; app-runtime `review_loop` 20/20; app workspace check; structural tests 45/45; `git diff --check`; successful-wrapper smoke.
+- Coordinator verification passed after fast-forward merge to `d373291`: focused corpus tests 11/11; app-runtime `review_loop` 20/20; app workspace check; structural tests 45/45; `git diff --check`; successful-wrapper smoke.
 
-Next action: merge worker branch `p0-046-harness-timeout` to coordinator, rerun coordinator verification, then start the first bounded full local CLI corpus sweep.
+Next action: start the first bounded full local CLI corpus sweep.
 
-### 4. P0-039 Withdrawn Bertrand Source
+### 4. First Bounded Full Local CLI Corpus Sweep
+
+Run LOOP.md preflight and corpus entries through `grokrxiv-run-with-timeout`.
+Use the generated `run-status.json` for F3 classification instead of manual
+stall diagnosis. Keep `--no-external-actions`.
+
+Triage rules:
+
+- `bertrand-elementary` is expected to skip before review as withdrawn/unavailable v5.
+- `zeta3-irrationality` should no longer be blocked by P0-044/P0-045/P0-046; if citation timeout reappears, triage it with wrapper evidence.
+- No full P0 green claim until all entries pass, zero NEVER-events, structural tests stay green, and the sweep is repeated on both runners.
+
+### 5. P0-039 Withdrawn Bertrand Source
 
 Resolved by human sign-off on 2026-06-14:
 
@@ -155,9 +168,8 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Merge P0-046 harness timeout/stall detection from worker branch
-`p0-046-harness-timeout` to the coordinator branch, rerun coordinator
-verification, and then run the first bounded full local CLI corpus sweep through
-`agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout`. Do not weaken
-corpus expected blocks or NEVER-events. Do not run external publishing actions.
+Run the first bounded full local CLI corpus sweep through
+`agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout`. Use
+`run-status.json` for timeout/stall F3 classification. Do not weaken corpus
+expected blocks or NEVER-events. Do not run external publishing actions.
 ```

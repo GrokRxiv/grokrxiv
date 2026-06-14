@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T01:52:11Z
+Updated: 2026-06-14T01:55:29Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local worker after P0-046 harness timeout/stall verification; coordinator merge pending.
-- Branch/worktree: worker branch `p0-046-harness-timeout` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-046-harness-timeout`.
-- Latest merged worker checkpoint: `6700d28` (`codex checkpoint: P0 - llm input contract gate`).
+- Session type: local coordinator after P0-046 merge verification.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Latest merged worker checkpoint: `d373291` (`codex checkpoint: P0 - harness timeout detection`).
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, P0-045 is merged, and P0-045b is merged. P0-046 is implemented and worker-verified: `evals/bin/grokrxiv-run-with-timeout` now wraps corpus entry runs, writes `run-status.json`, and classifies wall timeouts or idle-log stalls as F3 with command, PID, process state, elapsed time, signal, raw log path, and last log line. Active next queue item after coordinator merge is the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, P0-045 is merged, P0-045b is merged, and P0-046 is merged. `evals/bin/grokrxiv-run-with-timeout` now wraps corpus entry runs, writes `run-status.json`, and classifies wall timeouts or idle-log stalls as F3 with command, PID, process state, elapsed time, signal, raw log path, and last log line. Active next queue item is the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
