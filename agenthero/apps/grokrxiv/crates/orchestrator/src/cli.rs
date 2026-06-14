@@ -3983,7 +3983,26 @@ struct ReviewLoopCorpusContext {
     id: String,
     tier: String,
     source: String,
+    version: Option<String>,
+    status: Option<String>,
     expected_recommendation: Option<String>,
+    expected_source_status: Option<String>,
+    expected_extraction: Option<String>,
+    expected_review_loop: Option<String>,
+    expected_skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ReviewSourceCorpusSkip {
+    corpus_id: String,
+    corpus_tier: String,
+    corpus_source: String,
+    source_kind: String,
+    source_id: String,
+    source_status: String,
+    extraction: String,
+    review_loop: String,
+    skip_reason: String,
 }
 
 fn review_loop_stage_plan() -> anyhow::Result<Vec<ReviewLoopStage>> {
@@ -4376,6 +4395,40 @@ async fn review_resolved_sources(
     json: bool,
 ) -> anyhow::Result<()> {
     let _cleanup = LocalSourceCleanup::new(resolved);
+    let corpus_contexts = load_review_loop_corpus_contexts_from_file().await?;
+    let corpus_skips = resolved
+        .iter()
+        .map(|source| review_loop_corpus_skip_for_resolved_source(&corpus_contexts, source))
+        .collect::<Vec<_>>();
+    let external_actions_enabled = !options.no_external_actions;
+
+    if corpus_skips.iter().all(Option::is_some) {
+        let mut results = Vec::with_capacity(resolved.len());
+        for skip in corpus_skips.iter().flatten() {
+            emit_pipeline_header("review", &skip.source_id);
+            crate::cli_status::emit(format!(
+                "source {}: skipped before review ({})",
+                skip.source_id, skip.skip_reason
+            ));
+            if !json {
+                println!(
+                    "source_kind={} source_id={} source_status={} extraction={} review_loop={} skip_reason={}",
+                    skip.source_kind,
+                    skip.source_id,
+                    skip.source_status,
+                    skip.extraction,
+                    skip.review_loop,
+                    skip.skip_reason
+                );
+            }
+            results.push(review_source_corpus_skip_envelope(
+                skip,
+                external_actions_enabled,
+            ));
+        }
+        return print_review_results(&results, json);
+    }
+
     let config = super::Config::from_env();
     let state = super::AppState::from_config(config).await?;
     let supervisor = super::supervisor::Supervisor::spawn(state.clone());
@@ -4386,7 +4439,30 @@ async fn review_resolved_sources(
         .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?;
 
     let mut results = Vec::with_capacity(resolved.len());
-    for source in resolved {
+    for (index, source) in resolved.iter().enumerate() {
+        if let Some(skip) = corpus_skips[index].as_ref() {
+            emit_pipeline_header("review", &skip.source_id);
+            crate::cli_status::emit(format!(
+                "source {}: skipped before review ({})",
+                skip.source_id, skip.skip_reason
+            ));
+            if !json {
+                println!(
+                    "source_kind={} source_id={} source_status={} extraction={} review_loop={} skip_reason={}",
+                    skip.source_kind,
+                    skip.source_id,
+                    skip.source_status,
+                    skip.extraction,
+                    skip.review_loop,
+                    skip.skip_reason
+                );
+            }
+            results.push(review_source_corpus_skip_envelope(
+                skip,
+                external_actions_enabled,
+            ));
+            continue;
+        }
         match source {
             ResolvedSource::Arxiv(id) => {
                 emit_pipeline_header("review", id);
@@ -4400,7 +4476,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
-                    !options.no_external_actions,
+                    external_actions_enabled,
                     json,
                 )
                 .await?;
@@ -4438,7 +4514,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
-                    !options.no_external_actions,
+                    external_actions_enabled,
                     json,
                 )
                 .await?;
@@ -4483,7 +4559,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.debug_output,
-                    !options.no_external_actions,
+                    external_actions_enabled,
                     json,
                 )
                 .await?;
@@ -4510,11 +4586,15 @@ async fn review_resolved_sources(
         }
     }
 
+    print_review_results(&results, json)
+}
+
+fn print_review_results(results: &[serde_json::Value], json: bool) -> anyhow::Result<()> {
     if json {
         if results.len() == 1 {
             println!("{}", serde_json::to_string_pretty(&results[0])?);
         } else {
-            println!("{}", serde_json::to_string_pretty(&results)?);
+            println!("{}", serde_json::to_string_pretty(results)?);
         }
     }
     Ok(())
@@ -4959,6 +5039,21 @@ fn review_loop_corpus_contexts_from_yaml(
             .get("source")
             .and_then(|value| value.as_str())
             .ok_or_else(|| anyhow::anyhow!("corpus entry `{id}` missing source"))?;
+        let version = entry
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let status = entry
+            .get("status")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let expected = entry.get("expected");
+        let expected_value = |key: &str| {
+            expected
+                .and_then(|value| value.get(key))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        };
         let expected_recommendation = entry
             .get("expected")
             .and_then(|value| value.get("recommendation"))
@@ -4968,7 +5063,13 @@ fn review_loop_corpus_contexts_from_yaml(
             id: id.to_string(),
             tier: tier.to_string(),
             source: source.to_string(),
+            version,
+            status,
             expected_recommendation,
+            expected_source_status: expected_value("source_status"),
+            expected_extraction: expected_value("extraction"),
+            expected_review_loop: expected_value("review_loop"),
+            expected_skip_reason: expected_value("skip_reason"),
         });
     }
     Ok(contexts)
@@ -5144,6 +5245,87 @@ fn review_loop_corpus_context_for_candidates(
     })
 }
 
+fn review_source_corpus_skip_from_context(
+    context: &ReviewLoopCorpusContext,
+    source_kind: &str,
+    source_id: &str,
+) -> Option<ReviewSourceCorpusSkip> {
+    if context.status.as_deref() != Some("skipped_withdrawn_source") {
+        return None;
+    }
+    if source_kind == "arxiv" {
+        if let Some(version) = context.version.as_deref() {
+            if !source_id.ends_with(version) {
+                return None;
+            }
+        }
+    }
+    Some(ReviewSourceCorpusSkip {
+        corpus_id: context.id.clone(),
+        corpus_tier: context.tier.clone(),
+        corpus_source: context.source.clone(),
+        source_kind: source_kind.to_string(),
+        source_id: source_id.to_string(),
+        source_status: context.expected_source_status.clone()?,
+        extraction: context.expected_extraction.clone()?,
+        review_loop: context.expected_review_loop.clone()?,
+        skip_reason: context.expected_skip_reason.clone()?,
+    })
+}
+
+fn review_loop_corpus_skip_for_resolved_source(
+    contexts: &[ReviewLoopCorpusContext],
+    source: &ResolvedSource,
+) -> Option<ReviewSourceCorpusSkip> {
+    let ResolvedSource::Arxiv(id) = source else {
+        return None;
+    };
+    let mut candidates = BTreeSet::new();
+    add_review_loop_source_candidate(&mut candidates, Some(id));
+    add_review_loop_source_candidate(&mut candidates, Some(&format!("arxiv:{id}")));
+    add_review_loop_source_candidate(
+        &mut candidates,
+        Some(&format!("https://arxiv.org/abs/{id}")),
+    );
+    let context = review_loop_corpus_context_for_candidates(contexts, &candidates)?;
+    review_source_corpus_skip_from_context(&context, "arxiv", id)
+}
+
+fn review_source_corpus_skip_envelope(
+    skip: &ReviewSourceCorpusSkip,
+    external_actions_enabled: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "source_kind": skip.source_kind,
+        "source_id": skip.source_id,
+        "corpus": {
+            "id": skip.corpus_id,
+            "tier": skip.corpus_tier,
+            "source": skip.corpus_source,
+        },
+        "source_status": skip.source_status,
+        "extraction": skip.extraction,
+        "review_loop": skip.review_loop,
+        "skip_reason": skip.skip_reason,
+        "external_actions": {
+            "enabled": external_actions_enabled,
+        },
+    })
+}
+
+async fn load_review_loop_corpus_contexts_from_file() -> anyhow::Result<Vec<ReviewLoopCorpusContext>>
+{
+    let corpus_path = crate::dag_apps::app_root("grokrxiv")
+        .join("evals")
+        .join("corpus.yaml");
+    let corpus_yaml = match tokio::fs::read_to_string(&corpus_path).await {
+        Ok(body) => body,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", corpus_path.display())),
+    };
+    review_loop_corpus_contexts_from_yaml(&corpus_yaml)
+}
+
 async fn load_review_loop_corpus_context(
     pool: &sqlx::PgPool,
     paper_id: Uuid,
@@ -5196,15 +5378,7 @@ async fn load_review_loop_corpus_context(
         adapter.get("paper_path").and_then(|value| value.as_str()),
     );
 
-    let corpus_path = crate::dag_apps::app_root("grokrxiv")
-        .join("evals")
-        .join("corpus.yaml");
-    let corpus_yaml = match tokio::fs::read_to_string(&corpus_path).await {
-        Ok(body) => body,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).with_context(|| format!("read {}", corpus_path.display())),
-    };
-    let contexts = review_loop_corpus_contexts_from_yaml(&corpus_yaml)?;
+    let contexts = load_review_loop_corpus_contexts_from_file().await?;
     Ok(review_loop_corpus_context_for_candidates(
         &contexts,
         &candidates,
@@ -13789,7 +13963,13 @@ mod tests {
             id: "blum-pvnp".to_string(),
             tier: "C".to_string(),
             source: "arxiv:1708.03486".to_string(),
+            version: None,
+            status: None,
             expected_recommendation: Some("reject_or_major_revision".to_string()),
+            expected_source_status: None,
+            expected_extraction: None,
+            expected_review_loop: None,
+            expected_skip_reason: None,
         };
         let theorem_map = serde_json::json!({
             "status": "PROVED",
@@ -14145,6 +14325,31 @@ mod tests {
     }
 
     #[test]
+    fn corpus_withdrawn_arxiv_source_skips_before_review_runtime() {
+        let contexts =
+            review_loop_corpus_contexts_from_yaml(include_str!("../../../evals/corpus.yaml"))
+                .expect("corpus contexts parse");
+        let source = ResolvedSource::Arxiv("2407.07620v5".to_string());
+
+        let skip = review_loop_corpus_skip_for_resolved_source(&contexts, &source)
+            .expect("withdrawn Bertrand source should produce a runtime skip");
+
+        assert_eq!(skip.corpus_id, "bertrand-elementary");
+        assert_eq!(skip.source_kind, "arxiv");
+        assert_eq!(skip.source_id, "2407.07620v5");
+        assert_eq!(skip.source_status, "withdrawn_unavailable");
+        assert_eq!(skip.extraction, "skipped_withdrawn_source");
+        assert_eq!(skip.review_loop, "skipped_before_review");
+        assert_eq!(skip.skip_reason, "withdrawn_or_unavailable_source");
+
+        let earlier_version = ResolvedSource::Arxiv("2407.07620v4".to_string());
+        assert!(
+            review_loop_corpus_skip_for_resolved_source(&contexts, &earlier_version).is_none(),
+            "withdrawn-source skip must apply only to the pinned unavailable corpus version"
+        );
+    }
+
+    #[test]
     fn corpus_loop_uses_bounded_run_wrapper() {
         let loop_doc = include_str!("../../../evals/LOOP.md");
         assert!(
@@ -14363,7 +14568,13 @@ mod tests {
             id: "bertrand-elementary".to_string(),
             tier: "A".to_string(),
             source: "arxiv:2407.07620".to_string(),
+            version: None,
+            status: None,
             expected_recommendation: Some("accept".to_string()),
+            expected_source_status: None,
+            expected_extraction: None,
+            expected_review_loop: None,
+            expected_skip_reason: None,
         };
         let theorem_map = serde_json::json!({
             "status": "PROVED",
@@ -14384,7 +14595,13 @@ mod tests {
             id: "regression-pr54-weyl".to_string(),
             tier: "R".to_string(),
             source: "arxiv:2606.00799".to_string(),
+            version: None,
+            status: None,
             expected_recommendation: Some("honest".to_string()),
+            expected_source_status: None,
+            expected_extraction: None,
+            expected_review_loop: None,
+            expected_skip_reason: None,
         };
         let publication_gate = crate::review_gate::PublicationGate {
             verdict: crate::review_gate::GateVerdict::Fail,
