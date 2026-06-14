@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T01:55:29Z
+Updated: 2026-06-14T02:13:10Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local coordinator after P0-046 merge verification.
+- Session type: local coordinator after P0-047 withdrawn-source runtime skip merge verification.
 - Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
-- Latest merged worker checkpoint: `d373291` (`codex checkpoint: P0 - harness timeout detection`).
+- Latest merged worker checkpoint: `42b5f8f` (`codex checkpoint: P0 - withdrawn source runtime skip`), merged at `1f26c05`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, P0-045 is merged, P0-045b is merged, and P0-046 is merged. `evals/bin/grokrxiv-run-with-timeout` now wraps corpus entry runs, writes `run-status.json`, and classifies wall timeouts or idle-log stalls as F3 with command, PID, process state, elapsed time, signal, raw log path, and last log line. Active next queue item is the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. The public-use bar is `reference_ready`: the review must be good enough for another reader to use as a reference, with traceable claims, explicit limitations, readable PR/web artifacts, and no overclaimed confidence. Required missing/empty/stale/schema-invalid data must fail before an LLM call unless an explicit skip/partial status tells the agent what to do. P0-039 human sign-off is resolved, and P0-047 now makes the withdrawn Bertrand v5 entry skip before database, extraction, review, Haskell, Lean, or PR work. Active next queue item is the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -103,6 +103,8 @@ Updated: 2026-06-14T01:55:29Z
 - P0-045 coordinator verification, 2026-06-14T01:22Z: fast-forward merged `p0-045-no-math-proof-skip` at `eaaf4d4`. Coordinator-side verification passed: `grokrxiv-review-loop` 17/17, focused app-runtime no-math skip 1/1, app-runtime `review_loop` 19/19, app workspace check, structural tests 45/45, `git diff --check`, PATH `grokrxiv-app` install, PATH GrokRxiv adapter install, PATH `agh` install, `agh --version`, and wrapped GrokRxiv dry-run with `external_actions.enabled=false`. No full corpus-green claim or phase tag.
 - P0-045b worker verification, 2026-06-14T01:37Z: added a review-loop code-agent input contract gate. Red-first fixture failed before implementation because `review_loop_agent_input_contract_issue` did not exist, then passed. Verification passed: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, `git diff --check`, full app-runtime lib serial 295/295, PATH installs for `grokrxiv-app`/adapter/`agh`, `agh --version`, and wrapped GrokRxiv dry-run with `external_actions.enabled=false`. Parallel full lib run exposed a pre-existing doctor env race; the failing test passed in isolation and in the serial full run. No full corpus-green claim or phase tag.
 - P0-045b coordinator verification, 2026-06-14T01:40Z: fast-forward merged `p0-045b-llm-input-contract` at `6700d28`. Coordinator-side verification passed: app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, full app-runtime lib serial 295/295, `git diff --check`, PATH installs for `grokrxiv-app`/adapter/`agh`, `agh --version`, and wrapped GrokRxiv dry-run with `external_actions.enabled=false`. No full corpus-green claim or phase tag.
+- P0-046 coordinator verification, 2026-06-14T01:55Z: fast-forward merged `p0-046-harness-timeout` at `d373291`. Coordinator-side verification passed: corpus-focused app-runtime tests 11/11, app-runtime `review_loop` 20/20, app workspace check, structural tests 45/45, `git diff --check`, and successful-wrapper smoke. No full corpus-green claim or phase tag.
+- P0-047 coordinator verification, 2026-06-14T02:13Z: merged `p0-047-withdrawn-source-skip` at `1f26c05`. The CLI now reads the withdrawn-source corpus expected block and short-circuits matching pinned arXiv versions before DB/supervisor/extraction/review work. Coordinator focused test passed, worker corpus tests passed 12/12, worker app workspace check passed, worker structural tests passed 45/45, PATH installs for `grokrxiv-app`/adapter/`agh` passed, and wrapped merged PATH acceptance for `https://arxiv.org/abs/2407.07620v5` exited 0 with `source_status=withdrawn_unavailable`, `extraction=skipped_withdrawn_source`, `review_loop=skipped_before_review`, `skip_reason=withdrawn_or_unavailable_source`, and no extraction/review markers. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 

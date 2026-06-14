@@ -2205,3 +2205,48 @@ Evidence:
 Residual:
 - No full corpus-green claim.
 - Next action is a bounded full local CLI corpus sweep. If zeta citation timeout reappears under the wrapper, triage it with the generated `run-status.json`.
+
+## P0-047 - Withdrawn Source Runtime Skip
+
+ID: P0-047
+Corpus entry: `bertrand-elementary`
+Pinned source: `arxiv:2407.07620`, `version: v5`
+Runner: local CLI
+Worker branch: `p0-047-withdrawn-source-skip`
+Bucket: F1 app-local source-status gate
+NEVER-event: none. The entry must not review an empty body.
+
+Symptom:
+- After human sign-off changed the Bertrand corpus expectation to a withdrawn/unavailable skip, the first bounded CLI sweep still attempted the normal arXiv review path for `https://arxiv.org/abs/2407.07620v5`.
+- Wrapped run root: `agenthero/apps/grokrxiv/evals/results/20260614T015906Z/bertrand-elementary/`.
+- Product exit: 1.
+- Last log line: `error: extraction completeness gate failed for 2407.07620v5: extraction completeness failed: no body sections; extraction completeness failed: body text is too small for review context (0 chars)`.
+- The run reached VLM/Pandoc extraction instead of skipping before review.
+
+Root cause:
+- `evals/corpus.yaml` carried the authoritative skipped-withdrawn-source expected block, but `review_resolved_sources` did not consult corpus source-status expectations before creating the app state/supervisor and entering `run_one_paper_blocking`.
+- The existing corpus tests proved the YAML shape only; they did not prove the runtime CLI honored the skip.
+
+Resolution:
+1. Extended `ReviewLoopCorpusContext` to carry `status`, pinned `version`, and expected skip fields.
+2. Added `ReviewSourceCorpusSkip` and a runtime matcher for resolved arXiv sources.
+3. The skip is version-specific: `2407.07620v5` skips, while a retrievable `2407.07620v4` does not accidentally inherit the v5 skip.
+4. `review_resolved_sources` now returns a JSON skip envelope before DB/supervisor/extraction/review setup when all resolved inputs are corpus skips, and also supports mixed skip/non-skip input batches.
+5. The skip envelope includes `source_status`, `extraction`, `review_loop`, `skip_reason`, corpus id/tier/source, and `external_actions.enabled`.
+
+Evidence:
+- Red-first fixture `corpus_withdrawn_arxiv_source_skips_before_review_runtime` failed before implementation because `review_loop_corpus_skip_for_resolved_source` did not exist; it passed after the fix and asserts the v5 skip plus the v4 non-skip guard.
+- Worker `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ -- --nocapture`: pass, 12/12.
+- Worker `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- Worker `cargo test -p agenthero-orchestrator --test dag_app_registry --test agenthero_cli_contract`: pass, 45/45.
+- Worker and coordinator `git diff --check`: pass.
+- PATH installs passed for `grokrxiv-app`, `agenthero-dag-app-grokrxiv`, and `agh`.
+- Coordinator focused test passed after merge.
+- Merged PATH acceptance root: `agenthero/apps/grokrxiv/evals/results/20260614T-p0-047-merged/bertrand-elementary/`.
+- Merged PATH acceptance command exited 0 through `grokrxiv-run-with-timeout`; `run-status.json` recorded `classification=completed`, `exit_code=0`, `elapsed_ms=1008`.
+- `run.log` emitted `source_status=withdrawn_unavailable`, `extraction=skipped_withdrawn_source`, `review_loop=skipped_before_review`, and `skip_reason=withdrawn_or_unavailable_source`.
+- Negative evidence: `rg "\[2/6\] Extract|vlm starting|review_id=|publication policy" run.log` found no extraction/review markers.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action is the first bounded full local CLI corpus sweep from the merged coordinator checkout.

@@ -6,7 +6,7 @@ Continue exactly from here.
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `d373291` (`codex checkpoint: P0 - harness timeout detection`)
+- Latest merged worker checkpoint: `42b5f8f` (`codex checkpoint: P0 - withdrawn source runtime skip`), merged at `1f26c05`
 - Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
@@ -129,7 +129,39 @@ Evidence:
 
 Next action: start the first bounded full local CLI corpus sweep.
 
-### 4. First Bounded Full Local CLI Corpus Sweep
+### 4. P0-047 Withdrawn Bertrand Runtime Skip
+
+Status: accepted and merged to coordinator.
+
+Evidence:
+
+- Worker branch: `p0-047-withdrawn-source-skip`.
+- Worker commit: `42b5f8f`.
+- Coordinator merge commit: `1f26c05`.
+- The CLI now reads the corpus skip contract before DB/supervisor/extraction/review work.
+- `https://arxiv.org/abs/2407.07620v5` emits:
+  - `source_status=withdrawn_unavailable`
+  - `extraction=skipped_withdrawn_source`
+  - `review_loop=skipped_before_review`
+  - `skip_reason=withdrawn_or_unavailable_source`
+- The skip is version-specific: the fixture asserts `2407.07620v4` does not inherit the withdrawn v5 skip.
+- Merged PATH acceptance root: `agenthero/apps/grokrxiv/evals/results/20260614T-p0-047-merged/bertrand-elementary/`.
+- `run-status.json`: `classification=completed`, `exit_code=0`, `elapsed_ms=1008`.
+- Negative evidence: no `Extract`, `vlm starting`, `review_id=`, or `publication policy` markers in the run log.
+
+Verification:
+
+- Focused red/green app-runtime fixture passed.
+- Corpus app-runtime tests passed 12/12.
+- App workspace check passed.
+- Structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs passed for `grokrxiv-app`, `agenthero-dag-app-grokrxiv`, and `agh`.
+- Coordinator focused test passed after merge.
+
+Next action: start the first bounded full local CLI corpus sweep.
+
+### 5. First Bounded Full Local CLI Corpus Sweep
 
 Run LOOP.md preflight and corpus entries through `grokrxiv-run-with-timeout`.
 Use the generated `run-status.json` for F3 classification instead of manual
@@ -137,11 +169,11 @@ stall diagnosis. Keep `--no-external-actions`.
 
 Triage rules:
 
-- `bertrand-elementary` is expected to skip before review as withdrawn/unavailable v5.
+- `bertrand-elementary` is expected to skip before review as withdrawn/unavailable v5. If it starts extraction, triage as P0-047 regression.
 - `zeta3-irrationality` should no longer be blocked by P0-044/P0-045/P0-046; if citation timeout reappears, triage it with wrapper evidence.
 - No full P0 green claim until all entries pass, zero NEVER-events, structural tests stay green, and the sweep is repeated on both runners.
 
-### 5. P0-039 Withdrawn Bertrand Source
+### 6. P0-039 Withdrawn Bertrand Source
 
 Resolved by human sign-off on 2026-06-14:
 
@@ -172,4 +204,8 @@ Run the first bounded full local CLI corpus sweep through
 `agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout`. Use
 `run-status.json` for timeout/stall F3 classification. Do not weaken corpus
 expected blocks or NEVER-events. Do not run external publishing actions.
+
+Expected early behavior: `bertrand-elementary` should exit 0 as
+`skipped_withdrawn_source` before extraction or review. Continue the sweep from
+the next corpus entry after recording that skip evidence.
 ```
