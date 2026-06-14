@@ -101,6 +101,11 @@ Every entry must also satisfy the near-term review-pipeline slice from
    artifacts. Corpus loops still use `--no-external-actions`.
 7. **Git/web report**: final artifacts must show pass/fail/skip state for each
    stage and include evidence paths.
+8. **Readiness**: corpus green requires an integrity-ready report, not automatic
+   publication. `integrity_ready=true`, empty `blocking_issues`, buildable
+   PR/web artifacts, and zero NEVER-events are the corpus target.
+   `publisher_ready=true` is stricter and is only required when the expected
+   outcome is actual publication/acceptance.
 
 Use `NOT_CONDUCIVE_TO_LEAN_PROOF` as the operator-facing label for the no-math
 proof skip. Until the artifact schemas expose that exact enum everywhere,

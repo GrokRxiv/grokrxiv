@@ -136,6 +136,29 @@ Proof-stage verdict meanings:
 
 Until every artifact schema has an explicit `NOT_CONDUCIVE_TO_LEAN_PROOF` enum, the implementation may encode the condition as proof-stage skip artifacts with `skip_reason: no_math_targets`. That compatibility shim must be visible in the git/web report and should be removed once the schema is widened.
 
+## PR And Publishability Target
+
+Corpus green is an integrity target, not automatic publication approval.
+
+The PR/web artifact is acceptable for the corpus when:
+
+- normalized content is complete, or the corpus explicitly expects a source skip;
+- all required specialist outputs exist and are schema-valid, or failed visibly with reason;
+- citations are validated, retracted, unresolved, or `needs_review` with evidence instead of disappearing;
+- Haskell/Lean stages are either proved, honestly not proved, unsafe/failing with evidence, or skipped as not applicable;
+- PR/web artifacts build;
+- `blocking_issues` is empty;
+- zero NEVER-events occurred;
+- corpus runs used `--no-external-actions`.
+
+Use these readiness levels:
+
+- `integrity_ready=true`: the generated review/report is honest enough to be a reliable corpus artifact. It can say accept, reject, not proved, not applicable, or needs review as long as every claim is backed by visible evidence.
+- `publisher_ready=true`: the review may be published without force because the publication gate passed, the recommendation policy allows it, artifacts build, and no blockers remain.
+- Human approval: still required for real approve/request-revisions/publisher actions outside the corpus loop.
+
+Therefore a paper can be corpus-green while not `publisher_ready`. For example, a no-math paper with Haskell/Lean skipped, a flawed paper with `NOT_PROVED`, or an honest negative review can be integrity-ready but should not auto-publish as an accepted/formally verified result.
+
 ## Baseline Context
 
 Already landed before this phased plan: app-sdk extraction, retry/backoff hardening, review-loop crate extraction, AgentInput purge, and paper-math IR sourcing in flight. Treat these as baseline context, not active phase scope, and verify current files before relying on any prior implementation detail.
