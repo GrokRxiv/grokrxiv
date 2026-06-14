@@ -1,14 +1,14 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T00:44:00Z
+Updated: 2026-06-14T00:50:00Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local worker for P0-044 zeta Haskell semantic target hygiene, refreshed with the coordinator vertical-slice and reference-readiness contract.
-- Branch/worktree: worker branch `p0-044-zeta-haskell-target-hygiene` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-044-zeta-haskell-target-hygiene`; coordinator branch `grokrxiv-local-corpus-harness` is merged through `fc05277`.
-- Latest merged worker checkpoint on coordinator before this worker refresh: P0-043 at `347d858`; latest coordinator checkpoint before this worker refresh is `fc05277`.
+- Session type: coordinator after P0-044 worker merge.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-044-zeta-haskell-target-hygiene` is fast-forward merged at `ca900bc`.
+- Latest merged worker checkpoint: P0-044 at `ca900bc`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.

@@ -975,6 +975,13 @@ Residuals:
 | 2026-06-14T00:40:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions` | product exit 0; review `1154e7d0-ea88-48b1-90d5-fd60d5471e59`; P0-044 accepted; P0-045 exposed | `agenthero/apps/grokrxiv/evals/results/20260614T003026Z/zeta3-after-p0-044-acceptance/run.log` |
 | 2026-06-14T00:43:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
 | 2026-06-14T00:43:00Z | `02e300a` | `p0-044-zeta-haskell-target-hygiene` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-044-zeta-haskell-target-hygiene` | pass, fast-forward | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 16 tests | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 19 tests | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T00:50:00Z | `ca900bc` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | terminal |
 
 Acceptance evidence:
 - `semantic_category_mapper` reported `theorem_candidates=0`, `definitions=0`, `assumptions=0`.

@@ -2,11 +2,11 @@
 
 Continue exactly from here.
 
-## Current Worker State
+## Current Coordinator State
 
-- Branch: `p0-044-zeta-haskell-target-hygiene`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-044-zeta-haskell-target-hygiene`
-- Latest coordinator checkpoint merged into this worker: `fc05277` (`codex checkpoint: P0 - define reference readiness`)
+- Branch: `grokrxiv-local-corpus-harness`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Latest merged worker checkpoint: `ca900bc` (`codex checkpoint: P0 - accept P0-044 zeta hygiene`)
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -38,7 +38,7 @@ Rules:
 
 ### 1. P0-044 Acceptance / Merge
 
-Status: accepted in this worker, pending coordinator merge.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -50,11 +50,15 @@ Evidence:
 - Guard strings absent from semantic/Haskell artifacts: `body_math_41`, `body_math_67`, `ReviewCategory`.
 - PR artifact path completed; citation validation was non-blocking.
 
-Coordinator action:
+Coordinator verification:
 
-1. Merge this worker to `grokrxiv-local-corpus-harness`.
-2. Rerun focused checks on coordinator.
-3. Start a fresh worker for P0-045.
+- `grokrxiv-review-loop` tests passed 16/16.
+- app-runtime `review_loop` tests passed 19/19.
+- app workspace check passed.
+- structural tests passed 45/45.
+- `git diff --check` passed.
+
+Next action: start a fresh local worker for P0-045.
 
 ### 2. P0-045 No-Math Proof Skip
 
@@ -111,7 +115,7 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Merge the accepted P0-044 worker, then start P0-045 no-math proof-stage skip.
-Do not weaken corpus expected blocks or NEVER-events. Do not run external
-publishing actions.
+Start P0-045 no-math proof-stage skip from coordinator `ca900bc`. Do not
+weaken corpus expected blocks or NEVER-events. Do not run external publishing
+actions.
 ```
