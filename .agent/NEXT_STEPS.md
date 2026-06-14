@@ -306,12 +306,26 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Run the first bounded full local CLI corpus sweep through
-`agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout`. Use
-`run-status.json` for timeout/stall F3 classification. Do not weaken corpus
-expected blocks or NEVER-events. Do not run external publishing actions.
+Do not run the full corpus next. Run only the current failed non-skipped entry:
+`pfr-marton` / `https://arxiv.org/abs/2311.05762v2`.
 
-Expected early behavior: `bertrand-elementary` should exit 0 as
-`skipped_withdrawn_source` before extraction or review. Continue the sweep from
-the next corpus entry after recording that skip evidence.
+Use `agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout` with
+`--no-external-actions`. The P0-052 patch at `d19f071` is already merged to the
+coordinator and installed PATH `grokrxiv-app` before cleanup, but the app target
+directory was removed to reclaim disk; rebuild/install only if the PATH binary
+is stale.
+
+Acceptance focus for PFR:
+- citation LLM timeout must not erase deterministic checked citation verifier
+  evidence;
+- citation validation must emit checked/residue counts, not an empty artifact;
+- PR artifact fixer must receive initial compile stderr/stdout and produce a
+  recompilable PDF or fail with explicit diagnostics;
+- no approve/publish/request-revisions actions.
 ```
+
+## Cleanup Note
+
+`.agent/worktrees/*`, `agenthero/apps/c2rust/target`, and
+`agenthero/apps/grokrxiv/target` were removed on 2026-06-14. Durable `.agent/*.md`
+files were preserved.

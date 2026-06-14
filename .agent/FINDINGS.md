@@ -2406,3 +2406,42 @@ Evidence:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action is the first bounded full local CLI corpus sweep from the merged coordinator checkout.
+
+## P0-052 - PFR Citation Timeout and PR Artifact Repair Inputs
+
+ID: P0-052
+Corpus entry: `pfr-marton`
+Source: `https://arxiv.org/abs/2311.05762v2`
+Runner: local CLI
+Bucket: F1 app-local citation/review-loop reliability
+NEVER-event: none observed.
+
+Symptoms:
+- PFR-only affected run `20260614T061400Z/pfr-after-p0-052-pr-fixer-diagnostics` launched a single `pfr-marton` review, not a full corpus sweep.
+- The paper-review `citation` LLM role timed out after 360s. Deterministic verification then showed `citation [FAIL]`.
+- The app was treating a citation LLM role timeout as a verifier failure even when deterministic citation verification had checked references.
+- Earlier PFR PR/PDF failures showed the PR fixer did not receive the initial failed compile report as structured repair evidence.
+
+Root cause:
+- Paper-review citation was still configured as `gemini-2.5-pro`, despite the extraction citation config already documenting that Flash is the reliable model for lookup-heavy citation work.
+- `specialist_failure_verifier_result` unconditionally set timeout/failure status to `Fail`, overriding deterministic citation verifier evidence.
+- `try_compile_existing_pr_artifact` returned `None` on compile failure, so the downstream LLM PR fixer got the source TeX but not the structured `pdflatex` stderr/stdout that explains what to repair.
+
+Resolution:
+1. Changed paper-review citation default model to `gemini-2.5-flash`.
+2. Added a config guard that keeps citation review bounded: body budget 0, limited bibliography, 24 max entries, 360s timeout.
+3. Preserved deterministic citation verifier status on citation LLM timeout when checked references are present; the timeout is still recorded in `agent_execution`.
+4. Kept checked=0 citation validation as a failure.
+5. Added `build_pr_artifact_fixer_input` so the LLM PR fixer receives `initial_compile` diagnostics when deterministic compile-first fails.
+
+Evidence:
+- Red-first `citation_agent_timeout_preserves_checked_deterministic_verifier_status` failed with `Some(Fail)` before implementation, then passed with `Some(Warn)`.
+- `paper_review_citation_uses_flash_for_bounded_review_latency`: pass.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_ -- --nocapture`: pass, 2 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture`: pass, 23 tests.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20 tests.
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all --check && git diff --check`: pass.
+
+Residual:
+- The PFR affected runtime acceptance was stopped; no corpus-green claim.
+- Next runtime validation should run only `pfr-marton` with `--no-external-actions`, not the full corpus.

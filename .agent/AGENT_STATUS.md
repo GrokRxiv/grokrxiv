@@ -116,3 +116,16 @@ Updated: 2026-06-14T04:53:22Z
 - Do not invoke `approve`, `request-revisions`, publisher, or merge actions from corpus loop sessions.
 - Stop immediately on N5 and write a human escalation dossier.
 - End every local session with state updates, ledger append, `git status`, and a checkpoint commit.
+
+## P0-052 Coordinator Checkpoint
+
+Updated: 2026-06-14T06:39:30Z
+
+- Coordinator branch: `grokrxiv-local-corpus-harness`.
+- Merged worker: `p0-052-render-bidirectional-escape` fast-forwarded to `d19f071` (`codex checkpoint: P0 - preserve citation verifier on timeout`).
+- Scope corrected: do not chase individual LaTeX Unicode mappings in Rust for PFR. Deterministic code compiles, captures errors, supplies `initial_compile` diagnostics to the LLM PR fixer, then recompiles and gates on real PDF success.
+- Citation correction: paper-review citation now defaults to `gemini-2.5-flash`, matching the existing extraction citation rationale that `gemini-2.5-pro` is not reliable for lookup-heavy citation work. If the citation LLM role fails after deterministic citation verification checked references, the verifier status is preserved and the LLM failure is recorded in `agent_execution`; checked=0 still fails.
+- Verification run before cleanup: `pr_fixer_` tests passed 2/2; app-runtime `citation` tests passed 23/23; app-runtime `review_loop` tests passed 20/20; `cargo fmt --check` and `git diff --check` passed.
+- Active run state: no corpus or PFR run active.
+- Cleanup completed: `.agent` reduced to durable markdown files only (~480K); removed `.agent/worktrees/*`; removed `agenthero/apps/c2rust/target`; removed `agenthero/apps/grokrxiv/target`.
+- Phase state: P0 still has no full corpus green baseline and no phase tag. Next runtime validation should be only the failed non-skipped PFR entry, not the full corpus.

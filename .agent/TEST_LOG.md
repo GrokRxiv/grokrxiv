@@ -1246,3 +1246,17 @@ Residual:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action: resume the first bounded full local CLI corpus sweep.
+
+## 2026-06-14 P0-052 Citation Timeout / PR Fixer Inputs
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T06:39:30Z | `d19f071` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_ -- --nocapture` | pass, 2 tests | terminal |
+| 2026-06-14T06:39:30Z | `d19f071` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime citation -- --nocapture` | pass, 23 tests | terminal |
+| 2026-06-14T06:39:30Z | `d19f071` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T06:39:30Z | `d19f071` | `grokrxiv-local-corpus-harness` | `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all --check && git diff --check` | pass | terminal |
+
+Notes:
+- The runtime PFR affected run was stopped before acceptance.
+- No full corpus-green claim and no phase tag.
+- After verification, generated build/worker directories were removed: `.agent/worktrees/*`, `agenthero/apps/c2rust/target`, `agenthero/apps/grokrxiv/target`.
