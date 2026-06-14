@@ -2161,3 +2161,47 @@ Residual:
 
 Attempts: 1
 Escalation status: none.
+## P0-046 - Harness Timeout/Stall Detection
+
+ID: P0-046
+Corpus scope: harness-level fix before the next full local CLI sweep
+Runner: local CLI
+Bucket: F3 toolchain/harness reliability
+NEVER-event: none
+
+Symptom:
+- Prior corpus reruns could stall or terminate ambiguously and then require manual classification.
+- P0-018 left a zero-byte `run.log` and a partial review artifact tree without Haskell or citation artifacts.
+- P0-044 reached specialist verification/meta-review, stalled before Haskell artifacts, and had to be manually terminated and called inconclusive F3.
+
+Root cause:
+- `LOOP.md` told operators to run corpus entries through `grokrxiv-corpus-env ... |& tee run.log`.
+- That command captured raw output but had no wall timeout, idle-log timeout, process-state capture, or machine-readable status file.
+- A stuck run therefore burned operator time and did not automatically produce the evidence required by the F1-F5 triage rule.
+
+Owning code:
+- `agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout`
+- `agenthero/apps/grokrxiv/evals/LOOP.md`
+- `agenthero/apps/grokrxiv/crates/orchestrator/src/cli.rs` corpus contract tests
+
+Resolution:
+1. Added `grokrxiv-run-with-timeout`, an app-owned eval helper that wraps any corpus command.
+2. It writes the raw command log and `run-status.json` with command, PID, process state, elapsed time, exit code or signal, raw log path, last log line, and log mtime.
+3. It exits 124 and classifies wall timeouts as `bucket=F3`, `classification=timeout`, `reason=wall_timeout`.
+4. It exits 124 and classifies silent-log stalls as `bucket=F3`, `classification=stall`, `reason=idle_timeout`.
+5. Updated `LOOP.md` so every corpus entry run uses the bounded wrapper before the next full sweep.
+
+Evidence:
+- Red-first timeout fixture failed before implementation with missing `evals/bin/grokrxiv-run-with-timeout`.
+- Red-first LOOP contract fixture failed before implementation because `LOOP.md` still documented the unbounded `corpus-env | tee run.log` command.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ -- --nocapture`: pass, 11/11.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `git diff --check`: pass.
+- Direct successful-wrapper smoke returned status 0 and wrote `classification=completed`, `exit_code=0`, `process_state=exited`, and `last_log_line=ok`.
+
+Residual:
+- No full corpus-green claim.
+- Next action is a bounded full local CLI corpus sweep. If zeta citation timeout reappears under the wrapper, triage it with the generated `run-status.json`.

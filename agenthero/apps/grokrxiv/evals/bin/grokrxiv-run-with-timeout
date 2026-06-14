@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
+def last_log_line(log_path: Path):
+    if not log_path.exists():
+        return None
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = content.splitlines()
+    if not lines:
+        return None
+    return lines[-1]
+
+
+def log_mtime(log_path: Path):
+    try:
+        return log_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def write_status(
+    *,
+    status_path: Path,
+    bucket,
+    classification: str,
+    reason: str,
+    command: list[str],
+    pid: int,
+    process_state: str,
+    elapsed_ms: int,
+    exit_code,
+    signal_name,
+    log_path: Path,
+):
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "bucket": bucket,
+        "classification": classification,
+        "reason": reason,
+        "command": shlex.join(command),
+        "pid": pid,
+        "process_state": process_state,
+        "elapsed_ms": elapsed_ms,
+        "exit_code": exit_code,
+        "signal": signal_name,
+        "raw_log_path": str(log_path),
+        "last_log_line": last_log_line(log_path),
+        "last_log_mtime": log_mtime(log_path),
+    }
+    status_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def terminate_process_group(proc: subprocess.Popen, grace_seconds: float = 2.0) -> str:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        signal_name = "TERM"
+    except ProcessLookupError:
+        return "TERM"
+    except OSError:
+        proc.terminate()
+        signal_name = "TERM"
+
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return signal_name
+        time.sleep(0.05)
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+        signal_name = "KILL"
+    except ProcessLookupError:
+        pass
+    except OSError:
+        proc.kill()
+        signal_name = "KILL"
+    return signal_name
+
+
+def exit_code_for_returncode(returncode: int) -> int:
+    if returncode < 0:
+        return 128 + abs(returncode)
+    return returncode
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run a corpus command with bounded timeout/stall F3 classification."
+    )
+    parser.add_argument(
+        "--timeout-secs",
+        type=positive_int,
+        default=positive_int(os.environ.get("GROKRXIV_CORPUS_RUN_TIMEOUT_SECS", "1800")),
+    )
+    parser.add_argument(
+        "--idle-timeout-secs",
+        type=non_negative_int,
+        default=non_negative_int(os.environ.get("GROKRXIV_CORPUS_IDLE_TIMEOUT_SECS", "0")),
+        help="Kill when the log file has not changed for this many seconds; 0 disables it.",
+    )
+    parser.add_argument(
+        "--poll-ms",
+        type=positive_int,
+        default=1000,
+        help="Polling interval in milliseconds.",
+    )
+    parser.add_argument("--status-json", required=True)
+    parser.add_argument("--log", required=True)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        parser.error("missing command after --")
+
+    log_path = Path(args.log)
+    status_path = Path(args.status_json)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+
+    start = time.monotonic()
+    last_progress = time.monotonic()
+    last_seen_mtime = None
+    poll_seconds = max(args.poll_ms / 1000.0, 0.05)
+
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+        proc = subprocess.Popen(
+            command,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+        while True:
+            returncode = proc.poll()
+            now = time.monotonic()
+            elapsed_ms = int((now - start) * 1000)
+            current_mtime = log_mtime(log_path)
+            if current_mtime is not None and current_mtime != last_seen_mtime:
+                last_seen_mtime = current_mtime
+                last_progress = now
+
+            if returncode is not None:
+                exit_code = exit_code_for_returncode(returncode)
+                classification = "completed" if exit_code == 0 else "failed"
+                write_status(
+                    status_path=status_path,
+                    bucket=None,
+                    classification=classification,
+                    reason="process_exit",
+                    command=command,
+                    pid=proc.pid,
+                    process_state="exited",
+                    elapsed_ms=elapsed_ms,
+                    exit_code=exit_code,
+                    signal_name=None,
+                    log_path=log_path,
+                )
+                return exit_code
+
+            if now - start >= args.timeout_secs:
+                signal_name = terminate_process_group(proc)
+                proc.wait()
+                write_status(
+                    status_path=status_path,
+                    bucket="F3",
+                    classification="timeout",
+                    reason="wall_timeout",
+                    command=command,
+                    pid=proc.pid,
+                    process_state="killed",
+                    elapsed_ms=elapsed_ms,
+                    exit_code=None,
+                    signal_name=signal_name,
+                    log_path=log_path,
+                )
+                return 124
+
+            if args.idle_timeout_secs > 0 and now - last_progress >= args.idle_timeout_secs:
+                signal_name = terminate_process_group(proc)
+                proc.wait()
+                write_status(
+                    status_path=status_path,
+                    bucket="F3",
+                    classification="stall",
+                    reason="idle_timeout",
+                    command=command,
+                    pid=proc.pid,
+                    process_state="killed",
+                    elapsed_ms=elapsed_ms,
+                    exit_code=None,
+                    signal_name=signal_name,
+                    log_path=log_path,
+                )
+                return 124
+
+            time.sleep(poll_seconds)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

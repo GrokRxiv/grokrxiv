@@ -42,12 +42,20 @@ intentional: it makes `ghc` resolve to the GHC version pinned in
 For each corpus entry (failing entries first, then full sweep):
 
 ```sh
-agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
-  agh --json app run grokrxiv review <source> --loop --debug --no-external-actions \
-  |& tee evals/results/<sweep-ts>/<entry-id>/run.log
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
+  --timeout-secs "${GROKRXIV_CORPUS_RUN_TIMEOUT_SECS:-1800}" \
+  --idle-timeout-secs "${GROKRXIV_CORPUS_IDLE_TIMEOUT_SECS:-600}" \
+  --status-json evals/results/<sweep-ts>/<entry-id>/run-status.json \
+  --log evals/results/<sweep-ts>/<entry-id>/run.log \
+  -- \
+  agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review <source> --loop --debug --no-external-actions
 ```
 
-Capture `review_id` from output. Artifacts land in
+The wrapper writes the raw command log and a status JSON with command, PID,
+elapsed time, killed/exited process state, exit code or signal, and the last
+log line. A timeout or silent-log stall is F3 evidence, not an ambiguous
+operator interruption. Capture `review_id` from output. Artifacts land in
 `.agenthero/artifacts/grokrxiv/reviews/<review_id>/` (review_loop/ subtree).
 
 ## Phase 2 — CHECK (mechanical; no judgment calls)

@@ -1093,3 +1093,28 @@ Residual:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next worker: P0-046 harness timeout/stall detection before the next full sweep.
+
+## 2026-06-14 P0-046 Harness Timeout/Stall Detection
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T01:44:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_toolchain_env_selects_pinned_ghc_over_stale_path -- --nocapture` | baseline pass, 1 test | terminal |
+| 2026-06-14T01:46:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_run_wrapper_classifies_stalled_runs_as_f3 -- --nocapture` | red-first failure before implementation: missing `evals/bin/grokrxiv-run-with-timeout` | terminal |
+| 2026-06-14T01:47:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_run_wrapper_classifies_stalled_runs_as_f3 -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T01:48:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_loop_uses_bounded_run_wrapper -- --nocapture` | red-first failure before LOOP update: manual still used unbounded `grokrxiv-corpus-env ... | tee run.log` | terminal |
+| 2026-06-14T01:49:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime corpus_ -- --nocapture` | pass, 11 tests including wall-timeout F3, idle-log-stall F3, LOOP wrapper contract, corpus pins, withdrawn-source skip, and synthetic corpus liveness | terminal |
+| 2026-06-14T01:50:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T01:50:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:51:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T01:51:00Z | `dcf71c7` | `p0-046-harness-timeout` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T01:51:00Z | `dcf71c7` | `p0-046-harness-timeout` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:52:00Z | `dcf71c7` | `p0-046-harness-timeout` | `grokrxiv-run-with-timeout --timeout-secs 5 --idle-timeout-secs 2 --status-json <tmp>/run-status.json --log <tmp>/run.log -- /bin/sh -c "printf 'ok\n'"` | pass, wrapper status 0; JSON `classification=completed`, `exit_code=0`, `process_state=exited`, `last_log_line=ok` | terminal |
+
+Acceptance evidence:
+- The bounded wrapper records command, PID, killed/exited process state, elapsed time, exit code or signal, raw log path, last log line, and log mtime.
+- Wall timeout and idle-log stall both classify as F3 and return 124.
+- `LOOP.md` now routes each corpus entry run through `grokrxiv-run-with-timeout` and writes `run-status.json` next to `run.log`.
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action after coordinator merge: run the first bounded full local CLI corpus sweep.

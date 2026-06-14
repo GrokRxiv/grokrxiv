@@ -14144,6 +14144,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn corpus_loop_uses_bounded_run_wrapper() {
+        let loop_doc = include_str!("../../../evals/LOOP.md");
+        assert!(
+            loop_doc.contains("grokrxiv-run-with-timeout"),
+            "LOOP.md must route corpus entry runs through the bounded F3 wrapper"
+        );
+        assert!(
+            loop_doc.contains("--status-json evals/results/<sweep-ts>/<entry-id>/run-status.json"),
+            "LOOP.md must persist timeout/status evidence next to run.log"
+        );
+        assert!(
+            loop_doc.contains("--log evals/results/<sweep-ts>/<entry-id>/run.log"),
+            "LOOP.md must persist the raw command log through the wrapper"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn corpus_toolchain_env_selects_pinned_ghc_over_stale_path() {
@@ -14203,6 +14220,141 @@ mod tests {
             "9.14.1",
             "corpus toolchain env must prefer the pinned GHC over stale PATH"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corpus_run_wrapper_classifies_stalled_runs_as_f3() {
+        let app_root = crate::dag_apps::app_root("grokrxiv");
+        let run_script = app_root.join("evals/bin/grokrxiv-run-with-timeout");
+        assert!(
+            run_script.is_file(),
+            "missing bounded corpus run wrapper at {}",
+            run_script.display()
+        );
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-run-timeout-fixture")
+            .tempdir()
+            .expect("temp dir");
+        let log_path = tempdir.path().join("run.log");
+        let status_path = tempdir.path().join("run-status.json");
+
+        let output = std::process::Command::new(&run_script)
+            .arg("--timeout-secs")
+            .arg("1")
+            .arg("--poll-ms")
+            .arg("100")
+            .arg("--status-json")
+            .arg(&status_path)
+            .arg("--log")
+            .arg(&log_path)
+            .arg("--")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("printf 'started\\n'; sleep 5; printf 'done\\n'")
+            .output()
+            .expect("run bounded corpus wrapper");
+
+        assert_eq!(
+            output.status.code(),
+            Some(124),
+            "stalled command should exit with timeout status, stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let status: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&status_path).expect("read timeout status json"),
+        )
+        .expect("timeout status must be json");
+
+        assert_eq!(status["bucket"].as_str(), Some("F3"));
+        assert_eq!(status["classification"].as_str(), Some("timeout"));
+        assert_eq!(status["reason"].as_str(), Some("wall_timeout"));
+        assert_eq!(status["process_state"].as_str(), Some("killed"));
+        assert_eq!(status["exit_code"], serde_json::Value::Null);
+        assert_eq!(status["signal"].as_str(), Some("TERM"));
+        assert_eq!(
+            status["raw_log_path"].as_str(),
+            Some(log_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(status["last_log_line"].as_str(), Some("started"));
+        assert!(
+            status["pid"].as_i64().is_some_and(|pid| pid > 0),
+            "status should record killed process pid: {status}"
+        );
+        assert!(
+            status["elapsed_ms"].as_i64().is_some_and(|ms| ms >= 1_000),
+            "status should record elapsed time: {status}"
+        );
+        assert!(
+            status["command"]
+                .as_str()
+                .is_some_and(|command| command.contains("/bin/sh -c")),
+            "status should record command line: {status}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("read timeout log"),
+            "started\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corpus_run_wrapper_classifies_idle_log_stalls_as_f3() {
+        let app_root = crate::dag_apps::app_root("grokrxiv");
+        let run_script = app_root.join("evals/bin/grokrxiv-run-with-timeout");
+        assert!(
+            run_script.is_file(),
+            "missing bounded corpus run wrapper at {}",
+            run_script.display()
+        );
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-run-idle-fixture")
+            .tempdir()
+            .expect("temp dir");
+        let log_path = tempdir.path().join("run.log");
+        let status_path = tempdir.path().join("run-status.json");
+
+        let output = std::process::Command::new(&run_script)
+            .arg("--timeout-secs")
+            .arg("10")
+            .arg("--idle-timeout-secs")
+            .arg("1")
+            .arg("--poll-ms")
+            .arg("100")
+            .arg("--status-json")
+            .arg(&status_path)
+            .arg("--log")
+            .arg(&log_path)
+            .arg("--")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("printf 'started\\n'; sleep 5; printf 'done\\n'")
+            .output()
+            .expect("run bounded corpus wrapper");
+
+        assert_eq!(
+            output.status.code(),
+            Some(124),
+            "idle command should exit with timeout status, stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let status: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&status_path).expect("read idle status json"),
+        )
+        .expect("idle status must be json");
+
+        assert_eq!(status["bucket"].as_str(), Some("F3"));
+        assert_eq!(status["classification"].as_str(), Some("stall"));
+        assert_eq!(status["reason"].as_str(), Some("idle_timeout"));
+        assert_eq!(status["process_state"].as_str(), Some("killed"));
+        assert_eq!(status["signal"].as_str(), Some("TERM"));
+        assert_eq!(status["last_log_line"].as_str(), Some("started"));
     }
 
     #[test]
