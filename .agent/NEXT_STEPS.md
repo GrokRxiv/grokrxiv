@@ -2,12 +2,12 @@
 
 Continue exactly from here.
 
-## Current Worker State
+## Current Coordinator State
 
-- Branch: `p0-050-capset-recommendation-policy`
-- Worktree: `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-050-capset-recommendation-policy`
-- Latest merged worker checkpoint: `8cc7686` (`codex checkpoint: P0 - capset amsrefs bibliography`), fast-forward merged from `p0-049-capset-bibliography`
-- Pending worker checkpoint: P0-050 capset recommendation policy semantics, ready to commit and merge to coordinator.
+- Branch: `grokrxiv-local-corpus-harness`
+- Worktree: `/Users/mlong/Documents/Development/grokrxiv`
+- Latest merged worker checkpoint: `5c7c31e` (`codex checkpoint: P0 - capset recommendation policy`), fast-forward merged from `p0-050-capset-recommendation-policy`
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -89,7 +89,7 @@ Next action: start P0-050.
 
 ### 2. P0-050 Capset Recommendation Policy Semantics
 
-Status: accepted in worker; coordinator merge verification pending.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -116,17 +116,29 @@ Worker verification:
 - `git diff --check`: pass.
 - `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, installed worker binary for affected rerun.
 
+Coordinator verification:
+
+- `git merge --ff-only p0-050-capset-recommendation-policy`: pass, fast-forward to `5c7c31e`.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture`: pass, 1/1.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`: pass, 20/20.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `cargo test -p agenthero-orchestrator --test dag_app_registry`: pass, 21/21.
+- `cargo test -p agenthero-orchestrator --test agenthero_cli_contract`: pass, 24/24.
+- `git diff --check`: pass.
+- `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked`: pass, refreshed PATH `grokrxiv-app` from merged coordinator checkout.
+
 Residual:
 
 - No full corpus-green claim and no phase tag.
-- The next step is coordinator merge verification, then resume the first bounded full local CLI corpus sweep.
+- The next step is to resume the first bounded full local CLI corpus sweep.
 
-Suggested worker setup:
+Suggested next command shape:
 
 ```bash
 cd /Users/mlong/Documents/Development/grokrxiv
-git merge --ff-only p0-050-capset-recommendation-policy
-# run coordinator verification, refresh PATH grokrxiv-app, update .agent, commit if needed
+git worktree add .agent/worktrees/p0-051-bounded-cli-sweep -b p0-051-bounded-cli-sweep
+cd .agent/worktrees/p0-051-bounded-cli-sweep
+# run the LOOP.md preflight and bounded CLI corpus sweep with --no-external-actions
 ```
 
 Then resume the bounded full local CLI sweep from `evals/LOOP.md`.

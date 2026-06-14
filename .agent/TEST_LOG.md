@@ -1229,3 +1229,20 @@ Acceptance evidence:
 Residual:
 - No full corpus-green claim and no phase tag.
 - Next action after coordinator merge verification: resume the bounded full local CLI corpus sweep.
+
+## 2026-06-14 P0-050 Coordinator Verification
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-050-capset-recommendation-policy` | pass, fast-forward from `eca2b48` to `5c7c31e` | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime unpinned_recommendation_is_integrity_ready_without_publisher_ready -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture` | pass, 20 tests | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | terminal |
+| 2026-06-14T04:53:22Z | `5c7c31e` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass, replaced worker-installed PATH binary with coordinator binary; locked yanked-zip warning only | terminal |
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Next action: resume the first bounded full local CLI corpus sweep.
