@@ -7,6 +7,7 @@ Continue exactly from here.
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
 - Latest merged worker checkpoint: `ca900bc` (`codex checkpoint: P0 - accept P0-044 zeta hygiene`)
+- Pending worker checkpoint: P0-045 no-math proof-stage skip on branch `p0-045-no-math-proof-skip`.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -62,14 +63,29 @@ Next action: start a fresh local worker for P0-045.
 
 ### 2. P0-045 No-Math Proof Skip
 
-Add fixture coverage for a non-math document:
+Status: accepted in worker; merge to coordinator next.
 
-- normalize/extract succeeds;
-- semantic math map reports no formal targets;
-- Haskell may pass with empty targets, but proof-obligation and Lean artifacts must become explicit skips with `skip_reason: no_math_targets`;
-- review/PR artifact still builds under `--no-external-actions`;
-- git/web report shows proof stages as `NOT_CONDUCIVE_TO_LEAN_PROOF` or the schema-compatible skip equivalent.
-- policy does not block solely because no formal proof target exists.
+Evidence:
+
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T004910Z/zeta3-after-p0-045-no-math-skip`.
+- Review id: `849e55d1-b1b8-4c5d-9b53-db9e1aa95007`.
+- Product exit: 0; external actions disabled; `pr_url=null`.
+- `semantic_category_mapper`: `theorem_candidates=0`, `definitions=0`, `assumptions=0`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `verdict=NOT_PROVED`, `proof_status=SKIPPED`, `entries=0`.
+- `semantic_adequacy.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `verdicts=0`.
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `publishability_vector.formal=not_conducive_to_lean_proof`.
+- Review/PR artifacts built. Live stderr had a display-only `[FAIL] deterministic_status=pass`; source now uses `deterministic_status` for the marker.
+
+Worker verification:
+
+- `grokrxiv-review-loop` tests passed 17/17.
+- focused app-runtime no-math skip test passed 1/1.
+- app-runtime `review_loop` tests passed 19/19.
+- app workspace check passed.
+- `git diff --check` passed.
+
+Next action: commit the worker checkpoint, fast-forward merge it to coordinator, reinstall PATH app binaries because `cli.rs` changed after the live run, then run coordinator verification.
 
 ### 2b. P0-045b LLM Input Contract Gate
 
@@ -115,7 +131,7 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Start P0-045 no-math proof-stage skip from coordinator `ca900bc`. Do not
-weaken corpus expected blocks or NEVER-events. Do not run external publishing
-actions.
+Merge and verify P0-045 if it is still pending. Then start P0-045b LLM input
+contract gate from the updated coordinator. Do not weaken corpus expected
+blocks or NEVER-events. Do not run external publishing actions.
 ```

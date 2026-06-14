@@ -992,3 +992,32 @@ Acceptance evidence:
 
 Residual:
 - P0-045 is now active: proof/Lean/adequacy/policy still fail on no formal theorem targets instead of producing explicit `skip_reason: no_math_targets` artifacts.
+
+## 2026-06-14 P0-045 No-Math Proof-Stage Skip
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T00:55:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop no_formal_math_targets_skip_proof_stages --lib -- --nocapture` | red-first failure before implementation: proof obligations lacked `status=skipped` | terminal |
+| 2026-06-14T00:58:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop no_formal_math_targets_skip_proof_stages --lib -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T00:58:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime skipped_lean_review_fix_code_reports_no_math_targets_as_skip --lib -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T01:00:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 17 tests | terminal |
+| 2026-06-14T01:00:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 19 tests | terminal |
+| 2026-06-14T01:01:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:01:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:02:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass | terminal |
+| 2026-06-14T01:02:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass | terminal |
+| 2026-06-14T01:11:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `GROKRXIV_NO_CACHE=1 GROKRXIV_INGEST_NO_CACHE=1 agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions` | product exit 0; review `849e55d1-b1b8-4c5d-9b53-db9e1aa95007`; review loop `status=pass`; no-math proof stages skipped; integrity ready; external actions disabled | `agenthero/apps/grokrxiv/evals/results/20260614T004910Z/zeta3-after-p0-045-no-math-skip/run.log` |
+| 2026-06-14T01:14:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 17 tests after display-marker fix | terminal |
+| 2026-06-14T01:14:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime skipped_lean_review_fix_code_reports_no_math_targets_as_skip --lib -- --nocapture` | pass, 1 test after display-marker fix | terminal |
+| 2026-06-14T01:14:00Z | `9854df6` | `p0-045-no-math-proof-skip` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass after display-marker fix | terminal |
+
+Acceptance evidence:
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `verdict=NOT_PROVED`, `proof_status=SKIPPED`, `entries=0`.
+- `semantic_adequacy.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `verdicts=0`.
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `publishability_vector.formal=not_conducive_to_lean_proof`.
+- The live stderr printed `[FAIL] deterministic_status=pass`; this is display-only and was fixed in source after the run by using `deterministic_status` instead of `publisher_ready` for the status marker. Reinstall PATH binaries before the next live acceptance run.
+
+Residual:
+- No full corpus-green claim.
+- Next: merge P0-045 to coordinator, then start P0-045b LLM input contract gate and P0-046 harness timeout detection before the next full sweep.

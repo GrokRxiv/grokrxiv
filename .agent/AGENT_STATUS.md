@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T00:50:00Z
+Updated: 2026-06-14T01:20:00Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: coordinator after P0-044 worker merge.
-- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`; worker branch `p0-044-zeta-haskell-target-hygiene` is fast-forward merged at `ca900bc`.
-- Latest merged worker checkpoint: P0-044 at `ca900bc`.
+- Session type: local worker for P0-045 no-formal-target proof-stage skip.
+- Branch/worktree: worker branch `p0-045-no-math-proof-skip` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-045-no-math-proof-skip`.
+- Worker base checkpoint: coordinator `9854df6` after P0-044 merge verification.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved: withdrawn/unavailable `bertrand-elementary` v5 is now an expected skip before review, not an empty-body review. P0-044 is accepted on the affected zeta rerun: semantic mapper emitted zero theorem candidates, Haskell passed in one attempt with empty targets/claims/proof obligations, bibliography snippets were absent, PR artifacts built, and external actions stayed disabled. Active red is now P0-045: no-formal-target proof stages still become blocking proof/Lean/policy failures instead of explicit `no_math_targets` skips. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, and P0-045 is accepted in the worker on affected zeta rerun `20260614T004910Z`: no theorem candidates produced proof/Lean/adequacy skip artifacts, policy gate passed with `integrity_ready=true`, `publisher_ready=false`, and `blocking_issues=[]`, PR artifacts built, and external actions stayed disabled. Coordinator merge verification is pending. Active next queue items after merge are P0-045b LLM input contract gating and P0-046 harness timeout/stall detection before the next full corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 

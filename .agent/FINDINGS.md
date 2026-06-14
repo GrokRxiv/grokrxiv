@@ -71,6 +71,38 @@ Fix plan:
 
 Escalation status: none. This is app-local and mechanically testable.
 
+Resolution:
+1. `build_proof_obligations` now emits a first-class skip artifact when Haskell passed but no formal theorem obligations exist: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, and `obligations=[]`.
+2. Lean target generation, Lean results annotation, theorem-map generation, and semantic adequacy now preserve that skip instead of manufacturing a `SEMANTIC_GAP` failure.
+3. The review-loop policy gate accepts the no-math skip as integrity-valid, records `lean=skipped`, records `formal=not_conducive_to_lean_proof`, and does not block solely because no formal proof target exists.
+4. The final CLI review-loop status marker now uses `deterministic_status` instead of `publisher_ready`, so honest non-publishing reviews no longer render as `[FAIL] deterministic_status=pass`.
+
+Evidence:
+- Red-first fixture `no_formal_math_targets_skip_proof_stages` failed before implementation with no `status=skipped`, then passed after the review-loop crate change.
+- Focused app-runtime fixture `skipped_lean_review_fix_code_reports_no_math_targets_as_skip` passed.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib`: pass, 17/17.
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture`: pass, 19/19.
+- `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace`: pass.
+- `git diff --check`: pass.
+- PATH installs passed for `grokrxiv-app` and `agenthero-dag-app-grokrxiv` before the affected rerun. The display-marker fix was added after the live rerun and is covered by source tests/checks; reinstall before the next live runner acceptance.
+
+Affected rerun:
+- Result root: `agenthero/apps/grokrxiv/evals/results/20260614T004910Z/zeta3-after-p0-045-no-math-skip`.
+- Review id: `849e55d1-b1b8-4c5d-9b53-db9e1aa95007`.
+- Product exit: 0.
+- External actions: disabled; `pr_url=null`.
+- `semantic_category_mapper`: `theorem_candidates=0`, `definitions=0`, `assumptions=0`.
+- `proof_obligations.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `obligations=0`.
+- `lean/results.json`: `status=skipped`, `skip_reason=no_math_targets`, `verdict=NOT_PROVED`, `proof_status=SKIPPED`, `entries=0`.
+- `semantic_adequacy.json`: `status=skipped`, `skip_reason=no_math_targets`, `operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF`, `verdicts=0`.
+- `policy_gate.json`: `deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, `publishability_vector.formal=not_conducive_to_lean_proof`.
+- PR artifacts built and review loop returned `status=pass`. The live stderr still printed `[FAIL] deterministic_status=pass`; this was a display-only bug fixed in source after the rerun.
+
+Residual:
+- No full P0 green claim and no phase tag.
+- P0-045b remains queued: LLM-required missing/empty/stale/schema-invalid inputs must fail before a model call unless the stage has an explicit partial/skip contract.
+- P0-046 remains queued: stuck corpus runs need bounded timeout/stall classification before the next full sweep.
+
 ## P0-044 - Zeta Haskell Semantic Target Hygiene / Bibliography Snippets
 
 ID: P0-044

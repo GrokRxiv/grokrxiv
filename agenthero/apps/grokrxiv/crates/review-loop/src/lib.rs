@@ -381,19 +381,24 @@ pub fn build_proof_obligations(
         }));
     }
     if obligations.is_empty() {
-        obligations.push(json!({
-            "id": "semantic_gap_no_formal_math_statements",
-            "kind": "semantic_gap",
-            "statement": "No paper-derived formal mathematical statements were extracted for Lean verification.",
-            "lean_declaration": null,
-            "severity": "blocking",
-        }));
+        return json!({
+            "schema_version": "1.0.0",
+            "review_id": review_id,
+            "source": "review_loop/semantic_ir.json",
+            "haskell_status": haskell_status,
+            "status": "skipped",
+            "skip_reason": "no_math_targets",
+            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "message": "No paper-derived formal mathematical statements were extracted for Lean verification.",
+            "obligations": [],
+        });
     }
     json!({
         "schema_version": "1.0.0",
         "review_id": review_id,
         "source": "review_loop/semantic_ir.json",
         "haskell_status": haskell_status,
+        "status": "ready",
         "obligations": obligations,
     })
 }
@@ -411,6 +416,20 @@ pub fn proof_obligations_require_lean(proof_obligations: &serde_json::Value) -> 
 }
 
 pub fn build_lean_targets(proof_obligations: &serde_json::Value) -> serde_json::Value {
+    if proof_obligations
+        .get("skip_reason")
+        .and_then(|v| v.as_str())
+        == Some("no_math_targets")
+    {
+        return json!({
+            "schema_version": "1.0.0",
+            "source": "review_loop/proof_obligations.json",
+            "status": "skipped",
+            "skip_reason": "no_math_targets",
+            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "targets": [],
+        });
+    }
     let targets = proof_obligations
         .get("obligations")
         .and_then(|v| v.as_array())
@@ -442,6 +461,21 @@ pub fn build_theorem_map(
     proof_obligations: &serde_json::Value,
     lean_results: &serde_json::Value,
 ) -> serde_json::Value {
+    if proof_obligations
+        .get("skip_reason")
+        .and_then(|v| v.as_str())
+        == Some("no_math_targets")
+    {
+        return json!({
+            "schema_version": "1.0.0",
+            "source": "review_loop/proof_obligations.json",
+            "lean_results": "review_loop/lean/results.json",
+            "status": "SKIPPED",
+            "skip_reason": "no_math_targets",
+            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "entries": [],
+        });
+    }
     let obligations = proof_obligations
         .get("obligations")
         .and_then(|v| v.as_array())
@@ -506,6 +540,19 @@ pub fn build_semantic_adequacy(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    if theorem_candidates.is_empty()
+        && theorem_map.get("skip_reason").and_then(|v| v.as_str()) == Some("no_math_targets")
+    {
+        return json!({
+            "schema_version": "1.0.0",
+            "source": "review_loop/semantic_ir.json",
+            "theorem_map": "review_loop/lean/theorem_map.json",
+            "status": "skipped",
+            "skip_reason": "no_math_targets",
+            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "verdicts": [],
+        });
+    }
     let mut verdicts = Vec::new();
     for theorem in theorem_candidates {
         let source_claim_id = theorem
@@ -1863,6 +1910,50 @@ publisherReadyLowerBound = claimCount == 43
             obligation_items[0]["id"],
             "semantic_gap_haskell_model_failed"
         );
+    }
+
+    #[test]
+    fn no_formal_math_targets_skip_proof_stages() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [],
+            "limitations": [
+                {
+                    "id": "no_paper_math_transcribed",
+                    "kind": "semantic_gap",
+                    "statement": "No paper-derived theorem sources were transcribed into typed IR."
+                }
+            ]
+        });
+
+        let obligations =
+            build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
+
+        assert_eq!(obligations["status"], "skipped");
+        assert_eq!(obligations["skip_reason"], "no_math_targets");
+        assert_eq!(
+            obligations["operator_status"],
+            "NOT_CONDUCIVE_TO_LEAN_PROOF"
+        );
+        assert!(obligations["obligations"].as_array().unwrap().is_empty());
+        assert!(!proof_obligations_require_lean(&obligations));
+
+        let lean_targets = build_lean_targets(&obligations);
+        assert_eq!(lean_targets["status"], "skipped");
+        assert_eq!(lean_targets["skip_reason"], "no_math_targets");
+        assert!(lean_targets["targets"].as_array().unwrap().is_empty());
+
+        let theorem_map = build_theorem_map(&obligations, &json!({"status": "skipped"}));
+        assert_eq!(theorem_map["status"], "SKIPPED");
+        assert_eq!(theorem_map["skip_reason"], "no_math_targets");
+        assert!(theorem_map["entries"].as_array().unwrap().is_empty());
+
+        let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
+        assert_eq!(adequacy["status"], "skipped");
+        assert_eq!(adequacy["skip_reason"], "no_math_targets");
+        assert_eq!(adequacy["operator_status"], "NOT_CONDUCIVE_TO_LEAN_PROOF");
+        assert!(adequacy["verdicts"].as_array().unwrap().is_empty());
     }
 
     #[test]

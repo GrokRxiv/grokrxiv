@@ -7300,6 +7300,13 @@ fn review_fix_loop_summary(results: &serde_json::Value) -> String {
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    if results.get("status").and_then(|value| value.as_str()) == Some("skipped") {
+        let reason = results
+            .get("skip_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("skipped");
+        return truncate(&format!("status=skipped reason={reason}"), 260);
+    }
     if results.get("status").and_then(|value| value.as_str()) == Some("pass") {
         return format!("attempts={}", attempts.len());
     }
@@ -7662,13 +7669,18 @@ async fn run_review_loop_for_review(
     write_loop_json(&artifact_dir.join("lean_targets.json"), &lean_targets).await?;
     let proof_obligations_ready =
         grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
+    let no_math_targets_skip = proof_obligations
+        .get("skip_reason")
+        .and_then(|value| value.as_str())
+        == Some("no_math_targets");
+    let proof_obligations_accepted = proof_obligations_ready || no_math_targets_skip;
     record_review_loop_node(
         pool,
         review_id,
         &stages,
         "proof_obligation_generator",
         proof_obligations.clone(),
-        if proof_obligations_ready {
+        if proof_obligations_accepted {
             VerifierStatus::Pass
         } else {
             VerifierStatus::Fail
@@ -7684,6 +7696,8 @@ async fn run_review_loop_for_review(
                 .map(Vec::len)
                 .unwrap_or(0)
         )
+    } else if no_math_targets_skip {
+        "skip_reason=no_math_targets operator_status=NOT_CONDUCIVE_TO_LEAN_PROOF".to_string()
     } else {
         proof_obligations["obligations"]
             .as_array()
@@ -7695,7 +7709,7 @@ async fn run_review_loop_for_review(
     };
     emit_review_loop_node_debug(
         "proof_obligation_generator",
-        proof_obligations_ready,
+        proof_obligations_accepted,
         "review_loop/proof_obligations.json",
         debug_output,
         &proof_obligation_debug,
@@ -7752,6 +7766,23 @@ async fn run_review_loop_for_review(
             debug_output,
         )
         .await
+    } else if no_math_targets_skip {
+        let reason = proof_obligations
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("No paper-derived formal mathematical statements were extracted for Lean verification.");
+        let _ = write_review_loop_code_file(
+            &lean_final_path,
+            &format!("/- Lean formalization skipped: {reason} -/\n"),
+        )
+        .await;
+        skipped_review_fix_code_results_with_status(
+            &lean_task,
+            &lean_final_path,
+            reason,
+            "skipped",
+            "no_math_targets",
+        )
     } else {
         let reason = proof_obligations["obligations"]
             .as_array()
@@ -7770,6 +7801,7 @@ async fn run_review_loop_for_review(
     };
     let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
+    let lean_accepted = lean_pass || no_math_targets_skip;
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
     if !lean_final_path.is_file() {
@@ -7784,7 +7816,7 @@ async fn run_review_loop_for_review(
         &stages,
         "lean_review_fix_code",
         lean_results.clone(),
-        if lean_pass {
+        if lean_accepted {
             VerifierStatus::Pass
         } else {
             VerifierStatus::Fail
@@ -7794,7 +7826,7 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "lean_review_fix_code",
-        lean_pass,
+        lean_accepted,
         "review_loop/lean/results.json",
         debug_output,
         &review_fix_loop_summary(&lean_results),
@@ -7809,7 +7841,11 @@ async fn run_review_loop_for_review(
         &semantic_adequacy,
     )
     .await?;
-    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass";
+    let semantic_adequacy_skip = semantic_adequacy
+        .get("skip_reason")
+        .and_then(|value| value.as_str())
+        == Some("no_math_targets");
+    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass" || semantic_adequacy_skip;
     record_review_loop_node(
         pool,
         review_id,
@@ -7834,6 +7870,11 @@ async fn run_review_loop_for_review(
             .and_then(|items| items.first())
             .and_then(|item| item.get("verdict"))
             .and_then(|value| value.as_str())
+            .or_else(|| {
+                semantic_adequacy
+                    .get("operator_status")
+                    .and_then(|value| value.as_str())
+            })
             .unwrap_or("no theorem adequacy verdicts"),
     );
 
@@ -8065,12 +8106,12 @@ async fn run_review_loop_for_review(
     if !haskell_pass {
         blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
     }
-    if theorem_candidate_count == 0 {
+    if theorem_candidate_count == 0 && !no_math_targets_skip {
         blocking_issues.push(
             "Semantic IR did not extract theorem candidates for Lean formalization.".to_string(),
         );
     }
-    if !lean_pass {
+    if !lean_accepted {
         blocking_issues.push("Lean proof obligations did not verify cleanly.".to_string());
     }
     if !semantic_adequacy_pass {
@@ -8117,13 +8158,25 @@ async fn run_review_loop_for_review(
             "recommendation_policy": publication_policy.status,
             "bundle_completeness": bundle_completeness["status"],
             "haskell": if haskell_pass { "pass" } else { "fail" },
-            "lean": if lean_pass { "pass" } else { "fail" },
+            "lean": if lean_pass {
+                "pass"
+            } else if no_math_targets_skip {
+                "skipped"
+            } else {
+                "fail"
+            },
             "semantic_adequacy": semantic_adequacy["status"],
             "citation_validation": citation_report["status"],
             "pr_fixer": pr_fixes["status"],
         },
         "publishability_vector": {
-            "formal": if lean_pass { "proved" } else { "failed" },
+            "formal": if lean_pass {
+                "proved"
+            } else if no_math_targets_skip {
+                "not_conducive_to_lean_proof"
+            } else {
+                "failed"
+            },
             "semantic_adequacy": semantic_adequacy["status"],
             "citation": citation_report["status"],
             "reproducibility": "not_run",
@@ -8306,7 +8359,7 @@ async fn run_review_loop_for_review(
         6,
         6,
         "Review loop",
-        if outcome.publisher_ready {
+        if outcome.deterministic_status == "pass" {
             cli_status::StatusMark::Ok
         } else {
             cli_status::StatusMark::Fail
@@ -8614,6 +8667,16 @@ fn skipped_review_fix_code_results(
     final_path: &Path,
     reason: &str,
 ) -> serde_json::Value {
+    skipped_review_fix_code_results_with_status(task, final_path, reason, "fail", reason)
+}
+
+fn skipped_review_fix_code_results_with_status(
+    task: &ReviewFixCodeTask,
+    final_path: &Path,
+    reason: &str,
+    status: &str,
+    skip_reason: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "stage": format!("{}_review_fix_code", task.target_id),
         "target": task.target_id,
@@ -8626,10 +8689,10 @@ fn skipped_review_fix_code_results(
         "attempts": [
             {
                 "attempt": 0,
-                "status": "fail",
+                "status": status,
                 "skipped": true,
                 "semantic_validation": {
-                    "status": "fail",
+                    "status": status,
                     "issues": [reason]
                 }
             }
@@ -8640,9 +8703,9 @@ fn skipped_review_fix_code_results(
             "rejected": 0,
             "by_role": {}
         },
-        "status": "fail",
+        "status": status,
         "skipped": true,
-        "skip_reason": reason,
+        "skip_reason": skip_reason,
         "final_path": final_path.display().to_string(),
     })
 }
@@ -8664,6 +8727,16 @@ fn annotate_lean_review_fix_code_results(
     if let Some(object) = results.as_object_mut() {
         object.insert("verdict".to_string(), serde_json::json!(verdict));
         object.insert("proof_status".to_string(), serde_json::json!(proof_status));
+        if proof_obligations
+            .get("skip_reason")
+            .and_then(|value| value.as_str())
+            == Some("no_math_targets")
+        {
+            object.insert(
+                "operator_status".to_string(),
+                serde_json::json!("NOT_CONDUCIVE_TO_LEAN_PROOF"),
+            );
+        }
         object.insert(
             "entries".to_string(),
             theorem_map
@@ -14580,6 +14653,50 @@ obligationToLean = LeanTarget\n";
         assert_eq!(summary["accepted"], 2);
         assert_eq!(summary["rejected"], 1);
         assert_eq!(summary["by_role"]["haskell_code_reviewer"]["rejected"], 1);
+    }
+
+    #[test]
+    fn skipped_lean_review_fix_code_reports_no_math_targets_as_skip() {
+        let task = ReviewFixCodeTask {
+            target_id: "lean",
+            language: "lean",
+            filename: "GrokRxiv/Proofs.lean",
+            author_role: "lean_proof_author",
+            reviewer_role: "lean_code_reviewer",
+            fixer_role: "lean_code_fixer",
+            compile_program: "lake",
+            compile_args: vec![
+                "env".to_string(),
+                "lean".to_string(),
+                "GrokRxiv/Proofs.lean".to_string(),
+            ],
+            compile_timeout_secs: 1800,
+            forbidden_terms: vec!["sorry", "admit", "axiom"],
+            max_attempts: 2,
+        };
+        let proof_obligations = serde_json::json!({
+            "status": "skipped",
+            "skip_reason": "no_math_targets",
+            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "message": "No paper-derived formal mathematical statements were extracted for Lean verification.",
+            "obligations": []
+        });
+
+        let skipped = skipped_review_fix_code_results_with_status(
+            &task,
+            std::path::Path::new("review_loop/lean/GrokRxiv/Proofs.lean"),
+            "No paper-derived formal mathematical statements were extracted for Lean verification.",
+            "skipped",
+            "no_math_targets",
+        );
+        let results = annotate_lean_review_fix_code_results(skipped, &proof_obligations);
+
+        assert_eq!(results["status"], "skipped");
+        assert_eq!(results["skip_reason"], "no_math_targets");
+        assert_eq!(results["operator_status"], "NOT_CONDUCIVE_TO_LEAN_PROOF");
+        assert_eq!(results["proof_status"], "SKIPPED");
+        assert_eq!(results["entries"].as_array().unwrap().len(), 0);
+        assert!(review_fix_loop_summary(&results).contains("status=skipped"));
     }
 
     #[test]
