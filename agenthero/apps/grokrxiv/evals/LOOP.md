@@ -69,6 +69,10 @@ Order matters — NEVER-events first:
    - Tier B only: diff emitted Lean statement vs `fidelity_reference`
 5. **Diff vs `expected:`** → write `evals/results/<sweep-ts>/<entry-id>/verdict.json`:
    `PASS` or `FAIL { stage, expected, actual, evidence_paths[] }`.
+6. **Reference-quality check**: the final report must be good enough for a
+   reader to use as a reference. Check that claims and limitations are
+   traceable, unresolved items are explicit, recommendations do not overstate
+   evidence, and the PR/web artifact is readable and buildable.
 
 ### Narrow vertical-slice checks
 
@@ -86,22 +90,27 @@ Every entry must also satisfy the near-term review-pipeline slice from
    from context. Bibliography math, equations-only context, review/meta/citation
    prose, prompt-injection text, and `SemanticGap`/partial entries are not proof
    obligations by default.
-4. **Conditional Haskell**:
+4. **LLM input contract**: before each LLM agent call, write/check an input
+   manifest naming required artifacts, optional artifacts, completeness flags,
+   provenance, and missing-data instructions. If a required input is missing,
+   empty, stale, or schema-invalid without an allowed skip, fail before calling
+   the LLM.
+5. **Conditional Haskell**:
    - If formal math targets exist, Haskell runs and the artifact must pass GHC
      or fail with a classified F1-F5 cause.
    - If no formal math targets exist, Haskell is skipped with
      `skip_reason: no_math_targets`; this is not a corpus failure by itself.
-5. **Conditional Lean**:
+6. **Conditional Lean**:
    - If Haskell emits proof obligations, Lean runs and emits `PROVED`,
      `NOT_PROVED`, or an unsafe/failure status.
    - If Haskell was skipped for `no_math_targets`, Lean is skipped with the same
      reason and the review/PR path continues.
-6. **Review/PR artifact**: the LLM review and PR artifact/report path still runs
+7. **Review/PR artifact**: the LLM review and PR artifact/report path still runs
    for no-math documents, using normalized document content plus verifier
    artifacts. Corpus loops still use `--no-external-actions`.
-7. **Git/web report**: final artifacts must show pass/fail/skip state for each
+8. **Git/web report**: final artifacts must show pass/fail/skip state for each
    stage and include evidence paths.
-8. **Readiness**: corpus green requires an integrity-ready report, not automatic
+9. **Readiness**: corpus green requires an integrity-ready report, not automatic
    publication. `integrity_ready=true`, empty `blocking_issues`, buildable
    PR/web artifacts, and zero NEVER-events are the corpus target.
    `publisher_ready=true` is stricter and is only required when the expected

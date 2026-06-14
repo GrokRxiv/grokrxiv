@@ -159,6 +159,28 @@ Use these readiness levels:
 
 Therefore a paper can be corpus-green while not `publisher_ready`. For example, a no-math paper with Haskell/Lean skipped, a flawed paper with `NOT_PROVED`, or an honest negative review can be integrity-ready but should not auto-publish as an accepted/formally verified result.
 
+## Reference-Quality Bar
+
+The product publishing question is: is the report good enough that another reader can use it as a reference?
+
+That is stricter than "the pipeline did not lie" and should be represented as a distinct readiness level:
+
+- `reference_ready=true`: the review/report is clear, complete, traceable to the document, honest about limitations, and useful as a public reference.
+- `publisher_ready=true`: `reference_ready=true` plus the publication policy allows the action.
+
+Reference-ready requires:
+
+- the LLM input contract gate ran before every agent call;
+- no required input artifact was missing, empty, stale, or schema-invalid when passed to an LLM;
+- every missing or partial artifact has a typed status and agent instruction, such as `skip_reason`, `needs_review`, `not_applicable`, or `failed`;
+- the report summarizes the paper's actual content, not only verifier metadata;
+- key claims, proof statuses, citation statuses, and limitations are traceable to source spans or artifact paths;
+- the review distinguishes evidence, interpretation, and unresolved issues;
+- the recommendation is usable by a reader and does not overstate proof, citation, or reproducibility confidence;
+- the PR/web artifact is readable, builds, and includes the pass/fail/skip table.
+
+Agents should never have to infer what to do with missing data from prose. Each agent invocation needs an input manifest that names required artifacts, optional artifacts, completeness flags, provenance, and explicit instructions for missing/partial cases. If a required artifact is absent without an allowed skip, the loop fails before the LLM call.
+
 ## Baseline Context
 
 Already landed before this phased plan: app-sdk extraction, retry/backoff hardening, review-loop crate extraction, AgentInput purge, and paper-math IR sourcing in flight. Treat these as baseline context, not active phase scope, and verify current files before relying on any prior implementation detail.

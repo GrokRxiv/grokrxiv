@@ -29,7 +29,9 @@ Rules:
 - Use `NOT_CONDUCIVE_TO_LEAN_PROOF` as the operator-facing label for the no-math proof skip. Until schemas expose that exact enum, encode it as visible skip artifacts.
 - If formal math targets exist, Haskell/Lean must run and emit `PROVED`, `NOT_PROVED`, unsafe proof status, or a classified F1-F5 failure.
 - Corpus green means `integrity_ready=true`, not automatic publication. A report can be green while saying not proved, not applicable, reject, or needs review.
-- `publisher_ready=true` is stricter: publication gate passed, recommendation policy allows publication, PR/web artifacts build, and no blockers remain. Real approval/publish actions stay outside the corpus loop.
+- `reference_ready=true` is the public-use bar: the report is good enough for another reader to use as a reference. Claims and limitations must be traceable, unresolved items explicit, and the review useful, readable, and not overclaimed.
+- `publisher_ready=true` is stricter: reference-ready plus publication gate passed, recommendation policy allows publication, PR/web artifacts build, and no blockers remain. Real approval/publish actions stay outside the corpus loop.
+- LLM agents should not guess what to do with missing data. Every agent call needs an input manifest with required artifacts, optional artifacts, completeness flags, provenance, and explicit missing-data instructions. Missing required data without an allowed skip fails before the LLM call.
 - Corpus runs must keep `--no-external-actions`; never invoke approve, request-revisions, publisher, close, withdraw, merge, or PR-opening actions.
 
 ## Immediate Queue
@@ -64,6 +66,10 @@ Add fixture coverage for a non-math document:
 - Lean artifact exists as an explicit skip with `skip_reason: no_math_targets`;
 - review/PR artifact still builds under `--no-external-actions`;
 - git/web report shows proof stages as `NOT_CONDUCIVE_TO_LEAN_PROOF` or the schema-compatible skip equivalent.
+
+### 2b. P0-045b LLM Input Contract Gate
+
+Add fixture coverage that an LLM agent is not invoked when a required input is missing, empty, stale, or schema-invalid. The failure should be classified before the model call and should include the missing artifact name, stage, and expected remediation.
 
 ### 3. P0-046 Harness Timeout Detection
 
