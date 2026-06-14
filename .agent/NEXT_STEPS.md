@@ -6,8 +6,8 @@ Continue exactly from here.
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `ca900bc` (`codex checkpoint: P0 - accept P0-044 zeta hygiene`)
-- Pending worker checkpoint: P0-045 no-math proof-stage skip on branch `p0-045-no-math-proof-skip`.
+- Latest merged worker checkpoint: `eaaf4d4` (`codex checkpoint: P0 - no-math proof skip`)
+- Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
@@ -59,11 +59,11 @@ Coordinator verification:
 - structural tests passed 45/45.
 - `git diff --check` passed.
 
-Next action: start a fresh local worker for P0-045.
+Next action: already completed by P0-045.
 
 ### 2. P0-045 No-Math Proof Skip
 
-Status: accepted in worker; merge to coordinator next.
+Status: accepted and merged to coordinator.
 
 Evidence:
 
@@ -85,7 +85,19 @@ Worker verification:
 - app workspace check passed.
 - `git diff --check` passed.
 
-Next action: commit the worker checkpoint, fast-forward merge it to coordinator, reinstall PATH app binaries because `cli.rs` changed after the live run, then run coordinator verification.
+Coordinator verification:
+
+- `git merge --ff-only p0-045-no-math-proof-skip`: pass, fast-forward to `eaaf4d4`.
+- `grokrxiv-review-loop` tests passed 17/17.
+- focused app-runtime no-math skip test passed 1/1.
+- app-runtime `review_loop` tests passed 19/19.
+- app workspace check passed.
+- structural tests passed 45/45.
+- `git diff --check` passed.
+- PATH installs passed for `grokrxiv-app`, `agenthero-dag-app-grokrxiv`, and `agh`.
+- Wrapped PATH dry-run passed with `external_actions.enabled=false`.
+
+Next action: start a fresh local worker for P0-045b.
 
 ### 2b. P0-045b LLM Input Contract Gate
 
@@ -131,7 +143,7 @@ Continue the local-only P0 vertical slice:
 file/source -> normalized content -> semantic math map -> conditional
 Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report.
 
-Merge and verify P0-045 if it is still pending. Then start P0-045b LLM input
-contract gate from the updated coordinator. Do not weaken corpus expected
-blocks or NEVER-events. Do not run external publishing actions.
+Start P0-045b LLM input contract gate from coordinator `eaaf4d4` or the
+latest state-only checkpoint after it. Do not weaken corpus expected blocks or
+NEVER-events. Do not run external publishing actions.
 ```

@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T01:20:00Z
+Updated: 2026-06-14T01:22:31Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local worker for P0-045 no-formal-target proof-stage skip.
-- Branch/worktree: worker branch `p0-045-no-math-proof-skip` in `/Users/mlong/Documents/Development/grokrxiv/.agent/worktrees/p0-045-no-math-proof-skip`.
-- Worker base checkpoint: coordinator `9854df6` after P0-044 merge verification.
+- Session type: local coordinator after P0-045 merge verification.
+- Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
+- Latest merged worker checkpoint: `eaaf4d4` (`codex checkpoint: P0 - no-math proof skip`).
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, and P0-045 is accepted in the worker on affected zeta rerun `20260614T004910Z`: no theorem candidates produced proof/Lean/adequacy skip artifacts, policy gate passed with `integrity_ready=true`, `publisher_ready=false`, and `blocking_issues=[]`, PR artifacts built, and external actions stayed disabled. Coordinator merge verification is pending. Active next queue items after merge are P0-045b LLM input contract gating and P0-046 harness timeout/stall detection before the next full corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0 is narrowed to the reliable vertical slice: file/source -> normalized content -> semantic math map -> conditional Haskell/Lean proof path -> LLM review/PR artifact -> git/web evidence report. Haskell and Lean are conditional: no formal math targets means explicit `skip_reason: no_math_targets`, operator-facing `NOT_CONDUCIVE_TO_LEAN_PROOF`, and the review/PR artifact still runs. P0-039 human sign-off is resolved, P0-044 is merged, and P0-045 is merged. Affected zeta rerun `20260614T004910Z` proved no theorem candidates produce proof/Lean/adequacy skip artifacts, policy gate passed with `integrity_ready=true`, `publisher_ready=false`, and `blocking_issues=[]`, PR artifacts built, and external actions stayed disabled. Active next queue items are P0-045b LLM input contract gating and P0-046 harness timeout/stall detection before the next full corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
@@ -100,6 +100,7 @@ Updated: 2026-06-14T01:20:00Z
 - P0-039 corpus sign-off, 2026-06-14T00:12Z: human approved skipping withdrawn/unavailable sources instead of reviewing them. Updated `bertrand-elementary` expected block to keep pinned `2407.07620v5` but require `source_status: withdrawn_unavailable`, `extraction: skipped_withdrawn_source`, `review_loop: skipped_before_review`, and `skip_reason: withdrawn_or_unavailable_source`. This entry must not launch review/Haskell/Lean/PR work while v5 remains unavailable.
 - P0 PR/publishability standard, 2026-06-14T00:20Z: clarified that the corpus target is `integrity_ready=true`, empty `blocking_issues`, buildable PR/web artifacts, and zero NEVER-events. `publisher_ready=true` is stricter and means publication gate plus recommendation policy allow publishing. Real approve/request-revisions/publisher actions remain outside corpus runs.
 - P0 reference-quality standard, 2026-06-14T00:24Z: clarified that public publishing should require `reference_ready=true`: the report is good enough for another reader to use as a reference, with traceable claims, explicit limitations, readable PR/web output, and no overclaimed confidence. Added the LLM input contract rule: required missing/empty/stale/schema-invalid data must fail before an LLM call unless an explicit skip/partial status tells the agent what to do.
+- P0-045 coordinator verification, 2026-06-14T01:22Z: fast-forward merged `p0-045-no-math-proof-skip` at `eaaf4d4`. Coordinator-side verification passed: `grokrxiv-review-loop` 17/17, focused app-runtime no-math skip 1/1, app-runtime `review_loop` 19/19, app workspace check, structural tests 45/45, `git diff --check`, PATH `grokrxiv-app` install, PATH GrokRxiv adapter install, PATH `agh` install, `agh --version`, and wrapped GrokRxiv dry-run with `external_actions.enabled=false`. No full corpus-green claim or phase tag.
 
 ## Coordinator Rules
 

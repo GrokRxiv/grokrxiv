@@ -1021,3 +1021,25 @@ Acceptance evidence:
 Residual:
 - No full corpus-green claim.
 - Next: merge P0-045 to coordinator, then start P0-045b LLM input contract gate and P0-046 harness timeout detection before the next full sweep.
+
+## 2026-06-14 P0-045 Coordinator Verification
+
+| Time UTC | Commit | Branch | Command | Result | Raw log |
+|---|---|---|---|---|---|
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `git merge --ff-only p0-045-no-math-proof-skip` | pass, fast-forward from `9854df6` to `eaaf4d4` | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop --lib` | pass, 17 tests | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime skipped_lean_review_fix_code_reports_no_math_targets_as_skip --lib -- --nocapture` | pass, 1 test | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop --lib -- --nocapture` | pass, 19 tests | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo check --manifest-path agenthero/apps/grokrxiv/Cargo.toml --workspace` | pass | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/crates/orchestrator --bin grokrxiv-app --force --locked` | pass; replaced worker-installed binary with coordinator binary | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo install --path agenthero/apps/grokrxiv/rust --bin agenthero-dag-app-grokrxiv --force --locked` | pass; replaced worker-installed binary with coordinator binary | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `cargo install --path crates/orchestrator --bin agh --force --locked` | pass; replaced stale worktree-installed `agh` with coordinator binary | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --version` | pass, `agh 0.1.0` | terminal |
+| 2026-06-14T01:22:31Z | `eaaf4d4` | `grokrxiv-local-corpus-harness` | `agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env agh --json app run grokrxiv review https://arxiv.org/abs/2503.07625v2 --loop --debug --no-external-actions --dry-run` | pass, product status 0; dry run only; `external_actions.enabled=false` | terminal |
+
+Residual:
+- No full corpus-green claim and no phase tag.
+- Start P0-045b from the coordinator before the next full sweep.
