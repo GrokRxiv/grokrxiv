@@ -9336,7 +9336,7 @@ async fn run_review_loop_pr_fixer(
     let fixed_tex = fixed_dir.join("review.tex");
     let source_tex_body = tokio::fs::read_to_string(&source_tex).await.ok();
     let (compile_program, compile_args) = latex_compile_command();
-    if let Some(report) = try_compile_existing_pr_artifact(
+    let (compile_first_report, initial_compile) = try_compile_existing_pr_artifact(
         &source_tex,
         &fixed_tex,
         &fixed_dir,
@@ -9344,8 +9344,8 @@ async fn run_review_loop_pr_fixer(
         &compile_args,
         120,
     )
-    .await?
-    {
+    .await?;
+    if let Some(report) = compile_first_report {
         write_loop_json(&artifact_dir.join("pr_fixes.json"), &report).await?;
         return Ok(report);
     }
@@ -9370,19 +9370,13 @@ async fn run_review_loop_pr_fixer(
             forbidden_terms: Vec::new(),
             max_attempts: 2,
         },
-        serde_json::json!({
-            "review_id": review_id,
-            "task": "Generate corrected GrokRxiv review LaTeX for PR publication.",
-            "requirements": [
-                "Return the complete review.tex file.",
-                "Preserve review identifiers and substantive review evidence.",
-                "Fix LaTeX/build/formatting issues only.",
-                format!("The artifact must compile with {compile_command}.")
-            ],
-            "compile_command": compile_command,
-            "source_tex_path": source_tex.display().to_string(),
-            "source_tex": source_tex_body,
-        }),
+        build_pr_artifact_fixer_input(
+            review_id,
+            &compile_command,
+            &source_tex,
+            source_tex_body,
+            initial_compile.as_ref(),
+        ),
         &fixed_dir,
         &fixed_tex,
         debug_output,
@@ -9409,6 +9403,42 @@ async fn run_review_loop_pr_fixer(
     Ok(report)
 }
 
+fn build_pr_artifact_fixer_input(
+    review_id: Uuid,
+    compile_command: &str,
+    source_tex: &Path,
+    source_tex_body: Option<String>,
+    initial_compile: Option<&CommandRunReport>,
+) -> serde_json::Value {
+    let mut requirements = vec![
+        "Return the complete review.tex file.".to_string(),
+        "Preserve review identifiers and substantive review evidence.".to_string(),
+        "Fix LaTeX/build/formatting issues only.".to_string(),
+        format!("The artifact must compile with {compile_command}."),
+    ];
+    if initial_compile.is_some() {
+        requirements.push(
+            "Use initial_compile.stderr and initial_compile.stdout as the primary repair evidence; fix the reported LaTeX compiler errors before changing unrelated text."
+                .to_string(),
+        );
+    }
+
+    serde_json::json!({
+        "review_id": review_id,
+        "task": "Generate corrected GrokRxiv review LaTeX for PR publication.",
+        "requirements": requirements,
+        "compile_command": compile_command,
+        "source_tex_path": source_tex.display().to_string(),
+        "source_tex": source_tex_body,
+        "initial_compile": initial_compile.map(|report| {
+            serde_json::to_value(report).unwrap_or_else(|_| serde_json::json!({
+                "status": "fail",
+                "stderr": "failed to serialize compile report"
+            }))
+        }),
+    })
+}
+
 async fn try_compile_existing_pr_artifact(
     source_tex: &Path,
     fixed_tex: &Path,
@@ -9416,9 +9446,9 @@ async fn try_compile_existing_pr_artifact(
     compile_program: &str,
     compile_args: &[String],
     compile_timeout_secs: u64,
-) -> anyhow::Result<Option<serde_json::Value>> {
+) -> anyhow::Result<(Option<serde_json::Value>, Option<CommandRunReport>)> {
     if !source_tex.is_file() {
-        return Ok(None);
+        return Ok((None, None));
     }
     tokio::fs::create_dir_all(fixed_dir)
         .await
@@ -9444,7 +9474,7 @@ async fn try_compile_existing_pr_artifact(
     )
     .await;
     if compile_run.status != "pass" || !pdf_path.is_file() {
-        return Ok(None);
+        return Ok((None, Some(compile_run)));
     }
     let compile_value =
         serde_json::to_value(&compile_run).unwrap_or_else(|_| serde_json::json!({}));
@@ -9478,15 +9508,18 @@ async fn try_compile_existing_pr_artifact(
             "branch": null
         },
     });
-    Ok(Some(serde_json::json!({
-        "stage": "pr_fixer",
-        "status": "pass",
-        "artifact_worktree": fixed_dir.display().to_string(),
-        "fixed_tex": "review_loop/fixed/review.tex",
-        "fixed_pdf": "review_loop/fixed/review.pdf",
-        "compile_review_loop": compile_loop,
-        "issues": [],
-    })))
+    Ok((
+        Some(serde_json::json!({
+            "stage": "pr_fixer",
+            "status": "pass",
+            "artifact_worktree": fixed_dir.display().to_string(),
+            "fixed_tex": "review_loop/fixed/review.tex",
+            "fixed_pdf": "review_loop/fixed/review.pdf",
+            "compile_review_loop": compile_loop,
+            "issues": [],
+        })),
+        Some(compile_run),
+    ))
 }
 
 fn latex_compile_command() -> (&'static str, Vec<String>) {
@@ -13941,7 +13974,7 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&fake_latex, perms).expect("chmod fake latex");
 
-        let report = try_compile_existing_pr_artifact(
+        let (report, compile_run) = try_compile_existing_pr_artifact(
             &source_tex,
             &fixed_tex,
             &fixed_dir,
@@ -13950,8 +13983,15 @@ mod tests {
             5,
         )
         .await
-        .expect("compile fast path")
-        .expect("compilable source should produce a PR fixer report");
+        .expect("compile fast path");
+        let report = report.expect("compilable source should produce a PR fixer report");
+        assert_eq!(
+            compile_run
+                .as_ref()
+                .expect("compile run should be recorded")
+                .status,
+            "pass"
+        );
 
         assert_eq!(report["status"].as_str(), Some("pass"));
         assert_eq!(
@@ -13964,6 +14004,47 @@ mod tests {
         );
         assert!(fixed_tex.is_file());
         assert!(fixed_dir.join("review.pdf").is_file());
+    }
+
+    #[test]
+    fn pr_fixer_input_includes_failed_compile_diagnostics_for_llm_repair() {
+        let compile_report = CommandRunReport {
+            command: vec![
+                "pdflatex".to_string(),
+                "-interaction=nonstopmode".to_string(),
+                "-halt-on-error".to_string(),
+                "review.tex".to_string(),
+            ],
+            status: "fail".to_string(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "! LaTeX Error: Unicode character ↔ (U+2194) not set up for use with LaTeX."
+                .to_string(),
+            duration_ms: 42,
+        };
+
+        let input = build_pr_artifact_fixer_input(
+            Uuid::nil(),
+            "pdflatex -interaction=nonstopmode -halt-on-error review.tex",
+            std::path::Path::new("/tmp/review.tex"),
+            Some("Problem line: X̃_1 ↔ X_1.".to_string()),
+            Some(&compile_report),
+        );
+
+        assert_eq!(input["initial_compile"]["status"].as_str(), Some("fail"));
+        assert_eq!(input["initial_compile"]["exit_code"].as_i64(), Some(1));
+        assert!(input["initial_compile"]["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("Unicode character ↔"));
+        assert!(input["requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                .as_str()
+                .unwrap()
+                .contains("Use initial_compile.stderr")));
     }
 
     #[test]

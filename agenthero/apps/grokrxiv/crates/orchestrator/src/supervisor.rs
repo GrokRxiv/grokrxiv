@@ -1208,6 +1208,46 @@ mod tests {
     }
 
     #[test]
+    fn citation_agent_timeout_preserves_checked_deterministic_verifier_status() {
+        let existing_notes = serde_json::json!({
+            "json_schema": {
+                "status": "pass",
+                "notes": {}
+            },
+            "citation_existence": {
+                "status": "warn",
+                "notes": {
+                    "checked": 32,
+                    "unverified": [{ "citation_key": "ref1" }],
+                    "entries": [
+                        {
+                            "citation_key": "ref1",
+                            "status": "unverified",
+                            "title": "Residue",
+                            "reason": "resolver residue"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let (status, notes) = verification::specialist_failure_verifier_result(
+            "citation",
+            "CliRunner timed out after 360s for role citation",
+            Some(existing_notes),
+        );
+
+        assert_eq!(status, Some(grokrxiv_schemas::VerifierStatus::Warn));
+        let notes = notes.expect("citation notes");
+        assert_eq!(notes["citation_existence"]["notes"]["checked"], 32);
+        assert_eq!(notes["agent_execution"]["status"], "failed");
+        assert!(notes["agent_execution"]["reason"]
+            .as_str()
+            .expect("reason string")
+            .contains("timed out after 360s"));
+    }
+
+    #[test]
     fn meta_failure_output_is_schema_valid_major_revision() {
         let output = meta_failure_output("`claude` exited with Some(1)");
         assert_eq!(output["recommendation"], "major_revision");

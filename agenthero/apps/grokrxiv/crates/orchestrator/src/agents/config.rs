@@ -558,6 +558,23 @@ output_schema: schemas/does-not-exist.schema.json
     }
 
     #[test]
+    fn paper_review_citation_uses_flash_for_bounded_review_latency() {
+        let config: AgentConfig = serde_yaml::from_str(include_str!(
+            "../../../../agents/paper-review/citation.yaml"
+        ))
+        .expect("citation agent config parses");
+
+        assert_eq!(config.model, "gemini-2.5-flash");
+        assert_eq!(config.timeout_secs, Some(360));
+        assert_eq!(config.prompt_context.body_budget_chars, Some(0));
+        assert_eq!(
+            config.prompt_context.bibliography,
+            BibliographyMode::Limited
+        );
+        assert_eq!(config.prompt_context.max_bibliography_entries, Some(24));
+    }
+
+    #[test]
     fn validation_rejects_invalid_tool_loop_config() {
         let config: AgentConfig = serde_yaml::from_str(
             r#"

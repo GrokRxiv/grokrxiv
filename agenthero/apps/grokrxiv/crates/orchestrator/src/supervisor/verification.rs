@@ -83,10 +83,37 @@ pub(super) fn specialist_failure_verifier_result(
             "reason": error,
         }),
     );
-    (
-        Some(grokrxiv_schemas::VerifierStatus::Fail),
-        Some(serde_json::Value::Object(notes)),
-    )
+    let status = if role == "citation" {
+        checked_citation_verifier_status(&notes).unwrap_or(grokrxiv_schemas::VerifierStatus::Fail)
+    } else {
+        grokrxiv_schemas::VerifierStatus::Fail
+    };
+    (Some(status), Some(serde_json::Value::Object(notes)))
+}
+
+fn checked_citation_verifier_status(
+    notes: &serde_json::Map<String, serde_json::Value>,
+) -> Option<grokrxiv_schemas::VerifierStatus> {
+    for key in ["citation", "citation_existence"] {
+        let Some(entry) = notes.get(key) else {
+            continue;
+        };
+        let checked = entry
+            .get("notes")
+            .and_then(|value| value.get("checked"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if checked == 0 {
+            continue;
+        }
+        match entry.get("status").and_then(serde_json::Value::as_str) {
+            Some("pass") => return Some(grokrxiv_schemas::VerifierStatus::Pass),
+            Some("warn") => return Some(grokrxiv_schemas::VerifierStatus::Warn),
+            Some("fail") => return Some(grokrxiv_schemas::VerifierStatus::Fail),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn summary_failure_output(error: &str) -> serde_json::Value {
