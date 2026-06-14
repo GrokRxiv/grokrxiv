@@ -1,6 +1,6 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T04:00:59Z
+Updated: 2026-06-14T04:04:15Z
 
 ## Current State
 
@@ -13,6 +13,7 @@ Updated: 2026-06-14T04:00:59Z
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
 - In-flight defect: P0-049 normalized bibliography/reference extraction for `capset-ellenberg-gijswijt`. P0-048 is merged and verified: capset no longer promotes body/equation/prose snippets into theorem candidates, and the formal path now reports `NOT_CONDUCIVE_TO_LEAN_PROOF` when there are no reliable theorem graph targets. Capset is still red, correctly, because normalized bibliography extraction produced zero deterministic references while the citation specialist inferred seven entries from prose; citation validation checked 0 entries and policy blocked publication. P0-049 must make normalized content preserve bibliography/reference entries and make deterministic citation validation check real entries before the bounded full sweep resumes. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- Reference-readiness clarification: the active P0 queue now treats the product publishing question as `reference_ready`, meaning the report is good enough for another reader to use as a public reference. Missing required LLM inputs must fail before the LLM unless an explicit typed skip or partial-status contract tells the agent what to do.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.
 
