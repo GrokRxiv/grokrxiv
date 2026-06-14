@@ -1037,6 +1037,10 @@ fn parse_bibitems(src: &str) -> Vec<Citation> {
 }
 
 fn extract_bibitem_title(raw: &str) -> Option<String> {
+    extract_bibitem_newblock_title(raw).or_else(|| extract_quoted_bibliographic_title(raw))
+}
+
+fn extract_bibitem_newblock_title(raw: &str) -> Option<String> {
     let mut parts = raw.split("\\newblock");
     parts.next()?;
     let candidate = parts.next()?.trim();
@@ -1045,6 +1049,28 @@ fn extract_bibitem_title(raw: &str) -> Option<String> {
         .trim()
         .to_string();
     (!title.is_empty()).then_some(title)
+}
+
+fn extract_quoted_bibliographic_title(raw: &str) -> Option<String> {
+    let spans = [("``", "''"), ("“", "”"), ("\"", "\"")];
+    for (open, close) in spans {
+        let Some(start) = raw.find(open) else {
+            continue;
+        };
+        let content_start = start + open.len();
+        let Some(end_rel) = raw[content_start..].find(close) else {
+            continue;
+        };
+        let candidate = &raw[content_start..content_start + end_rel];
+        let title = sanitize_bib_value(candidate)
+            .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';'))
+            .trim()
+            .to_string();
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+    None
 }
 
 fn parse_bibfile(src: &str) -> Vec<Citation> {

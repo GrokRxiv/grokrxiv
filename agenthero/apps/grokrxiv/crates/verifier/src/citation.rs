@@ -19,8 +19,8 @@ use grokrxiv_schemas::{VerifierResult, VerifierStatus};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::{Verifier, VerifierContext};
 
@@ -33,6 +33,10 @@ const FAIL_FRACTION: f32 = 0.30;
 const BIBLIOGRAPHIC_MATCH_SCORE_MIN: f64 = 60.0;
 const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
 const BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS: u64 = 10;
+#[cfg(not(test))]
+const SEMANTIC_SCHOLAR_MIN_INTERVAL_MS: u64 = 1_100;
+
+static SEMANTIC_SCHOLAR_RATE_LIMIT: OnceLock<tokio::sync::Mutex<Option<Instant>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BibliographicProviderKind {
@@ -804,6 +808,31 @@ impl Verifier for CitationVerifier {
         for c in &bibliography {
             total += 1;
             let mut lookup: Option<CitationLookup> = None;
+            let citation_key = citation_key_from_raw(&c.raw);
+            let extracted_title_from_raw =
+                bib_field(&c.raw, "title").or_else(|| quoted_title_from_raw(&c.raw));
+            let title_is_key = c
+                .title
+                .as_deref()
+                .zip(citation_key.as_deref())
+                .is_some_and(|(title, key)| title.trim() == key.trim());
+            let normalization_status = if title_is_key
+                && extracted_title_from_raw
+                    .as_deref()
+                    .is_some_and(|title| !title.trim().is_empty())
+            {
+                Some("title_equals_key_but_raw_contains_title")
+            } else {
+                None
+            };
+            let normalized_title = if normalization_status.is_some() {
+                extracted_title_from_raw.clone()
+            } else {
+                c.title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .or_else(|| extracted_title_from_raw.clone())
+            };
 
             if let Some(doi) = &c.doi {
                 lookup = Some(self.resolve_doi(ctx.http, doi).await);
@@ -827,8 +856,7 @@ impl Verifier for CitationVerifier {
                 }
             }
             if lookup.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
-                let bibliographic_text = c
-                    .title
+                let bibliographic_text = normalized_title
                     .as_deref()
                     .map(str::trim)
                     .filter(|title| !title.is_empty())
@@ -851,8 +879,7 @@ impl Verifier for CitationVerifier {
                 CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
                 CitationLookupStatus::Malformed => malformed.push(c.raw.clone()),
             }
-            let citation_key = citation_key_from_raw(&c.raw);
-            let display_title = c.title.clone().or_else(|| bib_field(&c.raw, "title"));
+            let display_title = normalized_title.clone();
             let display_year = bib_field(&c.raw, "year").or_else(|| bib_field(&c.raw, "date"));
             let display_author = bib_field(&c.raw, "author");
             let display_url = bib_field(&c.raw, "url");
@@ -865,6 +892,8 @@ impl Verifier for CitationVerifier {
                 "doi": c.doi.clone(),
                 "arxiv_id": c.arxiv_id.clone(),
                 "url": display_url,
+                "normalization_status": normalization_status,
+                "extracted_title_from_raw": extracted_title_from_raw,
                 "exists": lookup.status.exists_value(),
                 "status": lookup.status.as_str(),
                 "resolved_doi": lookup.resolved_doi,
@@ -1662,17 +1691,7 @@ async fn send_provider_json_with_timeout(
     provider: &BibliographicProvider,
     query_text: &str,
 ) -> JsonLookup {
-    match tokio::time::timeout(
-        Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
-        send_provider_json_with_retry(http, url, provider, query_text),
-    )
-    .await
-    {
-        Ok(lookup) => lookup,
-        Err(_) => JsonLookup::Transient(format!(
-            "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
-        )),
-    }
+    send_provider_json_with_retry(http, url, provider, query_text).await
 }
 
 async fn send_provider_json_with_retry(
@@ -1683,9 +1702,15 @@ async fn send_provider_json_with_retry(
 ) -> JsonLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..2 {
+        throttle_provider_request(provider).await;
         let request = provider_request(http, url, provider, query_text);
-        match request.send().await {
-            Ok(response) => {
+        match tokio::time::timeout(
+            Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
+            request.send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
                 let status = response.status();
                 if status.is_success() {
                     return match response.json::<serde_json::Value>().await {
@@ -1703,8 +1728,16 @@ async fn send_provider_json_with_retry(
                     JsonLookup::Transient(format!("status {status}"))
                 };
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 last_err = Some(err.to_string());
+                if attempt == 0 {
+                    continue;
+                }
+            }
+            Err(_) => {
+                last_err = Some(format!(
+                    "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
+                ));
                 if attempt == 0 {
                     continue;
                 }
@@ -1712,6 +1745,44 @@ async fn send_provider_json_with_retry(
         }
     }
     JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn throttle_provider_request(provider: &BibliographicProvider) {
+    if provider.kind != BibliographicProviderKind::SemanticScholar {
+        return;
+    }
+    let interval = semantic_scholar_min_interval();
+    if interval.is_zero() {
+        return;
+    }
+    let limiter = SEMANTIC_SCHOLAR_RATE_LIMIT.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut last_request = limiter.lock().await;
+    if let Some(previous) = *last_request {
+        let elapsed = previous.elapsed();
+        if elapsed < interval {
+            tokio::time::sleep(interval - elapsed).await;
+        }
+    }
+    *last_request = Some(Instant::now());
+}
+
+fn semantic_scholar_min_interval() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = nonblank_env("GROKRXIV_TEST_SEMANTIC_SCHOLAR_MIN_INTERVAL_MS")
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+
+    #[cfg(test)]
+    {
+        Duration::ZERO
+    }
+
+    #[cfg(not(test))]
+    {
+        Duration::from_millis(SEMANTIC_SCHOLAR_MIN_INTERVAL_MS)
+    }
 }
 
 fn provider_request(
@@ -1924,6 +1995,26 @@ fn clean_bib_text(value: &str) -> String {
         .join(" ")
 }
 
+fn quoted_title_from_raw(raw: &str) -> Option<String> {
+    for (open, close) in [("``", "''"), ("“", "”"), ("\"", "\"")] {
+        let Some(start) = raw.find(open) else {
+            continue;
+        };
+        let content_start = start + open.len();
+        let Some(end_rel) = raw[content_start..].find(close) else {
+            continue;
+        };
+        let title = clean_bib_text(&raw[content_start..content_start + end_rel])
+            .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';'))
+            .trim()
+            .to_string();
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1983,6 +2074,49 @@ mod tests {
             arxiv_id: None,
             title: Some(title.to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn semantic_scholar_requests_are_rate_limited() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _interval = EnvVarGuard::set("GROKRXIV_TEST_SEMANTIC_SCHOLAR_MIN_INTERVAL_MS", "60");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/semantic/graph/v1/paper/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = BibliographicProvider::new(
+            "semantic_scholar",
+            format!("{}/semantic/graph/v1/paper/search", server.uri()),
+            BibliographicProviderKind::SemanticScholar,
+        );
+        let http = reqwest::Client::new();
+
+        let start = std::time::Instant::now();
+        let first_url = provider_query_url(&provider, "first test title");
+        let second_url = provider_query_url(&provider, "second test title");
+
+        let first =
+            send_provider_json_with_timeout(&http, &first_url, &provider, "first test title").await;
+        let second =
+            send_provider_json_with_timeout(&http, &second_url, &provider, "second test title")
+                .await;
+
+        assert!(matches!(first, JsonLookup::Ok(_)));
+        assert!(matches!(second, JsonLookup::Ok(_)));
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(50),
+            "Semantic Scholar requests were not throttled; elapsed={:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]
