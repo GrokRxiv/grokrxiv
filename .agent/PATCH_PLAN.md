@@ -127,3 +127,10 @@ Coordinator assigns one queue item at a time into a local worktree under `.agent
 - Preserved the compile-failure-to-LLM behavior with a regression guard.
 - Updated the `pr_artifact_fixer` prompt to state that it repairs only generated GrokRxiv review LaTeX, never original arXiv source.
 - No full corpus rerun. Next runtime check, if needed, should rerun only the single requested source, not the whole corpus.
+
+## P0-056 Applied Patch
+
+- Changed the required PR/review artifact from `review_loop/fixed/review.tex` to `review_loop/fixed/review.md`.
+- Removed `review_loop/fixed/review.tex` and `review_loop/fixed/review.pdf` from declared review-loop outputs.
+- Changed default PR artifact handling to copy rendered `review.md`; TeX/PDF are optional exports only.
+- Kept optional `fixed_tex` and `fixed_pdf` evidence fields in `pr_fixes.json` when those files exist, but acceptance uses `fixed_markdown`.

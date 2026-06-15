@@ -171,3 +171,14 @@ Updated: 2026-06-15T14:03:42Z
 - `review_loop/fixed/review.tex` is now the required PR artifact. `review_loop/fixed/review.pdf` is best-effort after the LLM repair loop and records `warn`/explicit skip when unavailable.
 - No full corpus run was started. No single-paper runtime rerun was started in this checkpoint.
 - Verification before cleanup: focused `pr_fixer_` tests passed 4/4; `review_loop_bundle_` tests passed 3/3; formatter check and `git diff --check` passed.
+
+## P0-056 Markdown Canonical Review Artifact
+
+Updated: 2026-06-15T14:25:31Z
+
+- User corrected artifact direction again: the required review artifact should be Markdown, not LaTeX.
+- Changed the review-loop contract so `review_loop/fixed/review.md` is the required PR/review artifact.
+- Removed `review_loop/fixed/review.tex` and `review_loop/fixed/review.pdf` from declared review-loop outputs. They may still appear as optional exports, but they are not review-process gates.
+- Default PR fixer now copies rendered `review.md` into `review_loop/fixed/review.md` and records TeX/PDF as optional only if present.
+- No full corpus run and no paper runtime rerun were started. Target directories were not cleaned.
+- Verification so far: `review_loop_stage_plan_is_loaded_from_manifest` passed, `review_loop_bundle_` passed 3/3, `pr_fixer_report_passes_when_markdown_exists_without_tex_or_pdf` passed, and app-runtime `review_loop` passed 20/20.

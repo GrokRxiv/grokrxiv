@@ -395,8 +395,8 @@ agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
   agh --json app run grokrxiv review https://arxiv.org/abs/2606.13495 --loop --debug --no-external-actions
 ```
 
-Expected PR artifact behavior:
-- If generated `review.tex` compiles directly, `pr_fixes.status=pass` and PDF may be present.
-- If PDF compile fails, the LLM `pr_artifact_fixer` must run.
-- If the LLM repair loop still cannot produce a PDF but `review_loop/fixed/review.tex` exists, `pr_fixes.status=warn`, bundle completeness skips only `review_loop/fixed/review.pdf`, and policy must not block solely on the missing PDF.
-- Missing `review_loop/fixed/review.tex` remains a hard failure.
+Expected PR artifact behavior after P0-056:
+- Rendered `review.md` is copied to `review_loop/fixed/review.md`.
+- `pr_fixes.status=pass` requires `review_loop/fixed/review.md`.
+- `review_loop/fixed/review.tex` and `review_loop/fixed/review.pdf` are optional exports only and must not be declared review-loop outputs or policy gates.
+- Missing `review_loop/fixed/review.md` remains a hard failure.

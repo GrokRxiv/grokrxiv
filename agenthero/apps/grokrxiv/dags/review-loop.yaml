@@ -183,8 +183,7 @@ nodes:
       - review_loop/semantic_adequacy.json
     outputs:
       - review_loop/pr_fixes.json
-      - review_loop/fixed/review.tex
-      - review_loop/fixed/review.pdf
+      - review_loop/fixed/review.md
     required: true
   - id: pr_review_fix_code
     kind: loop
@@ -193,7 +192,7 @@ nodes:
       max_rounds: 3
     inputs:
       - review_loop/pr_fixes.json
-      - review_loop/fixed/review.tex
+      - review_loop/fixed/review.md
     outputs:
       - review_loop/pr_review/results.json
       - review_loop/pr_review/fix_rounds.json

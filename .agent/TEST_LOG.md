@@ -1290,3 +1290,14 @@ Evidence summary:
   - pass
 - `git diff --check`
   - pass
+
+## 2026-06-15 P0-056 Markdown Canonical Review Artifact
+
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_stage_plan_is_loaded_from_manifest -- --nocapture`
+  - pass: 1/1
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle_ -- --nocapture`
+  - pass: 3/3
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_report_passes_when_markdown_exists_without_tex_or_pdf -- --nocapture`
+  - pass: 1/1
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop -- --nocapture`
+  - pass: 20/20

@@ -2587,3 +2587,28 @@ Evidence:
 
 Residual:
 - The LLM PR fixer still uses a full-file output schema. That is an LLM repair path, but it can be slow for small compile errors. A future optimization should make the LLM return a patch/replacement plan that the harness applies, rather than requiring a complete 50KB+ TeX rewrite.
+
+## P0-056 Markdown Canonical Review Artifact
+
+ID: P0-056
+Scope: generated GrokRxiv review artifacts only.
+Runner: local unit tests; no corpus or paper rerun.
+Bucket: F1 app-local review-loop artifact contract.
+NEVER-event: none observed.
+
+Finding:
+- Treating LaTeX as the required review artifact still couples review correctness to export formatting.
+- The existing renderer already writes `review.md`, `review.html`, and `review.tex`; Markdown is the better canonical artifact because it is diffable, LLM-editable, and suitable for PR/web publishing.
+
+Correction:
+- `review_loop/fixed/review.md` is now the required review artifact.
+- `review_loop/fixed/review.tex` and `review_loop/fixed/review.pdf` are not declared review-loop outputs.
+- Default PR artifact handling does not compile or fix PDFs. It copies the rendered Markdown into the fixed artifact directory and reports optional TeX/PDF paths only if they happen to exist.
+
+Evidence:
+- Manifest test asserts `review_loop/fixed/review.md` is declared and `review_loop/fixed/review.tex` / `review_loop/fixed/review.pdf` are not.
+- Bundle skip reasons no longer include PDF.
+- Focused verification passed: `review_loop_stage_plan_is_loaded_from_manifest`, `review_loop_bundle_` 3/3, `pr_fixer_report_passes_when_markdown_exists_without_tex_or_pdf`, and app-runtime `review_loop` 20/20.
+
+Residual:
+- A separate optional export command/flag for TeX/PDF can be added later. It should not participate in `publisher_ready`, `integrity_ready`, or corpus gates unless explicitly requested for export validation.
