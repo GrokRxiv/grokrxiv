@@ -1,5 +1,31 @@
 # GrokRxiv Local Harness Findings
 
+## P0-057 - Typed Theorem IR Extraction Handoff
+
+ID: P0-057
+Source used for live validation: `https://arxiv.org/abs/2606.13491`
+Result root: `agenthero/apps/grokrxiv/evals/results/20260615T-typed-ir-2606-13491/`
+Local data artifact: `../grokrxiv-data/papers/2606.13491/`
+Bucket: mixed; unit path fixed, live LLM extraction still not accepted.
+
+What was fixed:
+- The theorem extraction schema now carries `source_tex`, `typed_transcription`, and `theorem_ir`.
+- The theorem tool now returns full `statement` and full TeX `source_tex`, not only `statement_preview`.
+- Ingest theorem normalization preserves `source_tex`, `typed_transcription`, and `theorem_ir` instead of dropping them.
+- Semantic IR uses supplied typed theorem IR and skips proof blocks as dependency evidence instead of turning proof prose into Lean targets.
+- The theorem schema now allows explicit `null` typed fields for proof/nonformal/untranscribed entries; the live Gemini theorem agent hit this exact schema rejection before the fix.
+
+Live validation result:
+- Command was single-paper extraction only, not a corpus run.
+- Wrapper status: `classification=failed`, `exit_code=1`, `elapsed_ms=695049`.
+- LLM extraction stages failed and fell back: macros, citations, equations, and theorems all logged `failed; deterministic fallback may run`.
+- Local artifact exists despite final failure: `../grokrxiv-data/papers/2606.13491/theorem_graph.json`.
+- Local theorem artifact has `node_count=10`, `typed_count=0`, `theorem_ir_count=0`, `proof_count=8`.
+- Final failure was Stage 8 push, not extraction logic: `push grokrxiv-data commit 9b6e10c... to configured remote git@github.com:GrokRxiv/grokrxiv-data.git: unsupported URL protocol`.
+
+Remaining defect:
+- Live LLM theorem transcription is still not producing accepted typed IR for this paper. Next work should make the extraction agent produce `typed_transcription.status=transcribed|partial|untranscribed` objects for theorem/lemma/proposition/corollary entries instead of returning null for formal entries, and should provide a no-push local validation path.
+
 ## P0-054 - Single-File `2606.13517` WARN/FAIL Report
 
 ID: P0-054

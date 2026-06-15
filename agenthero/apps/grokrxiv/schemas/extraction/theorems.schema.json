@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://grokrxiv.org/schemas/extraction/theorems.schema.json",
   "title": "TheoremGraph",
-  "description": "Output of the TheoremGraphExtractorAgent (Stage 6). One entry per theorem-like block (theorem/lemma/proposition/corollary/definition/proof/remark/example) with a depends_on edge list resolved from \\ref{}.",
+  "description": "Output of the TheoremGraphExtractorAgent (Stage 6). One entry per theorem-like block (theorem/lemma/proposition/corollary/definition/proof/remark/example) with a depends_on edge list resolved from \\ref{}. Theorem-like statements may carry typed_transcription/theorem_ir so the review loop can emit Haskell/Lean targets from structured math instead of raw prose.",
   "type": "object",
   "additionalProperties": false,
   "required": ["theorem_graph", "reason"],
@@ -35,11 +35,152 @@
           },
           "statement": { "type": "string" },
           "section": { "type": "string" },
+          "source_tex": {
+            "description": "Raw theorem/equation/proof environment text when available. Do not truncate.",
+            "type": ["string", "null"]
+          },
+          "typed_transcription": {
+            "anyOf": [
+              { "$ref": "#/definitions/typed_transcription" },
+              { "type": "null" }
+            ]
+          },
+          "theorem_ir": {
+            "anyOf": [
+              { "$ref": "#/definitions/theorem_ir" },
+              { "type": "null" }
+            ]
+          },
           "depends_on": {
             "type": "array",
             "items": { "type": "string" }
           }
         }
+      }
+    }
+  },
+  "definitions": {
+    "math_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["nat", "int", "real", "bool", "prop", "custom", "unknown_type"]
+        },
+        "name": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "binder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "$ref": "#/definitions/math_type" }
+      }
+    },
+    "term": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["var", "nat_lit", "int_lit", "real_lit", "add", "sub", "mul", "div", "pow", "neg", "raw_term", "unknown_term"]
+        },
+        "name": { "type": "string" },
+        "value": { "type": ["number", "integer", "string"] },
+        "lhs": { "$ref": "#/definitions/term" },
+        "rhs": { "$ref": "#/definitions/term" },
+        "arg": { "$ref": "#/definitions/term" },
+        "base": { "$ref": "#/definitions/term" },
+        "exponent": { "$ref": "#/definitions/term" },
+        "text": { "type": "string" }
+      }
+    },
+    "proposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["equals", "less_equal", "less_than", "greater_equal", "greater_than", "implies", "and", "or", "not", "forall", "exists", "uninterpreted_predicate", "unknown_prop"]
+        },
+        "lhs": { "$ref": "#/definitions/term" },
+        "rhs": { "$ref": "#/definitions/term" },
+        "premise": { "$ref": "#/definitions/proposition" },
+        "conclusion": { "$ref": "#/definitions/proposition" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/proposition" }
+        },
+        "arg": { "$ref": "#/definitions/proposition" },
+        "binders": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/binder" }
+        },
+        "body": { "$ref": "#/definitions/proposition" },
+        "name": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/term" }
+        },
+        "reason": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "typed_transcription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "source_text", "math_objects", "binders", "assumptions", "conclusion"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["transcribed", "partial", "untranscribed"]
+        },
+        "source_text": { "type": "string" },
+        "math_objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "$ref": "#/definitions/math_type" }
+            }
+          }
+        },
+        "binders": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/binder" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/proposition" }
+        },
+        "conclusion": { "$ref": "#/definitions/proposition" }
+      }
+    },
+    "theorem_ir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theorem_name", "binders", "assumptions", "conclusion"],
+      "properties": {
+        "theorem_name": { "type": "string" },
+        "binders": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/binder" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/proposition" }
+        },
+        "conclusion": { "$ref": "#/definitions/proposition" }
       }
     }
   }

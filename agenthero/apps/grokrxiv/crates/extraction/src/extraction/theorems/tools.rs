@@ -362,8 +362,12 @@ pub struct TheoremBlock {
     pub label: Option<String>,
     /// Kind word (theorem / lemma / proposition / corollary / ...).
     pub kind: String,
+    /// Full extracted statement text. Never ellipsized.
+    pub statement: String,
     /// First ~200 chars of the statement.
     pub statement_preview: String,
+    /// Raw TeX/LaTeX block when the source was an explicit environment.
+    pub source_tex: Option<String>,
 }
 
 impl TheoremBlock {
@@ -371,7 +375,9 @@ impl TheoremBlock {
         json!({
             "label": self.label,
             "type": self.kind,
+            "statement": self.statement,
             "statement_preview": self.statement_preview,
+            "source_tex": self.source_tex.as_deref(),
         })
     }
 }
@@ -458,7 +464,9 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
             out.push(TheoremBlock {
                 label,
                 kind: kind_name.clone(),
+                statement: body_text.to_string(),
                 statement_preview: preview(body_text),
+                source_tex: cap.get(0).map(|m| m.as_str().to_string()),
             });
         }
     }
@@ -473,7 +481,9 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         out.push(TheoremBlock {
             label: None,
             kind,
+            statement: stmt.to_string(),
             statement_preview: preview(stmt),
+            source_tex: None,
         });
     }
 
@@ -493,10 +503,13 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
             .take_while(|l| !l.starts_with('#') && !l.trim().is_empty())
             .collect::<Vec<_>>()
             .join(" ");
+        let statement = next_para.trim().to_string();
         out.push(TheoremBlock {
             label: None,
             kind,
-            statement_preview: preview(next_para.trim()),
+            statement_preview: preview(&statement),
+            statement,
+            source_tex: None,
         });
     }
 
@@ -524,10 +537,13 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         } else {
             next_para.trim()
         };
+        let statement = statement.to_string();
         out.push(TheoremBlock {
             label: None,
             kind,
-            statement_preview: preview(statement),
+            statement_preview: preview(&statement),
+            statement,
+            source_tex: None,
         });
     }
 
@@ -912,6 +928,35 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Hausdorff"));
+    }
+
+    #[test]
+    fn read_section_returns_full_theorem_source_not_only_preview() {
+        let dir = tempdir();
+        let long_statement = format!(
+            "Let n be a natural number. {} Therefore n + 0 = n.",
+            "Assume the canonical recursive definition of addition. ".repeat(8)
+        );
+        let tex =
+            format!("\\begin{{theorem}}\\label{{thm:add-zero}} {long_statement} \\end{{theorem}}");
+        let body = format!("# Section\n\n{tex}\n");
+        std::fs::write(dir.path().join("body.md"), body).unwrap();
+        let ctx = ctx_no_ast(dir.path());
+        let sec_list = list_sections(&ctx).unwrap();
+        let id = sec_list[0]["id"].as_str().unwrap();
+        let out = read_section(id, &ctx).unwrap();
+        let theorem = &out["theorems"].as_array().unwrap()[0];
+
+        assert!(theorem["statement_preview"]
+            .as_str()
+            .unwrap()
+            .ends_with("..."));
+        assert!(theorem["statement"]
+            .as_str()
+            .unwrap()
+            .contains("Therefore n + 0 = n."));
+        assert!(!theorem["statement"].as_str().unwrap().ends_with("..."));
+        assert_eq!(theorem["source_tex"], tex);
     }
 
     #[test]

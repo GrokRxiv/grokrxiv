@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-14T04:53:22Z
+Updated: 2026-06-15T15:30:13Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local coordinator after P0-050 capset recommendation-policy merge verification.
+- Session type: local coordinator after P0-057 typed theorem IR extraction handoff.
 - Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
-- Latest merged worker checkpoint in coordinator: `5c7c31e` (`codex checkpoint: P0 - capset recommendation policy`), fast-forward merged from `p0-050-capset-recommendation-policy`.
+- Latest code checkpoint before this session: `314609c`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: none assigned. P0-050 is merged and coordinator-verified. Capset now has `policy_gate.deterministic_status=pass`, `integrity_ready=true`, `publisher_ready=false`, `blocking_issues=[]`, citation validation `checked=7`/pass, proof stages skipped as `NOT_CONDUCIVE_TO_LEAN_PROOF`, and external actions disabled. Next action is to resume the first bounded full local CLI corpus sweep. This is not a full P0 green claim; no full-corpus/both-runner sweep has run yet.
+- In-flight defect: P0-057 narrowed math extraction path. Unit-level code path now preserves LLM-supplied `typed_transcription`/`theorem_ir` from theorem extraction through ingest normalization into semantic IR; proof blocks are no longer theorem targets; theorem tools return full `statement` and `source_tex`, not only previews; theorem schema accepts typed objects and explicit nulls for nonformal/untranscribed entries. Single-paper extraction validation on `2606.13491` still did not prove live typed extraction: all four LLM extraction stages failed and deterministic fallback produced `theorem_graph.json` with 10 nodes, `typed_count=0`, `theorem_ir_count=0`; Stage 8 then failed on configured data-repo SSH push (`unsupported URL protocol`) after local commit `9b6e10c`. No corpus-green claim.
 - Reference-readiness clarification: the active P0 queue now treats the product publishing question as `reference_ready`, meaning the report is good enough for another reader to use as a public reference. Missing required LLM inputs must fail before the LLM unless an explicit typed skip or partial-status contract tells the agent what to do.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.

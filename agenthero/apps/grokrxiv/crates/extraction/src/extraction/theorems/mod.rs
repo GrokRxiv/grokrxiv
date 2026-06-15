@@ -80,7 +80,14 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
          Use `list_sections` to see structure, `read_section` to inspect specific \
          sections, and `query_ast` to find theorem-like environments. For every \
          theorem/lemma/proposition/corollary/definition/proof block: extract its \
-         id, type, statement (first paragraph), and the section it lives in. \
+         id, type, complete statement with no ellipsis, raw source_tex when \
+         available, and the section it lives in. For theorem/lemma/proposition/\
+         corollary blocks, also transcribe the mathematical statement into \
+         typed_transcription and theorem_ir. Use explicit unknown_type, \
+         unknown_term, or unknown_prop nodes only for the exact subexpression \
+         you cannot safely type; do not mark a complete theorem partial just \
+         because the prose is long. Proof blocks are dependency evidence, not \
+         Lean theorem targets, so do not invent theorem_ir for proof bodies. \
          Resolve every `\\ref{}` in proofs via `resolve_label` to build the \
          `depends_on` edges. Submit the full graph by calling `submit` with a \
          payload matching the schema. Do NOT emit prose; the ONLY way to finish \
@@ -93,11 +100,13 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
              ./ (workdir; `body.md` is the rendered markdown). Start by calling \
              `list_sections` to map the document, then read sections that contain \
              theorem-like blocks. For each theorem/lemma/proposition/corollary/\
-             definition/proof you find, record `id`, `type`, `statement` (first \
-             paragraph or 1-2 sentences), and `section`. For every `\\ref{{...}}` \
-             you see inside a proof, call `resolve_label` and add the resolved id \
-             to that proof's `depends_on` list. Finally call `submit` with the \
-             entire `theorem_graph`.",
+             definition/proof you find, record `id`, `type`, full `statement` \
+             without `...`, `source_tex` when available, and `section`. For \
+             theorem/lemma/proposition/corollary entries, fill \
+             `typed_transcription` and `theorem_ir` from the LaTeX math. For \
+             every `\\ref{{...}}` you see inside a proof, call `resolve_label` \
+             and add the resolved id to that proof's `depends_on` list. Finally \
+             call `submit` with the entire `theorem_graph`.",
             arxiv = ctx.arxiv_id,
             title = ctx.extract.title,
         )
@@ -301,6 +310,94 @@ mod tests {
             "reason": null
         });
         assert!(validator.validate(&bad).is_err());
+    }
+
+    #[test]
+    fn schema_allows_typed_theorem_transcription_for_llm_math_ir() {
+        let a = TheoremGraphExtractorAgent::new();
+        let schema = a.schema();
+        let validator = jsonschema::validator_for(schema).expect("schema compiles");
+        let typed = json!({
+            "theorem_graph": [
+                {
+                    "id": "thm-add-zero",
+                    "type": "theorem",
+                    "statement": "For every $n \\in \\mathbb{N}$, $n + 0 = n$.",
+                    "section": "sec-main",
+                    "depends_on": ["eq-add-zero"],
+                    "source_tex": "\\begin{theorem}\\label{thm:add-zero} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}",
+                    "typed_transcription": {
+                        "status": "transcribed",
+                        "source_text": "\\begin{theorem}\\label{thm:add-zero} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}",
+                        "math_objects": [
+                            {"name": "n", "type": {"kind": "nat"}}
+                        ],
+                        "binders": [
+                            {"name": "n", "type": {"kind": "nat"}}
+                        ],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "equals",
+                            "lhs": {
+                                "kind": "add",
+                                "lhs": {"kind": "var", "name": "n"},
+                                "rhs": {"kind": "nat_lit", "value": 0}
+                            },
+                            "rhs": {"kind": "var", "name": "n"}
+                        }
+                    },
+                    "theorem_ir": {
+                        "theorem_name": "thm_add_zero",
+                        "binders": [
+                            {"name": "n", "type": {"kind": "nat"}}
+                        ],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "equals",
+                            "lhs": {
+                                "kind": "add",
+                                "lhs": {"kind": "var", "name": "n"},
+                                "rhs": {"kind": "nat_lit", "value": 0}
+                            },
+                            "rhs": {"kind": "var", "name": "n"}
+                        }
+                    }
+                }
+            ],
+            "reason": null
+        });
+
+        assert!(
+            validator.validate(&typed).is_ok(),
+            "theorem extraction schema must carry typed math IR to review-loop"
+        );
+    }
+
+    #[test]
+    fn schema_allows_null_typed_ir_for_proofs_and_untranscribed_entries() {
+        let a = TheoremGraphExtractorAgent::new();
+        let schema = a.schema();
+        let validator = jsonschema::validator_for(schema).expect("schema compiles");
+        let proof = json!({
+            "theorem_graph": [
+                {
+                    "id": "proof-main",
+                    "type": "proof",
+                    "statement": "Proof. The claim follows from Lemma 1.",
+                    "section": "sec-proof",
+                    "source_tex": null,
+                    "typed_transcription": null,
+                    "theorem_ir": null,
+                    "depends_on": ["lem-1"]
+                }
+            ],
+            "reason": null
+        });
+
+        assert!(
+            validator.validate(&proof).is_ok(),
+            "proof and nonformal entries may explicitly set typed fields to null"
+        );
     }
 
     #[tokio::test]

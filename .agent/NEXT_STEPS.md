@@ -1,12 +1,12 @@
 # GrokRxiv Local Harness Next Steps
 
-Continue exactly from here. Current instruction is report-only after the single-file `2606.13517` run; do not code or rerun until the user asks.
+Continue exactly from here. Current instruction is the narrowed typed-math extraction path. Do not run the full corpus. Do not clean `target`.
 
 ## Current Coordinator State
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest merged worker checkpoint: `5c7c31e` (`codex checkpoint: P0 - capset recommendation policy`), fast-forward merged from `p0-050-capset-recommendation-policy`
+- Latest code checkpoint before P0-057: `314609c`
 - Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
@@ -14,18 +14,41 @@ Continue exactly from here. Current instruction is report-only after the single-
 - Run model: local Codex only; do not use Codex Cloud.
 - Budget/run rule: do not run the full corpus next. Work one source or one focused fixture at a time.
 
-## Stop Point After P0-054
+## Stop Point After P0-057
 
-Do not start a run automatically.
+Do not start a full corpus run automatically.
 
 If the user asks to continue coding, use this prompt shape:
 
 ```text
-Implement only the global citation normalization fix. Do not run the full corpus.
-Use the P0-054 findings. Add a failing test at the citation-verifier input boundary proving that quoted-title bibitems, newblock bibitems, amsrefs, .bib/.bbl, and Pandoc bibliography entries pass real titles to the resolver, not citation keys. Fix the normalization/handoff contract. Run focused tests only. Then rerun one affected source with --no-external-actions if explicitly requested.
+Continue P0-057 only. Do not run the full corpus.
+Make live theorem extraction produce accepted typed_transcription/theorem_ir objects for theorem/lemma/proposition/corollary entries, or explicit partial/untranscribed typed objects when not safely formalizable. Do not accept typed_transcription=null for formal entries as success. Add focused failing tests first. Add a no-push local validation path or local file remote override before rerunning one affected source.
 ```
 
-After citation normalization, the second known fix is theorem-target filtering: section-intro prose and truncated statements must not become Lean proof obligations.
+After P0-057 live typed extraction works, return to the global citation normalization plan from P0-054.
+
+## 2026-06-15 P0-057 Typed Theorem IR Extraction Handoff
+
+Implemented:
+- Theorem extraction schema carries `source_tex`, `typed_transcription`, and `theorem_ir`.
+- `read_section` theorem tool returns full `statement` and full `source_tex`, plus compact `statement_preview`.
+- Ingest `apply_theorems` preserves typed fields instead of dropping them.
+- Semantic IR uses supplied typed theorem IR and skips proof blocks as formal targets.
+- Theorem schema accepts explicit null typed fields for proof/nonformal/untranscribed entries; this fixes the live schema rejection seen in the Gemini theorem agent.
+
+Focused verification passed:
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all --check`
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-extraction theorem -- --nocapture`
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop semantic_ir -- --nocapture`
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime apply_theorems_preserves_typed_math_ir_from_agent_output -- --nocapture`
+- Haskell/Lean contract checks passed earlier in this checkpoint: deterministic Haskell author, proof obligations, deterministic Lean targets, Claude runner construction.
+
+Single-paper validation:
+- Command: `GROKRXIV_INGEST_NO_CACHE=1 GROKRXIV_EXTRACTION_MODE=agent_enabled cargo run --manifest-path agenthero/apps/grokrxiv/crates/orchestrator/Cargo.toml --quiet --bin grokrxiv-app -- --json --debug-logs extract 2606.13491`
+- Wrapper result: `classification=failed`, `exit_code=1`, `elapsed_ms=695049`.
+- LLM extraction stages all failed and deterministic fallback ran.
+- Local theorem artifact: `../grokrxiv-data/papers/2606.13491/theorem_graph.json`, `node_count=10`, `typed_count=0`, `theorem_ir_count=0`, `proof_count=8`.
+- Final process failure: data-repo push to `git@github.com:GrokRxiv/grokrxiv-data.git` failed with `unsupported URL protocol` after local commit `9b6e10c`.
 
 ## Narrow Acceptance Contract
 

@@ -1749,13 +1749,21 @@ fn apply_theorems(bundle: &mut ArtifactBundle, arxiv_id: &str, res: Option<Stage
                         .and_then(Value::as_array)
                         .cloned()
                         .unwrap_or_default();
-                    Some(json!({
+                    let mut node = json!({
                         "id": id,
                         "type": node_type,
                         "statement": statement,
                         "section_id": n.get("section_id").cloned().or_else(|| n.get("section").cloned()).unwrap_or(Value::Null),
                         "depends_on": depends_on,
-                    }))
+                    });
+                    if let Some(obj) = node.as_object_mut() {
+                        for key in ["source_tex", "typed_transcription", "theorem_ir"] {
+                            if let Some(value) = n.get(key).cloned() {
+                                obj.insert(key.to_string(), value);
+                            }
+                        }
+                    }
+                    Some(node)
                 })
                 .collect()
         })
@@ -3515,6 +3523,81 @@ mod a4_tests {
         assert_eq!(r.model.as_deref(), Some("test-model"));
         assert_eq!(r.runner.as_deref(), Some("api"));
         assert_eq!(r.iters, Some(1));
+    }
+
+    #[test]
+    fn apply_theorems_preserves_typed_math_ir_from_agent_output() {
+        let mut bundle = ArtifactBundle::new("2606.13491");
+        let typed_transcription = json!({
+            "status": "transcribed",
+            "source_text": "\\begin{theorem} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}",
+            "math_objects": [{"name": "n", "type": {"kind": "nat"}}],
+            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "equals",
+                "lhs": {
+                    "kind": "add",
+                    "lhs": {"kind": "var", "name": "n"},
+                    "rhs": {"kind": "nat_lit", "value": 0}
+                },
+                "rhs": {"kind": "var", "name": "n"}
+            }
+        });
+        let theorem_ir = json!({
+            "theorem_name": "add_zero",
+            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "equals",
+                "lhs": {
+                    "kind": "add",
+                    "lhs": {"kind": "var", "name": "n"},
+                    "rhs": {"kind": "nat_lit", "value": 0}
+                },
+                "rhs": {"kind": "var", "name": "n"}
+            }
+        });
+        let outcome = StageOutcome {
+            output: json!({
+                "theorem_graph": [{
+                    "id": "thm-add-zero",
+                    "type": "theorem",
+                    "statement": "For every $n \\in \\mathbb{N}$, $n + 0 = n$.",
+                    "section": "sec-main",
+                    "depends_on": ["eq-add-zero"],
+                    "source_tex": "\\begin{theorem} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}",
+                    "typed_transcription": typed_transcription,
+                    "theorem_ir": theorem_ir
+                }],
+                "reason": null
+            }),
+            tool_calls: vec![],
+            cost_usd: 0.0,
+            latency_ms: 0,
+            iters: 1,
+            model: "test-model".into(),
+            runner: "cli".into(),
+            provenance: NodeProvenance::agent(
+                "theorems",
+                "theorem_graph_extractor",
+                ["body.md", "equations.json"],
+                ["theorem_graph.json"],
+                ExtractionMode::AgentEnabled,
+            ),
+        };
+
+        apply_theorems(&mut bundle, "2606.13491", Some(outcome));
+
+        let node = &bundle.theorem_graph.unwrap()["nodes"][0];
+        assert_eq!(
+            node["source_tex"],
+            "\\begin{theorem} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}"
+        );
+        assert_eq!(node["typed_transcription"]["status"], "transcribed");
+        assert_eq!(node["typed_transcription"]["binders"][0]["name"], "n");
+        assert_eq!(node["theorem_ir"]["conclusion"]["kind"], "equals");
+        assert_eq!(node["theorem_ir"]["conclusion"]["lhs"]["kind"], "add");
     }
 
     #[test]

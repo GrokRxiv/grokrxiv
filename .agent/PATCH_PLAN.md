@@ -15,8 +15,27 @@ Haskell and Lean are conditional. If normalized content has no formal math targe
 The publishing question is whether the report is `reference_ready`: good enough that another reader can use it as a public reference. That requires complete or explicitly skipped source content, deterministic evidence for citations and proof status, traceable claims and limitations, buildable PR/web artifacts, and no overclaimed recommendation. LLM agents should not infer missing-data behavior from prose; every agent call must receive an input contract with required artifacts, optional artifacts, completeness flags, provenance, and explicit instructions for allowed skip/partial cases. Missing required data without an allowed skip fails before the LLM call.
 
 1. Do not resume the full corpus until the user explicitly asks. The current budget rule is one source or one focused fixture at a time.
-2. Next coding session should address citation normalization globally, not as a one-off for `2606.13517`.
-3. After the citation fix, rerun only the affected source chosen for the fixture. Do not run all corpus entries.
+2. Current math path priority: make live theorem extraction produce accepted typed IR objects for theorem/lemma/proposition/corollary entries, or explicit `partial`/`untranscribed` typed objects when math is not safely formalizable. Do not accept null typed fields for formal entries as success.
+3. Add a no-push local validation path for extraction/review runs so single-paper checks do not fail at `grokrxiv-data` remote push.
+4. Citation normalization remains queued globally, not as a one-off for `2606.13517`.
+5. Rerun only the affected source chosen for the fixture. Do not run all corpus entries.
+
+## Current Typed Math IR Plan
+
+Goal: LLM/tool extraction must turn LaTeX theorem/equation environments into structured typed math IR before Haskell/Lean scaffolds are emitted.
+
+Implemented in P0-057:
+1. Theorem schema accepts and validates `typed_transcription` and `theorem_ir`.
+2. Theorem tools expose full `statement` and `source_tex`.
+3. Ingest normalization preserves typed theorem fields.
+4. Semantic IR consumes supplied typed theorem IR and ignores proof blocks as formal theorem targets.
+5. Haskell/Lean contract tests still prove deterministic scaffolds are emitted only from typed/formal targets.
+
+Remaining:
+1. Enforce or postprocess the theorem agent contract so formal theorem/lemma/proposition/corollary entries cannot silently return `typed_transcription=null` as a successful formal extraction.
+2. Reduce theorem-agent prompt/tool payload size; the live run showed very large `read_section` tool results on `2606.13491`.
+3. Preserve bounded tool-call failure evidence locally; current failed agent tool logs were not available in Tier-1 artifacts.
+4. Add a local no-push validation mode or file remote override before rerunning `2606.13491`.
 
 ## Next Citation Plan
 

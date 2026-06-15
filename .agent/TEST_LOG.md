@@ -2,6 +2,10 @@
 
 | Time UTC | Commit | Branch | Command | Result | Raw log |
 |---|---|---|---|---|---|
+| 2026-06-15T15:30:13Z | `pending` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-extraction theorem -- --nocapture` | pass, 15 tests | chat transcript |
+| 2026-06-15T15:30:13Z | `pending` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-review-loop semantic_ir -- --nocapture` | pass, 8 tests | chat transcript |
+| 2026-06-15T15:30:13Z | `pending` | `grokrxiv-local-corpus-harness` | `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime apply_theorems_preserves_typed_math_ir_from_agent_output -- --nocapture` | pass, 1 test | chat transcript |
+| 2026-06-15T15:30:13Z | `pending` | `grokrxiv-local-corpus-harness` | `GROKRXIV_INGEST_NO_CACHE=1 GROKRXIV_EXTRACTION_MODE=agent_enabled cargo run --manifest-path agenthero/apps/grokrxiv/crates/orchestrator/Cargo.toml --quiet --bin grokrxiv-app -- --json --debug-logs extract 2606.13491` | fail, single-paper extraction only; LLM extraction stages fell back, local artifact wrote `typed_count=0`, final Stage 8 push failed | `agenthero/apps/grokrxiv/evals/results/20260615T-typed-ir-2606-13491/run-status.json` |
 | 2026-06-12T22:44:51Z | `0f157da` | `main` | `cargo test -p agenthero-orchestrator --test dag_app_registry` | pass, 21 tests | chat transcript |
 | 2026-06-12T22:44:51Z | `0f157da` | `main` | `cargo test -p agenthero-orchestrator --test agenthero_cli_contract` | pass, 24 tests | chat transcript |
 | 2026-06-12T23:01:56Z | `0f157da` | `grokrxiv-local-corpus-harness` | `git diff --check` | pass | chat transcript |

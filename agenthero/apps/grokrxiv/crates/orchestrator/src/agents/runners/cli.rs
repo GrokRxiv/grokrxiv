@@ -192,6 +192,10 @@ struct BuiltCommand {
     args: Vec<String>,
     /// The prompt body that gets piped to the child's stdin.
     stdin_payload: String,
+    /// Whether `stdin_payload` should be piped to the child. This is explicit
+    /// so Claude's documented `cat file | claude -p "query"` path does not
+    /// depend on an undocumented `-p -` sentinel.
+    pipe_stdin: bool,
     /// For codex: the schema file path written before invocation (so the test
     /// helper can assert it was placed and the runtime helper can clean up).
     /// `None` for claude / gemini.
@@ -559,7 +563,7 @@ fn build_tool_command(
     let args = match backend {
         CliProviderBackend::Claude => vec![
             "-p".to_string(),
-            "-".to_string(),
+            "Use the complete GrokRxiv extraction tool-call prompt supplied on stdin. Return only the requested JSON object.".to_string(),
             "--model".to_string(),
             spec.model.clone(),
             "--output-format".to_string(),
@@ -581,6 +585,7 @@ fn build_tool_command(
         program,
         args,
         stdin_payload: prompt.to_string(),
+        pipe_stdin: matches!(backend, CliProviderBackend::Claude),
         schema_path: None,
         cwd: Some(workdir.to_path_buf()),
     })
@@ -871,21 +876,34 @@ fn build_command(
         prompt.to_string()
     };
 
-    let (args, schema_path) = match backend {
+    let mut stdin_payload = provider_prompt.clone();
+    let (args, schema_path, pipe_stdin) = match backend {
         CliProviderBackend::Claude => {
-            // Pass the prompt via stdin (`-p -`) to avoid argv-length limits.
+            // Pass the large role prompt via stdin to avoid argv-length
+            // limits, but keep the actual `-p` query explicit. Claude's docs
+            // document `cat file | claude -p "query"` for piped content; they
+            // do not document `-p -` as a stdin sentinel.
+            stdin_payload = prompt.to_string();
+            let schema_json = serde_json::to_string(spec.schema.as_ref())
+                .map_err(|e| anyhow::anyhow!("failed to serialise claude json schema: {e}"))?;
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
             // (help text: "Skills still resolve via /skill-name").
             let args = vec![
                 "-p".to_string(),
-                "-".to_string(),
+                format!(
+                    "/{CLAUDE_SKILL_NAME}\n\n\
+                     Read the complete GrokRxiv review prompt supplied on stdin. \
+                     Follow it exactly and return only the requested schema-valid JSON object."
+                ),
                 "--model".to_string(),
                 spec.model.clone(),
                 "--output-format".to_string(),
                 "json".to_string(),
+                "--json-schema".to_string(),
+                schema_json,
             ];
-            (args, None)
+            (args, None, true)
         }
         CliProviderBackend::Codex => {
             // codex doesn't read prompts from stdin in `exec`; it takes a
@@ -903,7 +921,7 @@ fn build_command(
                 path.to_string_lossy().into_owned(),
                 provider_prompt.clone(),
             ];
-            (args, Some(path))
+            (args, Some(path), false)
         }
         CliProviderBackend::GeminiLegacy => {
             // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
@@ -920,20 +938,15 @@ fn build_command(
                 "-o".to_string(),
                 "json".to_string(),
             ];
-            (args, None)
+            (args, None, false)
         }
     };
-
-    // `stdin_payload` is only consumed by the claude branch (which reads
-    // `-p -`); for codex and gemini the prompt is already in argv. We still
-    // populate the field for symmetry / debugging so `BuiltCommand` always
-    // captures the prompt the model will actually see.
-    let stdin_payload = provider_prompt;
 
     Ok(BuiltCommand {
         program,
         args,
         stdin_payload,
+        pipe_stdin,
         schema_path,
         cwd: None,
     })
@@ -973,15 +986,9 @@ async fn exec_and_capture(
         "CLI subprocess API env scrubbed"
     );
 
-    // Only `claude` reads its prompt from stdin in our wiring. For codex /
-    // gemini the prompt is in argv, but we still set stdin to null to avoid
-    // the child blocking on an inherited terminal.
-    let uses_stdin = built
-        .args
-        .iter()
-        .zip(built.args.iter().skip(1))
-        .any(|(a, b)| a == "-p" && b == "-");
-    if uses_stdin {
+    // Only commands with `pipe_stdin` read stdin in our wiring. Others get
+    // null stdin so children cannot block on an inherited terminal.
+    if built.pipe_stdin {
         cmd.stdin(Stdio::piped());
     } else {
         cmd.stdin(Stdio::null());
@@ -1008,7 +1015,7 @@ async fn exec_and_capture(
         stderr.read_to_end(&mut buf).await.map(|_| buf)
     });
 
-    if uses_stdin {
+    if built.pipe_stdin {
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(built.stdin_payload.as_bytes())
@@ -1215,6 +1222,9 @@ fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
             let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) else {
                 return trimmed.to_string();
             };
+            if let Some(structured_output) = wrapper.get("structured_output") {
+                return structured_output.to_string();
+            }
             match wrapper.get("result") {
                 Some(serde_json::Value::String(s)) => s.clone(),
                 Some(other) => other.to_string(),
@@ -1976,11 +1986,26 @@ mod tests {
             built.program
         );
 
-        // Args: -p - --model <m> --output-format json
-        // (Skill is invoked via the `/grokrxiv-review` prompt prefix piped to
-        // stdin, NOT via a `--skill` CLI flag — claude CLI has no such flag.)
+        // Args: -p <query> --model <m> --output-format json --json-schema <schema>
+        // (Skill is invoked via the `/grokrxiv-review` query prefix, and the
+        // large prompt is piped to stdin. Claude CLI has no `--skill` flag.)
         let args = &built.args;
         assert!(args.contains(&"-p".to_string()), "missing -p in {args:?}");
+        let prompt_idx = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in claude args");
+        let prompt_value = args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in claude args");
+        assert!(
+            prompt_value.starts_with("/grokrxiv-review"),
+            "claude query should invoke the grokrxiv skill, got {prompt_value:?}"
+        );
+        assert_ne!(
+            prompt_value, "-",
+            "claude invocation should use documented piped-content shape, not `-p -`"
+        );
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--model" && w[1] == "claude-opus-4-7"),
@@ -1992,15 +2017,17 @@ mod tests {
             "missing --output-format json pair in {args:?}"
         );
         assert!(
+            args.windows(2).any(|w| w[0] == "--json-schema"),
+            "missing --json-schema pair in {args:?}"
+        );
+        assert!(
             !args.iter().any(|a| a == "--skill"),
             "claude CLI does not accept --skill; it must be absent ({args:?})"
         );
 
-        // Prompt is piped to stdin with `/grokrxiv-review` prefix
         assert!(
-            built.stdin_payload.starts_with("/grokrxiv-review"),
-            "stdin payload should be prefixed with /grokrxiv-review, got {:?}",
-            built.stdin_payload
+            built.pipe_stdin,
+            "claude should receive large prompts on stdin"
         );
         assert!(
             built.stdin_payload.contains("hello prompt"),
@@ -2157,6 +2184,19 @@ mod tests {
             "type": "result",
             "subtype": "success",
             "result": "{\"foo\":\"bar\"}"
+        })
+        .to_string();
+        let got = extract_json_text("claude", &wrapped);
+        assert_eq!(got, "{\"foo\":\"bar\"}");
+    }
+
+    #[test]
+    fn test_extract_json_text_prefers_claude_structured_output() {
+        let wrapped = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "structured_output": {"foo": "bar"},
+            "result": "ignored text"
         })
         .to_string();
         let got = extract_json_text("claude", &wrapped);
@@ -2482,6 +2522,7 @@ mod tests {
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2527,6 +2568,7 @@ exit 1
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2627,6 +2669,7 @@ exit 1
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2666,6 +2709,7 @@ exit 0
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2712,6 +2756,7 @@ exit 0
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2800,6 +2845,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };
@@ -2841,6 +2887,7 @@ printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
             program: script.to_string_lossy().to_string(),
             args: vec![],
             stdin_payload: String::new(),
+            pipe_stdin: false,
             schema_path: None,
             cwd: None,
         };

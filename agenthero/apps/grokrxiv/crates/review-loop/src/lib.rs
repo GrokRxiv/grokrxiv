@@ -181,6 +181,15 @@ pub fn build_semantic_ir_from_paper_math(
             ));
             continue;
         }
+        if source.kind == "proof" {
+            nonformal_review_claims.push(nonformal_claim(
+                &source.id,
+                statement.to_string(),
+                source_span,
+                "proof_block_used_as_dependency_evidence_not_formal_theorem_target",
+            ));
+            continue;
+        }
         if looks_like_assumption(&lower) {
             assumptions.push(json!({
                 "id": format!("assumption_{}", source.id),
@@ -202,12 +211,18 @@ pub fn build_semantic_ir_from_paper_math(
             continue;
         }
         let lean_declaration = lean_identifier(&source.id);
-        let theorem_ir = theorem_ir_from_statement(&lean_declaration, statement, &source_span);
-        let transcription_status = if has_unknown_prop(&theorem_ir["conclusion"]) {
-            "partial"
-        } else {
-            "transcribed"
-        };
+        let theorem_ir = typed_theorem_ir_from_source(
+            &lean_declaration,
+            statement,
+            &source_span,
+            source.typed_transcription.as_ref(),
+            source.theorem_ir.as_ref(),
+        );
+        let typed_transcription = typed_transcription_from_source(
+            statement,
+            &theorem_ir,
+            source.typed_transcription.as_ref(),
+        );
         theorem_candidates.push(json!({
             "id": format!("theorem_{}", lean_declaration),
             "kind": formal_math_kind(statement, &lower),
@@ -216,14 +231,7 @@ pub fn build_semantic_ir_from_paper_math(
             "source_claim_id": source.id,
             "source_span": source_span,
             "semantic_category": semantic_category_for_statement(statement, &lower),
-            "typed_transcription": {
-                "status": transcription_status,
-                "source_text": statement,
-                "math_objects": [],
-                "binders": theorem_ir["binders"].clone(),
-                "assumptions": theorem_ir["assumptions"].clone(),
-                "conclusion": theorem_ir["conclusion"].clone()
-            },
+            "typed_transcription": typed_transcription,
             "theorem_ir": theorem_ir,
             "dependencies": source.depends_on,
             "formalization_target": {
@@ -825,6 +833,8 @@ struct PaperMathSource {
     statement: String,
     section_id: serde_json::Value,
     depends_on: serde_json::Value,
+    typed_transcription: Option<serde_json::Value>,
+    theorem_ir: Option<serde_json::Value>,
 }
 
 fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<PaperMathSource> {
@@ -870,6 +880,8 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
                 .cloned()
                 .unwrap_or_else(|| json!(null));
             let depends_on = node.get("depends_on").cloned().unwrap_or_else(|| json!([]));
+            let typed_transcription = node.get("typed_transcription").cloned();
+            let theorem_ir = node.get("theorem_ir").cloned();
             Some(PaperMathSource {
                 artifact: "theorem_graph.json",
                 id,
@@ -877,6 +889,8 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
                 statement,
                 section_id,
                 depends_on,
+                typed_transcription,
+                theorem_ir,
             })
         })
         .collect::<Vec<_>>()
@@ -922,9 +936,115 @@ fn collect_paper_equation_sources(paper_math_sources: &serde_json::Value) -> Vec
                 statement,
                 section_id,
                 depends_on: json!([]),
+                typed_transcription: None,
+                theorem_ir: None,
             })
         })
         .collect()
+}
+
+fn typed_theorem_ir_from_source(
+    theorem_name: &str,
+    statement: &str,
+    source_span: &serde_json::Value,
+    typed_transcription: Option<&serde_json::Value>,
+    provided_theorem_ir: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let fallback = theorem_ir_from_statement(theorem_name, statement, source_span);
+    let mut theorem_ir = provided_theorem_ir
+        .filter(|value| value.is_object())
+        .cloned()
+        .or_else(|| {
+            typed_transcription.filter(|value| value.is_object()).map(|typed| {
+                json!({
+                    "theorem_name": theorem_name,
+                    "source_span": source_span,
+                    "binders": typed.get("binders").cloned().unwrap_or_else(|| json!([])),
+                    "assumptions": typed.get("assumptions").cloned().unwrap_or_else(|| json!([])),
+                    "conclusion": typed.get("conclusion").cloned().unwrap_or_else(|| fallback["conclusion"].clone()),
+                })
+            })
+        })
+        .unwrap_or_else(|| fallback.clone());
+
+    if let Some(obj) = theorem_ir.as_object_mut() {
+        obj.entry("theorem_name".to_string())
+            .or_insert_with(|| json!(theorem_name));
+        obj.entry("source_span".to_string())
+            .or_insert_with(|| source_span.clone());
+        obj.entry("binders".to_string()).or_insert_with(|| {
+            typed_transcription
+                .and_then(|typed| typed.get("binders").cloned())
+                .unwrap_or_else(|| fallback["binders"].clone())
+        });
+        obj.entry("assumptions".to_string()).or_insert_with(|| {
+            typed_transcription
+                .and_then(|typed| typed.get("assumptions").cloned())
+                .unwrap_or_else(|| fallback["assumptions"].clone())
+        });
+        obj.entry("conclusion".to_string()).or_insert_with(|| {
+            typed_transcription
+                .and_then(|typed| typed.get("conclusion").cloned())
+                .unwrap_or_else(|| fallback["conclusion"].clone())
+        });
+    }
+
+    theorem_ir
+}
+
+fn typed_transcription_from_source(
+    statement: &str,
+    theorem_ir: &serde_json::Value,
+    provided: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut typed = provided
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let requested_status = typed
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let conclusion = theorem_ir
+        .get("conclusion")
+        .cloned()
+        .unwrap_or_else(|| json!({"kind": "unknown_prop", "text": statement}));
+    let status = if contains_unknown_math_node(&conclusion) {
+        if requested_status == "untranscribed" {
+            "untranscribed"
+        } else {
+            "partial"
+        }
+    } else if matches!(requested_status.as_str(), "partial" | "untranscribed") {
+        requested_status.as_str()
+    } else {
+        "transcribed"
+    };
+
+    if let Some(obj) = typed.as_object_mut() {
+        obj.insert("status".to_string(), json!(status));
+        obj.entry("source_text".to_string())
+            .or_insert_with(|| json!(statement));
+        obj.entry("math_objects".to_string())
+            .or_insert_with(|| json!([]));
+        obj.entry("binders".to_string()).or_insert_with(|| {
+            theorem_ir
+                .get("binders")
+                .cloned()
+                .unwrap_or_else(|| json!([]))
+        });
+        obj.entry("assumptions".to_string()).or_insert_with(|| {
+            theorem_ir
+                .get("assumptions")
+                .cloned()
+                .unwrap_or_else(|| json!([]))
+        });
+        obj.entry("conclusion".to_string())
+            .or_insert_with(|| conclusion.clone());
+    }
+
+    typed
 }
 
 fn theorem_ir_from_statement(
@@ -1100,10 +1220,6 @@ fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
         }
     }
     None
-}
-
-fn has_unknown_prop(value: &serde_json::Value) -> bool {
-    value.get("kind").and_then(|v| v.as_str()) == Some("unknown_prop")
 }
 
 fn theorem_candidate_proof_target_issue(theorem: &serde_json::Value) -> Option<&'static str> {
@@ -2116,6 +2232,148 @@ end GrokRxiv
         assert_eq!(
             semantic_ir["nonformal_review_claims"][0]["source_claim_id"],
             "claim_review"
+        );
+    }
+
+    #[test]
+    fn semantic_ir_uses_llm_typed_theorem_ir_from_paper_math_sources() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let paper_math = json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": [
+                    {
+                        "id": "sec-main",
+                        "heading": "Main theorem",
+                        "body_markdown": "\\begin{theorem}\\label{thm:add-zero} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}"
+                    }
+                ]
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": [
+                    {
+                        "id": "eq-add-zero",
+                        "canonical_tex": "n + 0 = n",
+                        "section_id": "sec-main"
+                    }
+                ]
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": [
+                    {
+                        "id": "thm-add-zero",
+                        "type": "theorem",
+                        "statement": "For every $n \\in \\mathbb{N}$, $n + 0 = n$.",
+                        "section_id": "sec-main",
+                        "depends_on": ["eq-add-zero"],
+                        "typed_transcription": {
+                            "status": "transcribed",
+                            "source_text": "\\begin{theorem}\\label{thm:add-zero} For every $n \\in \\mathbb{N}$, $n + 0 = n$.\\end{theorem}",
+                            "math_objects": [
+                                {"name": "n", "type": {"kind": "nat"}}
+                            ],
+                            "binders": [
+                                {"name": "n", "type": {"kind": "nat"}}
+                            ],
+                            "assumptions": [],
+                            "conclusion": {
+                                "kind": "equals",
+                                "lhs": {
+                                    "kind": "add",
+                                    "lhs": {"kind": "var", "name": "n"},
+                                    "rhs": {"kind": "nat_lit", "value": 0}
+                                },
+                                "rhs": {"kind": "var", "name": "n"}
+                            }
+                        },
+                        "theorem_ir": {
+                            "theorem_name": "thm_add_zero",
+                            "binders": [
+                                {"name": "n", "type": {"kind": "nat"}}
+                            ],
+                            "assumptions": [],
+                            "conclusion": {
+                                "kind": "equals",
+                                "lhs": {
+                                    "kind": "add",
+                                    "lhs": {"kind": "var", "name": "n"},
+                                    "rhs": {"kind": "nat_lit", "value": 0}
+                                },
+                                "rhs": {"kind": "var", "name": "n"}
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+
+        let semantic_ir = build_semantic_ir_from_paper_math(
+            review_id,
+            &paper_math,
+            &json!({"claims": []}),
+            &json!({"nodes": [], "edges": []}),
+        );
+        let theorem = &semantic_ir["theorem_candidates"][0];
+
+        assert_eq!(theorem["typed_transcription"]["status"], "transcribed");
+        assert_eq!(theorem["theorem_ir"]["binders"][0]["name"], "n");
+        assert_eq!(
+            theorem["theorem_ir"]["binders"][0]["type"],
+            json!({"kind": "nat"})
+        );
+        assert_eq!(theorem["theorem_ir"]["conclusion"]["kind"], "equals");
+        assert_eq!(theorem["theorem_ir"]["conclusion"]["lhs"]["kind"], "add");
+        assert_eq!(
+            theorem["formalization_target"]["lean_declaration"],
+            "thm_add_zero"
+        );
+    }
+
+    #[test]
+    fn semantic_ir_does_not_turn_proof_blocks_into_theorem_targets() {
+        let review_id = Uuid::parse_str("5c0f871b-d0f8-4ddf-94e7-60c76f26a853").unwrap();
+        let paper_math = json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": []
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": []
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": [
+                    {
+                        "id": "proof-main",
+                        "type": "proof",
+                        "statement": "Proof. By Lemma 1 and equation (2), the bound follows.",
+                        "section_id": "sec-proof",
+                        "depends_on": ["lem-1", "eq-2"]
+                    }
+                ]
+            }
+        });
+
+        let semantic_ir = build_semantic_ir_from_paper_math(
+            review_id,
+            &paper_math,
+            &json!({"claims": []}),
+            &json!({"nodes": [], "edges": []}),
+        );
+
+        assert!(
+            semantic_ir["theorem_candidates"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "proof bodies are evidence, not theorem statements: {semantic_ir:?}"
+        );
+        assert_eq!(
+            semantic_ir["nonformal_review_claims"][0]["reason"],
+            "proof_block_used_as_dependency_evidence_not_formal_theorem_target"
         );
     }
 
