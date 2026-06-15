@@ -190,6 +190,21 @@ pub fn build_semantic_ir_from_paper_math(
             ));
             continue;
         }
+        // Remarks/examples/notes/constructions are commentary, not theorem targets — keep
+        // them as context so the LLM Lean author only ever sees real theorem-level claims
+        // (theorem/lemma/proposition/corollary), not "Remark 5 ..." prose.
+        if matches!(
+            source.kind.as_str(),
+            "remark" | "example" | "note" | "construction"
+        ) {
+            nonformal_review_claims.push(nonformal_claim(
+                &source.id,
+                statement.to_string(),
+                source_span,
+                "remark_or_example_used_as_context_not_formal_theorem_target",
+            ));
+            continue;
+        }
         if looks_like_assumption(&lower) {
             assumptions.push(json!({
                 "id": format!("assumption_{}", source.id),
