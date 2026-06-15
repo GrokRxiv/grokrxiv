@@ -4263,6 +4263,11 @@ async fn review_source(
     if options.debug_output {
         cli_status::set_enabled(true);
     }
+    // LLM calls in the whole review path (specialist reviewers AND the formalization
+    // loop) must never be killed mid-work. Raise the CLI kill-timeout floor for the
+    // entire review, not just the loop, so a working reviewer/author call runs to
+    // completion (only a genuinely hung process is bounded by this generous ceiling).
+    ensure_min_cli_timeout_secs(1800);
     let resolved = resolve_source(source, type_hint).await?;
     let resolved = expand_corpus_sources(resolved, &options).await?;
     if dry_run {
