@@ -161,3 +161,13 @@ Updated: 2026-06-14T07:08:47Z
 - Citation diagnosis correction: this is not only a raw LaTeX parser issue. The citation agent output contains real titles for examples like `Aki01` and `BMS67`, but the deterministic verifier evidence path reduces those same entries to `title=Aki01` and `title=BMS67`. The fix must be global across citation ingestion, verifier input construction, and handoff from normalized references to the resolver waterfall.
 - Theorem-target diagnosis: `semantic_ir` promoted section-heading/prose statements such as "In this section we prove Theorem 4..." into formal theorem candidates. That makes Lean fail correctly; the app should not ask Lean to prove prose.
 - Stop state: document-only checkpoint. Next coding session should start from the citation plan, not from another corpus run.
+
+## P0-055 PR PDF LLM Repair / Optional PDF Checkpoint
+
+Updated: 2026-06-15T14:03:42Z
+
+- User corrected direction: do not keep chasing paper-specific LaTeX Unicode mappings in Rust for generated review PDFs.
+- Implemented the PR artifact contract instead: generated review PDF compile failures fall through to the LLM `pr_artifact_fixer` path; the original arXiv source is not modified.
+- `review_loop/fixed/review.tex` is now the required PR artifact. `review_loop/fixed/review.pdf` is best-effort after the LLM repair loop and records `warn`/explicit skip when unavailable.
+- No full corpus run was started. No single-paper runtime rerun was started in this checkpoint.
+- Verification before cleanup: focused `pr_fixer_` tests passed 4/4; `review_loop_bundle_` tests passed 3/3; formatter check and `git diff --check` passed.

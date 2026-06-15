@@ -119,3 +119,11 @@ Coordinator assigns one queue item at a time into a local worktree under `.agent
 - Verification passed: focused new test, deterministic-author preservation test, app review-loop tests 17/17, app workspace check, structural tests 45/45, `git diff --check`, and PATH installs for `grokrxiv-app` plus `agenthero-dag-app-grokrxiv`.
 - API affected rerun `dad9153a-778c-4c4b-b2f3-f096a4c0ed21` proved Haskell now passes in one deterministic attempt with pinned GHC compile pass, independent reviewer pass, and `theorem_obligations=10`. Citation stayed within Tier R (`unverified=2`).
 - Residuals are intentionally separate: API novelty provider config, Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, and normal CLI rerun blocked by local Claude quota.
+
+## P0-055 Applied Patch
+
+- Changed PR artifact acceptance so missing `review.pdf` after LLM repair attempts is a warning when `review_loop/fixed/review.tex` exists.
+- Kept missing `review.tex` as a hard failure.
+- Preserved the compile-failure-to-LLM behavior with a regression guard.
+- Updated the `pr_artifact_fixer` prompt to state that it repairs only generated GrokRxiv review LaTeX, never original arXiv source.
+- No full corpus rerun. Next runtime check, if needed, should rerun only the single requested source, not the whole corpus.

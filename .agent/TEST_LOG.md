@@ -1276,3 +1276,17 @@ Evidence summary:
 - FAIL: Lean `NOT_PROVED`/`FAILED`, semantic adequacy `OVERCLAIMED`, policy gate fail.
 - External actions disabled and `pr_url=null`.
 - No full corpus run was started.
+
+## 2026-06-15 P0-055 PR PDF LLM Repair / Optional PDF
+
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_report_warns_when_llm_fails_but_tex_exists -- --nocapture`
+  - red before implementation: missing `build_pr_fixer_report` and `review_loop_pr_artifact_accepted`
+  - green after implementation: 1/1 passed
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime pr_fixer_ -- --nocapture`
+  - pass: 4/4
+- `cargo test --manifest-path agenthero/apps/grokrxiv/Cargo.toml -p grokrxiv-app-runtime review_loop_bundle_ -- --nocapture`
+  - pass: 3/3
+- `cargo fmt --manifest-path agenthero/apps/grokrxiv/Cargo.toml --all --check`
+  - pass
+- `git diff --check`
+  - pass

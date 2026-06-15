@@ -376,3 +376,27 @@ agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
   agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
   agh --json app run grokrxiv review https://arxiv.org/abs/2606.13517 --loop --debug --no-external-actions
 ```
+
+## Next Step After P0-055
+
+Do not run the full corpus.
+
+For the PR/PDF artifact path, the next runtime validation should be a single
+source only, preferably the last failing PR/PDF source:
+
+```sh
+agenthero/apps/grokrxiv/evals/bin/grokrxiv-run-with-timeout \
+  --timeout-secs 1800 \
+  --idle-timeout-secs 600 \
+  --status-json agenthero/apps/grokrxiv/evals/results/<ts>/arxiv-2606-13495-after-pr-pdf-policy/run-status.json \
+  --log agenthero/apps/grokrxiv/evals/results/<ts>/arxiv-2606-13495-after-pr-pdf-policy/run.log \
+  -- \
+  agenthero/apps/grokrxiv/evals/bin/grokrxiv-corpus-env \
+  agh --json app run grokrxiv review https://arxiv.org/abs/2606.13495 --loop --debug --no-external-actions
+```
+
+Expected PR artifact behavior:
+- If generated `review.tex` compiles directly, `pr_fixes.status=pass` and PDF may be present.
+- If PDF compile fails, the LLM `pr_artifact_fixer` must run.
+- If the LLM repair loop still cannot produce a PDF but `review_loop/fixed/review.tex` exists, `pr_fixes.status=warn`, bundle completeness skips only `review_loop/fixed/review.pdf`, and policy must not block solely on the missing PDF.
+- Missing `review_loop/fixed/review.tex` remains a hard failure.

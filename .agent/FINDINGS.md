@@ -2561,3 +2561,29 @@ Next targeted fixes:
 1. Normalize bibliography titles for `Label: Author, ``Title'', ...` references so citation validation uses titles instead of keys.
 2. Tighten theorem/proof-obligation filtering so section-heading prose does not become a Lean target.
 3. Reduce post-render and Lean-review payloads; pass artifact paths/summaries instead of embedding full HTML or multi-MB Lean review inputs where possible.
+
+## P0-055 PR PDF LLM Repair / Optional PDF
+
+ID: P0-055
+Scope: generated GrokRxiv PR/review artifacts only.
+Runner: local unit tests; no corpus or paper rerun.
+Bucket: F1 app-local review-loop artifact policy.
+NEVER-event: none observed.
+
+Finding:
+- The 2606.13495 run failed PR/PDF artifacts because the generated review LaTeX contained PDFLaTeX-hostile text and the `pr_artifact_fixer` LLM timed out after 360s.
+- The runtime policy treated missing `review.pdf` as a hard PR artifact failure even when `review.tex` existed.
+
+Correction:
+- Do not mutate original arXiv source files.
+- Do not add another paper-specific Rust Unicode repair for this checkpoint.
+- Keep the existing compile-first probe only as a detector. If generated `review.tex` does not compile to PDF, it returns no accepted report and the LLM `pr_artifact_fixer` path runs.
+- After the LLM repair loop, require `review_loop/fixed/review.tex`. Treat `review_loop/fixed/review.pdf` as best-effort with a `warn` status and bundle skip reason if missing.
+
+Evidence:
+- Red-first `pr_fixer_report_warns_when_llm_fails_but_tex_exists` failed before helper implementation, then passed.
+- Guard `pr_fixer_compile_failure_defers_to_llm_repair` proves compile failures are not locally accepted and must fall through to LLM repair.
+- Focused verification passed: `pr_fixer_` 4/4, `review_loop_bundle_` 3/3, `cargo fmt --check`, and `git diff --check`.
+
+Residual:
+- The LLM PR fixer still uses a full-file output schema. That is an LLM repair path, but it can be slow for small compile errors. A future optimization should make the LLM return a patch/replacement plan that the harness applies, rather than requiring a complete 50KB+ TeX rewrite.

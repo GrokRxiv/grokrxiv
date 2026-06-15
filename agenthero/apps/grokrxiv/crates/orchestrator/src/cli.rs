@@ -8468,10 +8468,14 @@ async fn run_review_loop_for_review(
 
     let pr_fixes =
         run_review_loop_pr_fixer(state, paper_id, review_id, &artifact_dir, debug_output).await?;
-    let pr_fixer_pass = pr_fixes
+    let fixed_pr_dir = artifact_dir.join("fixed");
+    let pr_fixer_accepted = review_loop_pr_artifact_accepted(&pr_fixes, &fixed_pr_dir);
+    let pr_fixer_status = pr_fixes
         .get("status")
         .and_then(|v| v.as_str())
-        .is_some_and(|status| status == "pass");
+        .unwrap_or("fail");
+    let pr_fixer_pass = pr_fixer_status == "pass";
+    let pr_fixer_warn = pr_fixer_status == "warn" && pr_fixer_accepted;
     let pr_skip_reason = pr_fixes
         .get("issues")
         .and_then(|value| value.as_array())
@@ -8479,12 +8483,6 @@ async fn run_review_loop_for_review(
         .and_then(|issue| issue.as_str())
         .unwrap_or("PR fixer did not produce the declared artifact")
         .to_string();
-    if !artifact_dir.join("fixed/review.tex").is_file() {
-        bundle_skip_reasons.insert(
-            "review_loop/fixed/review.tex".to_string(),
-            pr_skip_reason.clone(),
-        );
-    }
     if !artifact_dir.join("fixed/review.pdf").is_file() {
         bundle_skip_reasons.insert("review_loop/fixed/review.pdf".to_string(), pr_skip_reason);
     }
@@ -8499,6 +8497,8 @@ async fn run_review_loop_for_review(
         pr_fixes.clone(),
         if pr_fixer_pass {
             VerifierStatus::Pass
+        } else if pr_fixer_warn {
+            VerifierStatus::Warn
         } else {
             VerifierStatus::Fail
         },
@@ -8507,7 +8507,7 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "pr_fixer",
-        pr_fixer_pass,
+        pr_fixer_accepted,
         "review_loop/pr_fixes.json",
         debug_output,
         pr_fixes
@@ -8521,7 +8521,7 @@ async fn run_review_loop_for_review(
     let pr_review_results = serde_json::json!({
         "stage": "pr_review_fix_code",
         "max_attempts": 2,
-        "status": if pr_fixer_pass { "pass" } else { "fail" },
+        "status": pr_fixer_status,
         "attempts": pr_fixes
             .get("compile_review_loop")
             .and_then(|value| value.get("attempts"))
@@ -8546,6 +8546,8 @@ async fn run_review_loop_for_review(
         pr_review_results.clone(),
         if pr_fixer_pass {
             VerifierStatus::Pass
+        } else if pr_fixer_warn {
+            VerifierStatus::Warn
         } else {
             VerifierStatus::Fail
         },
@@ -8554,11 +8556,13 @@ async fn run_review_loop_for_review(
     .await?;
     emit_review_loop_node_debug(
         "pr_review_fix_code",
-        pr_fixer_pass,
+        pr_fixer_accepted,
         "review_loop/pr_review/results.json",
         debug_output,
         if pr_fixer_pass {
             "formatting review passed"
+        } else if pr_fixer_warn {
+            "formatting review produced TeX; PDF unavailable after repair attempts"
         } else {
             "formatting review failed"
         },
@@ -8622,9 +8626,8 @@ async fn run_review_loop_for_review(
         blocking_issues
             .push("Citation-validation evidence failed deterministic policy.".to_string());
     }
-    if !pr_fixer_pass {
-        blocking_issues
-            .push("PR fixer did not produce compile-reviewed corrected artifacts.".to_string());
+    if !pr_fixer_accepted {
+        blocking_issues.push("PR fixer did not produce required corrected review.tex.".to_string());
     }
     let integrity_ready = publication_policy.integrity_ready && blocking_issues.is_empty();
     let publisher_ready = publication_policy.publisher_ready && integrity_ready;
@@ -8647,7 +8650,7 @@ async fn run_review_loop_for_review(
             "lean_theorem_formalization": "proved",
             "semantic_adequacy": "all_theorem_claims_match_proved_lean_declarations",
             "citation_validation": "pass_or_warn",
-            "pr_artifacts": "fixed_tex_and_pdf_present",
+            "pr_artifacts": "fixed_tex_required_pdf_best_effort",
             "artifact_bundle": "all_declared_outputs_present_or_explicitly_skipped",
             "recommendation_policy": "publisher_ready_accept_or_corpus_expected_honest_or_unpinned_non_publishing"
         },
@@ -8680,7 +8683,13 @@ async fn run_review_loop_for_review(
             "citation": citation_report["status"],
             "reproducibility": "not_run",
             "integrity": if haskell_pass { "pass" } else { "fail" },
-            "safety": if pr_fixer_pass { "pass" } else { "fail" },
+            "safety": if pr_fixer_pass {
+                "pass"
+            } else if pr_fixer_warn {
+                "warn"
+            } else {
+                "fail"
+            },
         },
         "release_tier": {
             "tier": if publisher_ready { "formally_verified" } else { "in_review" },
@@ -9382,25 +9391,53 @@ async fn run_review_loop_pr_fixer(
         debug_output,
     )
     .await;
-    let mut issues = Vec::new();
-    if fix_loop.get("status").and_then(|value| value.as_str()) != Some("pass") {
-        issues.push(review_fix_loop_summary(&fix_loop));
-    }
-    let pdf_path = fixed_dir.join("review.pdf");
-    if !pdf_path.is_file() {
-        issues.push("fixed review.pdf was not produced".to_string());
-    }
-    let report = serde_json::json!({
-        "stage": "pr_fixer",
-        "status": if issues.is_empty() { "pass" } else { "fail" },
-        "artifact_worktree": fixed_dir.display().to_string(),
-        "fixed_tex": "review_loop/fixed/review.tex",
-        "fixed_pdf": if pdf_path.is_file() { Some("review_loop/fixed/review.pdf") } else { None::<&str> },
-        "compile_review_loop": fix_loop,
-        "issues": issues,
-    });
+    let report = build_pr_fixer_report(&fixed_dir, fix_loop);
     write_loop_json(&artifact_dir.join("pr_fixes.json"), &report).await?;
     Ok(report)
+}
+
+fn build_pr_fixer_report(fixed_dir: &Path, fix_loop: serde_json::Value) -> serde_json::Value {
+    let fixed_tex_path = fixed_dir.join("review.tex");
+    let pdf_path = fixed_dir.join("review.pdf");
+    let fixed_tex_present = fixed_tex_path.is_file();
+    let fixed_pdf_present = pdf_path.is_file();
+    let fix_loop_pass = fix_loop.get("status").and_then(|value| value.as_str()) == Some("pass");
+    let mut issues = Vec::new();
+    if !fix_loop_pass {
+        issues.push(review_fix_loop_summary(&fix_loop));
+    }
+    if !fixed_tex_present {
+        issues.push("fixed review.tex was not produced".to_string());
+    }
+    if !fixed_pdf_present {
+        issues.push(
+            "fixed review.pdf was not produced after LLM repair attempts; keeping review.tex as the required PR artifact"
+                .to_string(),
+        );
+    }
+    let status = if fixed_tex_present && fixed_pdf_present && fix_loop_pass {
+        "pass"
+    } else if fixed_tex_present {
+        "warn"
+    } else {
+        "fail"
+    };
+
+    serde_json::json!({
+        "stage": "pr_fixer",
+        "status": status,
+        "artifact_worktree": fixed_dir.display().to_string(),
+        "fixed_tex": if fixed_tex_present { Some("review_loop/fixed/review.tex") } else { None::<&str> },
+        "fixed_pdf": if fixed_pdf_present { Some("review_loop/fixed/review.pdf") } else { None::<&str> },
+        "compile_review_loop": fix_loop,
+        "issues": issues,
+    })
+}
+
+fn review_loop_pr_artifact_accepted(report: &serde_json::Value, fixed_dir: &Path) -> bool {
+    let status = report.get("status").and_then(|value| value.as_str());
+    let fixed_tex_present = fixed_dir.join("review.tex").is_file();
+    matches!(status, Some("pass")) || (status == Some("warn") && fixed_tex_present)
 }
 
 fn build_pr_artifact_fixer_input(
@@ -14004,6 +14041,102 @@ mod tests {
         );
         assert!(fixed_tex.is_file());
         assert!(fixed_dir.join("review.pdf").is_file());
+    }
+
+    #[tokio::test]
+    async fn pr_fixer_compile_failure_defers_to_llm_repair() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-pr-compile-fail-")
+            .tempdir()
+            .expect("tempdir");
+        let source_tex = tempdir.path().join("source-review.tex");
+        let fixed_dir = tempdir.path().join("fixed");
+        let fixed_tex = fixed_dir.join("review.tex");
+        let fake_latex = tempdir.path().join("fake-latex.sh");
+
+        tokio::fs::write(
+            &source_tex,
+            "\\documentclass{article}\\begin{document}bad pdf\\end{document}\n",
+        )
+        .await
+        .expect("source tex");
+        tokio::fs::write(
+            &fake_latex,
+            "#!/bin/sh\nset -eu\necho '! LaTeX Error: Unicode character' >&2\nexit 1\n",
+        )
+        .await
+        .expect("fake latex");
+        let mut perms = std::fs::metadata(&fake_latex)
+            .expect("fake latex metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_latex, perms).expect("chmod fake latex");
+
+        let (report, compile_run) = try_compile_existing_pr_artifact(
+            &source_tex,
+            &fixed_tex,
+            &fixed_dir,
+            fake_latex.to_str().expect("script path utf8"),
+            &[],
+            5,
+        )
+        .await
+        .expect("compile fast path");
+
+        assert!(
+            report.is_none(),
+            "compile failures must fall through to LLM repair"
+        );
+        assert_eq!(
+            compile_run
+                .as_ref()
+                .expect("compile run should be recorded")
+                .status,
+            "fail"
+        );
+        assert!(fixed_tex.is_file());
+        assert!(!fixed_dir.join("review.pdf").is_file());
+    }
+
+    #[test]
+    fn pr_fixer_report_warns_when_llm_fails_but_tex_exists() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-pr-pdf-optional-")
+            .tempdir()
+            .expect("tempdir");
+        let fixed_dir = tempdir.path().join("fixed");
+        let fixed_tex = fixed_dir.join("review.tex");
+        std::fs::create_dir_all(&fixed_dir).expect("fixed dir");
+        std::fs::write(
+            &fixed_tex,
+            "\\documentclass{article}\\begin{document}review artifact\\end{document}\n",
+        )
+        .expect("fixed tex");
+        let fix_loop = serde_json::json!({
+            "stage": "pr_review_fix_code",
+            "status": "fail",
+            "attempts": [{
+                "attempt": 1,
+                "status": "fail",
+                "author_error": "CliRunner timed out after 360s for role pr_artifact_fixer"
+            }]
+        });
+
+        let report = build_pr_fixer_report(&fixed_dir, fix_loop);
+
+        assert_eq!(report["status"].as_str(), Some("warn"));
+        assert_eq!(report["fixed_pdf"], serde_json::Value::Null);
+        assert!(review_loop_pr_artifact_accepted(&report, &fixed_dir));
+        assert!(report["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|issue| issue
+                .as_str()
+                .unwrap()
+                .contains("fixed review.pdf was not produced")));
     }
 
     #[test]
