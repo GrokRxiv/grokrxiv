@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grokrxiv.org/schemas/lean_faithfulness_verdict.schema.json",
+  "title": "GrokRxiv Lean Faithfulness Verdict",
+  "description": "Advisory paper-theorem <-> kernel-proved Lean-statement equivalence verdict. ADVISORY ONLY: never blocks publication; the Lean kernel remains the sole proof authority and a human is the final arbiter of faithfulness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "lean_declaration",
+    "back_translation",
+    "hypothesis_completeness",
+    "conclusion_matches",
+    "triviality_risk",
+    "verdict",
+    "issues",
+    "confidence"
+  ],
+  "properties": {
+    "lean_declaration": {
+      "description": "The exact Lean declaration name of the kernel-proved target this verdict is about.",
+      "type": "string",
+      "minLength": 1
+    },
+    "back_translation": {
+      "description": "A faithful natural-language rendering of the Lean statement as written, produced WITHOUT consulting the paper theorem text (round-trip back-translation). Render only what the Lean binders, hypotheses, and conclusion actually say.",
+      "type": "string",
+      "minLength": 1
+    },
+    "hypothesis_completeness": {
+      "description": "Whether every hypothesis present in the paper theorem appears as a Lean binder or assumption.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "missing_hypotheses", "note"],
+      "properties": {
+        "complete": {
+          "description": "True only if no paper hypothesis is dropped, weakened, or collapsed (e.g. a typed relation reduced to an opaque predicate) in the Lean statement.",
+          "type": "boolean"
+        },
+        "missing_hypotheses": {
+          "description": "Each paper hypothesis that is missing from or weaker than the Lean statement. Empty when complete is true.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["paper_hypothesis", "reason"],
+            "properties": {
+              "paper_hypothesis": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "conclusion_matches": {
+      "description": "Whether the Lean conclusion states the same proposition the paper theorem concludes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matches", "note"],
+      "properties": {
+        "matches": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "triviality_risk": {
+      "description": "Whether the Lean statement is a trivially-true strawman (e.g. vacuous hypotheses, a degenerate special case, or a tautology) that the kernel would accept without capturing the paper's claim.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trivial", "note"],
+      "properties": {
+        "trivial": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "verdict": {
+      "description": "Overall advisory equivalence verdict. `faithful`: Lean statement captures the paper theorem; `suspect`: plausible but with unresolved divergences; `unfaithful`: drops a hypothesis, mismatches the conclusion, or is a strawman.",
+      "type": "string",
+      "enum": ["faithful", "suspect", "unfaithful"]
+    },
+    "issues": {
+      "description": "Specific divergences found between the paper theorem and the Lean statement.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["info", "warning", "critical"]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

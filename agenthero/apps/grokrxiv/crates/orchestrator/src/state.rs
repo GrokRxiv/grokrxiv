@@ -517,7 +517,9 @@ mod tests {
 
     #[test]
     fn build_agent_registry_applies_resolved_model_override() {
-        let role = "haskell_semantic_author";
+        // `build_agent_registry` only builds roles that the on-disk DAG manifests declare.
+        // The Haskell roles were retired, so use a still-registered review-loop role.
+        let role = "lean_proof_author";
         let _guard = EnvVarGuard::set(
             crate::runtime_config::role_model_override_env_var(role),
             "claude-sonnet-test",
@@ -531,7 +533,7 @@ mod tests {
         let schema = Arc::new(serde_json::json!({ "type": "object" }));
         schemas.insert(role.to_string(), schema.clone());
         let registry = build_agent_registry(&role_yaml, &Arc::new(schemas)).unwrap();
-        let agent = registry.get(role).expect("haskell semantic author agent");
+        let agent = registry.get(role).expect("lean proof author agent");
 
         assert_eq!(agent.spec().model, "claude-sonnet-test");
         assert!(

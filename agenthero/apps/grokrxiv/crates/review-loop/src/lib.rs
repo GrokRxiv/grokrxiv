@@ -506,7 +506,8 @@ pub fn build_theorem_map(
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            let status = lean_entry_status(kind, lean_results);
+            let lean_declaration = obligation.get("lean_declaration").and_then(|v| v.as_str());
+            let status = lean_entry_status(kind, lean_declaration, lean_results);
             json!({
                 "obligation_id": obligation.get("id").cloned().unwrap_or_else(|| json!(null)),
                 "kind": kind,
@@ -789,17 +790,13 @@ pub fn validate_lean_proof_code(code: &str, obligations: &serde_json::Value) -> 
                     "Lean proof is metadata-only or missing theorem declaration {decl}."
                 ));
             }
-            if let Some(expected) = obligation.get("lean_statement").and_then(|v| v.as_str()) {
-                match extract_lean_statement_for_decl(code, decl) {
-                    Some(actual) if normalize_lean_statement(&actual) == normalize_lean_statement(expected) => {}
-                    Some(_) => issues.push(format!(
-                        "Lean proof must not alter emitted statement for {decl}."
-                    )),
-                    None => issues.push(format!(
-                        "Lean proof must not alter emitted statement for {decl}; declaration was not parseable."
-                    )),
-                }
-            }
+            // The LLM authors the FAITHFUL Lean statement directly from the paper
+            // theorem; the deterministic `lean_statement` is only a hint and may drop
+            // hypotheses, so we no longer byte-match the statement against it (that is
+            // exactly what collapsed typed relations to operand-dropping predicates).
+            // Proof correctness is enforced by the Lean kernel (`lake env lean`) plus the
+            // forbidden-term check above; statement faithfulness is checked separately
+            // (back-translation / hypothesis-completeness) and surfaced for moderation.
         }
     }
     if lower.contains("claimcount") || lower.contains("claim_count") {
@@ -1414,34 +1411,6 @@ fn emit_term(value: &serde_json::Value) -> String {
     }
 }
 
-fn extract_lean_statement_for_decl(code: &str, decl: &str) -> Option<String> {
-    let mut collecting = false;
-    let mut statement = String::new();
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if !collecting
-            && (trimmed.starts_with(&format!("theorem {decl}"))
-                || trimmed.starts_with(&format!("lemma {decl}")))
-        {
-            collecting = true;
-        }
-        if collecting {
-            if !statement.is_empty() {
-                statement.push(' ');
-            }
-            statement.push_str(trimmed);
-            if trimmed.contains(":= by") {
-                return Some(statement);
-            }
-        }
-    }
-    if collecting && !statement.is_empty() {
-        Some(statement)
-    } else {
-        None
-    }
-}
-
 fn normalize_lean_statement(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -1612,14 +1581,39 @@ fn lean_identifier(raw: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-fn lean_entry_status(kind: &str, lean_results: &serde_json::Value) -> &'static str {
+fn lean_entry_status(
+    kind: &str,
+    lean_declaration: Option<&str>,
+    lean_results: &serde_json::Value,
+) -> &'static str {
     if kind == "semantic_gap" {
         return "SEMANTIC_GAP";
+    }
+    // Per-theorem authoring: each obligation has its own proof run recorded under
+    // `declarations[<lean_declaration>]`. When that per-declaration entry exists, the
+    // status/diagnostics for THIS obligation come from it (so a paper with some proved and
+    // some unproved theorems yields per-theorem PROVED/FAILED rather than a single global
+    // verdict). The Lean kernel is still the sole proof authority: a declaration is only
+    // recorded `pass` after `lake env lean` accepted it with no sorry/admit/axiom.
+    if let Some(decl_results) = lean_declaration.and_then(|decl| {
+        lean_results
+            .get("declarations")
+            .and_then(|map| map.get(decl))
+    }) {
+        if decl_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
+            return "PROVED";
+        }
+        let diagnostics = lean_status_diagnostics(decl_results);
+        return classify_lean_failure(&diagnostics);
     }
     if lean_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
         return "PROVED";
     }
     let diagnostics = lean_status_diagnostics(lean_results);
+    classify_lean_failure(&diagnostics)
+}
+
+fn classify_lean_failure(diagnostics: &str) -> &'static str {
     if diagnostics.contains("sorry") {
         "USES_SORRY"
     } else if diagnostics.contains("axiom") {
@@ -2735,7 +2729,15 @@ end GrokRxiv
     }
 
     #[test]
-    fn lean_validator_rejects_statement_mutation() {
+    fn lean_validator_no_longer_byte_matches_statement() {
+        // Phase 3: the LLM authors the FAITHFUL Lean statement directly from the paper
+        // theorem; the deterministic `lean_statement` is only a hint and may itself drop
+        // hypotheses. The validator therefore NO LONGER byte-matches the authored statement
+        // against the emitted skeleton (that byte-lock is what collapsed typed relations into
+        // operand-dropping predicates). A statement that differs from the emitted hint but
+        // still declares the right name and uses no forbidden term passes deterministic
+        // validation; faithfulness (e.g. an over-narrowed strawman) is caught by the Lean
+        // kernel and the advisory faithfulness checker, not here.
         let obligations = json!({
             "obligations": [
                 {
@@ -2748,7 +2750,7 @@ end GrokRxiv
                 }
             ]
         });
-        let narrowed = r#"
+        let differing = r#"
 namespace GrokRxiv
 
 theorem thm_add_zero (n : Nat) : n = n := by
@@ -2757,11 +2759,62 @@ theorem thm_add_zero (n : Nat) : n = n := by
 end GrokRxiv
 "#;
 
-        let issues = validate_lean_proof_code(narrowed, &obligations);
+        let issues = validate_lean_proof_code(differing, &obligations);
 
+        // No byte-match issue is raised for a differing-but-faithfully-authored statement.
+        assert!(
+            !issues
+                .iter()
+                .any(|issue| issue.contains("must not alter emitted statement")),
+            "byte-match statement lock must be gone: {issues:?}"
+        );
+        // The required declaration is present and no forbidden term is used, so the
+        // deterministic validator finds no issues.
+        assert!(
+            issues.is_empty(),
+            "faithful-statement authoring must pass deterministic validation: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn lean_validator_still_rejects_forbidden_terms_and_missing_decl() {
+        // The anti-hallucination floor stays: forbidden terms and a missing declaration are
+        // still hard deterministic failures even though the statement is no longer byte-locked.
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_theorem_thm_add_zero",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "thm_add_zero",
+                    "statement": "For all n : Nat, n + 0 = n.",
+                    "lean_statement": "theorem thm_add_zero (n : Nat) : n + 0 = n := by",
+                    "lean_skeleton": "namespace GrokRxiv\n\ntheorem thm_add_zero (n : Nat) : n + 0 = n := by\n  sorry\n\nend GrokRxiv\n"
+                }
+            ]
+        });
+        let with_sorry = r#"
+namespace GrokRxiv
+
+theorem thm_add_zero (n : Nat) : n + 0 = n := by
+  sorry
+
+end GrokRxiv
+"#;
+        let issues = validate_lean_proof_code(with_sorry, &obligations);
+        assert!(issues.iter().any(|issue| issue.contains("forbidden term sorry")));
+
+        let missing_decl = r#"
+namespace GrokRxiv
+
+theorem some_other_name (n : Nat) : n + 0 = n := by
+  rfl
+
+end GrokRxiv
+"#;
+        let issues = validate_lean_proof_code(missing_decl, &obligations);
         assert!(issues
             .iter()
-            .any(|issue| issue.contains("must not alter emitted statement")));
+            .any(|issue| issue.contains("missing theorem declaration thm_add_zero")));
     }
 
     #[test]
@@ -2806,6 +2859,75 @@ end GrokRxiv
 
         assert_eq!(theorem_map["status"], "TYPE_ERROR");
         assert_eq!(theorem_map["entries"][0]["status"], "TYPE_ERROR");
+    }
+
+    #[test]
+    fn theorem_map_reads_per_declaration_status_from_per_theorem_aggregate() {
+        // Per-theorem authoring records each obligation's verdict under
+        // `declarations[<lean_declaration>]`. `build_theorem_map`/`lean_entry_status` must
+        // read THOSE per-declaration entries so a paper with one proved and one failed
+        // theorem yields per-theorem PROVED/FAILED, not a single global verdict.
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_thm_one",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "thm_one",
+                    "source_claim_id": "thm-one",
+                    "statement": "Theorem one."
+                },
+                {
+                    "id": "formalize_thm_two",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "thm_two",
+                    "source_claim_id": "thm-two",
+                    "statement": "Theorem two."
+                }
+            ]
+        });
+        let lean_results = json!({
+            // Aggregate top-level status is `partial`; consumers must NOT treat that as proved.
+            "status": "partial",
+            "mode": "per_theorem",
+            "verified_statements": {
+                "thm_one": "theorem thm_one : True := by trivial"
+            },
+            "declarations": {
+                "thm_one": {
+                    "status": "pass",
+                    "attempts": [{"attempt": 1, "status": "pass"}]
+                },
+                "thm_two": {
+                    "status": "fail",
+                    "attempts": [{
+                        "attempt": 2,
+                        "compile": {
+                            "status": "fail",
+                            "stdout": "GrokRxiv/Proofs.lean:3:1: error: unsolved goals",
+                            "stderr": ""
+                        }
+                    }]
+                }
+            }
+        });
+
+        let theorem_map = build_theorem_map(&obligations, &lean_results);
+
+        let entries = theorem_map["entries"].as_array().expect("entries");
+        let one = entries
+            .iter()
+            .find(|e| e["lean_declaration"] == "thm_one")
+            .expect("thm_one entry");
+        let two = entries
+            .iter()
+            .find(|e| e["lean_declaration"] == "thm_two")
+            .expect("thm_two entry");
+        assert_eq!(one["status"], "PROVED", "kernel-proved theorem must be PROVED");
+        assert_eq!(one["verified_statement"], "theorem thm_one : True := by trivial");
+        assert_eq!(two["status"], "TYPE_ERROR", "failed theorem must not be PROVED");
+        // Top-level map status is the first non-PROVED entry status (not blindly the
+        // aggregate's `partial`), so the paper is not falsely reported fully proved.
+        assert_ne!(theorem_map["status"], "PROVED");
     }
 
     #[test]

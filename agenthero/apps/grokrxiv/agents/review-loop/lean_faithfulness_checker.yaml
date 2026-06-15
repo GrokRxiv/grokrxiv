@@ -1,0 +1,14 @@
+id: lean_faithfulness_checker
+kind: verifier
+role: "Advisory paper-theorem to kernel-proved Lean-statement equivalence check (back-translation, hypothesis completeness, triviality)."
+provider: openai
+model: gpt-5.5
+runner: cli
+prompt_template: prompts/review-loop/lean_faithfulness_checker.md
+input_schema: schemas/lean_verification.schema.json
+output_schema: schemas/lean_faithfulness_verdict.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 300
+escalation: agent

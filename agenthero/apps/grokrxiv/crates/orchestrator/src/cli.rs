@@ -5587,40 +5587,50 @@ fn review_loop_agent_input_requirements(
             reason: "agent payload must declare the code target",
             remediation: "reconstruct the review-loop code task payload before invoking the role",
         },
-        ReviewLoopInputRequirement {
-            json_pointer: "/base",
-            artifact: "review_loop/code_task.base",
-            reason: "agent payload must include the upstream stage artifact bundle",
-            remediation:
-                "rerun the owning upstream stage or emit an explicit skipped/partial contract",
-        },
-        ReviewLoopInputRequirement {
-            json_pointer: "/harness",
-            artifact: "review_loop/git_harness",
-            reason: "agent payload must include the isolated git harness location",
-            remediation: "rerun review-loop harness preparation before invoking the role",
-        },
     ];
 
+    // `/base` and `/harness` are the code-task git-harness contract: they only apply to the
+    // author/reviewer/fixer code targets. Advisory single-shot targets (e.g. the faithfulness
+    // checker) carry a focused, harness-free artifact and declare their own required fields
+    // below, so the generic base+harness requirements must NOT be appended for them.
+    let code_task_target = matches!(target, "lean" | "haskell" | "pr");
+    if code_task_target {
+        requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/base",
+                artifact: "review_loop/code_task.base",
+                reason: "agent payload must include the upstream stage artifact bundle",
+                remediation:
+                    "rerun the owning upstream stage or emit an explicit skipped/partial contract",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/harness",
+                artifact: "review_loop/git_harness",
+                reason: "agent payload must include the isolated git harness location",
+                remediation: "rerun review-loop harness preparation before invoking the role",
+            },
+        ]);
+    }
+
     match target {
-        "haskell" => requirements.extend([
+        "faithfulness" => requirements.extend([
             ReviewLoopInputRequirement {
-                json_pointer: "/base/semantic_ir",
-                artifact: "review_loop/semantic_ir.json",
-                reason: "Haskell semantic modeling must consume the canonical typed semantic IR, not inferred review prose",
-                remediation: "rerun semantic_category_mapper or emit an explicit skipped/partial contract before haskell_review_fix_code",
+                json_pointer: "/lean_declaration",
+                artifact: "review_loop/lean/results.json#declarations",
+                reason: "faithfulness checking must name the exact kernel-proved Lean declaration",
+                remediation: "iterate over kernel-proved targets from the per-theorem lean results",
             },
             ReviewLoopInputRequirement {
-                json_pointer: "/base/paper_math_sources",
-                artifact: "review_loop/paper_math_sources.json",
-                reason: "Haskell semantic modeling needs the normalized extraction provenance for the IR",
-                remediation: "rerun paper_math_source_collector and semantic_category_mapper before haskell_review_fix_code",
+                json_pointer: "/paper_theorem",
+                artifact: "review_loop/proof_obligations.json#obligations.statement",
+                reason: "faithfulness checking must compare against the paper theorem statement text",
+                remediation: "pass the obligation `statement` for the proved target",
             },
             ReviewLoopInputRequirement {
-                json_pointer: "/base/haskell_semantic_contract",
-                artifact: "review_loop/haskell_semantic_contract",
-                reason: "the Haskell author needs the explicit rule that only semantic_ir formal sources become proof targets",
-                remediation: "compact the Haskell code-task base artifact before invoking haskell_semantic_author",
+                json_pointer: "/lean_statement",
+                artifact: "review_loop/lean/results.json#verified_statements",
+                reason: "faithfulness checking must read the kernel-verified Lean statement/signature",
+                remediation: "pass the kernel-proved Lean source for the target",
             },
         ]),
         "lean" => requirements.extend([
@@ -5641,12 +5651,6 @@ fn review_loop_agent_input_requirements(
                 artifact: "review_loop/semantic_ir.json",
                 reason: "Lean proof completion must trace theorem targets back to the typed semantic IR",
                 remediation: "rerun semantic_category_mapper before lean_review_fix_code",
-            },
-            ReviewLoopInputRequirement {
-                json_pointer: "/base/haskell_results",
-                artifact: "review_loop/haskell/results.json",
-                reason: "Lean proof completion depends on the Haskell semantic model status",
-                remediation: "rerun haskell_review_fix_code before lean_review_fix_code",
             },
         ]),
         "pr" => requirements.extend([
@@ -5907,596 +5911,6 @@ fn summarize_review_loop_knowledge_graph(value: &serde_json::Value) -> serde_jso
     })
 }
 
-fn deterministic_haskell_semantic_model_agent_run(
-    role: &str,
-    task: &ReviewFixCodeTask,
-    base_artifact: &serde_json::Value,
-) -> Option<AgentRun> {
-    if task.target_id != "haskell" {
-        return None;
-    }
-    let code = deterministic_haskell_semantic_model_code(base_artifact);
-    Some(AgentRun {
-        role: role.to_string(),
-        runner: AgentRunnerKind::Cli,
-        model: "deterministic-haskell-semantic-model".to_string(),
-        output: serde_json::json!({
-            "language": task.language,
-            "filename": task.filename,
-            "code": code,
-            "notes": [
-                "generated locally from compact semantic_ir theorem candidates to avoid semantic-author runner timeout"
-            ],
-            "confidence": 1.0,
-        }),
-        raw_output: Some(
-            "generated locally from compact semantic_ir theorem candidates".to_string(),
-        ),
-        tokens_in: None,
-        tokens_out: None,
-        latency_ms: 0,
-        cache_hit: true,
-        sandbox_ref: None,
-        verifier_status: None,
-        verifier_notes: None,
-    })
-}
-
-fn deterministic_haskell_semantic_model_code(base_artifact: &serde_json::Value) -> String {
-    let semantic_ir = base_artifact
-        .get("semantic_ir")
-        .unwrap_or(&serde_json::Value::Null);
-    let theorem_candidates = semantic_ir
-        .get("theorem_candidates")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let definitions = semantic_ir
-        .get("definitions")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let assumptions = semantic_ir
-        .get("assumptions")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let limitations = semantic_ir
-        .get("limitations")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut out = String::from(
-        "module SemanticModel where\n\n\
-data SourceSpan = SourceSpan { sourceArtifact :: String, sourceClaimId :: String, sourcePaperSourceId :: String, sourceSectionId :: String, sourceTextExcerpt :: String } deriving (Eq, Show)\n\n\
-data MathType = UnknownType String | PropType | CustomType String deriving (Eq, Show)\n\n\
-data Term = UnknownTerm String | Var String | RawTerm String SourceSpan deriving (Eq, Show)\n\n\
-data Proposition = SemanticGap SourceSpan String | UninterpretedPredicate String [Term] SourceSpan | Equals Term Term | Implies Proposition Proposition | And [Proposition] deriving (Eq, Show)\n\n\
-data Binder = Binder { binderName :: String, binderType :: MathType, binderSpan :: SourceSpan } deriving (Eq, Show)\n\n\
-data Definition = Definition { definitionId :: String, definitionStatement :: String, definitionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
-data Assumption = Assumption { assumptionId :: String, assumptionStatement :: String, assumptionSpan :: SourceSpan } deriving (Eq, Show)\n\n\
-data Limitation = Limitation { limitationId :: String, limitationKind :: String, limitationStatement :: String, limitationSpan :: SourceSpan } deriving (Eq, Show)\n\n\
-data LeanTarget = LeanTarget { targetDeclaration :: String, targetExpectedShape :: String, targetSource :: SourceSpan } deriving (Eq, Show)\n\n\
-data SemanticCategory = SemCatEquivalence | SemCatPlainTheorem | SemCatInvariantPreservation | SemCatOther String deriving (Eq, Show)\n\n\
-data TheoremKind = KindEquivalence | KindTheorem | KindInvariant | KindEquation | KindOther String deriving (Eq, Show)\n\n\
-data FormalizationClass = FormalMath | InformalProse | FCOther String deriving (Eq, Show)\n\n\
-data TranscriptionStatus = StatusTranscribed | StatusPartial | StatusUntranscribed | StatusOther String deriving (Eq, Show)\n\n\
-data TheoremIR = TheoremIR { theoremId :: String, theoremStatement :: String, theoremSpan :: SourceSpan, theoremBinders :: [Binder], theoremAssumptions :: [Proposition], theoremConclusion :: Proposition, theoremTarget :: LeanTarget, theoremKind :: TheoremKind, theoremSemanticCategory :: SemanticCategory, theoremFormalizationClass :: FormalizationClass, theoremTranscriptionStatus :: TranscriptionStatus } deriving (Eq, Show)\n\n\
-data ClaimIR = ClaimIR { claimId :: String, claimRawText :: String, claimSource :: SourceSpan, claimSemanticCategory :: SemanticCategory, claimTheorem :: Maybe TheoremIR } deriving (Eq, Show)\n\n\
-data ProofObligation = ProofObligation { obligationId :: String, obligationStatement :: Proposition, obligationSource :: SourceSpan, obligationLean :: LeanTarget } deriving (Eq, Show)\n\n",
-    );
-
-    out.push_str("definitions :: [Definition]\ndefinitions =\n");
-    out.push_str(&haskell_list(
-        definitions
-            .iter()
-            .enumerate()
-            .map(|(idx, definition)| {
-                format!(
-                    "Definition {} {} {}",
-                    haskell_string_literal(&json_string_or_fallback(
-                        definition,
-                        &["id", "name"],
-                        &format!("definition_{}", idx + 1),
-                    )),
-                    haskell_string_literal(&json_string_or_fallback(
-                        definition,
-                        &["statement", "text", "label"],
-                        "unknown definition",
-                    )),
-                    haskell_source_span_literal(definition, &format!("definition_{}", idx + 1))
-                )
-            })
-            .collect::<Vec<_>>(),
-    ));
-    out.push_str("\n\n");
-
-    out.push_str("globalAssumptions :: [Assumption]\nglobalAssumptions =\n");
-    out.push_str(&haskell_list(
-        assumptions
-            .iter()
-            .enumerate()
-            .map(|(idx, assumption)| {
-                format!(
-                    "Assumption {} {} {}",
-                    haskell_string_literal(&json_string_or_fallback(
-                        assumption,
-                        &["id", "name"],
-                        &format!("assumption_{}", idx + 1),
-                    )),
-                    haskell_string_literal(&json_string_or_fallback(
-                        assumption,
-                        &["statement", "text", "label"],
-                        "unknown assumption",
-                    )),
-                    haskell_source_span_literal(assumption, &format!("assumption_{}", idx + 1))
-                )
-            })
-            .collect::<Vec<_>>(),
-    ));
-    out.push_str("\n\n");
-
-    out.push_str("limitations :: [Limitation]\nlimitations =\n");
-    out.push_str(&haskell_list(
-        limitations
-            .iter()
-            .enumerate()
-            .map(|(idx, limitation)| {
-                format!(
-                    "Limitation {} {} {} {}",
-                    haskell_string_literal(&json_string_or_fallback(
-                        limitation,
-                        &["id", "limitation_id"],
-                        &format!("limitation_{}", idx + 1),
-                    )),
-                    haskell_string_literal(&json_string_or_fallback(
-                        limitation,
-                        &["kind"],
-                        "semantic_gap",
-                    )),
-                    haskell_string_literal(&json_string_or_fallback(
-                        limitation,
-                        &["statement", "message"],
-                        "semantic limitation",
-                    )),
-                    haskell_source_span_literal(limitation, &format!("limitation_{}", idx + 1))
-                )
-            })
-            .collect::<Vec<_>>(),
-    ));
-    out.push_str("\n\n");
-
-    let theorem_names = theorem_candidates
-        .iter()
-        .enumerate()
-        .map(|(idx, theorem)| {
-            let lean_decl = theorem
-                .get("formalization_target")
-                .and_then(|target| target.get("lean_declaration"))
-                .and_then(|value| value.as_str())
-                .or_else(|| theorem.get("id").and_then(|value| value.as_str()))
-                .unwrap_or("theorem_target");
-            format!(
-                "theorem_{}_{}",
-                idx + 1,
-                haskell_identifier_suffix(lean_decl)
-            )
-        })
-        .collect::<Vec<_>>();
-
-    for (idx, theorem) in theorem_candidates.iter().enumerate() {
-        let name = &theorem_names[idx];
-        let theorem_id = json_string_or_fallback(theorem, &["id"], &format!("theorem_{}", idx + 1));
-        let statement = json_string_or_fallback(theorem, &["statement", "text"], "unknown theorem");
-        let lean_decl = theorem
-            .get("formalization_target")
-            .and_then(|target| target.get("lean_declaration"))
-            .and_then(|value| value.as_str())
-            .unwrap_or(&theorem_id);
-        let expected_shape = theorem
-            .get("formalization_target")
-            .and_then(|target| target.get("expected_shape"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("theorem");
-        let theorem_kind =
-            haskell_theorem_kind_literal(&json_string_or_fallback(theorem, &["kind"], "other"));
-        let semantic_category = haskell_semantic_category_literal(&json_string_or_fallback(
-            theorem,
-            &["semantic_category"],
-            "other",
-        ));
-        let formalization_class_raw =
-            json_string_or_fallback(theorem, &["formalization_class"], "formal_math");
-        let formalization_class = haskell_formalization_class_literal(&formalization_class_raw);
-        let transcription_status_raw = theorem
-            .pointer("/typed_transcription/status")
-            .or_else(|| theorem.get("transcription_status"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_else(|| {
-                if theorem.pointer("/theorem_ir/conclusion/kind")
-                    == Some(&serde_json::Value::String("unknown_prop".to_string()))
-                {
-                    "partial"
-                } else {
-                    "transcribed"
-                }
-            });
-        let transcription_status = haskell_transcription_status_literal(transcription_status_raw);
-        let span = haskell_source_span_literal(theorem, &theorem_id);
-        let conclusion = theorem
-            .pointer("/theorem_ir/conclusion")
-            .or_else(|| theorem.pointer("/typed_transcription/conclusion"))
-            .map(|value| haskell_proposition_literal(value, "span"))
-            .unwrap_or_else(|| {
-                format!(
-                    "SemanticGap span {}",
-                    haskell_string_literal(&format!(
-                        "typed conclusion unavailable for {lean_decl}"
-                    ))
-                )
-            });
-        let theorem_assumptions = haskell_inline_list(
-            theorem
-                .pointer("/theorem_ir/assumptions")
-                .or_else(|| theorem.pointer("/typed_transcription/assumptions"))
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .map(|value| haskell_proposition_literal(value, "span"))
-                .collect::<Vec<_>>(),
-        );
-        let theorem_binders = haskell_inline_list(
-            theorem
-                .pointer("/theorem_ir/binders")
-                .or_else(|| theorem.pointer("/typed_transcription/binders"))
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(binder_idx, value)| {
-                    format!(
-                        "Binder {} (UnknownType \"not structurally typed in Phase 0\") span",
-                        haskell_string_literal(&json_string_or_fallback(
-                            value,
-                            &["name", "id"],
-                            &format!("binder_{}", binder_idx + 1),
-                        ))
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
-        out.push_str(&format!("{name} :: TheoremIR\n"));
-        out.push_str(&format!("{name} =\n"));
-        out.push_str(&format!("  let span = {span}\n"));
-        out.push_str(&format!("      conclusion = {conclusion}\n"));
-        out.push_str(&format!(
-            "      target = LeanTarget {} {} span\n",
-            haskell_string_literal(lean_decl),
-            haskell_string_literal(expected_shape)
-        ));
-        out.push_str("  in TheoremIR\n");
-        out.push_str(&format!(
-            "       {{ theoremId = {}\n",
-            haskell_string_literal(&theorem_id)
-        ));
-        out.push_str(&format!(
-            "       , theoremStatement = {}\n",
-            haskell_string_literal(&statement)
-        ));
-        out.push_str("       , theoremSpan = span\n");
-        out.push_str(&format!("       , theoremBinders = {theorem_binders}\n"));
-        out.push_str(&format!(
-            "       , theoremAssumptions = {theorem_assumptions}\n"
-        ));
-        out.push_str("       , theoremConclusion = conclusion\n");
-        out.push_str("       , theoremTarget = target\n");
-        out.push_str(&format!("       , theoremKind = {theorem_kind}\n"));
-        out.push_str(&format!(
-            "       , theoremSemanticCategory = {semantic_category}\n"
-        ));
-        out.push_str(&format!(
-            "       , theoremFormalizationClass = {formalization_class}\n"
-        ));
-        out.push_str(&format!(
-            "       , theoremTranscriptionStatus = {transcription_status}\n"
-        ));
-        out.push_str("       }\n\n");
-    }
-
-    out.push_str("theoremTargets :: [TheoremIR]\ntheoremTargets =\n");
-    out.push_str(&haskell_list(theorem_names.clone()));
-    out.push_str("\n\nclaims :: [ClaimIR]\nclaims =\n");
-    out.push_str(&haskell_list(
-        theorem_names
-            .iter()
-            .enumerate()
-            .map(|(idx, name)| {
-                let semantic_category = haskell_semantic_category_literal(
-                    &json_string_or_fallback(
-                        &theorem_candidates[idx],
-                        &["semantic_category", "kind"],
-                        "other",
-                    ),
-                );
-                let semantic_category_arg = haskell_constructor_arg(&semantic_category);
-                format!(
-                    "ClaimIR (theoremId {name}) (theoremStatement {name}) (theoremSpan {name}) {semantic_category_arg} (Just {name})"
-                )
-            })
-            .collect::<Vec<_>>(),
-    ));
-    out.push_str("\n\ncategoryToObligations :: ClaimIR -> [ProofObligation]\n");
-    out.push_str("categoryToObligations = claimToObligations\n\n");
-    out.push_str("isProofReadyConclusion :: Proposition -> Bool\n");
-    out.push_str("isProofReadyConclusion (SemanticGap _ _) = False\n");
-    out.push_str("isProofReadyConclusion _ = True\n\n");
-    out.push_str("isProofReadyTheorem :: TheoremIR -> Bool\n");
-    out.push_str("isProofReadyTheorem theorem =\n");
-    out.push_str("  theoremTranscriptionStatus theorem == StatusTranscribed\n");
-    out.push_str("    && isProofReadyConclusion (theoremConclusion theorem)\n\n");
-    out.push_str("claimToObligations :: ClaimIR -> [ProofObligation]\n");
-    out.push_str("claimToObligations claim =\n");
-    out.push_str("  case claimTheorem claim of\n");
-    out.push_str("    Nothing -> []\n");
-    out.push_str("    Just theorem ->\n");
-    out.push_str("      case theoremFormalizationClass theorem of\n");
-    out.push_str("        FormalMath | isProofReadyTheorem theorem ->\n");
-    out.push_str("          [ ProofObligation\n");
-    out.push_str("              (theoremId theorem)\n");
-    out.push_str("              (theoremConclusion theorem)\n");
-    out.push_str("              (theoremSpan theorem)\n");
-    out.push_str("              (theoremTarget theorem)\n");
-    out.push_str("          ]\n");
-    out.push_str("        _ -> []\n\n");
-    out.push_str("obligationToLean :: ProofObligation -> LeanTarget\n");
-    out.push_str("obligationToLean = obligationLean\n\n");
-    out.push_str("allProofObligations :: [ProofObligation]\n");
-    out.push_str("allProofObligations = concatMap categoryToObligations claims\n");
-    out
-}
-
-fn haskell_list(items: Vec<String>) -> String {
-    if items.is_empty() {
-        "  []".to_string()
-    } else {
-        format!("  [ {}\n  ]", items.join("\n  , "))
-    }
-}
-
-fn haskell_inline_list(items: Vec<String>) -> String {
-    if items.is_empty() {
-        "[]".to_string()
-    } else {
-        format!("[{}]", items.join(", "))
-    }
-}
-
-fn haskell_theorem_kind_literal(raw: &str) -> String {
-    match haskell_normalized_tag(raw).as_str() {
-        "equivalence" => "KindEquivalence".to_string(),
-        "theorem" | "plain_theorem" => "KindTheorem".to_string(),
-        "invariant" | "invariant_preservation" => "KindInvariant".to_string(),
-        "equation" | "construction" => "KindEquation".to_string(),
-        _ => format!("KindOther {}", haskell_string_literal(raw)),
-    }
-}
-
-fn haskell_semantic_category_literal(raw: &str) -> String {
-    match haskell_normalized_tag(raw).as_str() {
-        "equivalence" => "SemCatEquivalence".to_string(),
-        "plain_theorem" | "theorem" => "SemCatPlainTheorem".to_string(),
-        "invariant_preservation" | "invariant" => "SemCatInvariantPreservation".to_string(),
-        _ => format!("SemCatOther {}", haskell_string_literal(raw)),
-    }
-}
-
-fn haskell_formalization_class_literal(raw: &str) -> String {
-    match haskell_normalized_tag(raw).as_str() {
-        "formal_math" => "FormalMath".to_string(),
-        "informal_prose" => "InformalProse".to_string(),
-        _ => format!("FCOther {}", haskell_string_literal(raw)),
-    }
-}
-
-fn haskell_transcription_status_literal(raw: &str) -> String {
-    match haskell_normalized_tag(raw).as_str() {
-        "transcribed" => "StatusTranscribed".to_string(),
-        "partial" => "StatusPartial".to_string(),
-        "untranscribed" | "unknown" => "StatusUntranscribed".to_string(),
-        _ => format!("StatusOther {}", haskell_string_literal(raw)),
-    }
-}
-
-fn haskell_constructor_arg(value: &str) -> String {
-    if value.contains(char::is_whitespace) {
-        format!("({value})")
-    } else {
-        value.to_string()
-    }
-}
-
-fn haskell_normalized_tag(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase().replace('-', "_")
-}
-
-fn haskell_proposition_literal(value: &serde_json::Value, span_expr: &str) -> String {
-    match value.get("kind").and_then(|kind| kind.as_str()) {
-        Some("equals") => format!(
-            "Equals ({}) ({})",
-            haskell_term_literal(
-                value.get("lhs").unwrap_or(&serde_json::Value::Null),
-                span_expr
-            ),
-            haskell_term_literal(
-                value.get("rhs").unwrap_or(&serde_json::Value::Null),
-                span_expr
-            )
-        ),
-        Some("implies") => format!(
-            "Implies ({}) ({})",
-            haskell_proposition_literal(
-                value
-                    .get("premise")
-                    .or_else(|| value.get("lhs"))
-                    .unwrap_or(&serde_json::Value::Null),
-                span_expr
-            ),
-            haskell_proposition_literal(
-                value
-                    .get("conclusion")
-                    .or_else(|| value.get("rhs"))
-                    .unwrap_or(&serde_json::Value::Null),
-                span_expr
-            )
-        ),
-        Some("and") => {
-            let parts = value
-                .get("parts")
-                .or_else(|| value.get("items"))
-                .and_then(|items| items.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .map(|item| haskell_proposition_literal(item, span_expr))
-                .collect::<Vec<_>>();
-            format!("And {}", haskell_inline_list(parts))
-        }
-        Some("unknown_prop") => format!(
-            "SemanticGap {span_expr} {}",
-            haskell_string_literal(&json_string_or_fallback(
-                value,
-                &["text", "reason", "statement"],
-                "unknown_prop"
-            ))
-        ),
-        Some(kind) => format!(
-            "UninterpretedPredicate {} [] {span_expr}",
-            haskell_string_literal(kind)
-        ),
-        None => format!(
-            "SemanticGap {span_expr} {}",
-            haskell_string_literal("proposition not structurally typed in Phase 0")
-        ),
-    }
-}
-
-fn haskell_term_literal(value: &serde_json::Value, span_expr: &str) -> String {
-    match value.get("kind").and_then(|kind| kind.as_str()) {
-        Some("var") => format!(
-            "Var {}",
-            haskell_string_literal(&json_string_or_fallback(value, &["name", "id"], "unknown"))
-        ),
-        Some("raw") => format!(
-            "RawTerm {} {span_expr}",
-            haskell_string_literal(&json_string_or_fallback(
-                value,
-                &["text", "name"],
-                "raw term"
-            ))
-        ),
-        Some(kind) => format!(
-            "RawTerm {} {span_expr}",
-            haskell_string_literal(&format!(
-                "{kind}: {}",
-                json_string_or_fallback(value, &["name", "text", "id"], "unknown term")
-            ))
-        ),
-        None => format!(
-            "UnknownTerm {}",
-            haskell_string_literal("term not structurally typed in Phase 0")
-        ),
-    }
-}
-
-fn haskell_identifier_suffix(raw: &str) -> String {
-    let mut suffix = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    while suffix.contains("__") {
-        suffix = suffix.replace("__", "_");
-    }
-    suffix = suffix.trim_matches('_').to_string();
-    if suffix.is_empty() {
-        "target".to_string()
-    } else if suffix.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-        format!("target_{suffix}")
-    } else {
-        suffix
-    }
-}
-
-fn json_string_or_fallback(value: &serde_json::Value, keys: &[&str], fallback: &str) -> String {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))
-        .unwrap_or(fallback)
-        .to_string()
-}
-
-fn haskell_source_span_literal(value: &serde_json::Value, fallback_claim: &str) -> String {
-    let span = value.get("source_span").unwrap_or(value);
-    let artifact = span
-        .get("artifact")
-        .and_then(|value| value.as_str())
-        .unwrap_or("review_loop/semantic_ir.json");
-    let claim_id = span
-        .get("claim_id")
-        .or_else(|| span.get("claimId"))
-        .or_else(|| value.get("id"))
-        .and_then(|value| value.as_str())
-        .unwrap_or(fallback_claim);
-    let paper_source_id = span
-        .get("paper_source_id")
-        .or_else(|| span.get("paperSourceId"))
-        .or_else(|| span.get("source_id"))
-        .and_then(|value| value.as_str())
-        .unwrap_or(claim_id);
-    let section_id = span
-        .get("section_id")
-        .or_else(|| span.get("sectionId"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let text_excerpt = span
-        .get("text_excerpt")
-        .or_else(|| span.get("textExcerpt"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    format!(
-        "(SourceSpan {} {} {} {} {})",
-        haskell_string_literal(artifact),
-        haskell_string_literal(claim_id),
-        haskell_string_literal(paper_source_id),
-        haskell_string_literal(section_id),
-        haskell_string_literal(text_excerpt)
-    )
-}
-
-fn haskell_string_literal(raw: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in raw.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => out.push(' '),
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
-}
-
 async fn recovered_agent_run_from_code_file(
     role: &str,
     task: &ReviewFixCodeTask,
@@ -6692,121 +6106,111 @@ async fn run_review_fix_code_loop(
         }
         let mut generation_recovery: Option<serde_json::Value> = None;
         let generation_run = if attempt == 1 {
-            match deterministic_haskell_semantic_model_agent_run(role, &task, &base_artifact) {
-                Some(run) => {
-                    generation_recovery = Some(serde_json::json!({
-                        "status": "deterministic_local_author",
-                        "reason": "generated Haskell scaffold locally from compact semantic_ir theorem candidates",
-                    }));
-                    run
-                }
-                None => {
-                    let generation_started_at = std::time::SystemTime::now();
-                    match run_review_loop_agent(
-                        state,
-                        paper_id,
-                        review_id,
+            let generation_started_at = std::time::SystemTime::now();
+            match run_review_loop_agent(
+                state,
+                paper_id,
+                review_id,
+                role,
+                agent_artifact.clone(),
+                review_loop_code_system_prompt(&task, role, attempt),
+                review_loop_code_user_prompt(&task, role, attempt),
+                Some(&harness.path),
+            )
+            .await
+            {
+                Ok(run) => run,
+                Err(err) => {
+                    match recovered_agent_run_from_code_file(
                         role,
-                        agent_artifact.clone(),
-                        review_loop_code_system_prompt(&task, role, attempt),
-                        review_loop_code_user_prompt(&task, role, attempt),
-                        Some(&harness.path),
+                        &task,
+                        final_path,
+                        generation_started_at,
+                        &format!("{err:#}"),
                     )
                     .await
                     {
-                        Ok(run) => run,
-                        Err(err) => {
-                            match recovered_agent_run_from_code_file(
-                                role,
+                        Ok(Some(run)) => {
+                            generation_recovery = Some(serde_json::json!({
+                                "status": "recovered_from_file",
+                                "reason": format!("{err:#}"),
+                                "path": final_path.display().to_string(),
+                            }));
+                            run
+                        }
+                        Ok(None) => {
+                            let audit = write_review_loop_agent_output_audit(
+                                &artifact_root,
                                 &task,
-                                final_path,
-                                generation_started_at,
+                                attempt,
+                                role,
+                                "generate",
+                                &agent_artifact,
+                                None,
+                                None,
+                                None,
+                                "rejected",
                                 &format!("{err:#}"),
                             )
                             .await
-                            {
-                                Ok(Some(run)) => {
-                                    generation_recovery = Some(serde_json::json!({
-                                        "status": "recovered_from_file",
-                                        "reason": format!("{err:#}"),
-                                        "path": final_path.display().to_string(),
-                                    }));
-                                    run
-                                }
-                                Ok(None) => {
-                                    let audit = write_review_loop_agent_output_audit(
-                            &artifact_root,
-                            &task,
-                            attempt,
-                            role,
-                            "generate",
-                            &agent_artifact,
-                            None,
-                            None,
-                            None,
-                            "rejected",
-                            &format!("{err:#}"),
-                        )
-                        .await
-                        .unwrap_or_else(|audit_err| {
-                            serde_json::json!({
-                                "role": role,
-                                "phase": "generate",
+                            .unwrap_or_else(|audit_err| {
+                                serde_json::json!({
+                                    "role": role,
+                                    "phase": "generate",
+                                    "attempt": attempt,
+                                    "decision": {
+                                        "status": "rejected",
+                                        "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
+                                    }
+                                })
+                            });
+                            attempts.push(serde_json::json!({
                                 "attempt": attempt,
-                                "decision": {
-                                    "status": "rejected",
-                                    "reason": format!("agent failed: {err:#}; audit write failed: {audit_err:#}")
-                                }
-                            })
-                        });
-                                    attempts.push(serde_json::json!({
-                                        "attempt": attempt,
-                                        "status": "fail",
-                                        "author_role": role,
-                                        "author_error": format!("{err:#}"),
-                                        "agent_output_audits": [audit],
-                                    }));
-                                    break;
-                                }
-                                Err(recovery_err) => {
-                                    let decision_reason =
-                            format!("{err:#}; on-disk artifact recovery failed: {recovery_err:#}");
-                                    let audit = write_review_loop_agent_output_audit(
-                            &artifact_root,
-                            &task,
-                            attempt,
-                            role,
-                            "generate",
-                            &agent_artifact,
-                            None,
-                            None,
-                            None,
-                            "rejected",
-                            &decision_reason,
-                        )
-                        .await
-                        .unwrap_or_else(|audit_err| {
-                            serde_json::json!({
-                                "role": role,
-                                "phase": "generate",
+                                "status": "fail",
+                                "author_role": role,
+                                "author_error": format!("{err:#}"),
+                                "agent_output_audits": [audit],
+                            }));
+                            break;
+                        }
+                        Err(recovery_err) => {
+                            let decision_reason = format!(
+                                "{err:#}; on-disk artifact recovery failed: {recovery_err:#}"
+                            );
+                            let audit = write_review_loop_agent_output_audit(
+                                &artifact_root,
+                                &task,
+                                attempt,
+                                role,
+                                "generate",
+                                &agent_artifact,
+                                None,
+                                None,
+                                None,
+                                "rejected",
+                                &decision_reason,
+                            )
+                            .await
+                            .unwrap_or_else(|audit_err| {
+                                serde_json::json!({
+                                    "role": role,
+                                    "phase": "generate",
+                                    "attempt": attempt,
+                                    "decision": {
+                                        "status": "rejected",
+                                        "reason": format!("agent failed: {err:#}; recovery failed: {recovery_err:#}; audit write failed: {audit_err:#}")
+                                    }
+                                })
+                            });
+                            attempts.push(serde_json::json!({
                                 "attempt": attempt,
-                                "decision": {
-                                    "status": "rejected",
-                                    "reason": format!("agent failed: {err:#}; recovery failed: {recovery_err:#}; audit write failed: {audit_err:#}")
-                                }
-                            })
-                        });
-                                    attempts.push(serde_json::json!({
-                                        "attempt": attempt,
-                                        "status": "fail",
-                                        "author_role": role,
-                                        "author_error": format!("{err:#}"),
-                                        "recovery_error": format!("{recovery_err:#}"),
-                                        "agent_output_audits": [audit],
-                                    }));
-                                    break;
-                                }
-                            }
+                                "status": "fail",
+                                "author_role": role,
+                                "author_error": format!("{err:#}"),
+                                "recovery_error": format!("{recovery_err:#}"),
+                                "agent_output_audits": [audit],
+                            }));
+                            break;
                         }
                     }
                 }
@@ -7262,6 +6666,459 @@ async fn run_review_fix_code_loop(
     })
 }
 
+/// Run the Lean author -> `lake env lean` -> fix cycle ONE theorem at a time and aggregate
+/// the per-obligation runs into a single `lean_results` blob that downstream consumers
+/// (`build_theorem_map` via `lean_entry_status`, `annotate_lean_review_fix_code_results`)
+/// accept. Each obligation gets its own subdir under `lean_dir` and its own single-obligation
+/// base artifact (just that obligation's paper `statement` + `lean_declaration` + the same
+/// authoring requirements), so each call is small and never killed mid-work.
+///
+/// Anti-hallucination invariant unchanged: a declaration is recorded `pass` ONLY when
+/// `run_review_fix_code_loop` reports `status == "pass"`, which happens only after
+/// `lake env lean` kernel-accepted the file with no sorry/admit/axiom.
+#[allow(clippy::too_many_arguments)]
+async fn run_per_theorem_lean_loop(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    lean_task: &ReviewFixCodeTask,
+    proof_obligations: &serde_json::Value,
+    lean_targets: &serde_json::Value,
+    semantic_ir: &serde_json::Value,
+    semantic_model: &serde_json::Value,
+    lean_dir: &Path,
+    lean_final_path: &Path,
+    debug_output: bool,
+) -> serde_json::Value {
+    let obligations = proof_obligations
+        .get("obligations")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let theorem_obligations = obligations
+        .iter()
+        .filter(|item| {
+            item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization")
+        })
+        .collect::<Vec<_>>();
+
+    let requirements = serde_json::json!([
+        "Write a complete, self-contained Lean 4 file GrokRxiv/Proofs.lean importing Mathlib that contains ONLY this single theorem.",
+        "Author the FAITHFUL Lean 4 statement of the paper theorem directly from its `statement` text: capture EVERY hypothesis and the exact conclusion. The deterministic `lean_skeleton`/`lean_statement` is only a hint and MAY drop or weaken hypotheses (e.g. collapse a typed relation to an opaque predicate) — correct it so no hypothesis is dropped and the conclusion matches the paper.",
+        "Then prove the statement against the Lean kernel. Do NOT use sorry, admit, or axiom. A proof you cannot complete honestly MUST fail review — never fabricate a proof and never prove a trivially-true strawman in place of the paper's theorem.",
+        "Declare the theorem with its exact `lean_declaration` name; do not alter the declaration name.",
+        "Do not prove claim counts, review statuses, semantic labels, or metadata in place of the mathematical theorem target.",
+        "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
+        "If the theorem genuinely cannot be faithfully formalized, state your best faithful approximation and let the proof fail rather than masking the gap."
+    ]);
+
+    let mut declarations = serde_json::Map::new();
+    let mut verified_statements = serde_json::Map::new();
+    let mut all_attempts: Vec<serde_json::Value> = Vec::new();
+    let mut per_obligation_runs: Vec<serde_json::Value> = Vec::new();
+    let mut combined_files: Vec<String> = Vec::new();
+    let mut proved = 0usize;
+    let total = theorem_obligations.len();
+
+    for (index, obligation) in theorem_obligations.iter().enumerate() {
+        let lean_declaration = obligation
+            .get("lean_declaration")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("theorem_{index}"));
+        let obligation_id = obligation
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("obligation_{index}"));
+        let statement = obligation
+            .get("statement")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        let obligation_dir = lean_dir.join("targets").join(lean_identifier_subdir(
+            &lean_declaration,
+            index,
+        ));
+        let obligation_src_dir = obligation_dir.join("GrokRxiv");
+        if let Err(err) = tokio::fs::create_dir_all(&obligation_src_dir).await {
+            let failed = serde_json::json!({
+                "status": "fail",
+                "lean_declaration": lean_declaration,
+                "obligation_id": obligation_id,
+                "attempts": [{
+                    "attempt": 0,
+                    "status": "fail",
+                    "error": format!("create obligation dir {}: {err}", obligation_src_dir.display()),
+                }],
+            });
+            declarations.insert(lean_declaration.clone(), failed.clone());
+            per_obligation_runs.push(failed);
+            continue;
+        }
+        let obligation_final_path = obligation_src_dir.join("Proofs.lean");
+
+        if debug_output {
+            cli_status::emit_detail(
+                lean_task.author_role,
+                cli_status::StatusMark::Run,
+                &format!(
+                    "per-theorem lean target {}/{} decl={lean_declaration}",
+                    index + 1,
+                    total
+                ),
+            );
+        }
+
+        let base_artifact = serde_json::json!({
+            "review_id": review_id,
+            "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
+            "requirements": requirements,
+            "obligation": obligation,
+            "lean_declaration": lean_declaration,
+            "paper_theorem": statement,
+            "proof_obligations": proof_obligations,
+            "lean_targets": lean_targets,
+            "semantic_ir": semantic_ir,
+            "semantic_model": semantic_model,
+        });
+
+        let run = run_review_fix_code_loop(
+            state,
+            paper_id,
+            review_id,
+            lean_task.clone(),
+            base_artifact,
+            &obligation_dir,
+            &obligation_final_path,
+            debug_output,
+        )
+        .await;
+
+        let run_status = run
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("fail")
+            .to_string();
+        let proved_here = run_status == "pass";
+        if proved_here {
+            proved += 1;
+        }
+
+        // The kernel-verified Lean statement/proof for this declaration is exactly the
+        // contents of the proved file. Only record it when the kernel accepted it.
+        let verified_code = if proved_here {
+            tokio::fs::read_to_string(&obligation_final_path)
+                .await
+                .ok()
+        } else {
+            None
+        };
+        if let Some(code) = verified_code.as_ref() {
+            verified_statements.insert(
+                lean_declaration.clone(),
+                serde_json::json!(code),
+            );
+            combined_files.push(format!(
+                "-- ===== {lean_declaration} (PROVED) =====\n{}",
+                code.trim_end()
+            ));
+        } else {
+            let header = format!("/- {lean_declaration}: status={run_status} (not kernel-proved) -/");
+            let body = tokio::fs::read_to_string(&obligation_final_path)
+                .await
+                .unwrap_or_default();
+            combined_files.push(format!(
+                "-- ===== {lean_declaration} ({}) =====\n{header}\n{}",
+                run_status.to_ascii_uppercase(),
+                body.trim_end()
+            ));
+        }
+
+        if let Some(attempts) = run.get("attempts").and_then(|v| v.as_array()) {
+            for attempt in attempts {
+                let mut attempt = attempt.clone();
+                if let Some(object) = attempt.as_object_mut() {
+                    object.insert(
+                        "lean_declaration".to_string(),
+                        serde_json::json!(lean_declaration),
+                    );
+                }
+                all_attempts.push(attempt);
+            }
+        }
+
+        let decl_record = serde_json::json!({
+            "status": run_status,
+            "lean_declaration": lean_declaration,
+            "obligation_id": obligation_id,
+            "paper_theorem": statement,
+            "verified_statement": verified_code,
+            "final_path": obligation_final_path.display().to_string(),
+            "attempts": run.get("attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
+        });
+        declarations.insert(lean_declaration.clone(), decl_record);
+        per_obligation_runs.push(run);
+    }
+
+    // Write the combined, human-readable Proofs.lean (all per-theorem files concatenated).
+    let combined = if combined_files.is_empty() {
+        "/- No theorem_formalization obligations produced Lean output. -/\n".to_string()
+    } else {
+        format!(
+            "/- GrokRxiv combined per-theorem Lean proofs. Each section is authored and \
+             kernel-checked INDEPENDENTLY in its own harness under review_loop/lean/targets/. -/\n\n{}\n",
+            combined_files.join("\n\n")
+        )
+    };
+    let _ = write_review_loop_code_file(lean_final_path, &combined).await;
+
+    let aggregate_status = if total == 0 {
+        "fail"
+    } else if proved == total {
+        "pass"
+    } else if proved > 0 {
+        "partial"
+    } else {
+        "fail"
+    };
+
+    let audit_summary = review_fix_loop_agent_output_audit_summary(&serde_json::json!({
+        "attempts": all_attempts.clone(),
+    }));
+
+    serde_json::json!({
+        "stage": "lean_review_fix_code",
+        "target": lean_task.target_id,
+        "language": lean_task.language,
+        "filename": lean_task.filename,
+        "author_role": lean_task.author_role,
+        "reviewer_role": lean_task.reviewer_role,
+        "fixer_role": lean_task.fixer_role,
+        "compile_timeout_secs": lean_task.compile_timeout_secs,
+        "max_attempts": lean_task.max_attempts,
+        "mode": "per_theorem",
+        "theorem_total": total,
+        "theorem_proved": proved,
+        "status": aggregate_status,
+        "declarations": serde_json::Value::Object(declarations),
+        "verified_statements": serde_json::Value::Object(verified_statements),
+        "attempts": all_attempts,
+        "per_obligation_runs": per_obligation_runs,
+        "agent_output_audit_summary": audit_summary,
+        "final_path": lean_final_path.display().to_string(),
+    })
+}
+
+/// Sanitize a Lean declaration name into a stable, filesystem-safe subdir component, with the
+/// obligation index appended to guarantee uniqueness even for empty/colliding names.
+fn lean_identifier_subdir(lean_declaration: &str, index: usize) -> String {
+    let mut sanitized = lean_declaration
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+    sanitized.truncate(64);
+    let sanitized = sanitized.trim_matches('_');
+    if sanitized.is_empty() {
+        format!("theorem_{index}")
+    } else {
+        format!("{index:02}_{sanitized}")
+    }
+}
+
+/// Advisory faithfulness check for ONE kernel-proved Lean declaration. Invokes the
+/// `lean_faithfulness_checker` role (a DIFFERENT model than the Lean author) via the generic
+/// single-shot dispatcher and returns its schema-validated verdict JSON.
+///
+/// ADVISORY ONLY: the Lean kernel remains the sole proof authority. A target reaches this
+/// checker ONLY because `lake env lean` already kernel-accepted it with no sorry/admit/axiom;
+/// the verdict never asserts or revokes a proof and never blocks publication.
+async fn run_lean_faithfulness_check(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    lean_declaration: &str,
+    paper_theorem: &str,
+    lean_statement: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let artifact = serde_json::json!({
+        "phase": "advisory",
+        "target": "faithfulness",
+        "lean_declaration": lean_declaration,
+        "paper_theorem": paper_theorem,
+        "lean_statement": lean_statement,
+    });
+    let system_prompt = format!(
+        "You are GrokRxiv role `lean_faithfulness_checker`, an ADVISORY equivalence reviewer. \
+         The Lean declaration `{lean_declaration}` was ALREADY kernel-proved by `lake env lean` \
+         with no sorry/admit/axiom — you neither assert nor revoke that proof. Your only job is \
+         to judge whether the kernel-proved Lean STATEMENT faithfully captures the paper theorem. \
+         Back-translate the Lean statement to natural language WITHOUT consulting the paper text, \
+         then compare. Return one JSON object only, matching schema.json exactly."
+    );
+    let user_prompt = format!(
+        "Paper theorem statement:\n{paper_theorem}\n\n\
+         Kernel-proved Lean statement/proof for `{lean_declaration}`:\n{lean_statement}\n\n\
+         Decide if the Lean statement is a FAITHFUL formalization: every paper hypothesis must \
+         appear as a Lean binder/assumption, the conclusion must match, and the statement must \
+         not be a trivially-true strawman. Return strict JSON per schema.json; no markdown fences."
+    );
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_faithfulness_checker",
+        artifact,
+        system_prompt,
+        user_prompt,
+        None,
+    )
+    .await?;
+    Ok(run.output)
+}
+
+/// Advisory faithfulness stage over every kernel-proved target in `lean_results`. Collects
+/// per-target verdicts, writes `review_loop/faithfulness.json`, and returns the advisory
+/// summary. NEVER blocks: callers record the node as `Pass` and keep it out of policy/integrity.
+/// Degrades gracefully to `skipped` when the role is unavailable or no targets are proved.
+async fn run_lean_faithfulness_stage(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    theorem_map: &serde_json::Value,
+    lean_results: &serde_json::Value,
+    artifact_dir: &Path,
+    debug_output: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let proved_targets = theorem_map
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.get("status").and_then(|v| v.as_str()) == Some("PROVED")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let verified_statements = lean_results.get("verified_statements");
+
+    if proved_targets.is_empty() {
+        let summary = serde_json::json!({
+            "schema_version": "1.0.0",
+            "advisory": true,
+            "status": "skipped",
+            "skip_reason": "no_proved_targets",
+            "note": "No kernel-proved Lean targets to check for faithfulness.",
+            "verdicts": [],
+        });
+        write_loop_json(&artifact_dir.join("faithfulness.json"), &summary).await?;
+        return Ok(summary);
+    }
+
+    // Graceful degradation: if the role isn't configured, skip without failing the loop.
+    if state.agents.get("lean_faithfulness_checker").is_none() {
+        let summary = serde_json::json!({
+            "schema_version": "1.0.0",
+            "advisory": true,
+            "status": "skipped",
+            "skip_reason": "role_unavailable",
+            "note": "lean_faithfulness_checker role is not configured; faithfulness check skipped.",
+            "verdicts": [],
+        });
+        write_loop_json(&artifact_dir.join("faithfulness.json"), &summary).await?;
+        return Ok(summary);
+    }
+
+    let mut verdicts: Vec<serde_json::Value> = Vec::new();
+    for entry in &proved_targets {
+        let lean_declaration = entry
+            .get("lean_declaration")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if lean_declaration.is_empty() {
+            continue;
+        }
+        let paper_theorem = entry
+            .get("statement")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // Prefer the kernel-verified Lean source for this declaration; fall back to the
+        // theorem_map's recorded verified_statement.
+        let lean_statement = verified_statements
+            .and_then(|map| map.get(lean_declaration))
+            .and_then(|v| v.as_str())
+            .or_else(|| entry.get("verified_statement").and_then(|v| v.as_str()))
+            .unwrap_or_default();
+        if lean_statement.is_empty() {
+            continue;
+        }
+
+        if debug_output {
+            cli_status::emit_detail(
+                "lean_faithfulness_check",
+                cli_status::StatusMark::Run,
+                &format!("faithfulness decl={lean_declaration}"),
+            );
+        }
+
+        match run_lean_faithfulness_check(
+            state,
+            paper_id,
+            review_id,
+            lean_declaration,
+            paper_theorem,
+            lean_statement,
+        )
+        .await
+        {
+            Ok(output) => {
+                let verdict_label = output
+                    .get("verdict")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                verdicts.push(serde_json::json!({
+                    "target": lean_declaration,
+                    "verdict": verdict_label,
+                    "back_translation": output.get("back_translation").cloned().unwrap_or(serde_json::Value::Null),
+                    "paper_text": paper_theorem,
+                    "issues": output.get("issues").cloned().unwrap_or_else(|| serde_json::json!([])),
+                    "checker_output": output,
+                }));
+            }
+            Err(err) => {
+                // A failed advisory check must not fail the loop — record it as an
+                // error verdict and continue.
+                verdicts.push(serde_json::json!({
+                    "target": lean_declaration,
+                    "verdict": "error",
+                    "back_translation": serde_json::Value::Null,
+                    "paper_text": paper_theorem,
+                    "issues": [{
+                        "severity": "info",
+                        "message": format!("faithfulness check did not run: {err:#}"),
+                    }],
+                }));
+            }
+        }
+    }
+
+    let summary = serde_json::json!({
+        "schema_version": "1.0.0",
+        "advisory": true,
+        "status": if verdicts.is_empty() { "skipped" } else { "completed" },
+        "proved_targets": proved_targets.len(),
+        "checked": verdicts.len(),
+        "verdicts": verdicts,
+    });
+    write_loop_json(&artifact_dir.join("faithfulness.json"), &summary).await?;
+    Ok(summary)
+}
+
 async fn prepare_review_loop_git_harness(
     review_id: Uuid,
     task: &ReviewFixCodeTask,
@@ -7612,7 +7469,6 @@ fn code_review_passed(review: &serde_json::Value) -> bool {
 
 fn review_fix_code_node_id(target_id: &str) -> &'static str {
     match target_id {
-        "haskell" => "haskell_review_fix_code",
         "lean" => "lean_review_fix_code",
         "pr" => "pr_fixer",
         _ => "review_fix_code",
@@ -7902,6 +7758,19 @@ fn review_fix_loop_summary(results: &serde_json::Value) -> String {
     "review-fix-code loop failed".to_string()
 }
 
+/// Raise the CLI agent kill-timeout floor (env `AGENTHERO_CLI_TIMEOUT_SECS`) so a
+/// working formalization author/fixer LLM call is never killed mid-work. Only
+/// increases the value; never lowers an operator-set one.
+fn ensure_min_cli_timeout_secs(floor: u64) {
+    let current = std::env::var("AGENTHERO_CLI_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    if current < floor {
+        std::env::set_var("AGENTHERO_CLI_TIMEOUT_SECS", floor.to_string());
+    }
+}
+
 async fn run_review_loop_for_review(
     state: &super::AppState,
     review_id: Uuid,
@@ -7914,6 +7783,11 @@ async fn run_review_loop_for_review(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("review-loop: DATABASE_URL not configured"))?;
     let stages = review_loop_stage_plan()?;
+    // The formalization LLM calls (authoring Lean statements + proofs) must never be
+    // killed mid-work. Raise the CLI kill-timeout floor for this review loop so a
+    // working author/fixer call runs to completion; only a genuinely hung process is
+    // bounded (by this generous ceiling). Operators can still set a larger value.
+    ensure_min_cli_timeout_secs(1800);
     let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
     tokio::fs::create_dir_all(&artifact_dir).await?;
     let mut bundle_skip_reasons = BTreeMap::new();
@@ -8056,8 +7930,6 @@ async fn run_review_loop_for_review(
         ),
     );
 
-    let haskell_dir = artifact_dir.join("haskell");
-    tokio::fs::create_dir_all(&haskell_dir).await?;
     let semantic_ir = grokrxiv_review_loop::build_semantic_ir_from_paper_math(
         review_id,
         &paper_math_sources,
@@ -8085,10 +7957,6 @@ async fn run_review_loop_for_review(
         "theorem_candidate_count": theorem_candidate_count,
         "definition_count": definition_count,
         "assumption_count": assumption_count,
-        "haskell_module": "review_loop/haskell/SemanticModel.hs",
-        "author_role": "haskell_semantic_author",
-        "reviewer_role": "haskell_code_reviewer",
-        "fixer_role": "haskell_code_fixer",
     });
     write_loop_json(&artifact_dir.join("semantic_model.json"), &semantic_model).await?;
     record_review_loop_node(
@@ -8102,8 +7970,7 @@ async fn run_review_loop_for_review(
             "artifacts": [
                 "review_loop/paper_math_sources.json",
                 "review_loop/semantic_ir.json",
-                "review_loop/semantic_model.json",
-                "review_loop/haskell/SemanticModel.hs"
+                "review_loop/semantic_model.json"
             ]
         }),
     )
@@ -8116,84 +7983,14 @@ async fn run_review_loop_for_review(
         &format!("theorem_candidates={theorem_candidate_count} definitions={definition_count} assumptions={assumption_count}"),
     );
 
-    let haskell_results = run_review_fix_code_loop(
-        state,
-        paper_id,
-        review_id,
-        ReviewFixCodeTask {
-            target_id: "haskell",
-            language: "haskell",
-            filename: "SemanticModel.hs",
-            author_role: "haskell_semantic_author",
-            reviewer_role: "haskell_code_reviewer",
-            fixer_role: "haskell_code_fixer",
-            compile_program: "ghc",
-            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
-            compile_timeout_secs: 900,
-            forbidden_terms: Vec::new(),
-            // Haskell is an advisory, being-retired intermediate. Author it once
-            // (deterministic, compiles instantly) and never invoke the LLM fixer — that
-            // fixer is what timed out at 360s trying to "fix" an advisory round-trip.
-            max_attempts: 1,
-        },
-        serde_json::json!({
-            "review_id": review_id,
-            "task": "Generate a typed Haskell mathematical transcription IR model from GrokRxiv paper-derived evidence.",
-            "requirements": [
-                "Create module SemanticModel.",
-                "Use only pure Haskell definitions.",
-                "Treat review_loop/semantic_ir.json as the canonical typed mathematical IR contract.",
-                "The Haskell file is a checked consumer/round-trip artifact derived from canonical IR JSON; do not invent theorem statements outside that IR.",
-                "Define SourceSpan, MathType, Term, Proposition, Binder, Definition, Assumption, TheoremIR, ClaimIR, ProofObligation, and LeanTarget types.",
-                "Represent paper-derived formal mathematical statements, assumptions, definitions, source spans, and Lean declaration targets from semantic_ir theorem_candidates/definitions/assumptions; use paper_math_sources only as provenance/count context in this compact code-author payload.",
-                "If semantic_ir.theorem_candidates is empty, emit empty theoremTargets, claims, and proof obligations while preserving semantic_ir.limitations; do not backfill from claims or knowledge_graph summaries.",
-                "Treat semantic categories as annotations over typed mathematical transcription, not as replacements for the math.",
-                "Do not turn summary, novelty, citation, reviewer recommendation, or publisher-readiness claims into Lean obligations.",
-                "Do not model this as review roles, category counts, claimCount, or publisherReadyLowerBound.",
-                "Include categoryToObligations, claimToObligations, and obligationToLean mapping functions.",
-                "The file must compile with ghc -fno-code SemanticModel.hs."
-            ],
-            "claims": claims_value,
-            "paper_math_sources": paper_math_sources,
-            "knowledge_graph": knowledge_graph,
-            "semantic_ir": semantic_ir,
-            "semantic_model": semantic_model,
-        }),
-        &haskell_dir,
-        &haskell_dir.join("SemanticModel.hs"),
-        debug_output,
-    )
-    .await;
-    let haskell_pass = haskell_results["status"] == "pass";
-    write_loop_json(&haskell_dir.join("results.json"), &haskell_results).await?;
-    write_loop_json(&haskell_dir.join("fix_rounds.json"), &haskell_results).await?;
-    if !haskell_dir.join("SemanticModel.hs").is_file() {
-        bundle_skip_reasons.insert(
-            "review_loop/haskell/SemanticModel.hs".to_string(),
-            review_fix_loop_summary(&haskell_results),
-        );
-    }
-    record_review_loop_node(
-        pool,
-        review_id,
-        &stages,
-        "haskell_review_fix_code",
-        haskell_results.clone(),
-        if haskell_pass {
-            VerifierStatus::Pass
-        } else {
-            VerifierStatus::Fail
-        },
-        serde_json::json!({"artifact_path": "review_loop/haskell/results.json"}),
-    )
-    .await?;
-    emit_review_loop_node_debug(
-        "haskell_review_fix_code",
-        haskell_pass,
-        "review_loop/haskell/results.json",
-        debug_output,
-        &review_fix_loop_summary(&haskell_results),
-    );
+    // The Haskell intermediate semantic-model stage is retired: the LLM now authors
+    // Lean directly from the typed semantic IR. `haskell_results` is kept as a synthetic
+    // advisory value because `build_proof_obligations` still accepts it (and ignores it)
+    // and downstream report consumers still read it.
+    let haskell_results = serde_json::json!({
+        "status": "retired",
+        "note": "Haskell intermediate retired; LLM authors Lean directly.",
+    });
 
     let proof_obligations =
         grokrxiv_review_loop::build_proof_obligations(review_id, &semantic_ir, &haskell_results);
@@ -8275,30 +8072,23 @@ async fn run_review_loop_for_review(
     };
     let lean_final_path = lean_src_dir.join("Proofs.lean");
     let lean_results = if proof_obligations_ready {
-        run_review_fix_code_loop(
+        // Per-theorem authoring: run the author -> `lake env lean` -> fix cycle on ONE
+        // obligation at a time so each call is small, reliable, and never timed out, and so
+        // each theorem gets its own honest per-declaration verdict. The aggregate exposes a
+        // top-level `status` (pass/partial/fail), a per-declaration `declarations` map +
+        // `verified_statements` map that `lean_entry_status`/`build_theorem_map` read, and
+        // concatenated `attempts` for diagnostics. Anti-hallucination invariant unchanged: a
+        // declaration is only `pass` when `lake env lean` kernel-accepts it with no
+        // sorry/admit/axiom (enforced inside `run_review_fix_code_loop`).
+        run_per_theorem_lean_loop(
             state,
             paper_id,
             review_id,
-            lean_task.clone(),
-            serde_json::json!({
-                "review_id": review_id,
-                "task": "Complete proofs for GrokRxiv mathematical Lean targets deterministically emitted from the typed IR.",
-                "requirements": [
-                    "Write the complete file GrokRxiv/Proofs.lean.",
-                    "Use the lean_skeleton strings in review_loop/lean_targets.json as the theorem statement source of truth.",
-                    "You may replace proof bodies only; do not alter theorem names, binders, assumptions, or conclusions.",
-                    "Do not use sorry, admit, or axiom.",
-                    "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
-                    "For every theorem_formalization obligation, declare the exact lean_declaration name.",
-                    "Do not prove claim counts, review statuses, semantic labels, or metadata in place of the mathematical theorem target.",
-                    "If a theorem cannot be formalized honestly, emit code that fails review rather than masking the gap."
-                ],
-                "proof_obligations": proof_obligations,
-                "lean_targets": lean_targets,
-                "semantic_ir": semantic_ir,
-                "semantic_model": semantic_model,
-                "haskell_results": haskell_results,
-            }),
+            &lean_task,
+            &proof_obligations,
+            &lean_targets,
+            &semantic_ir,
+            &semantic_model,
             &lean_dir,
             &lean_final_path,
             debug_output,
@@ -8372,6 +8162,59 @@ async fn run_review_loop_for_review(
     let theorem_map = grokrxiv_review_loop::build_theorem_map(&proof_obligations, &lean_results);
     write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
     write_loop_json(&lean_dir.join("verification_report.json"), &theorem_map).await?;
+
+    // Advisory faithfulness step: for each KERNEL-PROVED target, a different model
+    // back-translates the proved Lean statement and checks it against the paper theorem.
+    // ADVISORY ONLY: never adds to blocking_issues, never flips deterministic_status, never
+    // feeds policy_gate / publishability integrity. Recorded as an always-Pass node.
+    let faithfulness = run_lean_faithfulness_stage(
+        state,
+        paper_id,
+        review_id,
+        &theorem_map,
+        &lean_results,
+        &artifact_dir,
+        debug_output,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        serde_json::json!({
+            "schema_version": "1.0.0",
+            "advisory": true,
+            "status": "skipped",
+            "skip_reason": "stage_error",
+            "note": format!("faithfulness stage error: {err:#}"),
+            "verdicts": [],
+        })
+    });
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "lean_faithfulness_check",
+        faithfulness.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/faithfulness.json", "advisory": true}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "lean_faithfulness_check",
+        true,
+        "review_loop/faithfulness.json",
+        debug_output,
+        &format!(
+            "advisory faithfulness status={} checked={}",
+            faithfulness
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("skipped"),
+            faithfulness
+                .get("checked")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        ),
+    );
+
     let semantic_adequacy =
         grokrxiv_review_loop::build_semantic_adequacy(&semantic_ir, &theorem_map);
     write_loop_json(
@@ -8643,7 +8486,7 @@ async fn run_review_loop_for_review(
     // outcome is reported as an informational `formal` component below (and in
     // `publishability_vector`), never a blocking issue. Anti-hallucination is preserved
     // upstream: a target is only ever labeled `proved` when the Lean kernel accepts the
-    // proof with no sorry/admit/axiom. (haskell_pass, lean_accepted, semantic_adequacy_pass,
+    // proof with no sorry/admit/axiom. (lean_accepted, semantic_adequacy_pass,
     // theorem_candidate_count, proof_targets_skip remain reported, just non-blocking.)
     if citation_report["status"] == "fail" {
         blocking_issues
@@ -8669,7 +8512,6 @@ async fn run_review_loop_for_review(
             "integrity_ready": publication_policy.integrity_ready,
         },
         "score_thresholds": {
-            "haskell_compile": "pass",
             "lean_theorem_formalization": "proved",
             "semantic_adequacy": "all_theorem_claims_match_proved_lean_declarations",
             "citation_validation": "pass_or_warn",
@@ -8682,7 +8524,7 @@ async fn run_review_loop_for_review(
             "publication_gate": format!("{:?}", publication_gate.verdict).to_ascii_lowercase(),
             "recommendation_policy": publication_policy.status,
             "bundle_completeness": bundle_completeness["status"],
-            "haskell": if haskell_pass { "pass" } else { "fail" },
+            "haskell": haskell_results["status"],
             "lean": if lean_pass {
                 "pass"
             } else if proof_targets_skip {
@@ -8705,7 +8547,7 @@ async fn run_review_loop_for_review(
             "semantic_adequacy": semantic_adequacy["status"],
             "citation": citation_report["status"],
             "reproducibility": "not_run",
-            "integrity": if haskell_pass { "pass" } else { "fail" },
+            "integrity": bundle_completeness["status"],
             "safety": if pr_fixer_pass {
                 "pass"
             } else if pr_fixer_warn {
@@ -8752,7 +8594,6 @@ async fn run_review_loop_for_review(
         "publisher_ready": publisher_ready,
         "blocking_issues": policy_gate["blocking_issues"],
         "fix_attempts": {
-            "haskell": haskell_results["attempts"],
             "lean": lean_results["attempts"],
             "pr_review": pr_review_results["attempts"],
         },
@@ -8762,8 +8603,6 @@ async fn run_review_loop_for_review(
             "knowledge_graph": "review_loop/knowledge_graph.json",
             "semantic_ir": "review_loop/semantic_ir.json",
             "semantic_model": "review_loop/semantic_model.json",
-            "haskell": "review_loop/haskell/results.json",
-            "haskell_harness": "review_loop/haskell/harness.json",
             "lean": "review_loop/lean/results.json",
             "lean_targets": "review_loop/lean_targets.json",
             "lean_harness": "review_loop/lean/harness.json",
@@ -8780,7 +8619,6 @@ async fn run_review_loop_for_review(
             "bundle_completeness": "review_loop/bundle_completeness.json",
         },
         "agent_output_audits": {
-            "haskell": haskell_results["agent_output_audit_summary"],
             "lean": lean_results["agent_output_audit_summary"],
             "pr": pr_fixes
                 .get("compile_review_loop")
@@ -9715,9 +9553,6 @@ async fn append_review_loop_pr_files(
     }
     for rel in [
         "bundle_completeness.json",
-        "haskell/GROKRXIV_HARNESS.md",
-        "haskell/harness.json",
-        "haskell/harness_task_input.json",
         "lean/GROKRXIV_HARNESS.md",
         "lean/harness.json",
         "lean/harness_task_input.json",
@@ -14853,365 +14688,6 @@ obligationToLean = LeanTarget\n";
     }
 
     #[test]
-    fn review_loop_deterministic_haskell_author_preserves_lean_targets() {
-        let task = ReviewFixCodeTask {
-            target_id: "haskell",
-            language: "haskell",
-            filename: "SemanticModel.hs",
-            author_role: "haskell_semantic_author",
-            reviewer_role: "haskell_code_reviewer",
-            fixer_role: "haskell_code_fixer",
-            compile_program: "ghc",
-            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
-            compile_timeout_secs: 900,
-            forbidden_terms: Vec::new(),
-            max_attempts: 2,
-        };
-        let base = compact_review_fix_code_base_artifact(
-            &task,
-            serde_json::json!({
-                "semantic_ir": {
-                    "schema_version": "1.0.0",
-                    "theorem_candidates": [
-                        {
-                            "id": "thm_alpha",
-                            "formalization_class": "formal_math",
-                            "statement": "For all n, n + 0 = n.",
-                            "source_span": {
-                                "artifact": "theorem_graph.json",
-                                "claim_id": "thm_alpha",
-                                "section_id": "sec-test",
-                                "text_excerpt": "For all n, n + 0 = n."
-                            },
-                            "theorem_ir": {
-                                "assumptions": [],
-                                "binders": [],
-                                "conclusion": {
-                                    "kind": "equals",
-                                    "lhs": {"kind": "var", "name": "n + 0"},
-                                    "rhs": {"kind": "var", "name": "n"}
-                                }
-                            },
-                            "formalization_target": {
-                                "lean_declaration": "thm_alpha",
-                                "expected_shape": "theorem"
-                            }
-                        },
-                        {
-                            "id": "thm_beta",
-                            "formalization_class": "formal_math",
-                            "statement": "If A, then A.",
-                            "formalization_target": {
-                                "lean_declaration": "thm_beta",
-                                "expected_shape": "lemma"
-                            }
-                        }
-                    ],
-                    "definitions": [],
-                    "assumptions": [],
-                    "supporting_equations": [],
-                    "paper_math_sources": {}
-                }
-            }),
-        );
-
-        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
-            .expect("deterministic haskell run");
-        let code = run.output["code"].as_str().expect("code output");
-
-        assert!(code.contains("thm_alpha"));
-        assert!(code.contains("thm_beta"));
-        assert!(code.contains("SemanticGap"));
-        assert!(code.contains("sourceSectionId"));
-        assert!(code.contains("sourceTextExcerpt"));
-        assert!(code.contains("Equals (Var \"n + 0\") (Var \"n\")"));
-        assert!(!code.contains("PRaw"));
-        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
-
-        if std::process::Command::new("ghc")
-            .arg("--numeric-version")
-            .output()
-            .is_ok()
-        {
-            let tempdir = tempfile::Builder::new()
-                .prefix("grokrxiv-deterministic-haskell-")
-                .tempdir()
-                .expect("tempdir");
-            let source_path = tempdir.path().join("SemanticModel.hs");
-            std::fs::write(&source_path, code).expect("write generated haskell");
-            let compile = std::process::Command::new("ghc")
-                .arg("-fno-code")
-                .arg(&source_path)
-                .output()
-                .expect("run ghc");
-            assert!(
-                compile.status.success(),
-                "stderr={}",
-                String::from_utf8_lossy(&compile.stderr)
-            );
-        }
-    }
-
-    #[test]
-    fn review_loop_deterministic_haskell_author_filters_review_categories_and_retains_formal_semantic_gaps(
-    ) {
-        let task = ReviewFixCodeTask {
-            target_id: "haskell",
-            language: "haskell",
-            filename: "SemanticModel.hs",
-            author_role: "haskell_semantic_author",
-            reviewer_role: "haskell_code_reviewer",
-            fixer_role: "haskell_code_fixer",
-            compile_program: "ghc",
-            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
-            compile_timeout_secs: 900,
-            forbidden_terms: Vec::new(),
-            max_attempts: 2,
-        };
-        let base = compact_review_fix_code_base_artifact(
-            &task,
-            serde_json::json!({
-                "semantic_ir": {
-                    "schema_version": "1.0.0",
-                    "theorem_candidates": [
-                        {
-                            "id": "thm_structured",
-                            "formalization_class": "formal_math",
-                            "statement": "For all n, n + 0 = n.",
-                            "theorem_ir": {
-                                "assumptions": [],
-                                "binders": [],
-                                "conclusion": {
-                                    "kind": "equals",
-                                    "lhs": {"kind": "var", "name": "n + 0"},
-                                    "rhs": {"kind": "var", "name": "n"}
-                                }
-                            },
-                            "kind": "equivalence",
-                            "semantic_category": "equivalence",
-                            "typed_transcription": {
-                                "status": "transcribed"
-                            },
-                            "formalization_target": {
-                                "lean_declaration": "thm_structured",
-                                "expected_shape": "theorem"
-                            }
-                        },
-                        {
-                            "id": "thm_gap",
-                            "formalization_class": "formal_math",
-                            "statement": "The text is theorem-like, but Phase 0 cannot parse a statement.",
-                            "theorem_ir": {
-                                "assumptions": [],
-                                "binders": [],
-                                "conclusion": {
-                                    "kind": "unknown_prop",
-                                    "text": "statement not structurally typed"
-                                }
-                            },
-                            "kind": "theorem",
-                            "semantic_category": "plain_theorem",
-                            "typed_transcription": {
-                                "status": "partial"
-                            },
-                            "formalization_target": {
-                                "lean_declaration": "thm_gap",
-                                "expected_shape": "theorem"
-                            }
-                        }
-                    ],
-                    "definitions": [],
-                    "assumptions": [],
-                    "supporting_equations": [],
-                    "paper_math_sources": {}
-                }
-            }),
-        );
-
-        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
-            .expect("deterministic haskell run");
-        let code = run.output["code"].as_str().expect("code output");
-
-        assert!(code.contains("data SemanticCategory"));
-        assert!(code.contains("data FormalizationClass"));
-        assert!(code.contains("data TranscriptionStatus"));
-        assert!(!code.contains("data ReviewCategory"));
-        assert!(!code.contains("claimReviewCategory"));
-        assert!(!code.contains("RCSummary"));
-        assert!(code.contains("theoremSemanticCategory = SemCatPlainTheorem"));
-        assert!(code.contains("theoremFormalizationClass = FormalMath"));
-        assert!(code.contains("theoremTranscriptionStatus = StatusPartial"));
-        assert!(code.contains("claimSemanticCategory :: SemanticCategory"));
-        assert!(code.contains("SemCatPlainTheorem (Just"));
-        assert!(code.contains("categoryToObligations :: ClaimIR -> [ProofObligation]"));
-        assert!(code.contains("categoryToObligations = claimToObligations"));
-        assert!(!code.contains("isNonFormalReview"));
-        assert!(code.contains("SemanticGap span \"statement not structurally typed\""));
-        assert!(!code.contains("UninterpretedPredicate \"unknown_prop\" []"));
-        assert!(code.contains("isProofReadyConclusion :: Proposition -> Bool"));
-        assert!(code.contains("isProofReadyConclusion (SemanticGap _ _) = False"));
-        assert!(code.contains("theoremTranscriptionStatus theorem == StatusTranscribed"));
-        assert!(code.contains("FormalMath | isProofReadyTheorem theorem ->"));
-        assert!(code.contains("(theoremConclusion theorem)"));
-        assert!(code.contains("allProofObligations = concatMap categoryToObligations claims"));
-        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
-    }
-
-    #[test]
-    fn review_loop_deterministic_haskell_author_does_not_emit_obligations_for_partial_semantic_gaps(
-    ) {
-        let task = ReviewFixCodeTask {
-            target_id: "haskell",
-            language: "haskell",
-            filename: "SemanticModel.hs",
-            author_role: "haskell_semantic_author",
-            reviewer_role: "haskell_code_reviewer",
-            fixer_role: "haskell_code_fixer",
-            compile_program: "ghc",
-            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
-            compile_timeout_secs: 900,
-            forbidden_terms: Vec::new(),
-            max_attempts: 2,
-        };
-        let base = compact_review_fix_code_base_artifact(
-            &task,
-            serde_json::json!({
-                "semantic_ir": {
-                    "schema_version": "1.0.0",
-                    "theorem_candidates": [
-                        {
-                            "id": "thm_structured",
-                            "formalization_class": "formal_math",
-                            "statement": "For all n, n + 0 = n.",
-                            "theorem_ir": {
-                                "assumptions": [],
-                                "binders": [],
-                                "conclusion": {
-                                    "kind": "equals",
-                                    "lhs": {"kind": "var", "name": "n + 0"},
-                                    "rhs": {"kind": "var", "name": "n"}
-                                }
-                            },
-                            "typed_transcription": {
-                                "status": "transcribed"
-                            },
-                            "formalization_target": {
-                                "lean_declaration": "thm_structured",
-                                "expected_shape": "theorem"
-                            }
-                        },
-                        {
-                            "id": "body_math_41",
-                            "formalization_class": "formal_math",
-                            "statement": "\\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models",
-                            "theorem_ir": {
-                                "assumptions": [],
-                                "binders": [],
-                                "conclusion": {
-                                    "kind": "unknown_prop",
-                                    "text": "\\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models"
-                                }
-                            },
-                            "typed_transcription": {
-                                "status": "partial"
-                            },
-                            "formalization_target": {
-                                "lean_declaration": "body_math_41",
-                                "expected_shape": "theorem"
-                            }
-                        }
-                    ],
-                    "definitions": [],
-                    "assumptions": [],
-                    "supporting_equations": [],
-                    "paper_math_sources": {}
-                }
-            }),
-        );
-
-        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
-            .expect("deterministic haskell run");
-        let code = run.output["code"].as_str().expect("code output");
-
-        assert!(code.contains("isProofReadyTheorem :: TheoremIR -> Bool"));
-        assert!(code.contains("theoremTranscriptionStatus theorem == StatusTranscribed"));
-        assert!(code.contains("isProofReadyConclusion (SemanticGap _ _) = False"));
-        assert!(code.contains("FormalMath | isProofReadyTheorem theorem ->"));
-        assert!(
-            !code.contains("FormalMath ->\n          [ ProofObligation"),
-            "formal math must not bypass transcription/conclusion readiness checks"
-        );
-        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
-    }
-
-    #[test]
-    fn review_loop_deterministic_haskell_author_keeps_empty_targets_when_ir_has_only_limitations() {
-        let task = ReviewFixCodeTask {
-            target_id: "haskell",
-            language: "haskell",
-            filename: "SemanticModel.hs",
-            author_role: "haskell_semantic_author",
-            reviewer_role: "haskell_code_reviewer",
-            fixer_role: "haskell_code_fixer",
-            compile_program: "ghc",
-            compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
-            compile_timeout_secs: 900,
-            forbidden_terms: Vec::new(),
-            max_attempts: 2,
-        };
-        let base = compact_review_fix_code_base_artifact(
-            &task,
-            serde_json::json!({
-                "claims": {
-                    "claims": [
-                        {"id": "claim_1", "statement": "First Lean 4 proof of zeta(3) irrationality."}
-                    ]
-                },
-                "knowledge_graph": {
-                    "nodes": [
-                        {"id": "claim_1", "label": "First Lean 4 proof of zeta(3) irrationality."}
-                    ],
-                    "edges": []
-                },
-                "semantic_ir": {
-                    "schema_version": "1.0.0",
-                    "theorem_candidates": [],
-                    "definitions": [],
-                    "assumptions": [],
-                    "supporting_equations": [],
-                    "nonformal_review_claims": [
-                        {"id": "claim_1", "statement": "First Lean 4 proof of zeta(3) irrationality."}
-                    ],
-                    "limitations": [
-                        {
-                            "id": "no_paper_math_transcribed",
-                            "kind": "semantic_gap",
-                            "statement": "No paper-derived theorem sources were transcribed into typed IR.",
-                            "source_span": {
-                                "artifact": "paper_math_sources",
-                                "claim_id": "paper_math_sources"
-                            }
-                        }
-                    ]
-                }
-            }),
-        );
-
-        let run = deterministic_haskell_semantic_model_agent_run(task.author_role, &task, &base)
-            .expect("deterministic haskell run");
-        let code = run.output["code"].as_str().expect("code output");
-
-        assert!(code.contains("data Limitation"));
-        assert!(code.contains("limitations :: [Limitation]"));
-        assert!(code.contains("no_paper_math_transcribed"));
-        assert!(code.contains("theoremTargets =\n  []"));
-        assert!(code.contains("claims =\n  []"));
-        assert!(!code.contains("First Lean 4 proof of zeta(3) irrationality"));
-        assert!(!code.contains("ReviewCategory"));
-        assert!(grokrxiv_review_loop::validate_generated_code("haskell", code, &base).is_empty());
-    }
-
-    #[test]
     fn review_loop_contract_files_define_formalization_policy_surface() {
         let claim_graph = include_str!("../../../schemas/claim_graph.schema.json");
         let semantic_ir = include_str!("../../../schemas/semantic_ir.schema.json");
@@ -15288,35 +14764,32 @@ obligationToLean = LeanTarget\n";
 
     #[test]
     fn review_loop_agent_input_contract_rejects_missing_semantic_ir_before_agent() {
+        // The Lean author must trace theorem targets back to the typed semantic IR; a base
+        // bundle missing `semantic_ir` is blocked before the runner is invoked.
         let artifact = serde_json::json!({
             "phase": "generate",
-            "target": "haskell",
-            "language": "haskell",
-            "filename": "SemanticModel.hs",
+            "target": "lean",
+            "language": "lean",
+            "filename": "GrokRxiv/Proofs.lean",
             "attempt": 1,
             "max_attempts": 2,
             "base": {
                 "review_id": "11111111-1111-1111-1111-111111111111",
-                "paper_math_sources": {
-                    "artifact_ref": "review_loop/paper_math_sources.json",
-                    "omitted_from_code_author_payload": true
-                },
-                "haskell_semantic_contract": {
-                    "canonical_formal_sources": ["semantic_ir.theorem_candidates"]
-                }
+                "proof_obligations": {"status": "ready", "obligations": [{"kind": "theorem_formalization"}]},
+                "lean_targets": {"targets": [{"lean_declaration": "thm"}]}
             },
             "previous_code": null,
             "previous_compile": null,
             "previous_codex_review": null,
-            "harness": {"path": "/tmp/harness", "branch": "review-loop/haskell/abc123"}
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/lean/abc123"}
         });
 
-        let issue = review_loop_agent_input_contract_issue("haskell_semantic_author", &artifact)
+        let issue = review_loop_agent_input_contract_issue("lean_proof_author", &artifact)
             .expect("missing semantic_ir must block the runner");
         let issue_json = issue.as_json();
 
-        assert_eq!(issue_json["stage"], "haskell_review_fix_code");
-        assert_eq!(issue_json["role"], "haskell_semantic_author");
+        assert_eq!(issue_json["stage"], "lean_review_fix_code");
+        assert_eq!(issue_json["role"], "lean_proof_author");
         assert_eq!(
             issue_json["missing_artifact"],
             "review_loop/semantic_ir.json"
