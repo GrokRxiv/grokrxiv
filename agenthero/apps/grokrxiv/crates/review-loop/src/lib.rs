@@ -339,17 +339,35 @@ pub fn build_proof_obligations(
         .unwrap_or_default();
     let mut obligations = Vec::new();
     let mut skipped_targets = Vec::new();
+    // The LLM authors + proves one theorem at a time (each target = an LLM call + a Lean
+    // kernel compile), so cap targets per run; the rest are deferred (logged, never
+    // silently dropped). Operators raise GROKRXIV_LEAN_MAX_TARGETS.
+    let max_targets = std::env::var("GROKRXIV_LEAN_MAX_TARGETS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(6);
     for theorem in theorem_candidates {
         if theorem.get("formalization_class").and_then(|v| v.as_str()) != Some("formal_math") {
             continue;
         }
-        if let Some(reason) = theorem_candidate_proof_target_issue(&theorem) {
+        if let Some(reason) = theorem_candidate_llm_author_issue(&theorem) {
             skipped_targets.push(json!({
                 "id": theorem.get("id").cloned().unwrap_or_else(|| json!("theorem")),
                 "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
                 "source_span": theorem.get("source_span").cloned().unwrap_or_else(|| json!(null)),
                 "statement": theorem.get("statement").cloned().unwrap_or_else(|| json!("")),
                 "reason": reason,
+            }));
+            continue;
+        }
+        if obligations.len() >= max_targets {
+            skipped_targets.push(json!({
+                "id": theorem.get("id").cloned().unwrap_or_else(|| json!("theorem")),
+                "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
+                "source_span": theorem.get("source_span").cloned().unwrap_or_else(|| json!(null)),
+                "statement": theorem.get("statement").cloned().unwrap_or_else(|| json!("")),
+                "reason": "deferred_lean_target_budget",
             }));
             continue;
         }
@@ -380,6 +398,9 @@ pub fn build_proof_obligations(
             "lean_declaration": lean_declaration,
             "lean_statement": lean_statement,
             "lean_skeleton": lean_skeleton,
+            // Hint only: did the deterministic synthesizer already produce clean typed IR?
+            // The LLM authors the faithful statement regardless; the kernel decides proved.
+            "deterministic_ready": theorem_candidate_proof_target_issue(&theorem).is_none(),
             "severity": "blocking",
             "expected_proof": "closed Lean theorem proof with no sorry, admit, or unapproved axiom",
         }));
@@ -1262,6 +1283,32 @@ fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
     None
 }
 
+/// Gate for the LLM-authored Lean path: a candidate is a proof target when it is a real
+/// discovered theorem (sourced from `theorem_graph.json`) carrying a non-empty statement.
+/// The LLM authors the faithful Lean statement from the paper text and the Lean kernel
+/// verifies the proof, so this no longer requires deterministic typed-IR readiness — that
+/// older gate filtered out every theorem on hard papers before the LLM could try.
+/// Honesty is preserved by the source-artifact check here plus the kernel downstream.
+fn theorem_candidate_llm_author_issue(theorem: &serde_json::Value) -> Option<&'static str> {
+    if theorem
+        .get("source_span")
+        .and_then(|span| span.get("artifact"))
+        .and_then(|value| value.as_str())
+        != Some("theorem_graph.json")
+    {
+        return Some("not_from_reliable_theorem_graph");
+    }
+    let has_statement = theorem
+        .get("statement")
+        .and_then(|value| value.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_statement {
+        return Some("empty_theorem_statement");
+    }
+    None
+}
+
 fn theorem_candidate_proof_target_issue(theorem: &serde_json::Value) -> Option<&'static str> {
     if theorem
         .get("source_span")
@@ -2043,7 +2090,7 @@ publisherReadyLowerBound = claimCount == 43
     }
 
     #[test]
-    fn proof_obligations_skip_body_fragments_and_partial_targets() {
+    fn proof_obligations_skip_body_fragments_but_author_theorem_graph_targets() {
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let semantic_ir = json!({
             "schema_version": "1.0.0",
@@ -2102,27 +2149,18 @@ publisherReadyLowerBound = claimCount == 43
         let obligations =
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
 
-        assert_eq!(obligations["status"], "skipped");
-        assert_eq!(obligations["skip_reason"], "no_proof_ready_math_targets");
-        assert_eq!(
-            obligations["operator_status"],
-            "NOT_CONDUCIVE_TO_LEAN_PROOF"
-        );
-        assert!(obligations["obligations"].as_array().unwrap().is_empty());
-        assert_eq!(obligations["skipped_targets"].as_array().unwrap().len(), 2);
-        assert!(!proof_obligations_require_lean(&obligations));
-
-        let lean_targets = build_lean_targets(&obligations);
-        assert_eq!(lean_targets["status"], "skipped");
-        assert_eq!(lean_targets["skip_reason"], "no_proof_ready_math_targets");
-
-        let theorem_map = build_theorem_map(&obligations, &json!({"status": "skipped"}));
-        assert_eq!(theorem_map["status"], "SKIPPED");
-        assert_eq!(theorem_map["skip_reason"], "no_proof_ready_math_targets");
-
-        let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
-        assert_eq!(adequacy["status"], "skipped");
-        assert_eq!(adequacy["skip_reason"], "no_proof_ready_math_targets");
+        // Body-fragment sources are still skipped (not from the reliable theorem graph),
+        // but the theorem_graph-sourced statement is now an LLM-author target even though
+        // its deterministic transcription was only "partial": the LLM authors the faithful
+        // Lean statement and the kernel decides proved/not_proved.
+        assert_eq!(obligations["status"], "ready");
+        let obls = obligations["obligations"].as_array().unwrap();
+        assert_eq!(obls.len(), 1);
+        assert_eq!(obls[0]["lean_declaration"], "thm_partial");
+        let skipped = obligations["skipped_targets"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["reason"], "not_from_reliable_theorem_graph");
+        assert!(proof_obligations_require_lean(&obligations));
     }
 
     #[test]
