@@ -680,10 +680,37 @@ async fn run_inner(
         crate::cli_status::emit(format!(
                 "extract {arxiv_id}: using pandoc_enabled local extraction; set GROKRXIV_EXTRACTION_MODE=agent_enabled to run LLM tool loops"
             ));
+        // Math papers need typed theorem IR (typed_transcription + theorem_ir)
+        // for the proof loop; the deterministic scanner cannot produce it. When
+        // the body shows math/theorem content, run the typed-IR theorem agent on
+        // the $0 CLI runner only (this stage), leaving the other stages
+        // deterministic and never forcing the API path. If no CLI runner is
+        // available the agent yields None and we keep the deterministic nodes —
+        // which honestly surface as not_conducive_to_lean_proof downstream.
+        let theorems_outcome = if should_run_typed_theorem_agent(&body_md_str, opts) {
+            crate::cli_status::emit(format!(
+                "extract {arxiv_id}: math content detected; running typed-IR theorem extraction on the CLI runner"
+            ));
+            run_agent_when(
+                !opts.should_skip("theorems"),
+                state,
+                workdir.path(),
+                &extract,
+                semantic_ast_ref,
+                paper_id,
+                arxiv_id,
+                "theorems",
+                TheoremGraphExtractorAgent::new(),
+            )
+            .await
+            .or_else(|| deterministic_theorems_or_empty(arxiv_id, &body_md_str))
+        } else {
+            deterministic_theorems_or_empty(arxiv_id, &body_md_str)
+        };
         (
             deterministic_macros_outcome(raw_tex_concat.as_deref()),
             deterministic_equations_or_empty(arxiv_id, semantic_ast_ref, &body_md_str),
-            deterministic_theorems_or_empty(arxiv_id, &body_md_str),
+            theorems_outcome,
             deterministic_citations_outcome(arxiv_id, &body_md_str, &extract),
         )
     };
@@ -764,6 +791,14 @@ async fn run_inner(
     apply_equations(&mut bundle, arxiv_id, equations_res);
     apply_theorems(&mut bundle, arxiv_id, theorems_res);
     apply_citations(&mut bundle, arxiv_id, citations_res);
+    // Run the real resolver waterfall (Crossref → arXiv → free-text providers)
+    // over the extracted bibliography and stamp each citation's `validation`
+    // field, so the report below projects honest resolver evidence instead of
+    // the unchecked default.
+    #[cfg(feature = "grokrxiv-verifier")]
+    if let Some(references) = bundle.references.as_mut() {
+        populate_citation_validations(state, &extract, references).await;
+    }
     if let Some(references) = &bundle.references {
         bundle.citation_validation_report = Some(build_citation_validation_report(references));
     }
@@ -828,8 +863,8 @@ async fn run_inner(
 /// - `GROKRXIV_DATA_REPO_PATH` (required) — local path to the
 ///   `grokrxiv-data` clone. Defaults to
 ///   `/Users/mlong/Documents/Development/grokrxiv-data` if absent.
-/// - `GROKRXIV_DATA_REPO_REMOTE` (optional) — git remote URL; when unset the
-///   local repo's existing remote is used (or no push happens).
+/// - `GROKRXIV_DATA_REPO_REMOTE` (optional) — git remote URL; when unset or
+///   empty no push happens and artifacts stay in the local clone.
 /// - `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (optional) — Tier-2 writes
 ///   are silently skipped when either is absent.
 /// - `GROKRXIV_DRY_RUN_STORAGE=1` or `opts.dry_run_storage = true` — skip
@@ -839,7 +874,12 @@ fn build_paper_artifacts(opts: &IngestOptions) -> Result<PaperArtifacts> {
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"));
-    let remote = std::env::var("GROKRXIV_DATA_REPO_REMOTE").ok();
+    // An empty value means "no push" (artifacts stay local) — an empty string is
+    // never a valid remote, and treating it as one would fail the commit step.
+    let remote = std::env::var("GROKRXIV_DATA_REPO_REMOTE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let git =
         GitArtifactStore::open_or_clone(repo_path, remote).context("open grokrxiv-data repo")?;
 
@@ -1877,6 +1917,139 @@ fn value_string_array(value: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Maximum wall-clock budget for the per-paper citation resolver waterfall.
+/// Overridable via `GROKRXIV_CITATION_VERIFY_BUDGET_SECS`. On elapse the
+/// citations keep their existing `validation` and the report degrades to its
+/// prior (unchecked) behavior rather than blocking ingest indefinitely.
+#[cfg(feature = "grokrxiv-verifier")]
+fn citation_verify_budget() -> std::time::Duration {
+    let secs = std::env::var("GROKRXIV_CITATION_VERIFY_BUDGET_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(600);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Run the deterministic citation resolver waterfall over the paper's extracted
+/// bibliography and write each real verdict onto the matching `references.json`
+/// citation's `validation` field. This is the *same* `CitationVerifier::verify`
+/// the review supervisor runs for the citation critic; here we join its results
+/// back into the extraction-time citation report so resolver status stops being
+/// a hollow `not_checked`.
+///
+/// All providers are free public HTTP APIs; the optional Gemini grounded
+/// resolver stays opt-in inside the verifier. A network blip yields
+/// `transient_unknown`, which `build_citation_validation_report` does not treat
+/// as remediation, so a flaky provider never wrongly fails a paper.
+#[cfg(feature = "grokrxiv-verifier")]
+async fn populate_citation_validations(state: &AppState, extract: &PaperExtract, references: &mut Value) {
+    use grokrxiv_verifier::{CitationVerifier, Verifier, VerifierContext};
+
+    let ctx = VerifierContext::for_paper(extract, &state.http);
+    let verifier = CitationVerifier::new();
+    let verify = verifier.verify(&Value::Null, &ctx);
+    let result = match tokio::time::timeout(citation_verify_budget(), verify).await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                arxiv_id = extract.arxiv_id.as_str(),
+                "citation verification exceeded budget; leaving validations unset"
+            );
+            return;
+        }
+    };
+    let Some(entries) = result.notes.get("entries").and_then(Value::as_array) else {
+        return;
+    };
+    if entries.is_empty() {
+        return;
+    }
+    apply_resolver_entries_to_references(references, entries);
+}
+
+/// Pure join: stamp each `references.json` citation's `validation` from its
+/// matching resolver entry. Split out from the network fetch so the join +
+/// projection are unit-testable without HTTP.
+#[cfg(feature = "grokrxiv-verifier")]
+fn apply_resolver_entries_to_references(references: &mut Value, entries: &[Value]) {
+    let Some(citations) = references.get_mut("citations").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for citation in citations.iter_mut() {
+        if let Some(entry) = match_resolver_entry(citation, entries) {
+            if let Some(validation) = validation_from_resolver_entry(entry) {
+                if let Some(obj) = citation.as_object_mut() {
+                    obj.insert("validation".to_string(), validation);
+                }
+            }
+        }
+    }
+}
+
+/// Join a report citation to its resolver entry by DOI, then arXiv id, then
+/// exact raw text. Ambiguous/empty keys are skipped (returns `None`) so a
+/// citation is left unchecked rather than mis-assigned another ref's verdict.
+#[cfg(feature = "grokrxiv-verifier")]
+fn match_resolver_entry<'a>(citation: &Value, entries: &'a [Value]) -> Option<&'a Value> {
+    fn norm(value: &Value, key: &str) -> Option<String> {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+    }
+    if let Some(doi) = norm(citation, "doi") {
+        if let Some(entry) = entries.iter().find(|e| norm(e, "doi").as_deref() == Some(doi.as_str())) {
+            return Some(entry);
+        }
+    }
+    if let Some(arxiv) = norm(citation, "arxiv_id") {
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| norm(e, "arxiv_id").as_deref() == Some(arxiv.as_str()))
+        {
+            return Some(entry);
+        }
+    }
+    let raw = citation.get("raw").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    if let Some(raw) = raw {
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| e.get("raw").and_then(Value::as_str).map(str::trim) == Some(raw))
+        {
+            return Some(entry);
+        }
+    }
+    None
+}
+
+/// Project a verifier `entries[]` element into the `validation` object shape
+/// that `build_citation_validation_report` consumes. Status/source strings pass
+/// through verbatim — they already match the report's accepted vocabulary.
+#[cfg(feature = "grokrxiv-verifier")]
+fn validation_from_resolver_entry(entry: &Value) -> Option<Value> {
+    let status = entry.get("status").and_then(Value::as_str)?;
+    let mut validation = json!({ "status": status });
+    let obj = validation.as_object_mut().expect("validation is an object literal");
+    if let Some(source) = entry.get("source").and_then(Value::as_str) {
+        obj.insert("source".to_string(), json!(source));
+    }
+    if let Some(resolved_doi) = entry.get("resolved_doi").filter(|v| !v.is_null()).cloned() {
+        obj.insert("resolved_doi".to_string(), resolved_doi);
+    }
+    if let Some(resolved_url) = entry.get("resolved_url").filter(|v| !v.is_null()).cloned() {
+        obj.insert("resolved_url".to_string(), resolved_url);
+    }
+    if let Some(reason) = entry
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        obj.insert("evidence".to_string(), json!([reason]));
+    }
+    Some(validation)
+}
+
 fn build_citation_validation_report(references: &Value) -> Value {
     let citations = references
         .get("citations")
@@ -2221,6 +2394,40 @@ fn deterministic_equations_outcome(
             ExtractionMode::PandocEnabled,
         ),
     })
+}
+
+/// Decide whether to spend the $0 CLI typed-IR theorem agent in the otherwise
+/// deterministic (`pandoc_enabled`) path. True only when the body shows
+/// theorem-like content (the agent's typed IR is what makes such blocks
+/// proof-ready) and the stage isn't skipped. We deliberately do NOT trigger on
+/// bare equation markers: equation-sourced candidates can never become proof
+/// targets — the proof-readiness gate requires `source_span.artifact ==
+/// "theorem_graph.json"` — so running a multi-minute LLM tool-loop on an
+/// equation-only paper costs operator quota for zero proof-loop benefit. Such
+/// papers honestly resolve to `not_conducive_to_lean_proof`. Operators can force
+/// pure-deterministic extraction with `GROKRXIV_TYPED_THEOREM_IR=off`.
+fn should_run_typed_theorem_agent(body_md: &str, opts: &IngestOptions) -> bool {
+    if opts.should_skip("theorems") {
+        return false;
+    }
+    if std::env::var("GROKRXIV_TYPED_THEOREM_IR")
+        .map(|v| v.eq_ignore_ascii_case("off") || v.trim() == "0")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    body_has_theorem_signal_local(body_md)
+}
+
+// Cheap theorem-content signal, mirrored from the audit-side predicate in
+// `cli.rs`. Kept local so ingest does not couple to storage-feature-gated
+// helpers. Catches `\begin{theorem}`, `**Theorem 1.**`, `### Lemma`, etc.
+fn body_has_theorem_signal_local(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("theorem")
+        || lower.contains("lemma")
+        || lower.contains("proposition")
+        || lower.contains("corollary")
 }
 
 fn deterministic_theorems_or_empty(_arxiv_id: &str, body_md: &str) -> Option<StageOutcome> {
@@ -3806,6 +4013,187 @@ mod a4_tests {
             .expect("remediations")
             .iter()
             .any(|item| item["key"] == "missing2026"));
+    }
+
+    #[cfg(feature = "grokrxiv-verifier")]
+    fn citation_report_schema_validator() -> jsonschema::Validator {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        jsonschema::validator_for(&schema).expect("compile schema")
+    }
+
+    #[cfg(feature = "grokrxiv-verifier")]
+    #[test]
+    fn resolver_entries_stamp_validation_and_report_verified() {
+        let mut references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "Smith, A. A Paper. Journal, 2026.",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "doi": "10.1000/xyz",
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "intro", "sentence": "see [@smith2026]"}],
+                "validation": Value::Null
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+        let entries = vec![json!({
+            "raw": "Smith, A. A Paper. Journal, 2026.",
+            "doi": "10.1000/xyz",
+            "status": "resolved",
+            "source": "crossref",
+            "resolved_doi": "10.1000/xyz",
+            "resolved_url": "https://doi.org/10.1000/xyz",
+            "reason": "crossref match"
+        })];
+
+        apply_resolver_entries_to_references(&mut references, &entries);
+        assert_eq!(references["citations"][0]["validation"]["status"], "resolved");
+        assert_eq!(references["citations"][0]["validation"]["source"], "crossref");
+        assert_eq!(
+            references["citations"][0]["validation"]["evidence"][0],
+            "crossref match"
+        );
+
+        let report = build_citation_validation_report(&references);
+        assert!(citation_report_schema_validator().validate(&report).is_ok());
+        assert_eq!(report["status"], "verified");
+        assert_eq!(report["resolver_results"][0]["status"], "verified");
+        assert_eq!(report["resolver_results"][0]["source"], "crossref");
+    }
+
+    #[cfg(feature = "grokrxiv-verifier")]
+    #[test]
+    fn resolver_transient_unknown_does_not_force_remediation() {
+        let mut references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "Smith, A. A Paper. Journal, 2026.",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "doi": "10.1000/xyz",
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "intro", "sentence": "see [@smith2026]"}],
+                "validation": Value::Null
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+        let entries = vec![json!({
+            "raw": "Smith, A. A Paper. Journal, 2026.",
+            "doi": "10.1000/xyz",
+            "status": "transient_unknown",
+            "source": "crossref",
+            "reason": "provider 503"
+        })];
+
+        apply_resolver_entries_to_references(&mut references, &entries);
+        let report = build_citation_validation_report(&references);
+        assert!(citation_report_schema_validator().validate(&report).is_ok());
+        // A network blip must NOT push an otherwise-clean paper into remediation.
+        assert_eq!(report["resolver_results"][0]["status"], "transient_unknown");
+        assert_ne!(report["status"], "needs_remediation");
+    }
+
+    #[cfg(feature = "grokrxiv-verifier")]
+    #[test]
+    fn resolver_join_matches_by_arxiv_and_leaves_others_unchecked() {
+        let mut references = json!({
+            "citations": [
+                {
+                    "key": "doe2026",
+                    "raw": "Doe arXiv:2601.00001",
+                    "title": "Matched",
+                    "doi": null,
+                    "arxiv_id": "2601.00001",
+                    "cited": true,
+                    "contexts": [{"section": "x", "sentence": "[@doe2026]"}],
+                    "validation": Value::Null
+                },
+                {
+                    "key": "ghost2026",
+                    "raw": "Ghost reference with no resolver entry",
+                    "title": "Unmatched",
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true,
+                    "contexts": [{"section": "x", "sentence": "[@ghost2026]"}],
+                    "validation": Value::Null
+                }
+            ],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+        let entries = vec![json!({
+            "raw": "Doe arXiv:2601.00001",
+            "arxiv_id": "2601.00001",
+            "status": "resolved",
+            "source": "arxiv",
+            "resolved_url": "https://arxiv.org/abs/2601.00001"
+        })];
+
+        apply_resolver_entries_to_references(&mut references, &entries);
+        assert_eq!(references["citations"][0]["validation"]["status"], "resolved");
+        assert_eq!(references["citations"][0]["validation"]["source"], "arxiv");
+        // No matching entry -> stays unchecked rather than borrowing another verdict.
+        assert!(references["citations"][1]["validation"].is_null());
+
+        let report = build_citation_validation_report(&references);
+        assert_eq!(report["resolver_results"][1]["status"], "not_checked");
+    }
+
+    #[test]
+    fn typed_theorem_agent_gate_respects_signal_skip_and_override() {
+        let theorem_body = "We prove the following.\n\\begin{theorem} For all n, n+0=n. \\end{theorem}";
+        let equation_only_body = "Energy is \\(E = mc^2\\) and \\begin{align} a &= b \\end{align}.";
+        let plain_body = "This is a survey with prose only and no formal results.";
+        let opts = IngestOptions {
+            no_cache: false,
+            skip_stages: vec![],
+            dry_run_storage: false,
+        };
+        let skip_opts = IngestOptions {
+            no_cache: false,
+            skip_stages: vec!["theorems".into()],
+            dry_run_storage: false,
+        };
+
+        let prev = std::env::var("GROKRXIV_TYPED_THEOREM_IR").ok();
+        std::env::remove_var("GROKRXIV_TYPED_THEOREM_IR");
+
+        assert!(
+            should_run_typed_theorem_agent(theorem_body, &opts),
+            "theorem signal should enable the typed-IR agent"
+        );
+        assert!(
+            !should_run_typed_theorem_agent(equation_only_body, &opts),
+            "equation-only papers have no theorem proof targets -> no LLM tool-loop"
+        );
+        assert!(
+            !should_run_typed_theorem_agent(plain_body, &opts),
+            "no theorem signal -> deterministic only"
+        );
+        assert!(
+            !should_run_typed_theorem_agent(theorem_body, &skip_opts),
+            "skipping the theorems stage disables the agent"
+        );
+
+        std::env::set_var("GROKRXIV_TYPED_THEOREM_IR", "off");
+        assert!(
+            !should_run_typed_theorem_agent(theorem_body, &opts),
+            "GROKRXIV_TYPED_THEOREM_IR=off forces pure-deterministic extraction"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("GROKRXIV_TYPED_THEOREM_IR", v),
+            None => std::env::remove_var("GROKRXIV_TYPED_THEOREM_IR"),
+        }
     }
 
     #[test]

@@ -86,7 +86,11 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
          typed_transcription and theorem_ir. Use explicit unknown_type, \
          unknown_term, or unknown_prop nodes only for the exact subexpression \
          you cannot safely type; do not mark a complete theorem partial just \
-         because the prose is long. Proof blocks are dependency evidence, not \
+         because the prose is long. When the conclusion is an (in)equality or a \
+         logical combination, emit the precise kind (equals, less_equal, \
+         less_than, greater_equal, greater_than, implies, and, or, not, forall, \
+         exists) rather than falling back to unknown_prop. Proof blocks are \
+         dependency evidence, not \
          Lean theorem targets, so do not invent theorem_ir for proof bodies. \
          Resolve every `\\ref{}` in proofs via `resolve_label` to build the \
          `depends_on` edges. Submit the full graph by calling `submit` with a \

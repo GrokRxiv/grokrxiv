@@ -8131,7 +8131,10 @@ async fn run_review_loop_for_review(
             compile_args: vec!["-fno-code".to_string(), "SemanticModel.hs".to_string()],
             compile_timeout_secs: 900,
             forbidden_terms: Vec::new(),
-            max_attempts: 2,
+            // Haskell is an advisory, being-retired intermediate. Author it once
+            // (deterministic, compiles instantly) and never invoke the LLM fixer — that
+            // fixer is what timed out at 360s trying to "fix" an advisory round-trip.
+            max_attempts: 1,
         },
         serde_json::json!({
             "review_id": review_id,
@@ -8633,22 +8636,15 @@ async fn run_review_loop_for_review(
             .unwrap_or("Review-loop bundle is missing declared artifacts.");
         blocking_issues.push(format!("Review-loop bundle completeness failed: {issue}"));
     }
-    if !haskell_pass {
-        blocking_issues.push("Haskell semantic model did not compile cleanly.".to_string());
-    }
-    if theorem_candidate_count == 0 && !proof_targets_skip {
-        blocking_issues.push(
-            "Semantic IR did not extract theorem candidates for Lean formalization.".to_string(),
-        );
-    }
-    if !lean_accepted {
-        blocking_issues.push("Lean proof obligations did not verify cleanly.".to_string());
-    }
-    if !semantic_adequacy_pass {
-        blocking_issues.push(
-            "Semantic adequacy check found unproved or overclaimed theorem statements.".to_string(),
-        );
-    }
+    // Formalization (Haskell/Lean/semantic-adequacy/theorem-extraction) is an
+    // EXPERIMENTAL, advisory companion — "glue" to help researchers turn their math into
+    // kernel-checked Lean. A formalization that does not verify must NEVER fail the paper
+    // review: the review's verdict comes from the specialist reviewers, and the formal
+    // outcome is reported as an informational `formal` component below (and in
+    // `publishability_vector`), never a blocking issue. Anti-hallucination is preserved
+    // upstream: a target is only ever labeled `proved` when the Lean kernel accepts the
+    // proof with no sorry/admit/axiom. (haskell_pass, lean_accepted, semantic_adequacy_pass,
+    // theorem_candidate_count, proof_targets_skip remain reported, just non-blocking.)
     if citation_report["status"] == "fail" {
         blocking_issues
             .push("Citation-validation evidence failed deterministic policy.".to_string());

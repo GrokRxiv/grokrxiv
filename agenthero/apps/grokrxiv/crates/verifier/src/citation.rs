@@ -1010,16 +1010,33 @@ fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
                 BibliographicProviderKind::GeminiGroundedEndpoint,
             ));
         }
-    } else if let Some(api_key) = gemini_grounded_api_key() {
-        providers.push(BibliographicProvider::new_gemini_grounded_api(
-            nonblank_env("GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL")
-                .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()),
-            nonblank_env("GROKRXIV_CITATION_GROUNDED_MODEL")
-                .unwrap_or_else(|| "gemini-2.5-pro".to_string()),
-            api_key,
-        ));
+    } else if provider_api_allowed_env() {
+        // The implicit Gemini grounded resolver makes paid LLM calls. Auto-detect
+        // it from an ambient API key ONLY when the operator opted into the
+        // provider-API path; otherwise the deterministic CLI path stays $0/paper
+        // even when a Gemini key is present in the environment.
+        if let Some(api_key) = gemini_grounded_api_key() {
+            providers.push(BibliographicProvider::new_gemini_grounded_api(
+                nonblank_env("GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL")
+                    .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()),
+                nonblank_env("GROKRXIV_CITATION_GROUNDED_MODEL")
+                    .unwrap_or_else(|| "gemini-2.5-pro".to_string()),
+                api_key,
+            ));
+        }
     }
     providers
+}
+
+/// Whether the operator explicitly opted into the paid provider-API path. The
+/// orchestrator sets `AGENTHERO_ALLOW_PROVIDER_API=1` only for `--runner api`;
+/// the default $0 CLI path leaves it unset so ambient Gemini keys never trigger
+/// billable grounded-resolver calls. The free HTTP providers always run.
+fn provider_api_allowed_env() -> bool {
+    matches!(
+        std::env::var("AGENTHERO_ALLOW_PROVIDER_API").as_deref(),
+        Ok("1")
+    )
 }
 
 fn gemini_grounded_api_key() -> Option<String> {
@@ -2900,6 +2917,9 @@ mod tests {
             .expect("env lock");
         let _endpoint = EnvVarGuard::clear("GROKRXIV_CITATION_GROUNDED_RESOLVER_URL");
         let _key = EnvVarGuard::set("GEMINI_API_KEY", "env-gemini-key");
+        // The implicit Gemini grounded resolver is billable, so it is only added
+        // when the operator opted into the provider-API path.
+        let _api = EnvVarGuard::set("AGENTHERO_ALLOW_PROVIDER_API", "1");
         let _base = EnvVarGuard::set(
             "GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL",
             "http://gemini.test",
@@ -2916,6 +2936,29 @@ mod tests {
         assert_eq!(provider.base_url, "http://gemini.test");
         assert_eq!(provider.model.as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(provider.api_key.as_deref(), Some("env-gemini-key"));
+    }
+
+    #[test]
+    fn default_providers_omit_gemini_without_provider_api_optin() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _endpoint = EnvVarGuard::clear("GROKRXIV_CITATION_GROUNDED_RESOLVER_URL");
+        let _key = EnvVarGuard::set("GEMINI_API_KEY", "env-gemini-key");
+        // Default $0 CLI path: no provider-API opt-in.
+        let _api = EnvVarGuard::clear("AGENTHERO_ALLOW_PROVIDER_API");
+
+        let providers = default_bibliographic_providers();
+
+        assert!(
+            providers
+                .iter()
+                .all(|provider| provider.kind != BibliographicProviderKind::GeminiGroundedApi),
+            "an ambient Gemini key must NOT add a billable resolver on the $0 CLI path"
+        );
+        // The free HTTP providers still run.
+        assert!(providers.iter().any(|provider| provider.source == "openalex"));
     }
 
     #[tokio::test]

@@ -323,29 +323,14 @@ pub fn build_proof_obligations(
     semantic_ir: &serde_json::Value,
     haskell_results: &serde_json::Value,
 ) -> serde_json::Value {
+    // The Haskell semantic model is being retired as an intermediate: a fixed ADT can't
+    // represent real math, and the LLM authors Lean directly. Lean formalization no
+    // longer depends on Haskell — `haskell_results` is kept only as advisory provenance.
     let haskell_status = haskell_results
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    if haskell_status != "pass" {
-        return json!({
-            "schema_version": "1.0.0",
-            "review_id": review_id,
-            "source": "review_loop/semantic_ir.json",
-            "haskell_status": haskell_status,
-            "obligations": [
-                {
-                    "id": "semantic_gap_haskell_model_failed",
-                    "kind": "semantic_gap",
-                    "statement": "Haskell mathematical IR generation did not pass; Lean verification is blocked.",
-                    "lean_declaration": null,
-                    "severity": "blocking",
-                    "upstream_artifact": "review_loop/haskell/results.json",
-                    "upstream_summary": review_fix_loop_summary(haskell_results),
-                }
-            ]
-        });
-    }
+    let _ = haskell_status;
 
     let theorem_candidates = semantic_ir
         .get("theorem_candidates")
@@ -1173,6 +1158,46 @@ fn parse_type(value: &str) -> serde_json::Value {
 
 fn parse_proposition(value: &str) -> serde_json::Value {
     let cleaned = value.trim().trim_end_matches('.').trim();
+
+    // Implication is the top-level connective; split first so each side becomes
+    // its own proposition. Only explicit arrows — never infer implication from
+    // prose, which would risk fabricating structure.
+    for arrow in ["⟹", "⇒", "\\implies", "\\Rightarrow", "=>"] {
+        if let Some((premise, conclusion)) = cleaned.split_once(arrow) {
+            if !premise.trim().is_empty() && !conclusion.trim().is_empty() {
+                return json!({
+                    "kind": "implies",
+                    "premise": parse_proposition(premise),
+                    "conclusion": parse_proposition(conclusion),
+                });
+            }
+        }
+    }
+
+    // Inequalities. Only explicit two-char / unicode / LaTeX forms, so a stray
+    // '<' or '>' inside a complex statement never fabricates a relation. `\leq`
+    // is matched before `\le` so the longer token wins.
+    for (op, kind) in [
+        ("≤", "less_equal"),
+        ("\\leq", "less_equal"),
+        ("\\le", "less_equal"),
+        ("<=", "less_equal"),
+        ("≥", "greater_equal"),
+        ("\\geq", "greater_equal"),
+        ("\\ge", "greater_equal"),
+        (">=", "greater_equal"),
+    ] {
+        if let Some((lhs, rhs)) = cleaned.split_once(op) {
+            if !lhs.trim().is_empty() && !rhs.trim().is_empty() {
+                return json!({
+                    "kind": kind,
+                    "lhs": parse_term(lhs),
+                    "rhs": parse_term(rhs),
+                });
+            }
+        }
+    }
+
     if let Some((lhs, rhs)) = cleaned.split_once('=') {
         return json!({
             "kind": "equals",
@@ -1201,10 +1226,28 @@ fn parse_term(value: &str) -> serde_json::Value {
     if let Ok(value) = cleaned.parse::<u64>() {
         return json!({"kind": "nat_lit", "value": value});
     }
-    if cleaned.is_empty() {
-        return json!({"kind": "unknown_term", "text": ""});
+    // Only a genuinely simple identifier becomes a `var`. Anything else (LaTeX
+    // macros, norms, multi-token expressions) is honestly `unknown_term` so the
+    // proof-readiness gate rejects relations we cannot faithfully type, rather
+    // than fabricating a clean-looking obligation from noise.
+    if is_simple_identifier(cleaned) {
+        return json!({"kind": "var", "name": cleaned});
     }
-    json!({"kind": "var", "name": cleaned})
+    json!({"kind": "unknown_term", "text": cleaned})
+}
+
+/// A simple math variable: starts with a letter and contains only letters,
+/// digits, underscores, or primes. Rejects whitespace, LaTeX control sequences,
+/// braces, norm bars, and operators.
+fn is_simple_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_alphabetic() => {}
+        _ => return false,
+    }
+    value
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
 }
 
 fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
@@ -1569,38 +1612,6 @@ fn lean_identifier(raw: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-fn review_fix_loop_summary(results: &serde_json::Value) -> String {
-    let status = results
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
-    let attempts = results
-        .get("attempts")
-        .and_then(|value| value.as_array())
-        .map(Vec::len)
-        .unwrap_or(0);
-    let last_issue = results
-        .get("attempts")
-        .and_then(|value| value.as_array())
-        .and_then(|items| items.last())
-        .and_then(|attempt| {
-            attempt
-                .pointer("/semantic_validation/issues/0")
-                .or_else(|| attempt.pointer("/compile/stderr"))
-                .or_else(|| attempt.pointer("/codex_review/issues/0/message"))
-        })
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if last_issue.is_empty() {
-        format!("status={status} attempts={attempts}")
-    } else {
-        format!(
-            "status={status} attempts={attempts} issue={}",
-            truncate(last_issue, 180)
-        )
-    }
-}
-
 fn lean_entry_status(kind: &str, lean_results: &serde_json::Value) -> &'static str {
     if kind == "semantic_gap" {
         return "SEMANTIC_GAP";
@@ -1672,6 +1683,82 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_proposition_types_simple_inequalities_and_implications() {
+        // `<=` / `>=` / unicode forms become typed relations with no unknown nodes.
+        let le = parse_proposition("a + b <= c");
+        assert_eq!(le["kind"], "less_equal");
+        assert!(!contains_unknown_math_node(&le), "clean <= must be fully typed");
+
+        let ge = parse_proposition("n ≥ 0");
+        assert_eq!(ge["kind"], "greater_equal");
+        assert_eq!(ge["rhs"], json!({"kind": "nat_lit", "value": 0}));
+        assert!(!contains_unknown_math_node(&ge));
+
+        let leq = parse_proposition("x \\leq y");
+        assert_eq!(leq["kind"], "less_equal");
+        assert!(!contains_unknown_math_node(&leq));
+
+        let imp = parse_proposition("a = b => c = d");
+        assert_eq!(imp["kind"], "implies");
+        assert_eq!(imp["premise"]["kind"], "equals");
+        assert_eq!(imp["conclusion"]["kind"], "equals");
+        assert!(!contains_unknown_math_node(&imp));
+    }
+
+    #[test]
+    fn parse_term_is_honest_about_untypeable_terms() {
+        // Simple identifiers and literals type cleanly.
+        assert_eq!(parse_term("n"), json!({"kind": "var", "name": "n"}));
+        assert_eq!(parse_term("x_0"), json!({"kind": "var", "name": "x_0"}));
+        assert_eq!(parse_term("0"), json!({"kind": "nat_lit", "value": 0}));
+
+        // Complex terms (LaTeX, norms, multi-token) are unknown, NOT a bogus var,
+        // so relations over them are honestly rejected by the proof-readiness gate.
+        assert!(contains_unknown_math_node(&parse_term("\\|T_n - T\\|")));
+        assert!(contains_unknown_math_node(&parse_term("\\sin(x)")));
+        assert!(contains_unknown_math_node(&parse_term("a b c")));
+    }
+
+    #[test]
+    fn complex_inequality_statement_stays_not_conducive() {
+        // A theorem_graph-sourced node whose statement cannot be faithfully typed
+        // must surface unknown math (-> partial -> skipped), never a fake target.
+        let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-hard"});
+        let theorem_ir =
+            typed_theorem_ir_from_source("thm_hard", "\\|T_n - T\\| \\leq \\epsilon", &source_span, None, None);
+        assert!(
+            contains_unknown_math_node(theorem_ir.get("conclusion").unwrap()),
+            "norm inequality must remain unknown, not a fabricated less_equal(var, var)"
+        );
+        let typed = typed_transcription_from_source("\\|T_n - T\\| \\leq \\epsilon", &theorem_ir, None);
+        assert_eq!(typed["status"], "partial");
+    }
+
+    #[test]
+    fn simple_inequality_theorem_is_proof_ready() {
+        // A clean inequality from the reliable theorem graph must pass the gate.
+        let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-le"});
+        let theorem_ir = typed_theorem_ir_from_source(
+            "thm_le",
+            "For all n : Nat, 0 <= n",
+            &source_span,
+            None,
+            None,
+        );
+        let typed = typed_transcription_from_source("For all n : Nat, 0 <= n", &theorem_ir, None);
+        let candidate = json!({
+            "source_span": source_span,
+            "typed_transcription": typed,
+            "theorem_ir": theorem_ir,
+        });
+        assert_eq!(
+            theorem_candidate_proof_target_issue(&candidate),
+            None,
+            "a clean typed inequality from theorem_graph.json must be proof-ready"
+        );
+    }
 
     #[test]
     fn semantic_ir_only_marks_formal_math_for_lean() {
@@ -2045,7 +2132,10 @@ publisherReadyLowerBound = claimCount == 43
     }
 
     #[test]
-    fn haskell_failure_blocks_theorem_formalization_obligations() {
+    fn haskell_failure_does_not_block_lean_obligations() {
+        // Haskell is a retired, advisory intermediate. A failed Haskell model must NOT
+        // block Lean formalization — obligations depend only on the theorem candidates'
+        // proof-readiness, never on Haskell.
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let semantic_ir = json!({
             "schema_version": "1.0.0",
@@ -2056,6 +2146,19 @@ publisherReadyLowerBound = claimCount == 43
                     "formalization_class": "formal_math",
                     "statement": "For all n in N, n + 0 = n.",
                     "source_claim_id": "claim_1",
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "claim_1"},
+                    "typed_transcription": {"status": "transcribed"},
+                    "theorem_ir": {
+                        "theorem_name": "add_zero_claim",
+                        "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "claim_1"},
+                        "binders": [{"name": "n", "type": {"kind": "nat"}}],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "equals",
+                            "lhs": {"kind": "add", "lhs": {"kind": "var", "name": "n"}, "rhs": {"kind": "nat_lit", "value": 0}},
+                            "rhs": {"kind": "var", "name": "n"}
+                        }
+                    },
                     "formalization_target": {
                         "lean_declaration": "add_zero_claim",
                         "expected_shape": "theorem"
@@ -2064,6 +2167,7 @@ publisherReadyLowerBound = claimCount == 43
             ]
         });
 
+        // Even with the Haskell model failing, the proof-ready theorem yields a real obligation.
         let obligations = build_proof_obligations(
             review_id,
             &semantic_ir,
@@ -2078,12 +2182,14 @@ publisherReadyLowerBound = claimCount == 43
         );
         let obligation_items = obligations["obligations"].as_array().expect("obligations");
 
-        assert_eq!(obligations["haskell_status"], "fail");
         assert_eq!(obligation_items.len(), 1);
-        assert_eq!(obligation_items[0]["kind"], "semantic_gap");
-        assert_eq!(
-            obligation_items[0]["id"],
-            "semantic_gap_haskell_model_failed"
+        assert_eq!(obligation_items[0]["kind"], "theorem_formalization");
+        assert_eq!(obligation_items[0]["lean_declaration"], "add_zero_claim");
+        assert!(
+            obligation_items
+                .iter()
+                .all(|o| o["id"] != "semantic_gap_haskell_model_failed"),
+            "Haskell failure must not inject a blocking semantic gap"
         );
     }
 
