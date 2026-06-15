@@ -1,5 +1,32 @@
 # GrokRxiv Local Harness Findings
 
+## P0-058 - Source Bibliography Recovery and Extraction Audit
+
+ID: P0-058
+Source used for live validation: `https://arxiv.org/abs/2606.13481`
+Local data artifact: `../grokrxiv-data/papers/2606.13481/`
+Bucket: F1 app-local extraction/citation normalization.
+
+What was fixed:
+- Classic `.bbl` / `thebibliography` source files are now parsed when recovering bibliography from arXiv source bundles, not only BibLaTeX `\entry` blocks.
+- Source-bundle bibliography recovery now backfills empty or hollow extracted references before review inputs are built.
+- Extraction audit now counts `citation_metadata` separately from citation contexts and fails when contexts exist but bibliographic metadata is empty.
+- Review-loop citation reports now classify missing bibliographic metadata and `not_checked` resolver statuses as remediation, not verified evidence.
+- The theorem scanner now recognizes Pandoc fenced theorem Divs such as `::: {#id .theorem}` so math-heavy Pandoc output is not treated as empty theorem content.
+- Technical correctness no longer owns citation existence verification; citation existence is owned by the citation lane and deterministic citation verifier.
+- Meta-review prompt now tells the reviewer to distinguish genuine manuscript omissions from pipeline input/extraction failures.
+
+Live validation result:
+- Command was single-paper extraction only, not a corpus run.
+- `grokrxiv-app --no-cache --status extract 2606.13481 --json` exited 0 with local data repo path.
+- Extraction audit output: `body_chars=208298`, `sections=8`, `equations=1644`, `citations=83`, `citation_metadata=83`, `contexts=191`, `theorem_nodes=75`, `review_ready=true`, `warnings=[]`, `failures=[]`.
+- `references.json`: 83 citations, 83 metadata entries, 191 contexts, 0 unmatched, 0 uncited.
+- `theorem_graph.json`: 75 nodes, including theorem/proposition/lemma/corollary/definition/proof/remark entries.
+- `citation_validation_report.json`: `status=needs_remediation`, summary `83 references parsed; 0 graph warnings`, with 77 `not_checked` resolver statuses and 6 `verified`.
+
+Remaining defect:
+- Extraction is now honest for this source, but validation is not complete. The next fix must run or wire the real resolver waterfall for the normalized 83 references and preserve per-reference evidence. A report with `not_checked` references is not reference-ready; it must call out the unchecked references and why.
+
 ## P0-057 - Typed Theorem IR Extraction Handoff
 
 ID: P0-057

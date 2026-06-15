@@ -1,18 +1,18 @@
 # GrokRxiv Local Harness Status
 
-Updated: 2026-06-15T15:30:13Z
+Updated: 2026-06-15T16:31:00Z
 
 ## Current State
 
 - Goal: Multi-day phased local Codex build of the GrokRxiv review pipeline on AgentHero, gated by the golden corpus.
 - Current phase: P0 stabilize.
-- Session type: local coordinator after P0-057 typed theorem IR extraction handoff.
+- Session type: local coordinator after P0-058 source bibliography and extraction audit hardening.
 - Branch/worktree: coordinator branch `grokrxiv-local-corpus-harness` in `/Users/mlong/Documents/Development/grokrxiv`.
 - Latest code checkpoint before this session: `314609c`.
 - Baseline tag: none yet.
 - Last green sweep: none yet.
 - Current runner: local `cli` first; local `api` runner command must be locked during P0 audit before any two-runner green claim.
-- In-flight defect: P0-057 narrowed math extraction path. Unit-level code path now preserves LLM-supplied `typed_transcription`/`theorem_ir` from theorem extraction through ingest normalization into semantic IR; proof blocks are no longer theorem targets; theorem tools return full `statement` and `source_tex`, not only previews; theorem schema accepts typed objects and explicit nulls for nonformal/untranscribed entries. Single-paper extraction validation on `2606.13491` still did not prove live typed extraction: all four LLM extraction stages failed and deterministic fallback produced `theorem_graph.json` with 10 nodes, `typed_count=0`, `theorem_ir_count=0`; Stage 8 then failed on configured data-repo SSH push (`unsupported URL protocol`) after local commit `9b6e10c`. No corpus-green claim.
+- In-flight defect: citation validation must consume normalized source bibliography and must not pass on hollow citation inputs. P0-058 fixed classic `.bbl`/thebibliography recovery from source bundles, Pandoc theorem Div extraction, extraction audit metadata checks, review-loop citation report classification for missing or unchecked references, and one-off non-accept policy semantics. Single-paper extraction validation on `2606.13481` passed locally with `body_chars=208298`, `sections=8`, `equations=1644`, `citations=83`, `citation_metadata=83`, `contexts=191`, `theorem_nodes=75`, `review_ready=true`, `warnings=[]`, and `failures=[]`. Citation validation is still not green for the paper: `citation_validation_report.json` is `needs_remediation` because 77 references are `not_checked` by the resolver waterfall. No full corpus run, no corpus-green claim, and no phase tag.
 - Reference-readiness clarification: the active P0 queue now treats the product publishing question as `reference_ready`, meaning the report is good enough for another reader to use as a public reference. Missing required LLM inputs must fail before the LLM unless an explicit typed skip or partial-status contract tells the agent what to do.
 - Run model: local Codex only. Do not use Codex Cloud tasks, cloud apply, or cloud state.
 - Agent-team model: coordinator plus local worktree workers; one defect per worker branch and checkpoint commit.

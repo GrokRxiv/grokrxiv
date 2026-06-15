@@ -575,6 +575,19 @@ output_schema: schemas/does-not-exist.schema.json
     }
 
     #[test]
+    fn technical_correctness_does_not_own_citation_existence_verification() {
+        let config: AgentConfig = serde_yaml::from_str(include_str!(
+            "../../../../agents/paper-review/technical_correctness.yaml"
+        ))
+        .expect("technical correctness agent config parses");
+
+        assert!(!config
+            .verifiers
+            .iter()
+            .any(|verifier| verifier == "citation_existence"));
+    }
+
+    #[test]
     fn validation_rejects_invalid_tool_loop_config() {
         let config: AgentConfig = serde_yaml::from_str(
             r#"

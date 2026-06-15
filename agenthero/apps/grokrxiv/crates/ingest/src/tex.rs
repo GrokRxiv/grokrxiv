@@ -155,6 +155,20 @@ pub async fn parse_bundle(bytes: &Bytes) -> Result<TexExtract> {
     })
 }
 
+/// Recover bibliography entries directly from a TeX source bundle.
+///
+/// This is used as a safety net by the app runtime when the review body was
+/// produced but the staged [`TexExtract`] bibliography came through empty.
+pub fn bibliography_from_bundle_bytes(bytes: &[u8]) -> Result<Vec<Citation>> {
+    let files = unpack(&Bytes::copy_from_slice(bytes))?;
+    let main_name = pick_main(&files);
+    let raw_main = files
+        .get(&main_name)
+        .map(String::as_str)
+        .unwrap_or_default();
+    Ok(collect_bibliography(raw_main, &files))
+}
+
 // ---------------------------------------------------------------------------
 // Bundle unpacking
 // ---------------------------------------------------------------------------
@@ -1037,7 +1051,9 @@ fn parse_bibitems(src: &str) -> Vec<Citation> {
 }
 
 fn extract_bibitem_title(raw: &str) -> Option<String> {
-    extract_bibitem_newblock_title(raw).or_else(|| extract_quoted_bibliographic_title(raw))
+    extract_bibitem_newblock_title(raw)
+        .or_else(|| extract_bibitem_em_title(raw))
+        .or_else(|| extract_quoted_bibliographic_title(raw))
 }
 
 fn extract_bibitem_newblock_title(raw: &str) -> Option<String> {
@@ -1069,6 +1085,54 @@ fn extract_quoted_bibliographic_title(raw: &str) -> Option<String> {
         if !title.is_empty() {
             return Some(title);
         }
+    }
+    None
+}
+
+fn extract_bibitem_em_title(raw: &str) -> Option<String> {
+    let mut search_from = 0usize;
+    while let Some(rel) = raw[search_from..].find("{\\em") {
+        let group_start = search_from + rel;
+        let command_end = group_start + "{\\em".len();
+        if raw[command_end..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic())
+        {
+            search_from = command_end;
+            continue;
+        }
+        let mut content_start = command_end;
+        while raw[content_start..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            content_start += raw[content_start..].chars().next().unwrap().len_utf8();
+        }
+
+        let mut depth = 1usize;
+        for (rel_end, ch) in raw[content_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let candidate = &raw[content_start..content_start + rel_end];
+                        let title = sanitize_bib_value(candidate)
+                            .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';'))
+                            .trim()
+                            .to_string();
+                        if !title.is_empty() {
+                            return Some(title);
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        search_from = command_end;
     }
     None
 }
@@ -1164,9 +1228,9 @@ fn find_bib_entry_open(src: &str, start: usize) -> Option<usize> {
 }
 
 fn parse_bblfile(src: &str) -> Vec<Citation> {
+    let mut out = parse_bibitems(src);
     let re =
         Regex::new(r"(?s)\\entry\{([^}]+)\}\{[^}]*\}\{[^}]*\}\{[^}]*\}(.*?)\\endentry").unwrap();
-    let mut out = Vec::new();
     for c in re.captures_iter(src) {
         let key = c.get(1).map(|m| m.as_str()).unwrap_or_default().trim();
         if key.is_empty() {
@@ -2197,5 +2261,88 @@ We use the polynomial method of Croot, Lev, and Pach~\cite{CLP}.
             Some("Pyknotic objects, I. Basic notions")
         );
         assert_eq!(cites[1].arxiv_id.as_deref(), Some("1904.09966"));
+    }
+
+    #[test]
+    fn bibliography_parses_classic_thebibliography_bbl_file() {
+        let bbl = r#"
+\begin{thebibliography}{10}
+
+\bibitem{agrachev2017note}
+{\sc A.~Agrachev, U.~Boscain, J.-P. Gauthier, and M.~Sigalotti}, {\em A note on
+  time-zero controllability and density of orbits for quantum systems}, in 2017
+  IEEE 56th annual conference on decision and control (CDC), IEEE, 2017,
+  pp.~5535--5538.
+
+\bibitem{aharonov2008adiabatic}
+{\sc D.~Aharonov, W.~Van~Dam, J.~Kempe, Z.~Landau, S.~Lloyd, and O.~Regev},
+  {\em Adiabatic quantum computation is equivalent to standard quantum
+  computation}, SIAM review, 50 (2008), pp.~755--787.
+
+\end{thebibliography}
+"#;
+        let files = HashMap::from([("qa.bbl".to_string(), bbl.to_string())]);
+
+        let cites = collect_bibliography(r"\bibliography{my_references}", &files);
+
+        assert_eq!(cites.len(), 2, "cites={cites:?}");
+        assert!(
+            cites.iter().any(|citation| {
+                citation.raw.starts_with("agrachev2017note:")
+                    && citation.title.as_deref()
+                        == Some(
+                            "A note on time-zero controllability and density of orbits for quantum systems"
+                        )
+            }),
+            "expected Agrachev citation title from classic .bbl, got {cites:?}"
+        );
+        assert!(
+            cites.iter().any(|citation| {
+                citation.raw.starts_with("aharonov2008adiabatic:")
+                    && citation
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| title.contains("Adiabatic quantum computation"))
+            }),
+            "expected Aharonov citation title from classic .bbl, got {cites:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_bundle_preserves_classic_bbl_bibliography() {
+        let _env = TexEnvGuard::new();
+        std::env::set_var("GROKRXIV_TEX_DISABLE_LATEXML", "1");
+        std::env::set_var("GROKRXIV_PANDOC_BIN", "false");
+        let tex = r#"\documentclass{book}
+\begin{document}
+\section{Main}
+We cite quantum control \cite{agrachev2017note}.
+\bibliography{my_references}
+\bibliographystyle{siam}
+\end{document}
+"#;
+        let bbl = r#"
+\begin{thebibliography}{10}
+
+\bibitem{agrachev2017note}
+{\sc A.~Agrachev, U.~Boscain, J.-P. Gauthier, and M.~Sigalotti}, {\em A note on
+  time-zero controllability and density of orbits for quantum systems}, in 2017
+  IEEE 56th annual conference on decision and control (CDC), IEEE, 2017,
+  pp.~5535--5538.
+
+\end{thebibliography}
+"#;
+        let bundle = make_targz(&[("qa.tex", tex), ("qa.bbl", bbl)]);
+
+        let extract = parse_bundle(&bundle).await.expect("parse bundle");
+        let recovered = bibliography_from_bundle_bytes(&bundle).expect("recover bibliography");
+
+        assert_eq!(extract.bibliography.len(), 1, "{:?}", extract.bibliography);
+        assert_eq!(recovered.len(), 1, "{recovered:?}");
+        assert_eq!(
+            extract.bibliography[0].title.as_deref(),
+            Some("A note on time-zero controllability and density of orbits for quantum systems")
+        );
+        assert!(extract.bibliography[0].raw.starts_with("agrachev2017note:"));
     }
 }

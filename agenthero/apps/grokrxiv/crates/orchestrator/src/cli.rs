@@ -2524,6 +2524,7 @@ struct ExtractionAudit {
     equation_count: usize,
     citation_count: usize,
     citation_context_count: usize,
+    citation_metadata_count: usize,
     theorem_node_count: usize,
     extraction_stage_count: usize,
     warnings: Vec<String>,
@@ -2561,11 +2562,12 @@ async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
                 .join("review_input.json");
 
             crate::cli_status::emit(format!(
-                "extract {id}: body_chars={} sections={} equations={} citations={} contexts={} theorem_nodes={} ready={}",
+                "extract {id}: body_chars={} sections={} equations={} citations={} citation_metadata={} contexts={} theorem_nodes={} ready={}",
                 audit.body_chars,
                 audit.section_count,
                 audit.equation_count,
                 audit.citation_count,
+                audit.citation_metadata_count,
                 audit.citation_context_count,
                 audit.theorem_node_count,
                 audit.review_ready
@@ -2580,11 +2582,12 @@ async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
                     audit.review_ready
                 );
                 println!(
-                    "counts body_chars={} sections={} equations={} citations={} citation_contexts={} theorem_nodes={}",
+                    "counts body_chars={} sections={} equations={} citations={} citation_metadata={} citation_contexts={} theorem_nodes={}",
                     audit.body_chars,
                     audit.section_count,
                     audit.equation_count,
                     audit.citation_count,
+                    audit.citation_metadata_count,
                     audit.citation_context_count,
                     audit.theorem_node_count
                 );
@@ -2740,6 +2743,16 @@ fn audit_review_input_artifacts(
                 .sum::<usize>()
         })
         .unwrap_or_default();
+    let citation_metadata_count = references_doc
+        .get("citations")
+        .and_then(serde_json::Value::as_array)
+        .map(|citations| {
+            citations
+                .iter()
+                .filter(|citation| citation_has_bibliographic_metadata(citation))
+                .count()
+        })
+        .unwrap_or_default();
     if citation_count == 0 && body_has_citation_signal(&body) {
         failures.push(
             "references.json has no citations even though body.md contains citation markers"
@@ -2749,6 +2762,16 @@ fn audit_review_input_artifacts(
     if citation_count > 0 && citation_context_count == 0 {
         failures.push(
             "references.json has citations but no citation contexts for reviewers".to_string(),
+        );
+    }
+    if citation_count > 0
+        && citation_context_count > 0
+        && citation_metadata_count == 0
+        && body_has_citation_signal(&body)
+    {
+        failures.push(
+            "references.json has citation contexts but no bibliographic metadata to validate"
+                .to_string(),
         );
     }
 
@@ -2787,6 +2810,7 @@ fn audit_review_input_artifacts(
         equation_count,
         citation_count,
         citation_context_count,
+        citation_metadata_count,
         theorem_node_count,
         extraction_stage_count,
         warnings,
@@ -2919,6 +2943,17 @@ fn body_has_math_signal(body: &str) -> bool {
 #[cfg(feature = "grokrxiv-storage")]
 fn body_has_citation_signal(body: &str) -> bool {
     body.contains("[@") || body.contains("\\cite")
+}
+
+#[cfg(feature = "grokrxiv-storage")]
+fn citation_has_bibliographic_metadata(citation: &serde_json::Value) -> bool {
+    ["raw", "title", "doi", "arxiv_id"].iter().any(|field| {
+        citation
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    })
 }
 
 #[cfg(feature = "grokrxiv-storage")]
@@ -5169,6 +5204,14 @@ fn review_loop_publication_gate_policy(
                     integrity_ready: true,
                     blocking_issue: None,
                     status: "unpinned_non_publishing_recommendation".to_string(),
+                };
+            }
+            None => {
+                return ReviewLoopPublicationGatePolicy {
+                    publisher_ready: false,
+                    integrity_ready: true,
+                    blocking_issue: None,
+                    status: "completed_not_publishable".to_string(),
                 };
             }
             _ => {}
@@ -14539,6 +14582,22 @@ mod tests {
     }
 
     #[test]
+    fn one_off_major_revision_is_completed_not_publishable() {
+        let publication_gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+
+        let policy = review_loop_publication_gate_policy(None, &publication_gate);
+
+        assert!(policy.integrity_ready);
+        assert!(!policy.publisher_ready);
+        assert_eq!(policy.blocking_issue, None);
+        assert_eq!(policy.status, "completed_not_publishable");
+    }
+
+    #[test]
     fn review_loop_halt_disables_external_actions() {
         let outcome = ReviewLoopOutcome {
             publisher_ready: false,
@@ -15734,6 +15793,71 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
             .failures
             .iter()
             .any(|msg| msg.contains("citation contexts")));
+    }
+
+    #[cfg(feature = "grokrxiv-storage")]
+    #[test]
+    fn extraction_audit_rejects_hollow_citation_metadata() {
+        let repo = tempfile::tempdir().unwrap();
+        let arxiv_id = "9999.00002";
+        let rel = |file: &str| format!("papers/{arxiv_id}/{file}");
+        let paper_dir = repo.path().join("papers").join(arxiv_id);
+        std::fs::create_dir_all(&paper_dir).unwrap();
+        std::fs::write(
+            paper_dir.join("metadata.json"),
+            r#"{"title":"Useful Paper","abstract":"A real abstract.","authors":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("body.md"),
+            format!("## Intro\n\n{} [@smith2026].\n", "body ".repeat(260)),
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("sections.json"),
+            r#"{"sections":[{"heading":"Intro","char_start":10,"char_end":1400}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("references.json"),
+            r#"{"citations":[{"key":"smith2026","contexts":[{"section":"Intro","snippet":"..."}]}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("equations.json"),
+            r#"{"equations":[{"id":"eq1","canonical_tex":"x=y"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(paper_dir.join("theorem_graph.json"), r#"{"nodes":[]}"#).unwrap();
+        std::fs::write(
+            paper_dir.join("extraction_report.json"),
+            r#"{"stages":[{"name":"citations","status":"ok","runner":"cli","model":"gemini","iters":3}]}"#,
+        )
+        .unwrap();
+
+        let review_input = grokrxiv_storage::ReviewInput {
+            schema_version: "1".into(),
+            arxiv_id: arxiv_id.into(),
+            metadata: rel("metadata.json"),
+            body_markdown: rel("body.md"),
+            sections: rel("sections.json"),
+            equations: rel("equations.json"),
+            references: rel("references.json"),
+            theorem_graph: rel("theorem_graph.json"),
+            extraction_report: rel("extraction_report.json"),
+            pdf_uri: None,
+            source_uri: None,
+            semantic_ast_uri: None,
+            vlm_raw_uri: None,
+            embeddings_uri: None,
+        };
+
+        let audit = audit_review_input_artifacts(repo.path(), None, &review_input).unwrap();
+        assert!(!audit.review_ready);
+        assert!(audit
+            .failures
+            .iter()
+            .any(|msg| msg.contains("bibliographic metadata")));
     }
 
     #[cfg(feature = "grokrxiv-storage")]

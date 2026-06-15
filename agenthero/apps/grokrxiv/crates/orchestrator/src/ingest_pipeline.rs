@@ -468,7 +468,8 @@ async fn run_inner(
     let started_at = Utc::now();
     let extraction_mode = extraction_mode_from_env()?;
     let workdir = tempfile::tempdir().context("creating extraction workdir")?;
-    let extract = staged.extract.clone();
+    let mut extract = staged.extract.clone();
+    recover_source_bibliography_if_needed(&mut extract, staged.source_tarball.as_deref());
     let mut bundle = build_initial_bundle(&staged, &extract);
     let mut stage_reports: Vec<StageReport> = Vec::new();
     stage_reports.push(
@@ -862,6 +863,38 @@ fn build_paper_artifacts(opts: &IngestOptions) -> Result<PaperArtifacts> {
         }
     };
     Ok(PaperArtifacts::new(git, storage))
+}
+
+fn recover_source_bibliography_if_needed(
+    extract: &mut PaperExtract,
+    source_tarball: Option<&[u8]>,
+) {
+    let current_keyed = bibliography_usable_key_count(&extract.bibliography);
+    let Some(bytes) = source_tarball else {
+        return;
+    };
+    match grokrxiv_ingest::bibliography_from_bundle_bytes(bytes) {
+        Ok(recovered) if !recovered.is_empty() => {
+            info!(
+                recovered = recovered.len(),
+                current_keyed,
+                recovered_keyed = bibliography_usable_key_count(&recovered),
+                "recovered bibliography metadata from source bundle"
+            );
+            extract.bibliography = recovered;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            warn!(error = %err, "source bibliography recovery failed");
+        }
+    }
+}
+
+fn bibliography_usable_key_count(bibliography: &[grokrxiv_schemas::Citation]) -> usize {
+    bibliography
+        .iter()
+        .filter(|citation| citation_key(citation).is_some())
+        .count()
 }
 
 fn build_initial_bundle(staged: &DeterministicIngest, extract: &PaperExtract) -> ArtifactBundle {
@@ -1852,6 +1885,13 @@ fn build_citation_validation_report(references: &Value) -> Value {
         .unwrap_or_default();
     let unmatched = value_string_array(references, "unmatched_citation_keys");
     let uncited = value_string_array(references, "uncited_bibliography_keys");
+    let missing_metadata_keys: Vec<String> = citations
+        .iter()
+        .filter(|citation| !citation_has_bibliographic_metadata(citation))
+        .filter_map(|citation| citation.get("key").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|key| !key.is_empty())
+        .collect();
 
     let parsed_references: Vec<Value> = citations
         .iter()
@@ -1974,14 +2014,28 @@ fn build_citation_validation_report(references: &Value) -> Value {
             "keys": uncited,
         }));
     }
+    if !missing_metadata_keys.is_empty() {
+        graph_warnings.push(json!({
+            "code": "missing_bibliographic_metadata",
+            "message": "Citation contexts were found but source bibliography metadata is missing.",
+            "keys": missing_metadata_keys,
+        }));
+    }
 
     let mut remediation_items = Vec::new();
     for warning in &graph_warnings {
         if let Some(keys) = warning.get("keys").and_then(Value::as_array) {
             for key in keys.iter().filter_map(Value::as_str) {
+                let action = if warning.get("code").and_then(Value::as_str)
+                    == Some("missing_bibliographic_metadata")
+                {
+                    "recover_reference_metadata"
+                } else {
+                    "repair_reference_graph"
+                };
                 remediation_items.push(json!({
                     "key": key,
-                    "action": "repair_reference_graph",
+                    "action": action,
                     "reason": warning.get("message").and_then(Value::as_str).unwrap_or("citation graph warning"),
                 }));
             }
@@ -1991,17 +2045,26 @@ fn build_citation_validation_report(references: &Value) -> Value {
     let resolver_needs_remediation = resolver_results.iter().any(|result| {
         matches!(
             result.get("status").and_then(Value::as_str),
-            Some("retracted" | "unresolved" | "malformed" | "conflict" | "not_found")
+            Some(
+                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+            )
         )
     });
     for result in &resolver_results {
         if matches!(
             result.get("status").and_then(Value::as_str),
-            Some("retracted" | "unresolved" | "malformed" | "conflict" | "not_found")
+            Some(
+                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+            )
         ) {
+            let action = if result.get("status").and_then(Value::as_str) == Some("not_checked") {
+                "validate_reference"
+            } else {
+                "repair_or_remove_reference"
+            };
             remediation_items.push(json!({
                 "key": result.get("key").cloned().unwrap_or(Value::Null),
-                "action": "repair_or_remove_reference",
+                "action": action,
                 "reason": format!(
                     "resolver status {} requires remediation",
                     result.get("status").and_then(Value::as_str).unwrap_or("unknown")
@@ -2028,6 +2091,16 @@ fn build_citation_validation_report(references: &Value) -> Value {
         "metadata_conflicts": Vec::<Value>::new(),
         "graph_warnings": graph_warnings,
         "remediation_items": remediation_items,
+    })
+}
+
+fn citation_has_bibliographic_metadata(citation: &Value) -> bool {
+    ["raw", "title", "doi", "arxiv_id"].iter().any(|field| {
+        citation
+            .get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
     })
 }
 
@@ -3299,6 +3372,66 @@ mod a4_tests {
         serde_yaml::from_str(&yaml).expect("parse extraction routing fixture")
     }
 
+    fn make_targz(files: &[(&str, &str)]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            for (name, contents) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(name).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, contents.as_bytes()).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        let mut gz_buf = Vec::new();
+        {
+            let mut enc = GzEncoder::new(&mut gz_buf, Compression::default());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap();
+        }
+        gz_buf
+    }
+
+    #[test]
+    fn source_bibliography_recovery_populates_empty_extract() {
+        let mut extract = extract_with(vec!["Main"], 0);
+        extract.bibliography.push(Citation {
+            raw: "unkeyed bibliography text".to_string(),
+            doi: None,
+            arxiv_id: None,
+            title: None,
+        });
+        let tex = r#"\documentclass{article}
+\begin{document}
+\section{Main}
+\cite{agrachev2017note}
+\bibliography{my_references}
+\end{document}
+"#;
+        let bbl = r#"\begin{thebibliography}{10}
+\bibitem{agrachev2017note}
+{\sc A.~Agrachev}, {\em A note on time-zero controllability and density of orbits for quantum systems}.
+\end{thebibliography}
+"#;
+        let bundle = make_targz(&[("qa.tex", tex), ("qa.bbl", bbl)]);
+
+        recover_source_bibliography_if_needed(&mut extract, Some(&bundle));
+
+        assert_eq!(extract.bibliography.len(), 1, "{:?}", extract.bibliography);
+        assert!(extract.bibliography[0].raw.starts_with("agrachev2017note:"));
+        assert_eq!(
+            extract.bibliography[0].title.as_deref(),
+            Some("A note on time-zero controllability and density of orbits for quantum systems")
+        );
+    }
+
     #[test]
     fn source_to_body_report_marks_empty_body_failed() {
         let report = source_to_body_stage_report(
@@ -3673,6 +3806,82 @@ mod a4_tests {
             .expect("remediations")
             .iter()
             .any(|item| item["key"] == "missing2026"));
+    }
+
+    #[test]
+    fn citation_validation_report_flags_hollow_bibliographic_metadata() {
+        let references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": null,
+                "title": null,
+                "authors": [],
+                "venue": null,
+                "year": null,
+                "doi": null,
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "Intro", "snippet": "The paper cites Smith."}]
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+        assert!(validator.validate(&report).is_ok(), "{report:#}");
+        assert_eq!(report["status"], "needs_remediation");
+        assert!(report["graph_warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning["code"] == "missing_bibliographic_metadata"));
+        assert!(report["remediation_items"]
+            .as_array()
+            .expect("remediations")
+            .iter()
+            .any(|item| item["action"] == "recover_reference_metadata"));
+    }
+
+    #[test]
+    fn citation_validation_report_requires_resolver_checks() {
+        let references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "smith2026: A. Smith, A Paper.",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "venue": null,
+                "year": 2026,
+                "doi": null,
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "Intro", "snippet": "The paper cites Smith."}]
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../schemas/citation_validation_report.schema.json"
+        ))
+        .expect("citation validation report schema");
+        let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+        assert!(validator.validate(&report).is_ok(), "{report:#}");
+        assert_eq!(report["status"], "needs_remediation");
+        assert_eq!(report["resolver_results"][0]["status"], "not_checked");
+        assert!(report["remediation_items"]
+            .as_array()
+            .expect("remediations")
+            .iter()
+            .any(|item| item["action"] == "validate_reference"));
     }
 
     #[test]

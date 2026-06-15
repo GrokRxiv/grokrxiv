@@ -1,18 +1,36 @@
 # GrokRxiv Local Harness Next Steps
 
-Continue exactly from here. Current instruction is the narrowed typed-math extraction path. Do not run the full corpus. Do not clean `target`.
+Continue exactly from here. Current instruction is citation validation from normalized source bibliography. Do not run the full corpus. Do not clean `target`.
 
 ## Current Coordinator State
 
 - Branch: `grokrxiv-local-corpus-harness`
 - Worktree: `/Users/mlong/Documents/Development/grokrxiv`
-- Latest code checkpoint before P0-057: `314609c`
+- Latest code checkpoint before P0-058: `314609c`
 - Pending worker checkpoint: none.
 - Current phase: P0 stabilize, narrowed to the vertical review-pipeline slice.
 - Baseline tag: none.
 - Last green full sweep: none.
 - Run model: local Codex only; do not use Codex Cloud.
 - Budget/run rule: do not run the full corpus next. Work one source or one focused fixture at a time.
+
+## Stop Point After P0-058
+
+Do not start a full corpus run automatically.
+
+If the user asks to continue coding, use this prompt shape:
+
+```text
+Continue P0-058 only. Do not run the full corpus.
+Use the normalized source bibliography for 2606.13481 and make the citation validation lane perform real resolver checks with per-reference evidence. Extraction now produces 83 citations, 83 metadata entries, 191 contexts, and 75 theorem nodes for that source. A citation report with `not_checked` references must remain `needs_remediation`; it cannot pass or be called reference-ready. Add focused failing tests first and rerun only the affected source or fixture.
+```
+
+Current state:
+- Source-bundle bibliography recovery now handles classic `.bbl` / `thebibliography` entries.
+- Extraction audit rejects hollow citation metadata.
+- `2606.13481` extraction passed locally with `body_chars=208298`, `sections=8`, `equations=1644`, `citations=83`, `citation_metadata=83`, `contexts=191`, `theorem_nodes=75`, and no audit warnings/failures.
+- `citation_validation_report.json` is honestly `needs_remediation` because 77 normalized references are still `not_checked` by the resolver waterfall.
+- Papers genuinely missing bibliography/code/proof artifacts must be called out with evidence and reason; extraction/validation failures must be reported as pipeline defects, not manuscript weaknesses.
 
 ## Stop Point After P0-057
 

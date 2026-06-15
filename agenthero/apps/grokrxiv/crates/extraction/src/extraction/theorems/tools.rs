@@ -388,6 +388,7 @@ static TEX_ENV_RES: OnceLock<Vec<(String, Regex)>> = OnceLock::new();
 static MD_BOLD_RE: OnceLock<Regex> = OnceLock::new();
 static MD_HEADING_RE: OnceLock<Regex> = OnceLock::new();
 static MD_TITLE_RE: OnceLock<Regex> = OnceLock::new();
+static PANDOC_DIV_RE: OnceLock<Regex> = OnceLock::new();
 
 const TEX_ENV_KINDS: &[&str] = &[
     "theorem",
@@ -450,6 +451,15 @@ fn md_title_re() -> &'static Regex {
     })
 }
 
+fn pandoc_div_re() -> &'static Regex {
+    PANDOC_DIV_RE.get_or_init(|| {
+        Regex::new(
+            r"(?ms)^:::\s*(?:(?:\{(?P<attrs>[^}]*)\})|(?P<bare>Theorem|Lemma|Proposition|Corollary|Definition|Proof|Remark|Example|Construction|theorem|lemma|proposition|corollary|definition|proof|remark|example|construction))\s*\n(?P<body>.*?)^:::\s*$",
+        )
+        .expect("valid regex")
+    })
+}
+
 /// Scan a markdown / latex-flavoured-markdown body for theorem-like blocks.
 /// Supports the three patterns documented at the top of this file.
 pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
@@ -471,8 +481,39 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         }
     }
 
-    // 2) Bold-prefix.
-    for cap in md_bold_re().captures_iter(body) {
+    // 2) Pandoc fenced Divs emitted for theorem environments:
+    //    `::: {#thm .theorem}` ... `:::`. These preserve labels and classes
+    //    even when the original TeX environment has been converted to
+    //    Markdown.
+    for cap in pandoc_div_re().captures_iter(body) {
+        let attrs = cap.name("attrs").map(|m| m.as_str()).unwrap_or("");
+        let bare = cap.name("bare").map(|m| m.as_str()).unwrap_or("");
+        let Some(kind) = pandoc_div_kind(attrs)
+            .or_else(|| (!bare.trim().is_empty()).then(|| bare.trim().to_ascii_lowercase()))
+        else {
+            continue;
+        };
+        let Some(kind) = normalize_theorem_kind(&kind) else {
+            continue;
+        };
+        let raw_body = cap.name("body").map(|m| m.as_str()).unwrap_or("").trim();
+        let statement = clean_markdown_statement(raw_body);
+        if statement.trim().is_empty() {
+            continue;
+        }
+        out.push(TheoremBlock {
+            label: pandoc_div_label(attrs),
+            kind,
+            statement_preview: preview(&statement),
+            statement,
+            source_tex: cap.get(0).map(|m| m.as_str().to_string()),
+        });
+    }
+
+    let body_without_pandoc_divs = pandoc_div_re().replace_all(body, "\n").to_string();
+
+    // 3) Bold-prefix.
+    for cap in md_bold_re().captures_iter(&body_without_pandoc_divs) {
         let kind = cap
             .name("kind")
             .map(|m| m.as_str().to_lowercase())
@@ -487,16 +528,16 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         });
     }
 
-    // 3) Heading-prefix. We grab the rest of the line plus, when present, the
+    // 4) Heading-prefix. We grab the rest of the line plus, when present, the
     //    paragraph that follows the heading.
-    for cap in md_heading_re().captures_iter(body) {
+    for cap in md_heading_re().captures_iter(&body_without_pandoc_divs) {
         let kind = cap
             .name("kind")
             .map(|m| m.as_str().to_lowercase())
             .unwrap_or_default();
         // Find the body that follows the heading line.
         let full_match_end = cap.get(0).map(|m| m.end()).unwrap_or(0);
-        let tail = &body[full_match_end..];
+        let tail = &body_without_pandoc_divs[full_match_end..];
         let next_para = tail
             .lines()
             .skip_while(|l| l.trim().is_empty())
@@ -513,10 +554,10 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
         });
     }
 
-    // 4) Title-containing headings such as "Spectral Decomposition Theorem"
+    // 5) Title-containing headings such as "Spectral Decomposition Theorem"
     // or "Proof sketch." Pandoc often emits those for theorem-like prose even
     // when the source did not use a theorem environment.
-    for cap in md_title_re().captures_iter(body) {
+    for cap in md_title_re().captures_iter(&body_without_pandoc_divs) {
         let title = cap.name("title").map(|m| m.as_str()).unwrap_or("").trim();
         if starts_with_kind_word(title) {
             continue;
@@ -525,7 +566,7 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
             continue;
         };
         let full_match_end = cap.get(0).map(|m| m.end()).unwrap_or(0);
-        let tail = &body[full_match_end..];
+        let tail = &body_without_pandoc_divs[full_match_end..];
         let next_para = tail
             .lines()
             .skip_while(|l| l.trim().is_empty())
@@ -548,6 +589,48 @@ pub fn scan_theorem_blocks(body: &str) -> Vec<Value> {
     }
 
     out.iter().map(TheoremBlock::to_json).collect()
+}
+
+fn pandoc_div_kind(attrs: &str) -> Option<String> {
+    attrs
+        .split_whitespace()
+        .filter_map(|part| part.strip_prefix('.'))
+        .find_map(normalize_theorem_kind)
+}
+
+fn pandoc_div_label(attrs: &str) -> Option<String> {
+    attrs
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix('#').map(str::to_string))
+}
+
+fn normalize_theorem_kind(value: &str) -> Option<String> {
+    let lower = value.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "theorem"
+            | "lemma"
+            | "proposition"
+            | "corollary"
+            | "definition"
+            | "proof"
+            | "remark"
+            | "construction"
+            | "example"
+    )
+    .then_some(lower)
+}
+
+fn clean_markdown_statement(raw: &str) -> String {
+    let bold = Regex::new(r"\*\*([^*\n]+)\*\*").unwrap();
+    let mut text = bold.replace_all(raw.trim(), "$1").to_string();
+    text = text.replace('\n', " ");
+    let emphasis = Regex::new(r"\*([^*\n]+)\*").unwrap();
+    for _ in 0..3 {
+        text = emphasis.replace_all(&text, "$1").to_string();
+    }
+    let multispace = Regex::new(r"\s+").unwrap();
+    multispace.replace_all(text.trim(), " ").to_string()
 }
 
 fn starts_with_kind_word(title: &str) -> bool {
@@ -995,6 +1078,44 @@ mod tests {
             .unwrap()
             .to_lowercase()
             .contains("hausdorff"));
+    }
+
+    #[test]
+    fn read_section_extracts_pandoc_theorem_div() {
+        let dir = tempdir();
+        let body = r#"# Section
+
+::: {#theorem_QA_QFT .theorem}
+**Theorem 3.3** (Quantum Advantage for the QFT). *Assume that the
+controlled Schrödinger equation satisfies operator controllability and
+uniformly bounded elementary gate time. Then the minimal time is bounded by
+$\tau n^2$.*
+:::
+
+::: proof
+The proof combines gate concatenation with the standard QFT decomposition.
+:::
+"#;
+        std::fs::write(dir.path().join("body.md"), body).unwrap();
+        let ctx = ctx_no_ast(dir.path());
+        let sec_list = list_sections(&ctx).unwrap();
+        let id = sec_list[0]["id"].as_str().unwrap();
+        let out = read_section(id, &ctx).unwrap();
+        let theorems = out["theorems"].as_array().unwrap();
+        let theorem = theorems
+            .iter()
+            .find(|item| item["type"] == "theorem")
+            .unwrap_or_else(|| panic!("expected theorem div, got {theorems:?}"));
+
+        assert_eq!(theorem["label"], "theorem_QA_QFT");
+        assert!(theorem["statement"]
+            .as_str()
+            .unwrap()
+            .contains("Quantum Advantage for the QFT"));
+        assert!(theorem["statement"]
+            .as_str()
+            .unwrap()
+            .contains("minimal time is bounded"));
     }
 
     #[test]

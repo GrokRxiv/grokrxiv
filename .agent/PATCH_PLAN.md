@@ -15,10 +15,11 @@ Haskell and Lean are conditional. If normalized content has no formal math targe
 The publishing question is whether the report is `reference_ready`: good enough that another reader can use it as a public reference. That requires complete or explicitly skipped source content, deterministic evidence for citations and proof status, traceable claims and limitations, buildable PR/web artifacts, and no overclaimed recommendation. LLM agents should not infer missing-data behavior from prose; every agent call must receive an input contract with required artifacts, optional artifacts, completeness flags, provenance, and explicit instructions for allowed skip/partial cases. Missing required data without an allowed skip fails before the LLM call.
 
 1. Do not resume the full corpus until the user explicitly asks. The current budget rule is one source or one focused fixture at a time.
-2. Current math path priority: make live theorem extraction produce accepted typed IR objects for theorem/lemma/proposition/corollary entries, or explicit `partial`/`untranscribed` typed objects when math is not safely formalizable. Do not accept null typed fields for formal entries as success.
-3. Add a no-push local validation path for extraction/review runs so single-paper checks do not fail at `grokrxiv-data` remote push.
-4. Citation normalization remains queued globally, not as a one-off for `2606.13517`.
-5. Rerun only the affected source chosen for the fixture. Do not run all corpus entries.
+2. Current citation priority: run or wire the real resolver waterfall against normalized references. Extraction now recovered 83/83 bibliographic metadata entries for `2606.13481`, but the citation report correctly stays `needs_remediation` while 77 references are `not_checked`.
+3. Any paper genuinely missing bibliography, code, proof, or formalizable math artifacts must be called out with evidence and reason. Missing data caused by extraction or validation failure is a pipeline defect, not a paper weakness.
+4. Keep the math path priority queued: live theorem extraction must produce accepted typed IR objects for theorem/lemma/proposition/corollary entries, or explicit `partial`/`untranscribed` typed objects when math is not safely formalizable. Do not accept null typed fields for formal entries as success.
+5. Add a no-push local validation path for extraction/review runs so single-paper checks do not fail at `grokrxiv-data` remote push.
+6. Rerun only the affected source chosen for the fixture. Do not run all corpus entries.
 
 ## Current Typed Math IR Plan
 
@@ -40,6 +41,11 @@ Remaining:
 ## Next Citation Plan
 
 Goal: citation validation must verify citations from normalized bibliographic data for all supported paper formats, not from citation keys or lossy verifier-local reconstruction.
+
+P0-058 status:
+- Accepted extraction-side fix for classic `.bbl` / `thebibliography` recovery, Pandoc theorem Div scanning, citation metadata audit, and honest `not_checked` citation report classification.
+- Single-source extraction on `2606.13481` now has `citations=83`, `citation_metadata=83`, `contexts=191`, and `theorem_nodes=75`.
+- Remaining red is validation, not extraction: 77 references are normalized but still `not_checked` by the resolver waterfall.
 
 Observed on `2606.13517`:
 - Citation specialist selected entries with real titles, for example `Aki01` -> `Homological infiniteness of Torelli groups` and `BMS67` -> `Solution of the congruence subgroup problem ...`.

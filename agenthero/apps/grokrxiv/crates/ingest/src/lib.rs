@@ -27,6 +27,7 @@ pub use source::{
     LocalSourceFormat, PreparedReviewSource, ReviewSourceSpec, SourceIdentity, SourceKind,
 };
 pub use tex::{
-    extract_main_tex_source, parse_bundle, source_url, MainTexSource, TexBodyProducer, TexExtract,
+    bibliography_from_bundle_bytes, extract_main_tex_source, parse_bundle, source_url,
+    MainTexSource, TexBodyProducer, TexExtract,
 };
 pub use types::*;

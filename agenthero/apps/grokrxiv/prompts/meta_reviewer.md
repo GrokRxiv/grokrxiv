@@ -18,6 +18,11 @@ Rules of engagement:
 - `revision_targets`, when present, map concrete weaknesses to manuscript,
   code, data, bibliography, or review-text updates. Use source locators from
   specialist findings instead of inventing new file names.
+- Distinguish manuscript evidence from pipeline evidence. If specialists or
+  verified fact blocks say bibliography/code/proof artifacts are genuinely
+  absent from the paper, call out exactly what is missing and why it matters
+  for trust. If the extraction/validation inputs are incomplete, identify that
+  as a review-input problem instead of turning it into a paper weakness.
 - `recommendation` ∈ `accept | minor_revision | major_revision | reject`.
   Default to `minor_revision` if the specialists are split between accept and
   major revision and no critical errors were found.

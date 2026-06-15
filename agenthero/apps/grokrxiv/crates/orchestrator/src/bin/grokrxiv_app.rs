@@ -13,6 +13,7 @@ async fn main() -> ExitCode {
     let mut status = false;
     let mut no_status = false;
     let mut debug_logs = false;
+    let mut no_cache = false;
     let mut args = Vec::new();
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
@@ -21,8 +22,13 @@ async fn main() -> ExitCode {
             "--status" => status = true,
             "--no-status" => no_status = true,
             "--debug-logs" => debug_logs = true,
+            "--no-cache" => no_cache = true,
             _ => args.push(arg),
         }
+    }
+    if no_cache {
+        std::env::set_var("GROKRXIV_INGEST_NO_CACHE", "1");
+        std::env::set_var("GROKRXIV_NO_CACHE", "1");
     }
     grokrxiv_app_runtime::cli_status::set_enabled(status || (!no_status && debug_logs));
     let Some(action) = args.first().cloned() else {
