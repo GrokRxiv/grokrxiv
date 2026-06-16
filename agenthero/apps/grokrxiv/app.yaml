@@ -150,6 +150,23 @@ actions:
       - name: --no-external-actions
         kind: flag
         description: Run review and loop checks without opening publication or revision PRs.
+  - id: formalize
+    command: [formalize]
+    dag_type: review-loop
+    description: >-
+      Run experimental Lean formalization for an existing review (advisory, never
+      affects the verdict). Enqueued asynchronously by `review --with-lean`; can also
+      be run directly. Authors per-theorem Lean statements, kernel-checks them, and
+      re-attaches results to the review and its PR.
+    options:
+      - name: review_id
+        kind: positional
+        value_name: REVIEW_ID
+        required: true
+        description: Review id whose extracted proof obligations should be formalized.
+      - name: --debug
+        kind: flag
+        description: Emit expanded per-stage diagnostics and artifact paths while formalizing.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

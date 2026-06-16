@@ -898,6 +898,28 @@ pub async fn run_grokrxiv_action(
             )
             .await
         }
+        "formalize" => {
+            let mut review_id: Option<Uuid> = None;
+            let mut debug = false;
+            for a in args {
+                match a.as_str() {
+                    "--debug" => debug = true,
+                    other => {
+                        if review_id.is_none() {
+                            review_id = Some(
+                                Uuid::parse_str(other)
+                                    .context("formalize: review_id must be a UUID")?,
+                            );
+                        } else {
+                            anyhow::bail!("formalize: unexpected argument `{other}`");
+                        }
+                    }
+                }
+            }
+            let review_id =
+                review_id.ok_or_else(|| anyhow::anyhow!("formalize requires a review_id"))?;
+            formalize_review(review_id, debug).await
+        }
         "review-extracted" => {
             let request = parse_review_extracted_args(args)?;
             review_extracted(&request.source, request.force, json).await
@@ -7787,10 +7809,241 @@ fn ensure_min_cli_timeout_secs(floor: u64) {
     }
 }
 
+/// Experimental Lean formalization for an already-reviewed paper, run ASYNCHRONOUSLY from the
+/// verdict (via the `formalize` app action / worker job, or directly). Reloads the review-loop
+/// state the synchronous review persisted (semantic_ir / proof_obligations / lean_targets /
+/// semantic_model), runs the per-theorem author -> `lake env lean` -> fix loop + the advisory
+/// faithfulness check, recomputes the lean-derived advisory artifacts (theorem_map /
+/// semantic_adequacy) and the `formal` view of policy_gate.json WITHOUT changing
+/// deterministic_status / recommendation / blocking_issues, re-renders review.md, and
+/// best-effort updates the PR. Anti-hallucination invariant unchanged: a target is `proved`
+/// only on a clean `lake env lean` kernel pass with no sorry/admit/axiom.
+async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result<()> {
+    use grokrxiv_schemas::VerifierStatus;
+    if debug_output {
+        cli_status::set_enabled(true);
+    }
+    ensure_min_cli_timeout_secs(1800);
+    let config = super::Config::from_env();
+    let state = super::AppState::from_config(config).await?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("formalize: DATABASE_URL not configured"))?;
+    let paper_id = paper_id_for_review(pool, review_id)
+        .await
+        .context("formalize: load paper_id for review")?;
+    let stages = review_loop_stage_plan()?;
+    let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+
+    let read_json = |name: &str| -> serde_json::Value {
+        std::fs::read_to_string(artifact_dir.join(name))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let semantic_ir = read_json("semantic_ir.json");
+    let semantic_model = read_json("semantic_model.json");
+    let proof_obligations = read_json("proof_obligations.json");
+    let lean_targets = read_json("lean_targets.json");
+    if proof_obligations.is_null() {
+        anyhow::bail!(
+            "formalize {review_id}: no review_loop/proof_obligations.json — run the review first"
+        );
+    }
+
+    let proof_obligations_ready =
+        grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
+    let proof_targets_skip = grokrxiv_review_loop::proof_obligations_skip_lean(&proof_obligations);
+
+    let lean_dir = artifact_dir.join("lean");
+    let lean_src_dir = lean_dir.join("GrokRxiv");
+    tokio::fs::create_dir_all(&lean_src_dir).await?;
+    let lean_task = ReviewFixCodeTask {
+        target_id: "lean",
+        language: "lean",
+        filename: "GrokRxiv/Proofs.lean",
+        author_role: "lean_proof_author",
+        reviewer_role: "lean_code_reviewer",
+        fixer_role: "lean_code_fixer",
+        compile_program: "lake",
+        compile_args: vec![
+            "env".to_string(),
+            "lean".to_string(),
+            "GrokRxiv/Proofs.lean".to_string(),
+        ],
+        compile_timeout_secs: 1800,
+        forbidden_terms: vec!["sorry", "admit", "axiom"],
+        max_attempts: 2,
+    };
+    let lean_final_path = lean_src_dir.join("Proofs.lean");
+
+    cli_status::emit(format!(
+        "formalize {review_id}: per-theorem Lean formalization (experimental, advisory)"
+    ));
+    let lean_results = if proof_obligations_ready {
+        run_per_theorem_lean_loop(
+            &state,
+            paper_id,
+            review_id,
+            &lean_task,
+            &proof_obligations,
+            &lean_targets,
+            &semantic_ir,
+            &semantic_model,
+            &lean_dir,
+            &lean_final_path,
+            debug_output,
+        )
+        .await
+    } else {
+        let reason = proof_obligations
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No paper-derived formal mathematical statements were available for Lean.");
+        let _ = write_review_loop_code_file(
+            &lean_final_path,
+            &format!("/- Lean formalization skipped: {reason} -/\n"),
+        )
+        .await;
+        let skip = proof_obligations
+            .get("skip_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no_math_targets");
+        skipped_review_fix_code_results_with_status(&lean_task, &lean_final_path, reason, "skipped", skip)
+    };
+    let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
+    let lean_pass = lean_results["status"] == "pass";
+    let lean_accepted = lean_pass || proof_targets_skip || !proof_obligations_ready;
+    write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
+    write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "lean_review_fix_code",
+        lean_results.clone(),
+        if lean_accepted {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/lean/results.json"}),
+    )
+    .await?;
+
+    let theorem_map = grokrxiv_review_loop::build_theorem_map(&proof_obligations, &lean_results);
+    write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
+    write_loop_json(&lean_dir.join("verification_report.json"), &theorem_map).await?;
+
+    let faithfulness = run_lean_faithfulness_stage(
+        &state,
+        paper_id,
+        review_id,
+        &theorem_map,
+        &lean_results,
+        &artifact_dir,
+        debug_output,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        serde_json::json!({
+            "schema_version": "1.0.0",
+            "advisory": true,
+            "status": "skipped",
+            "skip_reason": "stage_error",
+            "note": format!("faithfulness stage error: {err:#}"),
+            "verdicts": [],
+        })
+    });
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "lean_faithfulness_check",
+        faithfulness.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({"artifact_path": "review_loop/faithfulness.json", "advisory": true}),
+    )
+    .await?;
+
+    let semantic_adequacy =
+        grokrxiv_review_loop::build_semantic_adequacy(&semantic_ir, &theorem_map);
+    write_loop_json(&artifact_dir.join("semantic_adequacy.json"), &semantic_adequacy).await?;
+    let semantic_adequacy_skip = semantic_adequacy
+        .get("skip_reason")
+        .and_then(|v| v.as_str())
+        .map(|r| matches!(r, "no_math_targets" | "no_proof_ready_math_targets"))
+        .unwrap_or(false);
+    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass" || semantic_adequacy_skip;
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "semantic_adequacy_checker",
+        semantic_adequacy.clone(),
+        if semantic_adequacy_pass {
+            VerifierStatus::Pass
+        } else {
+            VerifierStatus::Fail
+        },
+        serde_json::json!({"artifact_path": "review_loop/semantic_adequacy.json"}),
+    )
+    .await?;
+
+    // Update ONLY the advisory `formal` view in policy_gate.json — never the verdict
+    // (deterministic_status / recommendation / blocking_issues), which already shipped.
+    let policy_path = artifact_dir.join("policy_gate.json");
+    if let Ok(text) = std::fs::read_to_string(&policy_path) {
+        if let Ok(mut policy) = serde_json::from_str::<serde_json::Value>(&text) {
+            let lean_label = if lean_pass {
+                "pass"
+            } else if proof_targets_skip || !proof_obligations_ready {
+                "skipped"
+            } else {
+                "fail"
+            };
+            let formal = if lean_pass {
+                "proved"
+            } else if proof_targets_skip || !proof_obligations_ready {
+                "not_conducive_to_lean_proof"
+            } else {
+                "not_proved"
+            };
+            if let Some(cs) = policy.get_mut("component_status").and_then(|v| v.as_object_mut()) {
+                cs.insert("lean".to_string(), serde_json::json!(lean_label));
+                cs.insert("semantic_adequacy".to_string(), semantic_adequacy["status"].clone());
+            }
+            if let Some(pv) = policy
+                .get_mut("publishability_vector")
+                .and_then(|v| v.as_object_mut())
+            {
+                pv.insert("formal".to_string(), serde_json::json!(formal));
+                pv.insert("semantic_adequacy".to_string(), semantic_adequacy["status"].clone());
+            }
+            let _ = write_loop_json(&policy_path, &policy).await;
+        }
+    }
+
+    if let Err(err) = super::supervisor::render_to_disk(&state, review_id).await {
+        cli_status::emit(format!("formalize {review_id}: re-render skipped: {err:#}"));
+    }
+    match open_review_pr_for_gate(&state, review_id, false, false).await {
+        Ok(_) => cli_status::emit(format!(
+            "formalize {review_id}: PR updated with formal-verification evidence"
+        )),
+        Err(err) => cli_status::emit(format!("formalize {review_id}: PR update skipped: {err:#}")),
+    }
+    cli_status::emit(format!(
+        "formalize {review_id}: done (lean status={})",
+        lean_results.get("status").and_then(|v| v.as_str()).unwrap_or("?")
+    ));
+    Ok(())
+}
+
 async fn run_review_loop_for_review(
     state: &super::AppState,
     review_id: Uuid,
-    with_lean: bool,
     debug_output: bool,
 ) -> anyhow::Result<ReviewLoopOutcome> {
     use grokrxiv_schemas::VerifierStatus;
@@ -8088,79 +8341,24 @@ async fn run_review_loop_for_review(
         max_attempts: 2,
     };
     let lean_final_path = lean_src_dir.join("Proofs.lean");
-    let lean_results = if !with_lean {
-        // Lean formalization is opt-in (experimental, advisory) and runs only with
-        // `--with-lean`. By default the verdict path skips it exactly like the no-targets
-        // case — skipped status, never blocking, verdict unchanged.
-        let reason = "Lean formalization is opt-in (experimental); run with --with-lean.";
-        let _ =
-            write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
-        skipped_review_fix_code_results_with_status(
-            &lean_task,
-            &lean_final_path,
-            reason,
-            "skipped",
-            "lean_not_requested",
-        )
-    } else if proof_obligations_ready {
-        // Per-theorem authoring: run the author -> `lake env lean` -> fix cycle on ONE
-        // obligation at a time so each call is small, reliable, and never timed out, and so
-        // each theorem gets its own honest per-declaration verdict. The aggregate exposes a
-        // top-level `status` (pass/partial/fail), a per-declaration `declarations` map +
-        // `verified_statements` map that `lean_entry_status`/`build_theorem_map` read, and
-        // concatenated `attempts` for diagnostics. Anti-hallucination invariant unchanged: a
-        // declaration is only `pass` when `lake env lean` kernel-accepts it with no
-        // sorry/admit/axiom (enforced inside `run_review_fix_code_loop`).
-        run_per_theorem_lean_loop(
-            state,
-            paper_id,
-            review_id,
-            &lean_task,
-            &proof_obligations,
-            &lean_targets,
-            &semantic_ir,
-            &semantic_model,
-            &lean_dir,
-            &lean_final_path,
-            debug_output,
-        )
-        .await
-    } else if proof_targets_skip {
-        let reason = proof_obligations
-            .get("message")
-            .and_then(|value| value.as_str())
-            .unwrap_or("No paper-derived formal mathematical statements were extracted for Lean verification.");
-        let _ = write_review_loop_code_file(
-            &lean_final_path,
-            &format!("/- Lean formalization skipped: {reason} -/\n"),
-        )
-        .await;
-        skipped_review_fix_code_results_with_status(
-            &lean_task,
-            &lean_final_path,
-            reason,
-            "skipped",
-            proof_skip_reason,
-        )
-    } else {
-        let reason = proof_obligations["obligations"]
-            .as_array()
-            .and_then(|items| items.first())
-            .and_then(|item| item.get("statement"))
-            .and_then(|value| value.as_str())
-            .unwrap_or(
-                "Lean formalization skipped because upstream semantic obligations are blocked.",
-            );
-        let _ = write_review_loop_code_file(
-            &lean_final_path,
-            &format!("/- Lean formalization skipped: {reason} -/\n"),
-        )
-        .await;
-        skipped_review_fix_code_results(&lean_task, &lean_final_path, reason)
-    };
+    // Lean formalization runs ASYNCHRONOUSLY via the `formalize` action/job (queued with
+    // `review --with-lean`). The synchronous review NEVER runs Lean inline, so its verdict is
+    // fully independent of formalization. These nodes record a skipped/advisory state; the
+    // `formalize` job recomputes lean/faithfulness/semantic_adequacy later and re-renders.
+    let _ = (proof_obligations_ready, proof_targets_skip, proof_skip_reason);
+    let reason =
+        "Lean formalization runs asynchronously via the `formalize` job; queue with --with-lean.";
+    let _ = write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
+    let lean_results = skipped_review_fix_code_results_with_status(
+        &lean_task,
+        &lean_final_path,
+        reason,
+        "skipped",
+        "lean_deferred_to_formalize",
+    );
     let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
-    let lean_accepted = lean_pass || proof_targets_skip || !with_lean;
+    let lean_accepted = true;
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
     if !lean_final_path.is_file() {
@@ -8198,35 +8396,14 @@ async fn run_review_loop_for_review(
     // back-translates the proved Lean statement and checks it against the paper theorem.
     // ADVISORY ONLY: never adds to blocking_issues, never flips deterministic_status, never
     // feeds policy_gate / publishability integrity. Recorded as an always-Pass node.
-    let faithfulness = if with_lean {
-        run_lean_faithfulness_stage(
-            state,
-            paper_id,
-            review_id,
-            &theorem_map,
-            &lean_results,
-            &artifact_dir,
-            debug_output,
-        )
-        .await
-        .unwrap_or_else(|err| {
-            serde_json::json!({
-                "schema_version": "1.0.0",
-                "advisory": true,
-                "status": "skipped",
-                "skip_reason": "stage_error",
-                "note": format!("faithfulness stage error: {err:#}"),
-                "verdicts": [],
-            })
-        })
-    } else {
-        // Lean was not requested, so there are no kernel-proved targets to check.
+    // Faithfulness runs with the async `formalize` job (over kernel-proved targets only).
+    let faithfulness = {
         let skipped = serde_json::json!({
             "schema_version": "1.0.0",
             "advisory": true,
             "status": "skipped",
-            "skip_reason": "lean_not_requested",
-            "note": "Lean formalization is opt-in; faithfulness runs only with --with-lean.",
+            "skip_reason": "lean_deferred_to_formalize",
+            "note": "Lean formalization (and its faithfulness check) runs via the async `formalize` job; queue with --with-lean.",
             "verdicts": [],
         });
         let _ = write_loop_json(&artifact_dir.join("faithfulness.json"), &skipped).await;
@@ -9076,6 +9253,7 @@ fn build_review_loop_knowledge_graph(claims_value: &serde_json::Value) -> serde_
     })
 }
 
+#[cfg(test)]
 fn skipped_review_fix_code_results(
     task: &ReviewFixCodeTask,
     final_path: &Path,
@@ -10186,6 +10364,36 @@ async fn open_review_pr_for_gate(
     })
 }
 
+/// Enqueue an asynchronous `grokrxiv formalize <review_id>` job on the platform `app_runs`
+/// worker queue. The platform scheduler (`worker_loop` → `claim_next` → `run_app_action`) claims
+/// `state='queued'` rows and dispatches them through the app adapter, so the job survives the CLI
+/// exit and is lease-recovered/retried. We insert via raw SQL (rather than the platform crate's
+/// `app_runs::insert_queued`) because this app crate does not depend on `agenthero-orchestrator`;
+/// the `input` payload mirrors `StoredAppRunInput` (its `input` field serde-defaults when omitted).
+async fn enqueue_formalize_app_run(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    json: bool,
+) -> anyhow::Result<Uuid> {
+    let input = serde_json::json!({
+        "args": [review_id.to_string()],
+        "dry_run": false,
+        "json": json,
+        "retry": { "max_attempts": 2 },
+    });
+    let job_id = sqlx::query_scalar::<_, Uuid>(
+        "insert into app_runs (app_id, action_id, state, input) \
+         values ($1, $2, 'queued', $3) returning id",
+    )
+    .bind("grokrxiv")
+    .bind("formalize")
+    .bind(input)
+    .fetch_one(pool)
+    .await
+    .context("enqueue formalize app run")?;
+    Ok(job_id)
+}
+
 async fn open_review_pr_after_optional_loop(
     state: &super::AppState,
     review_id: Uuid,
@@ -10196,10 +10404,28 @@ async fn open_review_pr_after_optional_loop(
     json: bool,
 ) -> anyhow::Result<(ReviewPrDispatchOutcome, Option<ReviewLoopOutcome>)> {
     let loop_outcome = if loop_enabled {
-        Some(run_review_loop_for_review(state, review_id, with_lean, debug_output).await?)
+        Some(run_review_loop_for_review(state, review_id, debug_output).await?)
     } else {
         None
     };
+    // Lean formalization is an experimental, advisory feature that runs ASYNCHRONOUSLY so it
+    // never blocks the review's verdict. `--with-lean` enqueues a `formalize(review_id)` job on
+    // the platform worker (app_runs); a worker dispatches `grokrxiv-app formalize <review_id>`
+    // which runs the per-theorem Lean loop, re-renders, and updates the PR when done. Without a
+    // worker running, the job stays queued; run `agh app run grokrxiv formalize <id>` to do it
+    // inline.
+    if with_lean {
+        if let Some(pool) = state.db.as_ref() {
+            match enqueue_formalize_app_run(pool, review_id, json).await {
+                Ok(job_id) => crate::cli_status::emit(format!(
+                    "review {review_id}: Lean formalization queued (app_runs job {job_id})"
+                )),
+                Err(err) => crate::cli_status::emit(format!(
+                    "review {review_id}: failed to queue Lean formalization: {err:#}"
+                )),
+            }
+        }
+    }
     if !review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref()) {
         if loop_outcome
             .as_ref()
