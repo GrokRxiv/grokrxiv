@@ -140,7 +140,10 @@ actions:
         description: Exclude corpus paths matching this pattern.
       - name: --loop
         kind: flag
-        description: Continue after paper review through the semantic/proof/citation/fix/publish loop.
+        description: Deprecated no-op — the semantic/citation/fix/publish loop now always runs.
+      - name: --with-lean
+        kind: flag
+        description: Run experimental Lean formalization (advisory, never affects the verdict).
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.

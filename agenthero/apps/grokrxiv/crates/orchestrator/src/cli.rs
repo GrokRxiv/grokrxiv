@@ -889,6 +889,7 @@ pub async fn run_grokrxiv_action(
                     include: request.include,
                     exclude: request.exclude,
                     loop_enabled: request.loop_enabled,
+                    with_lean: request.with_lean,
                     debug_output: request.debug_output,
                     no_external_actions: request.no_external_actions,
                 },
@@ -1111,6 +1112,7 @@ struct ResearchReviewArgs {
     include: Vec<String>,
     exclude: Vec<String>,
     loop_enabled: bool,
+    with_lean: bool,
     debug_output: bool,
     no_external_actions: bool,
 }
@@ -1191,7 +1193,10 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
         limit: None,
         include: Vec::new(),
         exclude: Vec::new(),
-        loop_enabled: false,
+        // The review loop's verdict stages now always run (consolidated): `--loop` is a
+        // no-op alias. Lean formalization is opt-in via `--with-lean`.
+        loop_enabled: true,
+        with_lean: false,
         debug_output: false,
         no_external_actions: false,
     };
@@ -1222,7 +1227,9 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
             }
             "--include" => parsed.include.push(next_arg(&mut iter, "--include")?),
             "--exclude" => parsed.exclude.push(next_arg(&mut iter, "--exclude")?),
+            // `--loop` is now the default (consolidated); kept as a no-op alias.
             "--loop" => parsed.loop_enabled = true,
+            "--with-lean" => parsed.with_lean = true,
             "--debug" => parsed.debug_output = true,
             "--no-external-actions" => parsed.no_external_actions = true,
             other => anyhow::bail!("unknown GrokRxiv review argument `{other}`"),
@@ -3999,6 +4006,7 @@ struct ReviewSourceOptions {
     include: Vec<String>,
     exclude: Vec<String>,
     loop_enabled: bool,
+    with_lean: bool,
     debug_output: bool,
     no_external_actions: bool,
 }
@@ -4515,6 +4523,7 @@ async fn review_resolved_sources(
                     &state,
                     review_id,
                     options.loop_enabled,
+                    options.with_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -4553,6 +4562,7 @@ async fn review_resolved_sources(
                     &state,
                     review_id,
                     options.loop_enabled,
+                    options.with_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -4598,6 +4608,7 @@ async fn review_resolved_sources(
                     &state,
                     review_id,
                     options.loop_enabled,
+                    options.with_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -7779,6 +7790,7 @@ fn ensure_min_cli_timeout_secs(floor: u64) {
 async fn run_review_loop_for_review(
     state: &super::AppState,
     review_id: Uuid,
+    with_lean: bool,
     debug_output: bool,
 ) -> anyhow::Result<ReviewLoopOutcome> {
     use grokrxiv_schemas::VerifierStatus;
@@ -8076,7 +8088,21 @@ async fn run_review_loop_for_review(
         max_attempts: 2,
     };
     let lean_final_path = lean_src_dir.join("Proofs.lean");
-    let lean_results = if proof_obligations_ready {
+    let lean_results = if !with_lean {
+        // Lean formalization is opt-in (experimental, advisory) and runs only with
+        // `--with-lean`. By default the verdict path skips it exactly like the no-targets
+        // case — skipped status, never blocking, verdict unchanged.
+        let reason = "Lean formalization is opt-in (experimental); run with --with-lean.";
+        let _ =
+            write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
+        skipped_review_fix_code_results_with_status(
+            &lean_task,
+            &lean_final_path,
+            reason,
+            "skipped",
+            "lean_not_requested",
+        )
+    } else if proof_obligations_ready {
         // Per-theorem authoring: run the author -> `lake env lean` -> fix cycle on ONE
         // obligation at a time so each call is small, reliable, and never timed out, and so
         // each theorem gets its own honest per-declaration verdict. The aggregate exposes a
@@ -8134,7 +8160,7 @@ async fn run_review_loop_for_review(
     };
     let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
-    let lean_accepted = lean_pass || proof_targets_skip;
+    let lean_accepted = lean_pass || proof_targets_skip || !with_lean;
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
     write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
     if !lean_final_path.is_file() {
@@ -8172,26 +8198,40 @@ async fn run_review_loop_for_review(
     // back-translates the proved Lean statement and checks it against the paper theorem.
     // ADVISORY ONLY: never adds to blocking_issues, never flips deterministic_status, never
     // feeds policy_gate / publishability integrity. Recorded as an always-Pass node.
-    let faithfulness = run_lean_faithfulness_stage(
-        state,
-        paper_id,
-        review_id,
-        &theorem_map,
-        &lean_results,
-        &artifact_dir,
-        debug_output,
-    )
-    .await
-    .unwrap_or_else(|err| {
-        serde_json::json!({
+    let faithfulness = if with_lean {
+        run_lean_faithfulness_stage(
+            state,
+            paper_id,
+            review_id,
+            &theorem_map,
+            &lean_results,
+            &artifact_dir,
+            debug_output,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "advisory": true,
+                "status": "skipped",
+                "skip_reason": "stage_error",
+                "note": format!("faithfulness stage error: {err:#}"),
+                "verdicts": [],
+            })
+        })
+    } else {
+        // Lean was not requested, so there are no kernel-proved targets to check.
+        let skipped = serde_json::json!({
             "schema_version": "1.0.0",
             "advisory": true,
             "status": "skipped",
-            "skip_reason": "stage_error",
-            "note": format!("faithfulness stage error: {err:#}"),
+            "skip_reason": "lean_not_requested",
+            "note": "Lean formalization is opt-in; faithfulness runs only with --with-lean.",
             "verdicts": [],
-        })
-    });
+        });
+        let _ = write_loop_json(&artifact_dir.join("faithfulness.json"), &skipped).await;
+        skipped
+    };
     record_review_loop_node(
         pool,
         review_id,
@@ -10150,12 +10190,13 @@ async fn open_review_pr_after_optional_loop(
     state: &super::AppState,
     review_id: Uuid,
     loop_enabled: bool,
+    with_lean: bool,
     debug_output: bool,
     external_actions_enabled: bool,
     json: bool,
 ) -> anyhow::Result<(ReviewPrDispatchOutcome, Option<ReviewLoopOutcome>)> {
     let loop_outcome = if loop_enabled {
-        Some(run_review_loop_for_review(state, review_id, debug_output).await?)
+        Some(run_review_loop_for_review(state, review_id, with_lean, debug_output).await?)
     } else {
         None
     };
