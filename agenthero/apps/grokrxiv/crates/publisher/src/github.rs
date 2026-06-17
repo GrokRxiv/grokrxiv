@@ -151,6 +151,92 @@ impl GithubPublisher {
         Ok(pr.html_url)
     }
 
+    /// Add a NEW commit to an EXISTING pull request's head branch. Used by the async
+    /// `formalize` job to attach the authored Lean files after the review PR was already
+    /// opened (with a placeholder): looks up the PR's head branch, stacks a commit carrying
+    /// `files` on top of the current branch tip, and fast-forwards the branch ref so the new
+    /// commit shows up on the open PR. Returns the new commit SHA (empty string if no files).
+    pub async fn add_commit_to_pr(
+        &self,
+        pr_number: u64,
+        message: &str,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<String> {
+        if files.is_empty() {
+            return Ok(String::new());
+        }
+        // 1) Resolve the PR's head branch + 2) its tip commit and tree.
+        let pr: PullRequestHead = self
+            .api_get(&format!("pulls/{pr_number}"))
+            .await
+            .context("get PR head branch")?;
+        let branch = pr.head.r#ref;
+        let branch_ref: GitRef = self
+            .api_get(&format!("git/ref/heads/{branch}"))
+            .await
+            .context("get branch ref")?;
+        let tip_sha = branch_ref.object.sha;
+        let tip_commit: CommitDetail = self
+            .api_get(&format!("git/commits/{tip_sha}"))
+            .await
+            .context("get tip commit")?;
+
+        // 3) Blobs, 4) tree stacked on the tip tree, 5) commit parented on the tip.
+        let mut blobs: Vec<TreeEntry> = Vec::with_capacity(files.len());
+        for (path, bytes) in &files {
+            let blob: BlobResponse = self
+                .api_post(
+                    "git/blobs",
+                    &BlobRequest {
+                        content: base64::engine::general_purpose::STANDARD.encode(bytes),
+                        encoding: "base64",
+                    },
+                )
+                .await
+                .with_context(|| format!("create blob {path}"))?;
+            blobs.push(TreeEntry {
+                path: path.clone(),
+                mode: "100644".into(),
+                r#type: "blob".into(),
+                sha: blob.sha,
+            });
+        }
+        let tree: TreeResponse = self
+            .api_post(
+                "git/trees",
+                &TreeRequest {
+                    base_tree: Some(tip_commit.tree.sha),
+                    tree: blobs,
+                },
+            )
+            .await
+            .context("create tree")?;
+        let commit: CommitResponse = self
+            .api_post(
+                "git/commits",
+                &CommitRequest {
+                    message: message.to_string(),
+                    tree: tree.sha,
+                    parents: vec![tip_sha],
+                },
+            )
+            .await
+            .context("create commit")?;
+
+        // 6) Fast-forward the branch ref to the new commit.
+        let _: GitRef = self
+            .api_patch(
+                &format!("git/refs/heads/{branch}"),
+                &RefUpdateRequest {
+                    sha: commit.sha.clone(),
+                    force: false,
+                },
+            )
+            .await
+            .context("update branch ref")?;
+        Ok(commit.sha)
+    }
+
     /// Close an existing pull request and post a single explanatory comment.
     /// Used by the supersede flow: when a paper is re-reviewed and a new PR
     /// opens, the prior PR is closed with a pointer to the new one.
@@ -439,6 +525,32 @@ struct CommitResponse {
 #[derive(Serialize)]
 struct RefRequest {
     r#ref: String,
+    sha: String,
+}
+
+#[derive(Serialize)]
+struct RefUpdateRequest {
+    sha: String,
+    force: bool,
+}
+
+#[derive(Deserialize)]
+struct PullRequestHead {
+    head: PrHeadRef,
+}
+
+#[derive(Deserialize)]
+struct PrHeadRef {
+    r#ref: String,
+}
+
+#[derive(Deserialize)]
+struct CommitDetail {
+    tree: CommitTreeRef,
+}
+
+#[derive(Deserialize)]
+struct CommitTreeRef {
     sha: String,
 }
 

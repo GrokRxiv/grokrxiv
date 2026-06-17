@@ -928,13 +928,19 @@ pub(super) async fn run_review_dag_inner_with_context(
             .agent_configs
             .get(role)
             .ok_or_else(|| anyhow::anyhow!("missing YAML config for DAG role `{role}`"))?;
-        let output_to_persist = apply_agent_postprocessors(
+        let mut output_to_persist = apply_agent_postprocessors(
             cfg,
             output.clone(),
             v_notes.as_ref(),
             &reproducibility_facts,
             &novelty_facts,
         )?;
+        // Citation reviewers routinely emit bibliographic `year` as a numeric string
+        // ("2008"); the schema requires integer|null. Coerce so a formatting quirk never
+        // marks the whole review system_failed at post-merge validation.
+        if role == "citation" {
+            coerce_year_strings(&mut output_to_persist);
+        }
         #[cfg(feature = "grokrxiv-verifier")]
         if !matches!(v_status, Some(VerifierStatus::Fail)) {
             validate_role_output_after_merge(role, &output_to_persist, &state.agent_schemas)?;
@@ -1538,6 +1544,38 @@ fn apply_agent_postprocessors(
         };
     }
     Ok(output)
+}
+
+/// Recursively coerce every `"year"` field from a numeric string to an integer
+/// (and blank / non-numeric to null). LLM citation reviewers frequently emit
+/// `year: "2008"` while the citation schema requires `["integer", "null"]`; a
+/// single such string would otherwise fail post-merge schema validation and
+/// mark the entire review `system_failed`.
+fn coerce_year_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "year" {
+                    if let serde_json::Value::String(text) = child {
+                        *child = text
+                            .trim()
+                            .parse::<i64>()
+                            .ok()
+                            .map(serde_json::Value::from)
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                } else {
+                    coerce_year_strings(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                coerce_year_strings(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]

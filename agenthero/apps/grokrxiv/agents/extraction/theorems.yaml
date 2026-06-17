@@ -1,10 +1,14 @@
 id: theorem_graph_extractor
 kind: extractor
 role: "Build a dependency graph over theorem-like blocks (theorem/lemma/proposition/corollary/definition/proof). Resolves \\ref{} edges."
-provider: gemini
-# Keep theorem graph extraction on the local Gemini-family CLI path by default.
-# Math-heavy papers can still override the model/runner explicitly.
-model: gemini-2.5-flash
+provider: claude
+# Claude Opus for faithful typed-IR theorem capture -> downstream Lean. gemini-2.5-flash is
+# too weak here and produces poor Lean. The earlier failures were NOT the model: the
+# tool_loop was killed by a 360s timeout and a phantom per-token cost ceiling, both of which
+# are meaningless on the $0 subscription CLI path and are now lifted for CLI runs (see
+# run_agent_safe). Codex/openai is not a valid tool_loop backend (build_tool_command bails),
+# so Claude is the strong option for this extraction agent.
+model: claude-opus-4-8
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/theorems.md
@@ -18,5 +22,5 @@ tools:
   - resolve_label
   - submit
 max_iters: 50
-max_cost_usd: 1.50
-timeout_secs: 240
+max_cost_usd: 100.0
+timeout_secs: 2400

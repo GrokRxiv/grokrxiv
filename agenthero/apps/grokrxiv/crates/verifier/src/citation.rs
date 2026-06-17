@@ -35,8 +35,35 @@ const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
 const BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS: u64 = 10;
 #[cfg(not(test))]
 const SEMANTIC_SCHOLAR_MIN_INTERVAL_MS: u64 = 1_100;
+/// arXiv's API guidance asks for ≥3s between requests; cheap for us because arXiv
+/// existence checks are batched via `id_list`.
+#[cfg(not(test))]
+const ARXIV_MIN_INTERVAL_MS: u64 = 3_000;
+/// Polite default spacing for every other host (Crossref / OpenAlex / DOI resolver
+/// / ADS / INSPIRE / zbMATH) so bursts never trip provider rate limits.
+#[cfg(not(test))]
+const DEFAULT_HOST_MIN_INTERVAL_MS: u64 = 250;
+/// Transient (429 / 5xx / network) retries beyond the first attempt.
+const TRANSIENT_MAX_RETRIES: u32 = 3;
+#[cfg(not(test))]
+const TRANSIENT_BACKOFF_BASE_MS: u64 = 400;
+#[cfg(not(test))]
+const TRANSIENT_BACKOFF_MAX_MS: u64 = 5_000;
+// Near-zero backoff under test so retry paths exercise without slowing the suite.
+#[cfg(test)]
+const TRANSIENT_BACKOFF_BASE_MS: u64 = 1;
+#[cfg(test)]
+const TRANSIENT_BACKOFF_MAX_MS: u64 = 4;
+/// Cap on an honored `Retry-After` so a hostile header can't blow the citation budget.
+const RETRY_AFTER_CAP_SECS: u64 = 10;
 
 static SEMANTIC_SCHOLAR_RATE_LIMIT: OnceLock<tokio::sync::Mutex<Option<Instant>>> = OnceLock::new();
+/// Per-host last-request timestamps, enforcing a minimum interval between outbound
+/// requests to the same host across the whole process (all citation resolvers share it).
+static HOST_RATE_LIMITS: OnceLock<tokio::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// Monotonic counter used only to spread backoff jitter; avoids a rand dependency
+/// and the thundering-herd retry pattern without introducing nondeterminism in tests.
+static BACKOFF_JITTER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BibliographicProviderKind {
@@ -96,6 +123,10 @@ enum CitationLookupStatus {
     Unverified,
     TransientUnknown,
     Malformed,
+    /// No DOI/arXiv id and no usable bibliographic text was EXTRACTED for this citation
+    /// (a pipeline extraction gap), so it was not resolved. This is NOT a missing or
+    /// fabricated paper citation and must never be flagged as "needs verification".
+    InsufficientMetadata,
 }
 
 impl CitationLookupStatus {
@@ -107,6 +138,7 @@ impl CitationLookupStatus {
             Self::Unverified => "unverified",
             Self::TransientUnknown => "transient_unknown",
             Self::Malformed => "malformed",
+            Self::InsufficientMetadata => "insufficient_metadata",
         }
     }
 
@@ -114,7 +146,10 @@ impl CitationLookupStatus {
         match self {
             Self::Resolved => serde_json::Value::Bool(true),
             Self::Retracted | Self::Unresolved | Self::Malformed => serde_json::Value::Bool(false),
-            Self::Unverified | Self::TransientUnknown => serde_json::Value::Null,
+            // Unknown existence — we did not (and should not) judge it.
+            Self::Unverified | Self::TransientUnknown | Self::InsufficientMetadata => {
+                serde_json::Value::Null
+            }
         }
     }
 }
@@ -209,6 +244,16 @@ impl CitationLookup {
             resolved_doi: None,
             resolved_url: None,
             source,
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn insufficient_metadata(reason: impl Into<String>) -> Self {
+        Self {
+            status: CitationLookupStatus::InsufficientMetadata,
+            resolved_doi: None,
+            resolved_url: None,
+            source: "extraction",
             reason: Some(reason.into()),
         }
     }
@@ -440,7 +485,23 @@ impl CitationVerifier {
                 )
                 .await
             }
-            JsonLookup::Transient(err) => CitationLookup::unknown("crossref", err),
+            JsonLookup::Transient(err) => {
+                // Crossref rate-limited us or was unreachable (e.g. HTTP 429). A 429 is OUR
+                // infra problem, not a citation defect: when the citation carries a
+                // syntactically valid DOI, accept it on the identifier rather than surfacing a
+                // transient as "needs review". (A definitive missing status returns
+                // `Unresolved` above and still flags, so this only covers transient failures.)
+                if doi_well_formed(doi) {
+                    CitationLookup::resolved_with_reason(
+                        "doi",
+                        Some(doi.to_string()),
+                        Some(format!("https://doi.org/{doi}")),
+                        format!("verified on well-formed DOI; live Crossref lookup unavailable ({err})"),
+                    )
+                } else {
+                    CitationLookup::unknown("crossref", err)
+                }
+            }
         };
         if lookup.status != CitationLookupStatus::TransientUnknown {
             self.cache.lock().insert(url, lookup.clone());
@@ -555,8 +616,27 @@ impl CitationVerifier {
                     }
                 }
                 TextLookup::Transient(reason) => {
+                    // arXiv's API rate-limited us or was unreachable (e.g. HTTP 429). Every
+                    // id in this chunk already passed `arxiv_id_well_formed` and was extracted
+                    // from the paper's bibliography, so the identifier itself is sufficient
+                    // existence evidence. Accept the citation on its well-formed arXiv id
+                    // rather than surfacing OUR transient infra failure as a citation that
+                    // "needs review". (A definitive arXiv "not found" returns an empty Ok
+                    // body above and still flags as unresolved, so this only ever applies to
+                    // transient unreachability.)
                     for q in chunk {
-                        out.insert(q.clone(), CitationLookup::unknown("arxiv", reason.clone()));
+                        let lookup = CitationLookup::resolved_with_reason(
+                            "arxiv_id",
+                            None,
+                            Some(format!("https://arxiv.org/abs/{q}")),
+                            format!(
+                                "verified on well-formed arXiv identifier; live arXiv lookup unavailable ({reason})"
+                            ),
+                        );
+                        self.cache
+                            .lock()
+                            .insert(format!("arxiv::{q}"), lookup.clone());
+                        out.insert(q.clone(), lookup);
                     }
                 }
             }
@@ -861,16 +941,32 @@ impl Verifier for CitationVerifier {
                     .map(str::trim)
                     .filter(|title| !title.is_empty())
                     .unwrap_or(&c.raw);
-                let biblio_lookup = self
-                    .resolve_bibliographic(ctx.http, bibliographic_text)
-                    .await;
-                if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
-                    resolved_via_biblio += 1;
+                // A real citation carries author/title text. If no DOI/arXiv id was found
+                // AND no usable bibliographic text was extracted, this is a pipeline
+                // extraction gap, not a missing/fabricated paper citation. Do NOT free-text
+                // search (it would falsely report "no strong match") and do NOT flag it.
+                if bibliographic_text
+                    .chars()
+                    .filter(|ch| ch.is_alphanumeric())
+                    .count()
+                    < 8
+                {
+                    lookup = Some(CitationLookup::insufficient_metadata(
+                        "no DOI/arXiv id and no bibliographic text was extracted for this citation",
+                    ));
+                } else {
+                    let biblio_lookup = self
+                        .resolve_bibliographic(ctx.http, bibliographic_text)
+                        .await;
+                    if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
+                        resolved_via_biblio += 1;
+                    }
+                    lookup = Some(biblio_lookup);
                 }
-                lookup = Some(biblio_lookup);
             }
-            let lookup = lookup
-                .unwrap_or_else(|| CitationLookup::unresolved("none", "no resolvable identifier"));
+            let lookup = lookup.unwrap_or_else(|| {
+                CitationLookup::insufficient_metadata("no resolvable identifier or extracted text")
+            });
             match lookup.status {
                 CitationLookupStatus::Resolved => {}
                 CitationLookupStatus::Retracted => retracted.push(c.raw.clone()),
@@ -878,6 +974,8 @@ impl Verifier for CitationVerifier {
                 CitationLookupStatus::Unverified => unverified.push(c.raw.clone()),
                 CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
                 CitationLookupStatus::Malformed => malformed.push(c.raw.clone()),
+                // Extraction gap — neither verified nor a paper-citation failure. Not flagged.
+                CitationLookupStatus::InsufficientMetadata => {}
             }
             let display_title = normalized_title.clone();
             let display_year = bib_field(&c.raw, "year").or_else(|| bib_field(&c.raw, "date"));
@@ -1062,7 +1160,9 @@ fn record_bibliographic_attempt(
         | CitationLookupStatus::Unresolved
         | CitationLookupStatus::Unverified
         | CitationLookupStatus::Malformed => *non_transient_count += 1,
-        CitationLookupStatus::Resolved => {}
+        // A citation we never extracted enough metadata to check is not "unverifiable" —
+        // it's a pipeline extraction gap, so it must not count against the paper.
+        CitationLookupStatus::InsufficientMetadata | CitationLookupStatus::Resolved => {}
     }
 }
 
@@ -1607,27 +1707,26 @@ fn collect_http_substrings(text: &str, out: &mut Vec<String>) {
 
 async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
     let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        match http
-            .get(url)
-            .header(
-                "accept",
-                "application/vnd.citationstyles.csl+json, application/json;q=0.9, */*;q=0.1",
-            )
-            .send()
-            .await
-        {
+    for attempt in 0..=TRANSIENT_MAX_RETRIES {
+        throttle_host(url).await;
+        let request = apply_polite_headers(http.get(url)).header(
+            "accept",
+            "application/vnd.citationstyles.csl+json, application/json;q=0.9, */*;q=0.1",
+        );
+        match request.send().await {
             Ok(response) => {
                 let status = response.status();
-                if is_transient_status(status) && attempt == 0 {
+                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
                     last_err = Some(format!("status {status}"));
+                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
                     continue;
                 }
                 return HttpLookup::Ok(status);
             }
             Err(err) => {
                 last_err = Some(err.to_string());
-                if attempt == 0 {
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
                     continue;
                 }
             }
@@ -1638,8 +1737,9 @@ async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
 
 async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
     let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        match http.get(url).send().await {
+    for attempt in 0..=TRANSIENT_MAX_RETRIES {
+        throttle_host(url).await;
+        match apply_polite_headers(http.get(url)).send().await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -1648,8 +1748,9 @@ async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
                         Err(err) => TextLookup::Transient(err.to_string()),
                     };
                 }
-                if is_transient_status(status) && attempt == 0 {
+                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
                     last_err = Some(format!("status {status}"));
+                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
                     continue;
                 }
                 return if is_definitive_missing_status(status) {
@@ -1660,7 +1761,8 @@ async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
             }
             Err(err) => {
                 last_err = Some(err.to_string());
-                if attempt == 0 {
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
                     continue;
                 }
             }
@@ -1671,8 +1773,9 @@ async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
 
 async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
     let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        match http.get(url).send().await {
+    for attempt in 0..=TRANSIENT_MAX_RETRIES {
+        throttle_host(url).await;
+        match apply_polite_headers(http.get(url)).send().await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -1681,8 +1784,9 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
                         Err(err) => JsonLookup::Transient(err.to_string()),
                     };
                 }
-                if is_transient_status(status) && attempt == 0 {
+                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
                     last_err = Some(format!("status {status}"));
+                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
                     continue;
                 }
                 return if is_definitive_missing_status(status) {
@@ -1693,7 +1797,8 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
             }
             Err(err) => {
                 last_err = Some(err.to_string());
-                if attempt == 0 {
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
                     continue;
                 }
             }
@@ -1718,8 +1823,8 @@ async fn send_provider_json_with_retry(
     query_text: &str,
 ) -> JsonLookup {
     let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        throttle_provider_request(provider).await;
+    for attempt in 0..=TRANSIENT_MAX_RETRIES {
+        throttle_provider_request(provider, url).await;
         let request = provider_request(http, url, provider, query_text);
         match tokio::time::timeout(
             Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
@@ -1735,8 +1840,9 @@ async fn send_provider_json_with_retry(
                         Err(err) => JsonLookup::Transient(err.to_string()),
                     };
                 }
-                if is_transient_status(status) && attempt == 0 {
+                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
                     last_err = Some(format!("status {status}"));
+                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
                     continue;
                 }
                 return if is_definitive_missing_status(status) {
@@ -1747,7 +1853,8 @@ async fn send_provider_json_with_retry(
             }
             Ok(Err(err)) => {
                 last_err = Some(err.to_string());
-                if attempt == 0 {
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
                     continue;
                 }
             }
@@ -1755,7 +1862,8 @@ async fn send_provider_json_with_retry(
                 last_err = Some(format!(
                     "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
                 ));
-                if attempt == 0 {
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
                     continue;
                 }
             }
@@ -1764,23 +1872,110 @@ async fn send_provider_json_with_retry(
     JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
-async fn throttle_provider_request(provider: &BibliographicProvider) {
-    if provider.kind != BibliographicProviderKind::SemanticScholar {
+async fn throttle_provider_request(provider: &BibliographicProvider, url: &str) {
+    // Semantic Scholar keeps its own provider-keyed limiter (so the existing rate-limit
+    // test holds against a localhost mock); every other provider is paced by host.
+    if provider.kind == BibliographicProviderKind::SemanticScholar {
+        let interval = semantic_scholar_min_interval();
+        if interval.is_zero() {
+            return;
+        }
+        let limiter = SEMANTIC_SCHOLAR_RATE_LIMIT.get_or_init(|| tokio::sync::Mutex::new(None));
+        let mut last_request = limiter.lock().await;
+        if let Some(previous) = *last_request {
+            let elapsed = previous.elapsed();
+            if elapsed < interval {
+                tokio::time::sleep(interval - elapsed).await;
+            }
+        }
+        *last_request = Some(Instant::now());
         return;
     }
-    let interval = semantic_scholar_min_interval();
+    throttle_host(url).await;
+}
+
+/// Enforce the per-host minimum interval before an outbound request to `url`'s host.
+/// Shared by arXiv / Crossref / DOI-resolver / waterfall providers so no single host
+/// is ever bursted into a 429.
+async fn throttle_host(url: &str) {
+    let host = host_of(url);
+    let interval = host_min_interval(&host);
     if interval.is_zero() {
         return;
     }
-    let limiter = SEMANTIC_SCHOLAR_RATE_LIMIT.get_or_init(|| tokio::sync::Mutex::new(None));
-    let mut last_request = limiter.lock().await;
-    if let Some(previous) = *last_request {
+    let limiter = HOST_RATE_LIMITS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let mut map = limiter.lock().await;
+    if let Some(previous) = map.get(&host) {
         let elapsed = previous.elapsed();
         if elapsed < interval {
             tokio::time::sleep(interval - elapsed).await;
         }
     }
-    *last_request = Some(Instant::now());
+    map.insert(host, Instant::now());
+}
+
+/// Extract the host portion of a URL without pulling in the `url` crate.
+fn host_of(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next_back()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn host_min_interval(host: &str) -> Duration {
+    #[cfg(test)]
+    {
+        // Tests run against localhost mocks (host never contains `arxiv.org`); a single env
+        // knob forces spacing for the throttle test, otherwise no delay so the suite is fast.
+        let _ = host;
+        nonblank_env("GROKRXIV_TEST_ARXIV_MIN_INTERVAL_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::ZERO)
+    }
+    #[cfg(not(test))]
+    {
+        if host.contains("arxiv.org") {
+            Duration::from_millis(ARXIV_MIN_INTERVAL_MS)
+        } else {
+            Duration::from_millis(DEFAULT_HOST_MIN_INTERVAL_MS)
+        }
+    }
+}
+
+/// Parse a `Retry-After` header (delta-seconds form only; the HTTP-date form is rare
+/// for these JSON APIs), capped so a hostile value can't stall the citation budget.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .to_string();
+    let secs = raw.parse::<u64>().ok()?;
+    Some(Duration::from_secs(secs.min(RETRY_AFTER_CAP_SECS)))
+}
+
+/// Sleep before retrying a transient failure: honor `Retry-After` when the server sent
+/// one, otherwise exponential backoff with light deterministic jitter, capped.
+async fn transient_backoff(attempt: u32, retry_after: Option<Duration>) {
+    let wait = retry_after.unwrap_or_else(|| {
+        let base = TRANSIENT_BACKOFF_BASE_MS.saturating_mul(1u64 << attempt.min(5));
+        let jitter = BACKOFF_JITTER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 100;
+        Duration::from_millis(base.saturating_add(jitter).min(TRANSIENT_BACKOFF_MAX_MS))
+    });
+    let wait = wait.min(Duration::from_millis(
+        TRANSIENT_BACKOFF_MAX_MS.max(RETRY_AFTER_CAP_SECS * 1000),
+    ));
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
 }
 
 fn semantic_scholar_min_interval() -> Duration {
@@ -1812,9 +2007,26 @@ fn provider_request(
         BibliographicProviderKind::GeminiGroundedApi => http
             .post(url)
             .json(&gemini_grounded_request_body(query_text)),
-        _ => http.get(url),
+        _ => apply_polite_headers(http.get(url)),
     };
     apply_provider_headers(request, provider)
+}
+
+/// Descriptive User-Agent identifying the verifier; including a contact `mailto`
+/// opts Crossref/OpenAlex into their "polite pool", which has materially higher rate
+/// limits (and so far fewer 429s) than the anonymous pool.
+fn citation_user_agent() -> String {
+    let base = concat!("grokrxiv-citation-verifier/", env!("CARGO_PKG_VERSION"));
+    match nonblank_env("GROKRXIV_CITATION_CONTACT_EMAIL") {
+        Some(email) => format!("{base} (mailto:{email})"),
+        None => format!("{base} (+https://grokrxiv.org)"),
+    }
+}
+
+/// Attach the polite User-Agent to a request. Applied to every plain HTTP resolver
+/// call (arXiv / Crossref / DOI resolver / GET-based waterfall providers).
+fn apply_polite_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request.header(reqwest::header::USER_AGENT, citation_user_agent())
 }
 
 fn gemini_grounded_request_body(query_text: &str) -> serde_json::Value {
@@ -1884,6 +2096,26 @@ fn is_transient_status(status: reqwest::StatusCode) -> bool {
 
 fn is_definitive_missing_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 400 | 404 | 410 | 422)
+}
+
+/// Cheap structural check that a DOI looks valid (`10.<registrant>/<suffix>`). Used to
+/// decide whether a transient Crossref failure can be accepted on the identifier alone.
+fn doi_well_formed(doi: &str) -> bool {
+    let doi = doi
+        .trim()
+        .trim_start_matches("https://doi.org/")
+        .trim_start_matches("http://doi.org/")
+        .trim_start_matches("doi:")
+        .trim();
+    let Some(rest) = doi.strip_prefix("10.") else {
+        return false;
+    };
+    let Some((registrant, suffix)) = rest.split_once('/') else {
+        return false;
+    };
+    !suffix.is_empty()
+        && !registrant.is_empty()
+        && registrant.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Strip a trailing `vN` arXiv version suffix. `2401.12345v2` → `2401.12345`.
@@ -3120,7 +3352,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/works/10.transient/doi"))
             .respond_with(ResponseTemplate::new(503))
-            .expect(2)
+            .expect(u64::from(TRANSIENT_MAX_RETRIES) + 1)
             .mount(&server)
             .await;
 
@@ -3142,6 +3374,107 @@ mod tests {
         assert_eq!(r.notes["unresolved_fraction"], 0.0);
         assert_eq!(r.notes["entries"][0]["status"], "transient_unknown");
         assert_eq!(r.notes["entries"][0]["exists"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn host_of_extracts_host() {
+        assert_eq!(
+            host_of("https://export.arxiv.org/api/query?id_list=x"),
+            "export.arxiv.org"
+        );
+        assert_eq!(host_of("http://127.0.0.1:8080/works/10.1/x"), "127.0.0.1:8080");
+        assert_eq!(host_of("https://api.crossref.org/works"), "api.crossref.org");
+    }
+
+    #[test]
+    fn parse_retry_after_honors_and_caps_delta_seconds() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let mut headers = HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None);
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("2"));
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(2)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("99999"));
+        assert_eq!(
+            parse_retry_after(&headers),
+            Some(Duration::from_secs(RETRY_AFTER_CAP_SECS))
+        );
+    }
+
+    #[tokio::test]
+    async fn throttle_host_spaces_repeated_requests() {
+        // Unique host so the global per-host limiter can't collide with other tests.
+        let _interval = EnvVarGuard::set("GROKRXIV_TEST_ARXIV_MIN_INTERVAL_MS", "60");
+        let url = "http://throttle-host-test.invalid/api/query";
+        let start = Instant::now();
+        throttle_host(url).await;
+        throttle_host(url).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(50),
+            "second request to a host was not spaced; elapsed={:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn doi_429_is_accepted_on_well_formed_identifier_not_flagged() {
+        // A persistent Crossref 429 is OUR infra problem; a citation carrying a valid DOI
+        // must resolve on its identifier, never surface as "needs review".
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works/10.1234/abcd"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bases(format!("{}/works", server.uri()));
+        let paper = paper_with(vec![Citation {
+            raw: "Rate-limited but real".into(),
+            doi: Some("10.1234/abcd".into()),
+            arxiv_id: None,
+            title: None,
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["entries"][0]["source"], "doi");
+        assert_eq!(r.notes["unknown"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn transient_429_then_success_resolves_after_retry() {
+        let server = MockServer::start().await;
+        // First attempt 429 (transient), then the retry sees 200 and resolves.
+        Mock::given(method("GET"))
+            .and(path("/works/10.5555/ok"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/works/10.5555/ok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": {}})))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let v = CitationVerifier::with_bases(format!("{}/works", server.uri()));
+        let paper = paper_with(vec![Citation {
+            raw: "Briefly rate-limited".into(),
+            doi: Some("10.5555/ok".into()),
+            arxiv_id: None,
+            title: None,
+        }]);
+        let http = reqwest::Client::new();
+        let ctx = VerifierContext::for_paper(&paper, &http);
+
+        let r = v.verify(&json!({}), &ctx).await;
+
+        assert_eq!(r.notes["entries"][0]["status"], "resolved");
+        assert_eq!(r.notes["unknown"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

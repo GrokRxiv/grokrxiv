@@ -1030,14 +1030,26 @@ async fn exec_and_capture(
         Ok(Ok(status)) => status,
         Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
         Err(_) => {
+            // Timed out. Kill the whole process group first (reaps CLI sub-children), then the
+            // direct child, then VERIFY death by reaping it — if `wait()` doesn't return after
+            // the kill the process is wedged un-killably, which we surface in the error.
             kill_process_group(&child);
             let _ = timeout(Duration::from_secs(5), child.kill()).await;
             stdout_task.abort();
             stderr_task.abort();
+            let reaped = matches!(timeout(Duration::from_secs(5), child.wait()).await, Ok(Ok(_)));
+            if !reaped {
+                tracing::warn!(
+                    role,
+                    pid = child.id(),
+                    "CliRunner subprocess did not exit after SIGKILL; possible orphaned process tree"
+                );
+            }
             anyhow::bail!(
-                "CliRunner timed out after {}s for role {}",
+                "CliRunner timed out after {}s for role {} (subprocess {})",
                 timeout_dur.as_secs(),
-                role
+                role,
+                if reaped { "killed" } else { "kill_unconfirmed" }
             );
         }
     };
@@ -1160,13 +1172,24 @@ fn kill_process_group(child: &tokio::process::Child) {
         return;
     };
     let target = format!("-{pid}");
-    // Best-effort group cleanup. The subsequent child.kill() still handles
-    // the direct child if setting or killing the process group was unavailable.
-    let _ = std::process::Command::new("kill")
+    // Group cleanup. The child is spawned with `process_group(0)` so `-KILL -<pid>` reaps the
+    // whole tree (the CLI's own sub-children — e.g. codex/claude helpers — that the direct
+    // `child.kill()` alone would orphan). Log failures instead of silently swallowing them so
+    // a survived process tree is visible in the hang diagnostics.
+    match std::process::Command::new("kill")
         .args(["-KILL", &target])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            tracing::warn!(pid, %status, "process-group SIGKILL returned non-success; sub-children may have escaped the group");
+        }
+        Err(err) => {
+            tracing::warn!(pid, err = %err, "failed to SIGKILL process group; sub-children may be orphaned");
+        }
+    }
 }
 
 #[cfg(not(unix))]

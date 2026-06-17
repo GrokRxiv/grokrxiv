@@ -154,8 +154,14 @@ pub async fn run_tool_loop(
                         // try again on the next turn.
                         retried_submit = true;
                         let err_msg = format!(
-                            "submit() payload failed schema validation: {e}. Please call submit \
-                             again with a corrected payload that matches the schema exactly."
+                            "submit() payload failed schema validation: {e}.\n\n\
+                             Your output MUST validate against this exact JSON Schema. The \
+                             top-level object has ONLY the keys the schema declares — do NOT \
+                             wrap results in `nodes`/`edges`/`title`; emit the single declared \
+                             array directly and fold any dependency edges into each item's \
+                             `depends_on` field. Call submit again with a corrected payload.\n\n\
+                             Schema:\n{schema}",
+                            schema = serde_json::to_string(agent.schema()).unwrap_or_default(),
                         );
                         tool_call_log.push(ToolCallRecord {
                             iter: iters,
@@ -289,6 +295,7 @@ fn normalize_submit_payload(agent_name: &str, payload: &Value) -> Value {
             }
         }
         "theorem_graph_extractor" => {
+            normalize_theorem_graph_shape(obj);
             normalize_reason_to_null_when_nonempty(obj, "theorem_graph");
         }
         "equation_canonicalizer" => {
@@ -307,6 +314,124 @@ fn normalize_submit_payload(agent_name: &str, payload: &Value) -> Value {
     }
 
     out
+}
+
+/// LLMs (Claude especially) frequently emit the theorem graph in its natural
+/// `{nodes, edges, title}` object form instead of the schema's `{theorem_graph: [...],
+/// reason}` (a flat array of nodes, each carrying its own `depends_on`). A correct,
+/// content-complete extraction must not be discarded over that structural rename, so
+/// coerce it: lift `nodes` -> `theorem_graph`, fold a separate `edges` (`from`->`to`,
+/// relation `depends_on`) list into each node's `depends_on`, map `kind`->`type` and
+/// `location`->`section`, keep ONLY schema-allowed node keys, and reduce the top level to
+/// exactly `{theorem_graph, reason}` (the schema is `additionalProperties: false`).
+fn normalize_theorem_graph_shape(obj: &mut serde_json::Map<String, Value>) {
+    // The node array may already be `theorem_graph` (array), or under `nodes`, or nested as
+    // `theorem_graph.{nodes,edges}` if the whole graph object was placed there.
+    let mut nodes: Option<Vec<Value>> = None;
+    let mut edges: Option<Vec<Value>> = None;
+    match obj.get("theorem_graph") {
+        Some(Value::Array(arr)) => nodes = Some(arr.clone()),
+        Some(Value::Object(graph)) => {
+            if let Some(Value::Array(arr)) = graph.get("nodes") {
+                nodes = Some(arr.clone());
+            }
+            if let Some(Value::Array(e)) = graph.get("edges") {
+                edges = Some(e.clone());
+            }
+        }
+        _ => {}
+    }
+    if nodes.is_none() {
+        if let Some(Value::Array(arr)) = obj.get("nodes") {
+            nodes = Some(arr.clone());
+        }
+    }
+    if edges.is_none() {
+        if let Some(Value::Array(e)) = obj.get("edges") {
+            edges = Some(e.clone());
+        }
+    }
+    let Some(nodes) = nodes else {
+        return;
+    };
+
+    // id -> [depends_on...] from any separate `edges` list (relation == "depends_on").
+    let mut edge_map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for edge in edges.into_iter().flatten() {
+        let rel = edge
+            .get("relation")
+            .and_then(Value::as_str)
+            .unwrap_or("depends_on");
+        if rel != "depends_on" {
+            continue;
+        }
+        if let (Some(from), Some(to)) = (
+            edge.get("from").and_then(Value::as_str),
+            edge.get("to").and_then(Value::as_str),
+        ) {
+            edge_map
+                .entry(from.to_string())
+                .or_default()
+                .push(to.to_string());
+        }
+    }
+
+    let cleaned: Vec<Value> = nodes
+        .into_iter()
+        .filter_map(|node| {
+            let src = node.as_object()?;
+            let id = src.get("id").and_then(Value::as_str)?.to_string();
+            let mut out = serde_json::Map::new();
+            out.insert("id".to_string(), Value::String(id.clone()));
+            out.insert(
+                "type".to_string(),
+                src.get("type")
+                    .or_else(|| src.get("kind"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("theorem".to_string())),
+            );
+            out.insert(
+                "section".to_string(),
+                src.get("section")
+                    .or_else(|| src.get("location"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new())),
+            );
+            out.insert(
+                "statement".to_string(),
+                src.get("statement")
+                    .or_else(|| src.get("label"))
+                    .or_else(|| src.get("note"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new())),
+            );
+            let depends_on = match src.get("depends_on") {
+                Some(Value::Array(existing)) => Value::Array(existing.clone()),
+                _ => Value::Array(
+                    edge_map
+                        .get(&id)
+                        .map(|tos| tos.iter().cloned().map(Value::String).collect())
+                        .unwrap_or_default(),
+                ),
+            };
+            out.insert("depends_on".to_string(), depends_on);
+            if let Some(src_tex) = src.get("source_tex") {
+                out.insert("source_tex".to_string(), src_tex.clone());
+            }
+            // typed_transcription / theorem_ir have strict sub-schemas; drop them here so a
+            // malformed optional block can't sink an otherwise-correct extraction. The LLM
+            // Lean author works from `statement`, and the deterministic IR is only a hint.
+            Some(Value::Object(out))
+        })
+        .collect();
+
+    let reason = obj.get("reason").cloned();
+    obj.clear();
+    obj.insert("theorem_graph".to_string(), Value::Array(cleaned));
+    if let Some(reason) = reason {
+        obj.insert("reason".to_string(), reason);
+    }
 }
 
 fn normalize_reason_to_null_when_nonempty(
@@ -369,7 +494,48 @@ fn estimated_cost_usd(_spec: &AgentSpec, usage: &grokrxiv_llm_adapter::Usage) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction::{ExtractionRole, ToolRegistry};
+    use crate::extraction::{ExtractionAgent, ExtractionRole, ToolRegistry};
+
+    #[test]
+    fn theorem_graph_nodes_edges_shape_is_normalized_and_validates() {
+        // The exact malformation Claude Opus emitted on arXiv:2606.12482: a `{nodes, edges,
+        // title}` graph object instead of the schema's `{theorem_graph: [...], reason}`.
+        let payload = json!({
+            "title": "Categorical Hopf map",
+            "nodes": [
+                {"id": "Ehresconn", "kind": "definition", "location": "sec-4",
+                 "statement": "Let G be a Lie group and pi:P->M a principal G-bundle...",
+                 "source_tex": null, "note": "Definition 1"},
+                {"id": "giveHopf", "kind": "proposition", "location": "sec-8",
+                 "statement": "The categorical Hopf map exists.", "depends_on": ["Ehresconn"]}
+            ],
+            "edges": [
+                {"from": "giveHopf", "to": "priGtoG", "relation": "depends_on"},
+                {"from": "Ehresconn", "to": "cocycleg", "relation": "mentions"}
+            ]
+        });
+
+        let normalized = normalize_submit_payload("theorem_graph_extractor", &payload);
+
+        // Top level is exactly {theorem_graph, reason} — nodes/edges/title gone.
+        let obj = normalized.as_object().unwrap();
+        assert!(obj.contains_key("theorem_graph") && obj.contains_key("reason"));
+        assert!(!obj.contains_key("nodes") && !obj.contains_key("edges") && !obj.contains_key("title"));
+        let tg = obj["theorem_graph"].as_array().unwrap();
+        assert_eq!(tg.len(), 2);
+        // kind->type, location->section, depends_on present (node's own kept; edge folded in).
+        assert_eq!(tg[0]["type"], "definition");
+        assert_eq!(tg[0]["section"], "sec-4");
+        assert_eq!(tg[0]["depends_on"], json!([])); // only `mentions` edge existed -> not folded
+        assert_eq!(tg[1]["depends_on"], json!(["Ehresconn"])); // node's own depends_on preserved
+        assert_eq!(obj["reason"], serde_json::Value::Null);
+
+        // The whole point: it now validates against the REAL theorems schema.
+        let agent = crate::extraction::theorems::TheoremGraphExtractorAgent::new();
+        validate_submit(&normalized, agent.schema())
+            .expect("normalized theorem graph must validate against theorems.schema.json");
+    }
+
     use agenthero_agent_runtime::AgentSpec;
     use async_trait::async_trait;
     use grokrxiv_llm_adapter::{FinishReason, ProviderToolCall, ToolCompletion, ToolSpec, Usage};

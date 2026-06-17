@@ -595,14 +595,44 @@ pub fn build_semantic_adequacy(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if proof_map_skips_lean(theorem_map) {
+    // The adequacy/faithfulness check (does the Lean statement faithfully capture the
+    // paper theorem?) is only meaningful once Lean has actually authored and verified
+    // statements — that happens in the async `--with-lean` / `formalize` job. In the
+    // default review the theorem_map holds only un-authored placeholder stubs
+    // (`: True := by`, no per-entry `status`), so comparing each real paper theorem
+    // against a `True` stub would spuriously read as OVERCLAIMED on every claim. Treat an
+    // un-formalized map (none of whose entries carry a Lean proof `status`) as SKIPPED —
+    // not FAILED — so the default review never surfaces a false faithfulness failure.
+    let lean_authored = theorem_entries.iter().any(|entry| {
+        entry
+            .get("emitted_statement")
+            .and_then(|value| value.as_str())
+            .map(|statement| !lean_statement_is_placeholder(statement))
+            .unwrap_or(false)
+    });
+    if proof_map_skips_lean(theorem_map) || !lean_authored {
+        let skip_reason = theorem_map
+            .get("skip_reason")
+            .cloned()
+            .unwrap_or_else(|| {
+                if theorem_entries.is_empty() {
+                    json!("no_math_targets")
+                } else {
+                    json!("lean_not_run")
+                }
+            });
+        let operator_status = if theorem_entries.is_empty() {
+            "NOT_CONDUCIVE_TO_LEAN_PROOF"
+        } else {
+            "AWAITING_FORMALIZATION"
+        };
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/semantic_ir.json",
             "theorem_map": "review_loop/lean/theorem_map.json",
             "status": "skipped",
-            "skip_reason": theorem_map.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
-            "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "skip_reason": skip_reason,
+            "operator_status": operator_status,
             "verdicts": [],
         });
     }
@@ -1366,6 +1396,35 @@ fn contains_unknown_math_node(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(map) => map.values().any(contains_unknown_math_node),
         _ => false,
     }
+}
+
+/// The pre-Lean stub theorem_map emits `theorem <name> : True := by` for every
+/// obligation before the async `--with-lean` / formalize job authors real Lean
+/// statements. A genuine authored statement never reduces to a bare `: True`, so an
+/// all-`True` map means Lean has not actually run yet and there is nothing to check
+/// faithfulness against (the default review must not surface that as OVERCLAIMED).
+fn lean_statement_is_placeholder(statement: &str) -> bool {
+    let compact: String = statement.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.contains(":True:=") || compact.ends_with(":True") {
+        return true;
+    }
+    // The deterministic obligation generator also emits a trivially-true REFLEXIVE equality
+    // (`: 0 = 0 := by`, `: x = x := by`) when `emit_prop` hits a degenerate/unknown conclusion
+    // — see `emit_prop`'s `equals` arm over `unknown_term`s. That is still an un-authored
+    // placeholder (Lean has not run), so the faithfulness check must treat it as such, not as
+    // an OVERCLAIMED real statement. Isolate the conclusion (the segment before `:=`, after the
+    // final binder/`:`) and flag an exact reflexive equality.
+    let body = compact.split(":=").next().unwrap_or(&compact);
+    let conclusion = body.rsplit_once(':').map(|(_, c)| c).unwrap_or(body);
+    if conclusion == "True" {
+        return true;
+    }
+    if let Some((lhs, rhs)) = conclusion.split_once('=') {
+        if !lhs.is_empty() && lhs == rhs {
+            return true;
+        }
+    }
+    false
 }
 
 fn proof_map_skips_lean(theorem_map: &serde_json::Value) -> bool {
@@ -3022,5 +3081,53 @@ end GrokRxiv
 
         assert_eq!(adequacy["status"], "fail");
         assert_eq!(adequacy["verdicts"][0]["verdict"], "NARROWED");
+    }
+
+    #[test]
+    fn semantic_adequacy_skips_unformalized_placeholder_map() {
+        // The default review (no `--with-lean`) feeds an un-authored stub theorem_map:
+        // every entry is `theorem <name> : True := by` with status FAILED. This must read
+        // as SKIPPED (Lean not run), never as a faithfulness FAILURE / OVERCLAIMED.
+        let semantic_ir = json!({
+            "theorem_candidates": [
+                {
+                    "id": "theorem_main",
+                    "source_claim_id": "thm-main",
+                    "statement": "Some non-trivial Riemannian theorem."
+                }
+            ]
+        });
+        // Mix the two deterministic placeholder forms the generator actually emits: a `True`
+        // conclusion AND a trivially-true reflexive equality `0 = 0` (from `emit_prop` over a
+        // degenerate `equals`). BOTH are un-authored placeholders → the whole map must SKIP.
+        let theorem_map = json!({
+            "entries": [
+                {
+                    "source_claim_id": "thm-main",
+                    "status": "FAILED",
+                    "lean_declaration": "thm_main",
+                    "emitted_statement": "theorem thm_main : True := by",
+                    "verified_statement": "theorem thm_main : True := by"
+                },
+                {
+                    "source_claim_id": "thm-main",
+                    "status": "FAILED",
+                    "lean_declaration": "prop_trivial",
+                    "emitted_statement": "theorem prop_trivial : 0 = 0 := by",
+                    "verified_statement": "theorem prop_trivial : 0 = 0 := by"
+                }
+            ]
+        });
+
+        let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
+
+        assert_eq!(adequacy["status"], "skipped");
+        assert_eq!(adequacy["skip_reason"], "lean_not_run");
+        assert!(adequacy["verdicts"].as_array().unwrap().is_empty());
+        // Sanity: the helper flags True, 0=0, x=x but NOT a real (non-reflexive) statement.
+        assert!(lean_statement_is_placeholder("theorem t : True := by"));
+        assert!(lean_statement_is_placeholder("theorem t : 0 = 0 := by"));
+        assert!(lean_statement_is_placeholder("theorem t (x : Nat) : x = x := by"));
+        assert!(!lean_statement_is_placeholder("theorem t (n : Nat) : n + 0 = n := by"));
     }
 }

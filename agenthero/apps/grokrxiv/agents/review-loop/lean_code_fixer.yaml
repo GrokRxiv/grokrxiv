@@ -2,7 +2,7 @@ id: lean_code_fixer
 kind: code_generator
 role: "Fix generated Lean proof code using compiler diagnostics and Codex review."
 provider: claude
-model: claude-opus-4-7
+model: claude-opus-4-8
 runner: cli
 prompt_template: prompts/review-loop/lean_code_fixer.md
 input_schema: schemas/review_loop_code_task.schema.json

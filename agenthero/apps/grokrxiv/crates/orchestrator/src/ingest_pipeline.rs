@@ -1589,7 +1589,14 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
     };
     let runner_name = runner.name().to_string();
     let registry = Arc::new(build_registry_for(agent));
-    let budget = extraction_budget_for(stage_name);
+    // The CLI runner bills against the operator's subscription, so real spend is $0. The
+    // per-token cost ceiling is an API-spend guard and must NOT gate or truncate a CLI run
+    // (a math-heavy typed-IR tool loop legitimately accrues a large *estimated* cost).
+    let is_cli_runner = matches!(runner_kind, AgentRunnerKind::Cli);
+    let mut budget = extraction_budget_for(stage_name);
+    if is_cli_runner {
+        budget.max_cost_usd = f32::MAX;
+    }
     let ctx = ExtractionContext {
         workdir,
         extract,
@@ -1606,7 +1613,12 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         max_iters = budget.max_iters,
         "extraction budget resolved from agents/extraction/<stage>.yaml",
     );
-    let spec = default_extraction_spec(stage_name, runner_kind);
+    let mut spec = default_extraction_spec(stage_name, runner_kind);
+    // CLI tool-loop extraction of math-heavy papers is legitimately slow; never let a short
+    // default timeout truncate it (operator rule: the LLM should never time out). 1800s floor.
+    if is_cli_runner {
+        spec.timeout_secs = spec.timeout_secs.max(1800);
+    }
     let model = spec.model.clone();
     crate::cli_status::emit(format!(
         "extract {arxiv_id}: {stage_name} starting via {runner_name} ({model})"
@@ -1643,7 +1655,7 @@ async fn run_agent_safe<A: ExtractionAgent + Sized + 'static>(
         Err(e) => {
             warn!(stage_name, arxiv_id, err = %format!("{e:#}"), "extraction stage failed");
             crate::cli_status::emit(format!(
-                "extract {arxiv_id}: {stage_name} failed; deterministic fallback may run"
+                "extract {arxiv_id}: {stage_name} failed; deterministic fallback may run: {e:#}"
             ));
             None
         }
@@ -2106,7 +2118,12 @@ fn build_citation_validation_report(references: &Value) -> Value {
                 });
             let status = match raw_status {
                 "resolved" | "verified" => "verified",
-                "unresolved" | "unverified" | "transient_unknown" | "malformed" | "conflict"
+                // `insufficient_metadata` = a citation whose bibliographic text we never
+                // extracted; pass it through (it is NOT in the remediation set below), so a
+                // pipeline extraction gap is never flagged as a missing/unverifiable paper
+                // citation.
+                "insufficient_metadata"
+                | "unresolved" | "unverified" | "transient_unknown" | "malformed" | "conflict"
                 | "not_checked" | "retracted" | "not_found" => raw_status,
                 _ => "not_checked",
             };

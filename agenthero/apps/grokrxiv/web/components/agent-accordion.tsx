@@ -19,6 +19,43 @@ const ROLE_LABEL: Record<KnownAgentRole, string> = {
   meta_reviewer: "Overall reviewer",
 };
 
+// Human-readable display names for the review-loop / formalization nodes (whose
+// `role` is the raw snake_case node id). Anything not listed here falls back to
+// `humanizeRole`, so every check renders as prose rather than an internal id.
+const NODE_LABEL: Record<string, string> = {
+  claim_extractor: "Claim extractor",
+  paper_math_source_collector: "Paper math sources",
+  knowledge_graph_builder: "Knowledge graph",
+  semantic_category_mapper: "Semantic category mapping",
+  proof_obligation_generator: "Proof obligations",
+  semantic_adequacy_checker: "Lean faithfulness adequacy",
+  citation_validation: "Citation validation",
+  citation_validation_adjudication: "Citation adjudication",
+  pr_fixer: "PR fixer",
+  pr_review_fix_code: "PR review fix",
+  lean_review_fix_code: "Lean review fix",
+  lean_faithfulness_check: "Lean faithfulness check",
+  policy_gate: "Policy gate",
+  review_loop_report: "Review loop report",
+  publish_decision: "Publish decision",
+  bundle_completeness: "Bundle completeness",
+};
+
+// Known acronyms that should stay upper-cased when humanizing an unmapped id.
+const ACRONYMS = new Set(["pr", "llm", "ir", "dag", "pdf", "url", "doi", "ci", "id"]);
+
+function humanizeRole(role: string): string {
+  const words = role.split(/[_\-\s]+/).filter(Boolean);
+  if (words.length === 0) return role;
+  return words
+    .map((word, index) => {
+      if (ACRONYMS.has(word.toLowerCase())) return word.toUpperCase();
+      const cased = word.charAt(0).toUpperCase() + word.slice(1);
+      return index === 0 ? cased : word;
+    })
+    .join(" ");
+}
+
 const ROLE_ORDER: KnownAgentRole[] = [
   "summary",
   "technical_correctness",
@@ -70,7 +107,7 @@ function roleRank(role: string): number {
 }
 
 function roleLabel(role: string): string {
-  return ROLE_LABEL[role as KnownAgentRole] ?? role;
+  return ROLE_LABEL[role as KnownAgentRole] ?? NODE_LABEL[role] ?? humanizeRole(role);
 }
 
 function displayVerifierStatus(agent: AgentOutput): {

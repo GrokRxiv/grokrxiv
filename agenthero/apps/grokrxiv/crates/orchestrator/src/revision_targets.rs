@@ -330,8 +330,30 @@ fn graph_node_id(id: &str, index: usize) -> String {
     out
 }
 
+/// Sanitize a Mermaid `flowchart` node label for GitHub's renderer. GitHub's Mermaid does
+/// NOT support backslash-escaped quotes inside `id["…"]` (the `\"` ends the quoted string
+/// early → `Parse error … got 'STR'`). Use Mermaid entity codes (`#NN;` / `#quot;`) for the
+/// characters that break the parser, and collapse newlines, so labels like
+/// `…(Construction 55 "symmofhopf")` render instead of crashing the whole diagram.
 fn escape_mermaid_label(label: &str) -> String {
-    label.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(label.len());
+    for ch in label.chars() {
+        match ch {
+            '"' => out.push_str("#quot;"),
+            '(' => out.push_str("#40;"),
+            ')' => out.push_str("#41;"),
+            '[' => out.push_str("#91;"),
+            ']' => out.push_str("#93;"),
+            '{' => out.push_str("#123;"),
+            '}' => out.push_str("#125;"),
+            '<' => out.push_str("#lt;"),
+            '>' => out.push_str("#gt;"),
+            '\\' => out.push_str("#92;"),
+            '\r' | '\n' => out.push(' '),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn collect_candidates(specialists: &Value) -> Vec<TargetCandidate> {
@@ -1149,6 +1171,75 @@ mod tests {
         assert!(graph.contains("```mermaid"));
         assert!(graph.contains("nweakness_2 --> nweakness_1"));
         assert!(graph.contains("`weakness-1` should follow `weakness-2`."));
+    }
+
+    #[test]
+    fn mermaid_labels_use_entity_codes_not_backslash_escapes() {
+        // Regression: GitHub Mermaid rejected backslash-escaped quotes inside `id["…"]`
+        // (e.g. `(Construction 55 \"symmofhopf\")`) → "Parse error … got 'STR'". The label
+        // must carry NO raw `"`/`(`/`)` and NO backslash escapes.
+        let escaped = escape_mermaid_label("Section 6 (Construction 55 \"symmofhopf\")");
+        assert_eq!(
+            escaped,
+            "Section 6 #40;Construction 55 #quot;symmofhopf#quot;#41;"
+        );
+        assert!(!escaped.contains('"'));
+        assert!(!escaped.contains('('));
+        assert!(!escaped.contains(')'));
+        assert!(!escaped.contains('\\'));
+        assert!(escape_mermaid_label("a\nb").contains("a b"));
+    }
+
+    #[test]
+    fn dependency_graph_renders_labels_with_quotes_and_parens() {
+        let meta = json!({
+            "revision_targets": [
+                {
+                    "id": "weakness-1",
+                    "weakness_index": 0,
+                    "source_role": "technical_correctness",
+                    "target_kind": "paper_tex",
+                    "source_path": "paper.tex",
+                    "locator": "Abstract; Section 6 (Construction 55 \"symmofhopf\")",
+                    "evidence": "The categorical Hopf map construction is asserted without proof.",
+                    "required_update": "Justify Construction 55 (\"symmofhopf\") with a citation or proof.",
+                    "verification_check": "Re-review should confirm the construction is justified.",
+                    "status": "open"
+                },
+                {
+                    "id": "weakness-2",
+                    "weakness_index": 1,
+                    "source_role": "reproducibility",
+                    "target_kind": "code",
+                    "source_path": null,
+                    "locator": "code release and execution entrypoints",
+                    "evidence": "No runnable source code is provided.",
+                    "required_update": "Release source code and entrypoints.",
+                    "verification_check": "Re-review should confirm runnable source code is present.",
+                    "status": "open"
+                }
+            ]
+        });
+        let graph = revision_dependency_graph_markdown(Some(&meta));
+
+        // The whole mermaid fenced block must contain NO backslash-escaped quote and NO raw
+        // quote/paren inside a node label (only the wrapping `["` / `"]` quotes are allowed).
+        assert!(graph.contains("```mermaid"));
+        assert!(!graph.contains("\\\""), "backslash-escaped quote breaks GitHub mermaid:\n{graph}");
+        assert!(graph.contains("#quot;"), "expected entity-encoded quote:\n{graph}");
+        for line in graph
+            .lines()
+            .filter(|l| l.trim_start().starts_with("nweakness_") && l.contains("[\""))
+        {
+            let inner = line
+                .split_once("[\"")
+                .and_then(|(_, rest)| rest.rsplit_once("\"]"))
+                .map(|(label, _)| label)
+                .unwrap_or("");
+            assert!(!inner.contains('"'), "raw quote in label: {line}");
+            assert!(!inner.contains('('), "raw paren in label: {line}");
+            assert!(!inner.contains(')'), "raw paren in label: {line}");
+        }
     }
 
     #[test]

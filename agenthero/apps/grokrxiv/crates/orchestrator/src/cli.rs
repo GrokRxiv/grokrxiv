@@ -6758,146 +6758,98 @@ async fn run_per_theorem_lean_loop(
     let mut proved = 0usize;
     let total = theorem_obligations.len();
 
-    for (index, obligation) in theorem_obligations.iter().enumerate() {
-        let lean_declaration = obligation
-            .get("lean_declaration")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("theorem_{index}"));
-        let obligation_id = obligation
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("obligation_{index}"));
-        let statement = obligation
-            .get("statement")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+    // Bound each Lean CLI call to its per-role YAML timeout (author/fixer 600s, reviewer
+    // 300s) even though the review-loop globally raises AGENTHERO_CLI_TIMEOUT_SECS to 1800 for
+    // slow non-Lean specialists. The per-role env wins over the global floor in
+    // `cli_timeout_for`, so a hung Lean call is killed in ~10 min, not 30 — and this is
+    // Lean-only, so citation/specialist timeouts are untouched.
+    set_lean_role_timeout_env(lean_task.author_role, 600);
+    set_lean_role_timeout_env(lean_task.fixer_role, 600);
+    set_lean_role_timeout_env(lean_task.reviewer_role, 300);
 
-        let obligation_dir = lean_dir.join("targets").join(lean_identifier_subdir(
-            &lean_declaration,
-            index,
-        ));
-        let obligation_src_dir = obligation_dir.join("GrokRxiv");
-        if let Err(err) = tokio::fs::create_dir_all(&obligation_src_dir).await {
-            let failed = serde_json::json!({
-                "status": "fail",
-                "lean_declaration": lean_declaration,
-                "obligation_id": obligation_id,
-                "attempts": [{
-                    "attempt": 0,
-                    "status": "fail",
-                    "error": format!("create obligation dir {}: {err}", obligation_src_dir.display()),
-                }],
-            });
-            declarations.insert(lean_declaration.clone(), failed.clone());
-            per_obligation_runs.push(failed);
-            continue;
-        }
-        let obligation_final_path = obligation_src_dir.join("Proofs.lean");
+    // Fan out the per-theorem author -> kernel -> review/fix pipelines with BOUNDED
+    // concurrency. Each target is fully isolated (its own workdir, git harness, lakefile, and
+    // `lake env lean` kernel check sharing the read-only Mathlib), so one slow/hung proof no
+    // longer blocks the others. Buffered-stream pattern mirrors agents/review/facts.rs; each
+    // target is wrapped in a watchdog (see `run_one_lean_target`) that kills + retries a wedge.
+    use futures::stream::StreamExt as _;
+    let concurrency = std::env::var("GROKRXIV_LEAN_TARGET_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(4);
+    let per_call_secs: u64 = 600;
+    let target_budget = std::time::Duration::from_secs(
+        (lean_task.max_attempts.max(1) as u64)
+            .saturating_mul(per_call_secs)
+            .saturating_add(300),
+    );
 
-        if debug_output {
-            cli_status::emit_detail(
-                lean_task.author_role,
-                cli_status::StatusMark::Run,
-                &format!(
-                    "per-theorem lean target {}/{} decl={lean_declaration}",
-                    index + 1,
-                    total
-                ),
-            );
-        }
+    let mut results: Vec<LeanTargetResult> = futures::stream::iter(
+        theorem_obligations
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, obligation)| {
+                run_one_lean_target(
+                    state,
+                    paper_id,
+                    review_id,
+                    lean_task,
+                    index,
+                    total,
+                    obligation,
+                    &requirements,
+                    proof_obligations,
+                    lean_targets,
+                    semantic_ir,
+                    semantic_model,
+                    lean_dir,
+                    debug_output,
+                    target_budget,
+                )
+            }),
+    )
+    .buffer_unordered(concurrency)
+    .collect()
+    .await;
+    results.sort_by_key(|r| r.index);
 
-        let base_artifact = serde_json::json!({
-            "review_id": review_id,
-            "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
-            "requirements": requirements,
-            "obligation": obligation,
-            "lean_declaration": lean_declaration,
-            "paper_theorem": statement,
-            "proof_obligations": proof_obligations,
-            "lean_targets": lean_targets,
-            "semantic_ir": semantic_ir,
-            "semantic_model": semantic_model,
-        });
-
-        let run = run_review_fix_code_loop(
-            state,
-            paper_id,
-            review_id,
-            lean_task.clone(),
-            base_artifact,
-            &obligation_dir,
-            &obligation_final_path,
-            debug_output,
-        )
-        .await;
-
-        let run_status = run
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("fail")
-            .to_string();
-        let proved_here = run_status == "pass";
-        if proved_here {
+    let mut hang_rows: Vec<serde_json::Value> = Vec::with_capacity(results.len());
+    for r in results {
+        if r.proved {
             proved += 1;
         }
-
-        // The kernel-verified Lean statement/proof for this declaration is exactly the
-        // contents of the proved file. Only record it when the kernel accepted it.
-        let verified_code = if proved_here {
-            tokio::fs::read_to_string(&obligation_final_path)
-                .await
-                .ok()
-        } else {
-            None
-        };
-        if let Some(code) = verified_code.as_ref() {
-            verified_statements.insert(
-                lean_declaration.clone(),
-                serde_json::json!(code),
-            );
-            combined_files.push(format!(
-                "-- ===== {lean_declaration} (PROVED) =====\n{}",
-                code.trim_end()
-            ));
-        } else {
-            let header = format!("/- {lean_declaration}: status={run_status} (not kernel-proved) -/");
-            let body = tokio::fs::read_to_string(&obligation_final_path)
-                .await
-                .unwrap_or_default();
-            combined_files.push(format!(
-                "-- ===== {lean_declaration} ({}) =====\n{header}\n{}",
-                run_status.to_ascii_uppercase(),
-                body.trim_end()
-            ));
+        if let Some(code) = r.verified_code.as_ref() {
+            verified_statements.insert(r.lean_declaration.clone(), serde_json::json!(code));
         }
-
-        if let Some(attempts) = run.get("attempts").and_then(|v| v.as_array()) {
-            for attempt in attempts {
-                let mut attempt = attempt.clone();
-                if let Some(object) = attempt.as_object_mut() {
-                    object.insert(
-                        "lean_declaration".to_string(),
-                        serde_json::json!(lean_declaration),
-                    );
-                }
-                all_attempts.push(attempt);
-            }
-        }
-
-        let decl_record = serde_json::json!({
-            "status": run_status,
-            "lean_declaration": lean_declaration,
-            "obligation_id": obligation_id,
-            "paper_theorem": statement,
-            "verified_statement": verified_code,
-            "final_path": obligation_final_path.display().to_string(),
-            "attempts": run.get("attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
-        });
-        declarations.insert(lean_declaration.clone(), decl_record);
-        per_obligation_runs.push(run);
+        combined_files.push(r.combined_entry);
+        all_attempts.extend(r.attempts_with_decl);
+        declarations.insert(r.lean_declaration.clone(), r.decl_record);
+        per_obligation_runs.push(r.run);
+        hang_rows.push(serde_json::json!({
+            "index": r.index,
+            "lean_declaration": r.lean_declaration,
+            "author_role": lean_task.author_role,
+            "duration_ms": r.duration_ms,
+            "outcome": r.outcome,
+            "retried": r.retried,
+        }));
     }
+
+    // Observability for "why are runs hung": per-target wall-clock + outcome
+    // (completed | completed_after_retry | watchdog_timeout | dir_error).
+    let _ = write_loop_json(
+        &lean_dir.join("hang_report.json"),
+        &serde_json::json!({
+            "stage": "lean_per_theorem_watchdog",
+            "concurrency": concurrency,
+            "per_call_timeout_secs": per_call_secs,
+            "target_budget_secs": target_budget.as_secs(),
+            "targets": hang_rows,
+        }),
+    )
+    .await;
 
     // Write the combined, human-readable Proofs.lean (all per-theorem files concatenated).
     let combined = if combined_files.is_empty() {
@@ -6946,6 +6898,261 @@ async fn run_per_theorem_lean_loop(
         "agent_output_audit_summary": audit_summary,
         "final_path": lean_final_path.display().to_string(),
     })
+}
+
+/// Set a Lean role's per-call CLI timeout via its role env var (`GROKRXIV_<ROLE>_TIMEOUT_SECS`),
+/// which `cli_timeout_for` honors ABOVE the global `AGENTHERO_CLI_TIMEOUT_SECS` floor — so the
+/// review-loop's 1800s floor (for slow specialists) doesn't stretch a Lean author/review/fix
+/// call to 30 min. Only sets it if not already provided by the operator.
+fn set_lean_role_timeout_env(role: &str, secs: u64) {
+    let var = format!(
+        "GROKRXIV_{}_TIMEOUT_SECS",
+        crate::runtime_config::role_env_suffix(role)
+    );
+    if std::env::var(&var).is_err() {
+        std::env::set_var(var, secs.to_string());
+    }
+}
+
+/// Per-target outcome from `run_one_lean_target`, merged back (in original index order) into the
+/// aggregate by `run_per_theorem_lean_loop`.
+struct LeanTargetResult {
+    index: usize,
+    lean_declaration: String,
+    run: serde_json::Value,
+    proved: bool,
+    verified_code: Option<String>,
+    combined_entry: String,
+    attempts_with_decl: Vec<serde_json::Value>,
+    decl_record: serde_json::Value,
+    duration_ms: u64,
+    outcome: &'static str,
+    retried: bool,
+}
+
+/// Author -> `lake env lean` -> review/fix one theorem in its own isolated harness, bounded by a
+/// `target_budget` watchdog. If the whole pipeline wedges past the budget, the in-flight future
+/// is dropped (its CLI subprocess is killed by its own per-call timeout) and the target is
+/// retried ONCE; a second wedge yields a `watchdog_timeout` failure instead of stalling the run.
+#[allow(clippy::too_many_arguments)]
+async fn run_one_lean_target(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    lean_task: &ReviewFixCodeTask,
+    index: usize,
+    total: usize,
+    obligation: &serde_json::Value,
+    requirements: &serde_json::Value,
+    proof_obligations: &serde_json::Value,
+    lean_targets: &serde_json::Value,
+    semantic_ir: &serde_json::Value,
+    semantic_model: &serde_json::Value,
+    lean_dir: &Path,
+    debug_output: bool,
+    target_budget: std::time::Duration,
+) -> LeanTargetResult {
+    let started = std::time::Instant::now();
+    let lean_declaration = obligation
+        .get("lean_declaration")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("theorem_{index}"));
+    let obligation_id = obligation
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("obligation_{index}"));
+    let statement = obligation
+        .get("statement")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
+    let obligation_dir = lean_dir
+        .join("targets")
+        .join(lean_identifier_subdir(&lean_declaration, index));
+    let obligation_src_dir = obligation_dir.join("GrokRxiv");
+    if let Err(err) = tokio::fs::create_dir_all(&obligation_src_dir).await {
+        let failed = serde_json::json!({
+            "status": "fail",
+            "lean_declaration": lean_declaration,
+            "obligation_id": obligation_id,
+            "attempts": [{
+                "attempt": 0,
+                "status": "fail",
+                "error": format!("create obligation dir {}: {err}", obligation_src_dir.display()),
+            }],
+        });
+        return LeanTargetResult {
+            index,
+            lean_declaration: lean_declaration.clone(),
+            run: failed.clone(),
+            proved: false,
+            verified_code: None,
+            combined_entry: format!(
+                "-- ===== {lean_declaration} (DIR_ERROR) =====\n/- could not create target dir -/"
+            ),
+            attempts_with_decl: Vec::new(),
+            decl_record: failed,
+            duration_ms: started.elapsed().as_millis() as u64,
+            outcome: "dir_error",
+            retried: false,
+        };
+    }
+    let obligation_final_path = obligation_src_dir.join("Proofs.lean");
+
+    if debug_output {
+        cli_status::emit_detail(
+            lean_task.author_role,
+            cli_status::StatusMark::Run,
+            &format!(
+                "per-theorem lean target {}/{} decl={lean_declaration}",
+                index + 1,
+                total
+            ),
+        );
+    }
+
+    let base_artifact = serde_json::json!({
+        "review_id": review_id,
+        "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
+        "requirements": requirements,
+        "obligation": obligation,
+        "lean_declaration": lean_declaration,
+        "paper_theorem": statement,
+        "proof_obligations": proof_obligations,
+        "lean_targets": lean_targets,
+        "semantic_ir": semantic_ir,
+        "semantic_model": semantic_model,
+    });
+
+    let mut retried = false;
+    let mut outcome = "completed";
+    let run = match tokio::time::timeout(
+        target_budget,
+        run_review_fix_code_loop(
+            state,
+            paper_id,
+            review_id,
+            lean_task.clone(),
+            base_artifact.clone(),
+            &obligation_dir,
+            &obligation_final_path,
+            debug_output,
+        ),
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(_) => {
+            retried = true;
+            cli_status::emit_detail(
+                lean_task.author_role,
+                cli_status::StatusMark::Warn,
+                &format!(
+                    "lean target {lean_declaration} exceeded {}s budget; killing + retrying once",
+                    target_budget.as_secs()
+                ),
+            );
+            match tokio::time::timeout(
+                target_budget,
+                run_review_fix_code_loop(
+                    state,
+                    paper_id,
+                    review_id,
+                    lean_task.clone(),
+                    base_artifact,
+                    &obligation_dir,
+                    &obligation_final_path,
+                    debug_output,
+                ),
+            )
+            .await
+            {
+                Ok(run) => {
+                    outcome = "completed_after_retry";
+                    run
+                }
+                Err(_) => {
+                    outcome = "watchdog_timeout";
+                    serde_json::json!({
+                        "status": "fail",
+                        "reason": "watchdog_timeout",
+                        "lean_declaration": lean_declaration,
+                        "attempts": [],
+                    })
+                }
+            }
+        }
+    };
+
+    let run_status = run
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fail")
+        .to_string();
+    let proved_here = run_status == "pass";
+
+    // The kernel-verified Lean is exactly the contents of the proved file; only record on pass.
+    let verified_code = if proved_here {
+        tokio::fs::read_to_string(&obligation_final_path).await.ok()
+    } else {
+        None
+    };
+    let combined_entry = if let Some(code) = verified_code.as_ref() {
+        format!(
+            "-- ===== {lean_declaration} (PROVED) =====\n{}",
+            code.trim_end()
+        )
+    } else {
+        let header = format!("/- {lean_declaration}: status={run_status} (not kernel-proved) -/");
+        let body = tokio::fs::read_to_string(&obligation_final_path)
+            .await
+            .unwrap_or_default();
+        format!(
+            "-- ===== {lean_declaration} ({}) =====\n{header}\n{}",
+            run_status.to_ascii_uppercase(),
+            body.trim_end()
+        )
+    };
+
+    let mut attempts_with_decl = Vec::new();
+    if let Some(attempts) = run.get("attempts").and_then(|v| v.as_array()) {
+        for attempt in attempts {
+            let mut attempt = attempt.clone();
+            if let Some(object) = attempt.as_object_mut() {
+                object.insert(
+                    "lean_declaration".to_string(),
+                    serde_json::json!(lean_declaration),
+                );
+            }
+            attempts_with_decl.push(attempt);
+        }
+    }
+
+    let decl_record = serde_json::json!({
+        "status": run_status,
+        "lean_declaration": lean_declaration,
+        "obligation_id": obligation_id,
+        "paper_theorem": statement,
+        "verified_statement": verified_code,
+        "final_path": obligation_final_path.display().to_string(),
+        "attempts": run.get("attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
+    });
+
+    LeanTargetResult {
+        index,
+        lean_declaration,
+        run,
+        proved: proved_here,
+        verified_code,
+        combined_entry,
+        attempts_with_decl,
+        decl_record,
+        duration_ms: started.elapsed().as_millis() as u64,
+        outcome,
+        retried,
+    }
 }
 
 /// Sanitize a Lean declaration name into a stable, filesystem-safe subdir component, with the
@@ -7242,17 +7449,75 @@ async fn prepare_review_loop_project_harness(
     workdir: &Path,
 ) -> anyhow::Result<()> {
     if task.target_id == "lean" {
-        tokio::fs::write(
-            workdir.join("lakefile.lean"),
-            "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\nlean_lib GrokRxiv\n",
-        )
-        .await
-        .with_context(|| format!("write Lean lakefile in {}", workdir.display()))?;
-        tokio::fs::write(workdir.join("lean-toolchain"), "leanprover/lean4:v4.30.0\n")
+        // The LLM authors Lean that `import Mathlib`. For `lake env lean` to actually
+        // kernel-check it, the project must require a BUILT Mathlib — otherwise every check
+        // dies on `unknown module prefix 'Mathlib'` and no real proof can ever verify. Point
+        // the lakefile at a shared, prebuilt Mathlib package (downloaded once via
+        // `lake exe cache get`) so checks reuse its oleans instead of rebuilding from source.
+        let (lakefile, toolchain) = match resolve_shared_mathlib_dir() {
+            Some(mathlib_dir) => (
+                format!(
+                    "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\n\
+                     require mathlib from \"{}\"\n\nlean_lib GrokRxiv\n",
+                    mathlib_dir.display()
+                ),
+                shared_mathlib_toolchain(&mathlib_dir)
+                    .unwrap_or_else(|| "leanprover/lean4:v4.30.0\n".to_string()),
+            ),
+            None => {
+                tracing::warn!(
+                    "no shared Mathlib found (set GROKRXIV_LEAN_MATHLIB_DIR to a prebuilt \
+                     mathlib package); `import Mathlib` kernel checks will fail until it is set"
+                );
+                (
+                    "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\nlean_lib GrokRxiv\n"
+                        .to_string(),
+                    "leanprover/lean4:v4.30.0\n".to_string(),
+                )
+            }
+        };
+        tokio::fs::write(workdir.join("lakefile.lean"), lakefile)
+            .await
+            .with_context(|| format!("write Lean lakefile in {}", workdir.display()))?;
+        tokio::fs::write(workdir.join("lean-toolchain"), toolchain)
             .await
             .with_context(|| format!("write Lean toolchain in {}", workdir.display()))?;
     }
     Ok(())
+}
+
+/// Resolve a shared, prebuilt Mathlib package directory (a mathlib source root whose
+/// `.lake/build/lib` already holds oleans). Honors `GROKRXIV_LEAN_MATHLIB_DIR`, else
+/// probes the in-repo eval cache at `evals/lean/.lake/packages/mathlib`.
+fn resolve_shared_mathlib_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("GROKRXIV_LEAN_MATHLIB_DIR") {
+        let dir = std::path::PathBuf::from(dir.trim());
+        if dir.join("lakefile.lean").is_file() || dir.join("lakefile.toml").is_file() {
+            return Some(dir);
+        }
+    }
+    let mut base = std::env::current_dir().ok()?;
+    for _ in 0..6 {
+        let candidate = base.join("evals/lean/.lake/packages/mathlib");
+        if candidate.join("lakefile.lean").is_file() || candidate.join("lakefile.toml").is_file() {
+            return Some(candidate);
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Use the shared Mathlib's own `lean-toolchain` so the per-target project's toolchain
+/// matches the prebuilt oleans (a mismatch forces a full Mathlib source rebuild).
+fn shared_mathlib_toolchain(mathlib_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(mathlib_dir.join("lean-toolchain")).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(format!("{trimmed}\n"))
 }
 
 fn review_loop_harness_branch(review_id: Uuid, target_id: &str) -> String {
@@ -7970,12 +8235,12 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
     let semantic_adequacy =
         grokrxiv_review_loop::build_semantic_adequacy(&semantic_ir, &theorem_map);
     write_loop_json(&artifact_dir.join("semantic_adequacy.json"), &semantic_adequacy).await?;
-    let semantic_adequacy_skip = semantic_adequacy
-        .get("skip_reason")
-        .and_then(|v| v.as_str())
-        .map(|r| matches!(r, "no_math_targets" | "no_proof_ready_math_targets"))
-        .unwrap_or(false);
-    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass" || semantic_adequacy_skip;
+    // A `skipped` adequacy check (Lean not run / no formalizable targets) is non-blocking
+    // and must never render as a faithfulness FAILURE.
+    let semantic_adequacy_pass = matches!(
+        semantic_adequacy["status"].as_str(),
+        Some("pass" | "skipped")
+    );
     record_review_loop_node(
         pool,
         review_id,
@@ -8028,11 +8293,25 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
     if let Err(err) = super::supervisor::render_to_disk(&state, review_id).await {
         cli_status::emit(format!("formalize {review_id}: re-render skipped: {err:#}"));
     }
-    match open_review_pr_for_gate(&state, review_id, false, false).await {
-        Ok(_) => cli_status::emit(format!(
-            "formalize {review_id}: PR updated with formal-verification evidence"
+    // Refresh the gate-feedback COMMENT (idempotent — does not touch committed files).
+    if let Err(err) = open_review_pr_for_gate(&state, review_id, false, false).await {
+        cli_status::emit(format!("formalize {review_id}: PR comment update skipped: {err:#}"));
+    }
+    // The async formalize authored the real Lean AFTER the review PR was opened (with a
+    // placeholder Proofs.lean), and the PR-open path is idempotent on an existing PR, so it
+    // never re-commits files. Explicitly stack a NEW commit carrying the authored Lean onto
+    // the existing PR branch so the proofs actually land in git.
+    match commit_lean_files_to_existing_pr(&state, review_id).await {
+        Ok(Some(sha)) => cli_status::emit(format!(
+            "formalize {review_id}: committed Lean to PR (commit {})",
+            sha.get(0..8).unwrap_or(&sha)
         )),
-        Err(err) => cli_status::emit(format!("formalize {review_id}: PR update skipped: {err:#}")),
+        Ok(None) => cli_status::emit(format!(
+            "formalize {review_id}: no open PR or no Lean files to commit"
+        )),
+        Err(err) => {
+            cli_status::emit(format!("formalize {review_id}: Lean PR commit skipped: {err:#}"))
+        }
     }
     cli_status::emit(format!(
         "formalize {review_id}: done (lean status={})",
@@ -8444,12 +8723,12 @@ async fn run_review_loop_for_review(
         &semantic_adequacy,
     )
     .await?;
-    let semantic_adequacy_skip = semantic_adequacy
-        .get("skip_reason")
-        .and_then(|value| value.as_str())
-        .map(|reason| matches!(reason, "no_math_targets" | "no_proof_ready_math_targets"))
-        .unwrap_or(false);
-    let semantic_adequacy_pass = semantic_adequacy["status"] == "pass" || semantic_adequacy_skip;
+    // A `skipped` adequacy check (Lean not run / no formalizable targets) is non-blocking
+    // and must never render as a faithfulness FAILURE.
+    let semantic_adequacy_pass = matches!(
+        semantic_adequacy["status"].as_str(),
+        Some("pass" | "skipped")
+    );
     record_review_loop_node(
         pool,
         review_id,
@@ -9800,6 +10079,70 @@ async fn append_review_loop_pr_files(
             }
         }
     }
+
+    // Push the LLM-authored Lean SOURCE itself (per-target `GrokRxiv/Proofs.lean`,
+    // lakefiles, toolchains) plus small per-target verdict JSONs, so the actual Lean code
+    // lands in the review PR/repo — not just the summary JSONs above. Excludes the huge
+    // `.lake` build tree (oleans) and oversized agent-IO transcripts.
+    let lean_dir = dir.join("lean");
+    if lean_dir.is_dir() {
+        let mut lean_files: Vec<(String, Vec<u8>)> = Vec::new();
+        collect_lean_pr_source_files(&lean_dir, &lean_dir, &mut lean_files);
+        for (rel, bytes) in lean_files {
+            files.push((format!("{repo_prefix}/review_loop/lean/{rel}"), bytes));
+        }
+    }
+}
+
+/// Recursively collect the Lean SOURCE artifacts under `lean/` that belong in the review
+/// PR: every `*.lean` file (the authored proofs), `lean-toolchain`, and small verdict
+/// JSONs (`compile.json`, `results.json`, `theorem_map.json`, `verification_report.json`).
+/// Skips the `.lake` build tree, `.git`, and any oversized file (giant agent-IO
+/// transcripts). `*.lean` files are always included regardless of size.
+fn collect_lean_pr_source_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    const MAX_AUX_BYTES: u64 = 256 * 1024;
+    const VERDICT_JSONS: [&str; 5] = [
+        "compile.json",
+        "results.json",
+        "theorem_map.json",
+        "verification_report.json",
+        "semantic_validation.json",
+    ];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            // Never descend into the multi-GB Mathlib build tree or git metadata.
+            if name == ".lake" || name == ".git" {
+                continue;
+            }
+            collect_lean_pr_source_files(root, &path, out);
+            continue;
+        }
+        let is_lean_source = name.ends_with(".lean") || name == "lean-toolchain";
+        let is_verdict = VERDICT_JSONS.contains(&name.as_str());
+        if !is_lean_source && !is_verdict {
+            continue;
+        }
+        if !is_lean_source {
+            // Cap auxiliary JSONs so a giant transcript can't bloat the PR; `.lean` is uncapped.
+            let too_big = std::fs::metadata(&path)
+                .map(|m| m.len() > MAX_AUX_BYTES)
+                .unwrap_or(true);
+            if too_big {
+                continue;
+            }
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        if let Ok(bytes) = std::fs::read(&path) {
+            out.push((rel.to_string_lossy().replace('\\', "/"), bytes));
+        }
+    }
 }
 
 async fn load_publication_gate_context(
@@ -10010,6 +10353,7 @@ impl CitationEvidenceItem {
             "malformed" => "malformed identifier",
             "transient_unknown" => "temporarily unknown",
             "unverified" => "needs verification",
+            "insufficient_metadata" => "citation metadata not extracted",
             "retracted" => "retracted",
             "resolved" => "verified",
             _ => "needs review",
@@ -10305,9 +10649,12 @@ async fn citation_verifier_summary(
     let evidence = entry_items
         .into_iter()
         .filter(|entry| {
+            // `transient_unknown` is OUR transient infra failure (e.g. a provider HTTP 429),
+            // not a citation defect — it stays in the `unknown` count for transparency but is
+            // never enumerated as a citation "needing review".
             matches!(
                 entry.effective_status(),
-                "unresolved" | "retracted" | "unverified" | "transient_unknown" | "malformed"
+                "unresolved" | "retracted" | "unverified" | "malformed"
             )
         })
         .take(8)
@@ -10362,6 +10709,83 @@ async fn open_review_pr_for_gate(
         kind,
         external_actions_enabled: true,
     })
+}
+
+/// Commit the authored Lean files to the review's EXISTING open PR as a new commit. The async
+/// `formalize` job runs AFTER the review PR was opened (with a placeholder `Proofs.lean`), and
+/// the PR-open path (`request_revisions_impl`/`open_publication_pr_impl`) is idempotent on an
+/// existing PR — it only refreshes the gate comment — so without this the real proofs would
+/// never reach git. Returns the new commit SHA, or `None` when there is no open PR / no files.
+#[cfg(feature = "grokrxiv-publisher")]
+async fn commit_lean_files_to_existing_pr(
+    state: &super::AppState,
+    review_id: Uuid,
+) -> anyhow::Result<Option<String>> {
+    use grokrxiv_publisher::GithubPublisher;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
+    let row: (String, Option<String>, String, Option<String>, Option<String>) = sqlx::query_as(
+        "select p.arxiv_id, p.field, coalesce(r.visibility, 'public'), r.github_pr_url, p.source_id \
+         from reviews r join papers p on p.id = r.paper_id where r.id = $1",
+    )
+    .bind(review_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("review not found: {e}"))?;
+    let (arxiv_id, field, visibility, existing_pr_url, source_id) = row;
+    let Some(pr_url) = real_existing_pr_url(existing_pr_url.as_deref()) else {
+        return Ok(None);
+    };
+    let Some(pr_number) = grokrxiv_publisher::parse_pr_number(pr_url) else {
+        return Ok(None);
+    };
+    let artifact_id = crate::source_display::source_artifact_id(source_id.as_deref(), &arxiv_id);
+    let now = chrono::Utc::now();
+    let repo_prefix = format!(
+        "reviews/{year}/{month:02}/{field}/{artifact_id}",
+        year = now.format("%Y"),
+        month = now.format("%m").to_string().parse::<u32>().unwrap_or(1),
+        field = field.as_deref().unwrap_or("cs"),
+        artifact_id = artifact_id,
+    );
+    let dir_local = crate::artifacts::review_artifact_dir(review_id);
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in ["review.html", "review.md", "review.tex", "bundle.zip"] {
+        if let Ok(bytes) = tokio::fs::read(dir_local.join(name)).await {
+            files.push((format!("{repo_prefix}/{name}"), bytes));
+        }
+    }
+    append_review_loop_pr_files(review_id, &repo_prefix, &mut files).await;
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| anyhow::anyhow!("GITHUB_TOKEN not set; required to commit Lean to PR"))?;
+    let (owner, repo) = review_repo_for_visibility(&visibility);
+    let client = octocrab::OctocrabBuilder::new()
+        .personal_token(token)
+        .build()
+        .map_err(|e| anyhow::anyhow!("octocrab build: {e}"))?;
+    let publisher = GithubPublisher::new(client, owner, repo);
+    let sha = publisher
+        .add_commit_to_pr(
+            pr_number,
+            "Add Lean formalization (experimental, advisory)",
+            files,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("add_commit_to_pr: {e}"))?;
+    Ok(if sha.is_empty() { None } else { Some(sha) })
+}
+
+#[cfg(not(feature = "grokrxiv-publisher"))]
+async fn commit_lean_files_to_existing_pr(
+    _state: &super::AppState,
+    _review_id: Uuid,
+) -> anyhow::Result<Option<String>> {
+    Ok(None)
 }
 
 /// Enqueue an asynchronous `grokrxiv formalize <review_id>` job on the platform `app_runs`
