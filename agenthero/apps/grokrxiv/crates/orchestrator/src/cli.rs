@@ -6704,6 +6704,135 @@ async fn run_review_fix_code_loop(
     })
 }
 
+/// Resolve a theorem obligation's paper-level dependencies into the referenced
+/// definitions/lemmas/theorems so the Lean author can formalize AGAINST them instead of restating
+/// a referenced object as an opaque `True`. The dependency edges live in the paper's
+/// `theorem_graph` (`paper_math_sources.json` nodes): a theorem's "uses" edges are attached by the
+/// extractor to its `proof:<id>` node's `depends_on`, NOT to the theorem node itself (whose
+/// `depends_on` is usually empty). So for obligation `T` we union `T.depends_on` with the
+/// `depends_on` of every `proof:<T>` node, then resolve each dependency id against the graph nodes
+/// (`{type, statement, source_tex}`). Deduped; self/unresolved/empty dropped; capped so the author
+/// prompt never blows up — the drop is logged, never silent.
+fn resolve_obligation_dependencies(
+    obligation: &serde_json::Value,
+    theorem_nodes: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    const MAX_DEPENDENCIES: usize = 12;
+    if theorem_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    fn node_id(n: &serde_json::Value) -> Option<&str> {
+        n.get("id")
+            .or_else(|| n.get("label"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+    fn node_type(n: &serde_json::Value) -> String {
+        n.get("type")
+            .or_else(|| n.get("kind"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("dependency")
+            .to_ascii_lowercase()
+    }
+    fn push_deps(node: &serde_json::Value, out: &mut Vec<String>) {
+        if let Some(arr) = node.get("depends_on").and_then(|v| v.as_array()) {
+            for d in arr {
+                if let Some(s) = d.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+
+    let Some(tid) = obligation
+        .get("source_claim_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    // Index nodes by id (first wins).
+    let mut by_id: std::collections::HashMap<&str, &serde_json::Value> =
+        std::collections::HashMap::new();
+    for n in theorem_nodes {
+        if let Some(id) = node_id(n) {
+            by_id.entry(id).or_insert(n);
+        }
+    }
+
+    // Dependency ids = the theorem node's own `depends_on` UNION the `depends_on` of every
+    // `proof:<tid>` node (the extractor records the "uses" edges on the proof, not the theorem).
+    let mut dep_ids: Vec<String> = Vec::new();
+    if let Some(node) = by_id.get(tid) {
+        push_deps(node, &mut dep_ids);
+    }
+    for n in theorem_nodes {
+        if node_type(n) != "proof" {
+            continue;
+        }
+        let Some(id) = node_id(n) else { continue };
+        let target = id
+            .strip_prefix("proof:")
+            .or_else(|| id.strip_prefix("proof_"))
+            .or_else(|| id.strip_prefix("proof-"))
+            .unwrap_or(id);
+        if target == tid {
+            push_deps(n, &mut dep_ids);
+        }
+    }
+
+    // Resolve against the graph nodes; exclude self; dedup; drop unresolved/empty; cap (logged).
+    let mut resolved: Vec<serde_json::Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in &dep_ids {
+        if id == tid || !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(node) = by_id.get(id.as_str()) else {
+            continue;
+        };
+        let statement = node
+            .get("statement")
+            .or_else(|| node.get("statement_preview"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if statement.is_empty() {
+            continue;
+        }
+        let mut record = serde_json::Map::new();
+        record.insert("id".to_string(), serde_json::json!(id));
+        record.insert("type".to_string(), serde_json::json!(node_type(node)));
+        record.insert("statement".to_string(), serde_json::json!(statement));
+        if let Some(tex) = node
+            .get("source_tex")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            record.insert("source_tex".to_string(), serde_json::json!(tex));
+        }
+        resolved.push(serde_json::Value::Object(record));
+    }
+    if resolved.len() > MAX_DEPENDENCIES {
+        let dropped = resolved.len() - MAX_DEPENDENCIES;
+        cli_status::emit_detail(
+            "lean_proof_author",
+            cli_status::StatusMark::Warn,
+            &format!(
+                "dependency context capped at {MAX_DEPENDENCIES}; {dropped} additional dependency statement(s) omitted from the author prompt"
+            ),
+        );
+        resolved.truncate(MAX_DEPENDENCIES);
+    }
+    resolved
+}
+
 /// Run the Lean author -> `lake env lean` -> fix cycle ONE theorem at a time and aggregate
 /// the per-obligation runs into a single `lean_results` blob that downstream consumers
 /// (`build_theorem_map` via `lean_entry_status`, `annotate_lean_review_fix_code_results`)
@@ -6724,6 +6853,7 @@ async fn run_per_theorem_lean_loop(
     lean_targets: &serde_json::Value,
     semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
+    theorem_nodes: &[serde_json::Value],
     lean_dir: &Path,
     lean_final_path: &Path,
     debug_output: bool,
@@ -6746,6 +6876,7 @@ async fn run_per_theorem_lean_loop(
         "Then prove the statement against the Lean kernel. Do NOT use sorry, admit, or axiom. A proof you cannot complete honestly MUST fail review — never fabricate a proof and never prove a trivially-true strawman in place of the paper's theorem.",
         "Declare the theorem with its exact `lean_declaration` name; do not alter the declaration name.",
         "Do not prove claim counts, review statuses, semantic labels, or metadata in place of the mathematical theorem target.",
+        "If this task input includes a `dependencies` array, those are the paper definitions/lemmas/constructions your theorem references (resolved from the paper's dependency graph). Formalize your statement faithfully against their structure and hypotheses — introduce or import the structures they describe; NEVER restate a referenced object as an opaque `True`, an empty placeholder, or a vacuously-true strawman.",
         "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
         "If the theorem genuinely cannot be faithfully formalized, state your best faithful approximation and let the proof fail rather than masking the gap."
     ]);
@@ -6804,6 +6935,7 @@ async fn run_per_theorem_lean_loop(
                     lean_targets,
                     semantic_ir,
                     semantic_model,
+                    theorem_nodes,
                     lean_dir,
                     debug_output,
                     target_budget,
@@ -6948,6 +7080,7 @@ async fn run_one_lean_target(
     lean_targets: &serde_json::Value,
     semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
+    theorem_nodes: &[serde_json::Value],
     lean_dir: &Path,
     debug_output: bool,
     target_budget: std::time::Duration,
@@ -7013,6 +7146,11 @@ async fn run_one_lean_target(
         );
     }
 
+    // Dependency context (A1): the paper definitions/lemmas/constructions this theorem references,
+    // resolved from semantic_ir so the author formalizes against them rather than restating a
+    // referenced object as an opaque `True`.
+    let dependencies = resolve_obligation_dependencies(obligation, theorem_nodes);
+
     let base_artifact = serde_json::json!({
         "review_id": review_id,
         "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
@@ -7020,6 +7158,7 @@ async fn run_one_lean_target(
         "obligation": obligation,
         "lean_declaration": lean_declaration,
         "paper_theorem": statement,
+        "dependencies": dependencies,
         "proof_obligations": proof_obligations,
         "lean_targets": lean_targets,
         "semantic_ir": semantic_ir,
@@ -8111,6 +8250,16 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
     let semantic_model = read_json("semantic_model.json");
     let proof_obligations = read_json("proof_obligations.json");
     let lean_targets = read_json("lean_targets.json");
+    // Paper dependency graph (A1): the extractor records each theorem's "uses" edges on its
+    // `proof:<id>` node here, which `resolve_obligation_dependencies` mines to give the Lean
+    // author the referenced definitions/lemmas instead of an isolated statement.
+    let paper_math_sources = read_json("paper_math_sources.json");
+    let theorem_nodes: Vec<serde_json::Value> = paper_math_sources
+        .get("theorem_graph")
+        .and_then(|tg| tg.get("nodes").or_else(|| tg.get("theorem_graph")))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     if proof_obligations.is_null() {
         anyhow::bail!(
             "formalize {review_id}: no review_loop/proof_obligations.json — run the review first"
@@ -8156,6 +8305,7 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
             &lean_targets,
             &semantic_ir,
             &semantic_model,
+            &theorem_nodes,
             &lean_dir,
             &lean_final_path,
             debug_output,
@@ -13429,6 +13579,81 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_obligation_dependencies_unions_proof_node_edges() {
+        // Real theorem_graph shape: the theorem's "uses" edges live on its `proof:<id>` node,
+        // while the theorem node itself carries one direct dependency. Union of both, resolved
+        // against the graph nodes; unresolved ("missing") and self are dropped.
+        let nodes = vec![
+            serde_json::json!({
+                "id": "thm:1.7", "type": "theorem",
+                "statement": "Theorem 1.7: all cycles are realised",
+                "depends_on": ["def:1.3"]
+            }),
+            serde_json::json!({
+                "id": "proof:thm:1.7", "type": "proof",
+                "statement": "Proof of Theorem 1.7 ...",
+                "depends_on": ["thm:1.5", "thm:1.7", "missing", "def:1.3"]
+            }),
+            serde_json::json!({
+                "id": "thm:1.5", "type": "theorem",
+                "statement": "Theorem 1.5 statement",
+                "source_tex": "\\begin{theorem}1.5\\end{theorem}"
+            }),
+            serde_json::json!({
+                "id": "def:1.3", "type": "definition",
+                "statement": "Definition 1.3 statement"
+            }),
+        ];
+        let obligation = serde_json::json!({
+            "kind": "theorem_formalization",
+            "source_claim_id": "thm:1.7",
+            "lean_declaration": "thm_1_7"
+        });
+
+        let deps = resolve_obligation_dependencies(&obligation, &nodes);
+        // def:1.3 (theorem node's own dep, first), thm:1.5 (from proof node); missing dropped,
+        // self (thm:1.7) dropped, def:1.3 deduped across both sources.
+        assert_eq!(deps.len(), 2, "expected def:1.3 + thm:1.5, got {deps:?}");
+        assert_eq!(deps[0]["id"], "def:1.3");
+        assert_eq!(deps[0]["type"], "definition");
+        assert_eq!(deps[0]["statement"], "Definition 1.3 statement");
+        assert!(deps[0].get("source_tex").is_none());
+        assert_eq!(deps[1]["id"], "thm:1.5");
+        assert_eq!(deps[1]["type"], "theorem");
+        assert_eq!(deps[1]["source_tex"], "\\begin{theorem}1.5\\end{theorem}");
+
+        // No graph nodes -> empty context (older reviews / missing paper_math_sources).
+        assert!(resolve_obligation_dependencies(&obligation, &[]).is_empty());
+        // A target with no matching node/proof and no deps -> empty.
+        let orphan = serde_json::json!({"source_claim_id": "thm:9.9", "lean_declaration": "x"});
+        assert!(resolve_obligation_dependencies(&orphan, &nodes).is_empty());
+    }
+
+    #[test]
+    fn resolve_obligation_dependencies_caps_at_twelve() {
+        let mut dep_ids = Vec::new();
+        let mut nodes = vec![serde_json::json!({
+            "id": "thm:big", "type": "theorem", "statement": "Big theorem", "depends_on": []
+        })];
+        for i in 0..20 {
+            let id = format!("def:{i}");
+            dep_ids.push(serde_json::json!(id));
+            nodes.push(serde_json::json!({
+                "id": id, "type": "definition", "statement": format!("Definition {i}")
+            }));
+        }
+        nodes.push(serde_json::json!({
+            "id": "proof:thm:big", "type": "proof", "statement": "Proof", "depends_on": dep_ids
+        }));
+        let obligation =
+            serde_json::json!({"source_claim_id": "thm:big", "lean_declaration": "big"});
+        let deps = resolve_obligation_dependencies(&obligation, &nodes);
+        assert_eq!(deps.len(), 12, "dependency context must be capped at 12");
+        assert_eq!(deps[0]["id"], "def:0");
+        assert_eq!(deps[11]["id"], "def:11");
+    }
 
     struct EnvVarGuard {
         key: &'static str,
