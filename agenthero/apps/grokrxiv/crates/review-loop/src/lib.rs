@@ -320,6 +320,7 @@ pub fn build_semantic_ir_from_paper_math(
             "extracted_equations_are_supporting_context": true
         },
         "paper_math_sources": paper_math_sources.clone(),
+        "source_inventory": paper_math_sources.get("theorem_inventory").cloned().unwrap_or_else(|| json!(null)),
         "definitions": definitions,
         "assumptions": assumptions,
         "supporting_equations": supporting_equations,
@@ -354,19 +355,18 @@ pub fn build_proof_obligations(
         .unwrap_or_default();
     let mut obligations = Vec::new();
     let mut skipped_targets = Vec::new();
-    // The LLM authors + proves one theorem at a time (each target = an LLM call + a Lean
-    // kernel compile), so cap targets per run; the rest are deferred (logged, never
-    // silently dropped). Operators raise GROKRXIV_LEAN_MAX_TARGETS.
+    // The default best-effort mode attempts every theorem-level target. Operators may set
+    // a positive cap for an explicit budgeted run; capped targets are reported, never
+    // silently dropped.
     let max_targets = std::env::var("GROKRXIV_LEAN_MAX_TARGETS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(6);
-    for theorem in theorem_candidates {
+        .filter(|n| *n > 0);
+    for theorem in &theorem_candidates {
         if theorem.get("formalization_class").and_then(|v| v.as_str()) != Some("formal_math") {
             continue;
         }
-        if let Some(reason) = theorem_candidate_llm_author_issue(&theorem) {
+        if let Some(reason) = theorem_candidate_llm_author_issue(theorem) {
             skipped_targets.push(json!({
                 "id": theorem.get("id").cloned().unwrap_or_else(|| json!("theorem")),
                 "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
@@ -376,7 +376,10 @@ pub fn build_proof_obligations(
             }));
             continue;
         }
-        if obligations.len() >= max_targets {
+        if max_targets
+            .map(|max_targets| obligations.len() >= max_targets)
+            .unwrap_or(false)
+        {
             skipped_targets.push(json!({
                 "id": theorem.get("id").cloned().unwrap_or_else(|| json!("theorem")),
                 "source_claim_id": theorem.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
@@ -396,7 +399,7 @@ pub fn build_proof_obligations(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}_formalized", lean_identifier(theorem_id)));
-        let deterministic_ready_reason = theorem_candidate_proof_target_issue(&theorem);
+        let deterministic_ready_reason = theorem_candidate_proof_target_issue(theorem);
         let theorem_ir = theorem
             .get("theorem_ir")
             .cloned()
@@ -453,6 +456,9 @@ pub fn build_proof_obligations(
             "lean_attempt_status": lean_attempt_status,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "message": message,
+            "candidate_count": theorem_candidates.len(),
+            "selected_count": 0usize,
+            "omitted_count": skipped_targets.len(),
             "obligations": [],
             "skipped_targets": skipped_targets,
         });
@@ -464,6 +470,10 @@ pub fn build_proof_obligations(
         "haskell_status": haskell_status,
         "status": "ready",
         "lean_attempt_status": "pending",
+        "candidate_count": theorem_candidates.len(),
+        "selected_count": obligations.len(),
+        "omitted_count": skipped_targets.len(),
+        "explicit_target_cap": max_targets,
         "obligations": obligations,
         "skipped_targets": skipped_targets,
     })
@@ -503,6 +513,9 @@ pub fn build_lean_targets(proof_obligations: &serde_json::Value) -> serde_json::
             "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_found")),
             "lean_attempt_status": lean_attempt_status,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
+            "candidate_count": proof_obligations.get("candidate_count").cloned().unwrap_or_else(|| json!(0)),
+            "selected_count": 0usize,
+            "omitted_count": proof_obligations.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
             "targets": [],
         });
     }
@@ -526,9 +539,14 @@ pub fn build_lean_targets(proof_obligations: &serde_json::Value) -> serde_json::
             })
         })
         .collect::<Vec<_>>();
+    let selected_count = targets.len();
     json!({
         "schema_version": "1.0.0",
         "source": "review_loop/proof_obligations.json",
+        "candidate_count": proof_obligations.get("candidate_count").cloned().unwrap_or_else(|| json!(selected_count)),
+        "selected_count": selected_count,
+        "omitted_count": proof_obligations.get("omitted_count").cloned().unwrap_or_else(|| json!(0)),
+        "skipped_targets": proof_obligations.get("skipped_targets").cloned().unwrap_or_else(|| json!([])),
         "targets": targets,
     })
 }
@@ -2400,6 +2418,55 @@ publisherReadyLowerBound = claimCount == 43
         assert_eq!(obligation_items.len(), 1);
         assert_eq!(obligation_items[0]["kind"], "theorem_formalization");
         assert_eq!(obligation_items[0]["lean_declaration"], "add_zero_claim");
+    }
+
+    #[test]
+    fn proof_obligations_default_attempts_all_source_backed_theorem_targets() {
+        let prior = std::env::var("GROKRXIV_LEAN_MAX_TARGETS").ok();
+        std::env::remove_var("GROKRXIV_LEAN_MAX_TARGETS");
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let theorem_candidates = (0..8)
+            .map(|index| {
+                json!({
+                    "id": format!("theorem_full_{index}"),
+                    "kind": "theorem",
+                    "formalization_class": "formal_math",
+                    "statement": format!("Source-backed theorem {index}."),
+                    "source_claim_id": format!("thm:{index}"),
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": format!("thm:{index}")},
+                    "typed_transcription": {"status": "transcribed"},
+                    "theorem_ir": {
+                        "theorem_name": format!("thm_full_{index}"),
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "uninterpreted_predicate",
+                            "name": format!("TheoremFull{index}"),
+                            "args": []
+                        }
+                    },
+                    "formalization_target": {
+                        "lean_declaration": format!("thm_full_{index}"),
+                        "expected_shape": "theorem"
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": theorem_candidates,
+        });
+
+        let obligations =
+            build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
+
+        if let Some(value) = prior {
+            std::env::set_var("GROKRXIV_LEAN_MAX_TARGETS", value);
+        }
+        assert_eq!(obligations["candidate_count"], 8);
+        assert_eq!(obligations["selected_count"], 8);
+        assert_eq!(obligations["omitted_count"], 0);
+        assert_eq!(obligations["obligations"].as_array().unwrap().len(), 8);
     }
 
     #[test]

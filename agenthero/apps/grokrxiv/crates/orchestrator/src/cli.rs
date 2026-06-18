@@ -1149,7 +1149,7 @@ async fn app_runs(
         let rows = rows
             .iter()
             .map(|row| {
-            use sqlx::Row as _;
+                use sqlx::Row as _;
                 let input = row.get::<serde_json::Value, _>(4);
                 AppRunListRow {
                     id: row.get(0),
@@ -1446,7 +1446,14 @@ fn format_app_run_table(rows: &[AppRunListRow], now: chrono::DateTime<chrono::Ut
     let mut out = String::new();
     out.push_str(&format!(
         "{:<14} {:<20} {:<36} {:<8} {:<17} {:<17} {:<17} {}\n",
-        "STATE", "APP:ACTION", "REVIEW_ID", "AGE", "QUEUED_AT", "STARTED_AT", "FINISHED_AT", "RUN_ID"
+        "STATE",
+        "APP:ACTION",
+        "REVIEW_ID",
+        "AGE",
+        "QUEUED_AT",
+        "STARTED_AT",
+        "FINISHED_AT",
+        "RUN_ID"
     ));
     for row in rows {
         out.push_str(&format!(
@@ -1473,10 +1480,7 @@ fn format_app_run_age(
     created_at: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
-    let secs = now
-        .signed_duration_since(created_at)
-        .num_seconds()
-        .max(0);
+    let secs = now.signed_duration_since(created_at).num_seconds().max(0);
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3_600 {
@@ -8925,12 +8929,22 @@ async fn refresh_formalization_math_artifacts(
         pool,
         paper_id,
         review_id,
+        artifact_dir,
         &paper_math_sources,
     )
     .await
     {
         Ok(Some(theorem_graph)) => {
             if let Some(obj) = paper_math_sources.as_object_mut() {
+                obj.insert(
+                    "theorem_inventory".to_string(),
+                    serde_json::json!({
+                        "artifact": "review_loop/theorem_inventory.json",
+                        "inventory_count": theorem_graph.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                        "theorem_level_count": theorem_graph.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                        "typed_count": theorem_graph.get("typed_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                    }),
+                );
                 obj.insert("theorem_graph".to_string(), theorem_graph);
                 append_paper_math_source(
                     obj,
@@ -8960,6 +8974,7 @@ async fn run_formalize_typed_theorem_extraction(
     pool: &sqlx::PgPool,
     paper_id: Uuid,
     review_id: Uuid,
+    artifact_dir: &Path,
     paper_math_sources: &serde_json::Value,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let body_md = paper_math_sources_body_markdown(paper_math_sources);
@@ -8974,15 +8989,34 @@ async fn run_formalize_typed_theorem_extraction(
     let seed = crate::db::load_paper_review_seed(pool, paper_id).await?;
     let workdir = tempfile::tempdir().context("formalize typed-IR workdir")?;
     crate::ingest_pipeline::write_body_md_to_workdir(workdir.path(), &body_md).await?;
-    let mut source_candidate_pack = String::new();
+    let formalize_config = FormalizeSourceConfig::from_env();
+    let mut theorem_inventory = serde_json::Value::Null;
     match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
         Ok(count) if count > 0 => {
             cli_status::emit(format!(
                 "formalize {review_id}: hydrated {count} arXiv source files for typed-IR extraction"
             ));
-            source_candidate_pack =
-                build_formalize_latex_candidate_pack_from_workdir(workdir.path(), &seed.title)
-                    .unwrap_or_default();
+            theorem_inventory = build_formalize_theorem_inventory_from_workdir(
+                workdir.path(),
+                &seed.arxiv_id,
+                &seed.title,
+                &formalize_config,
+            )
+            .unwrap_or_else(|err| {
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "arxiv_id": seed.arxiv_id,
+                    "title": seed.title,
+                    "items": [],
+                    "inventory_count": 0usize,
+                    "warnings": [format!("failed to build theorem inventory: {err:#}")],
+                })
+            });
+            write_loop_json(
+                &artifact_dir.join("theorem_inventory.json"),
+                &theorem_inventory,
+            )
+            .await?;
         }
         Ok(_) => cli_status::emit(format!(
             "formalize {review_id}: arXiv source hydration yielded no source files"
@@ -9008,19 +9042,28 @@ async fn run_formalize_typed_theorem_extraction(
     let agent = grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::new();
     let mut spec =
         crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-    spec.timeout_secs = spec.timeout_secs.max(1800);
+    spec.timeout_secs = spec
+        .timeout_secs
+        .max(formalize_config.source_extraction_timeout_secs);
     spec.schema = Arc::new(agent.schema().clone());
-    if !source_candidate_pack.trim().is_empty() {
+    if theorem_inventory
+        .get("items")
+        .and_then(|value| value.as_array())
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
         cli_status::emit(format!(
-            "formalize {review_id}: source-first typed-IR theorem extraction starting"
+            "formalize {review_id}: source-first typed-IR theorem extraction starting inventory_count={}",
+            theorem_inventory["inventory_count"].as_u64().unwrap_or(0)
         ));
-        match run_formalize_source_first_theorem_extraction(
+        match run_formalize_inventory_typed_transcription(
             runner.clone(),
             &spec,
             paper_id,
             review_id,
             &seed,
-            &source_candidate_pack,
+            &theorem_inventory,
+            &formalize_config,
             workdir.path(),
         )
         .await
@@ -9075,95 +9118,143 @@ async fn run_formalize_typed_theorem_extraction(
     })))
 }
 
-async fn run_formalize_source_first_theorem_extraction(
+async fn run_formalize_inventory_typed_transcription(
     runner: Arc<dyn crate::agents::AgentRunner>,
     spec: &crate::agents::AgentSpec,
     paper_id: Uuid,
     review_id: Uuid,
     seed: &crate::db::PaperReviewSeedRow,
-    source_candidate_pack: &str,
+    theorem_inventory: &serde_json::Value,
+    config: &FormalizeSourceConfig,
     workdir: &Path,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let mut spec = spec.clone();
-    spec.role = "formalize_source_theorem_graph_extractor".to_string();
-    spec.timeout_secs = spec.timeout_secs.max(900);
+    spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+    spec.timeout_secs = spec.timeout_secs.max(config.source_extraction_timeout_secs);
 
-    let artifact = serde_json::json!({
-        "review_id": review_id,
-        "paper_id": paper_id,
-        "arxiv_id": &seed.arxiv_id,
-        "title": &seed.title,
-        "task": "Extract source-grounded theorem graph nodes with typed_transcription/theorem_ir from real arXiv TeX candidates.",
-        "source_candidate_pack": source_candidate_pack,
-    });
-    let input = AgentInput {
-        context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
-        role: spec.role.clone(),
-        content_hash_material: artifact.clone(),
-        artifact,
-        system_prompt: formalize_source_first_theorem_system_prompt(),
-        user_prompt: formalize_source_first_theorem_user_prompt(
-            &seed.arxiv_id,
-            &seed.title,
-            source_candidate_pack,
-        ),
-        source_bundle_path: Some(workdir.display().to_string()),
-    };
-    let run = runner.run(&spec, &input).await?;
-    let nodes = run
-        .output
-        .get("theorem_graph")
+    let items = theorem_inventory
+        .get("items")
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let batches = formalize_inventory_batches(&items, config);
+    let mut nodes = Vec::new();
+    for (batch_index, batch_items) in batches.iter().enumerate() {
+        let batch_number = batch_index + 1;
+        cli_status::emit(format!(
+            "formalize {review_id}: typed-IR transcription batch {batch_number}/{} items={}",
+            batches.len(),
+            batch_items.len()
+        ));
+        let artifact = serde_json::json!({
+            "review_id": review_id,
+            "paper_id": paper_id,
+            "arxiv_id": &seed.arxiv_id,
+            "title": &seed.title,
+            "task": "Type-transcribe every supplied theorem_inventory item into theorem_graph nodes with typed_transcription/theorem_ir.",
+            "theorem_inventory_artifact": "review_loop/theorem_inventory.json",
+            "batch_index": batch_index,
+            "batch_count": batches.len(),
+            "batch_items": batch_items,
+        });
+        let input = AgentInput {
+            context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
+            role: spec.role.clone(),
+            content_hash_material: artifact.clone(),
+            artifact,
+            system_prompt: formalize_inventory_typed_transcription_system_prompt(),
+            user_prompt: formalize_inventory_typed_transcription_user_prompt(
+                &seed.arxiv_id,
+                &seed.title,
+                batch_index,
+                batches.len(),
+                batch_items,
+            ),
+            source_bundle_path: Some(workdir.display().to_string()),
+        };
+        let run = runner.run(&spec, &input).await?;
+        let mut batch_nodes = run
+            .output
+            .get("theorem_graph")
+            .or_else(|| run.output.get("nodes"))
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        cli_status::emit(format!(
+            "formalize {review_id}: typed-IR transcription batch {batch_number}/{} ok nodes={} latency_ms={}",
+            batches.len(),
+            batch_nodes.len(),
+            run.latency_ms
+        ));
+        nodes.append(&mut batch_nodes);
+    }
     if nodes.is_empty() {
         return Ok(None);
     }
+    let inventory_count = theorem_inventory["inventory_count"].as_u64().unwrap_or(0);
+    let theorem_level_count = theorem_inventory["theorem_level_count"]
+        .as_u64()
+        .unwrap_or(0);
     cli_status::emit(format!(
-        "formalize {review_id}: source-first typed-IR theorem extraction ok nodes={} latency_ms={}",
-        nodes.len(),
-        run.latency_ms
+        "formalize {review_id}: source-first typed-IR theorem extraction ok inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={}",
+        nodes.len()
     ));
     Ok(Some(serde_json::json!({
         "artifact": "theorem_graph.json",
         "arxiv_id": &seed.arxiv_id,
+        "inventory_artifact": "review_loop/theorem_inventory.json",
+        "inventory_count": inventory_count,
+        "theorem_level_count": theorem_level_count,
+        "typed_count": nodes.len(),
         "nodes": nodes,
-        "source": "formalize_source_first_theorem_graph_extractor",
+        "source": "formalize_source_inventory_typed_transcriber",
     })))
 }
 
-fn formalize_source_first_theorem_system_prompt() -> String {
-    "You are GrokRxiv role `formalize_source_theorem_graph_extractor`. \
-     Extract theorem graph nodes from real arXiv LaTeX source candidates. \
-     The candidate pack is only a source index; it is not a theorem graph. \
+fn formalize_inventory_typed_transcription_system_prompt() -> String {
+    "You are GrokRxiv role `formalize_source_inventory_typed_transcriber`. \
+     Type-transcribe theorem graph nodes from a deterministic inventory of real arXiv LaTeX source blocks. \
+     The inventory is complete for the supplied batch; do not sample, rank, or omit items. \
      Return one raw JSON object matching the supplied schema exactly. \
-     Do not add undeclared fields. Set `reason` to null when candidates exist. \
+     Do not add undeclared fields. Set `reason` to null when inventory items exist. \
      Do not invent theorems that are not present in `source_tex`. \
-     For theorem/lemma/proposition/corollary nodes, preserve the exact source_tex, \
+     Preserve the exact source_tex for every output node. Set each output node's \
+     `id` from the inventory item `id`, `type` from `kind`, and `section` from \
+     the source `file` plus `char_start` when no paper section heading is available. \
+     For theorem/lemma/proposition/corollary nodes, \
      write a faithful plain-language statement, set typed_transcription.status to \
-     `transcribed`, and fill theorem_ir. For topology, algebra, category, or group \
+     `transcribed`, and fill theorem_ir. For definition nodes, emit a definition/context \
+     node with source_tex and typed_transcription when possible; definitions are not proof targets. \
+     For topology, algebra, category, or group \
      theory statements that do not fit arithmetic/equality constructors, use \
      math_type `{ \"kind\": \"custom\", \"name\": \"...\" }` and proposition \
      `{ \"kind\": \"uninterpreted_predicate\", \"name\": \"...\", \"args\": [...] }`. \
      Do not use unknown_prop, raw_term, or unknown_term for a theorem-level target \
      unless the TeX block is genuinely not a mathematical statement. \
-     Resolve depends_on from labels referenced in the same source block when possible."
+     Resolve depends_on from labels referenced in the same source block when possible. \
+     Emit one theorem_graph node for every inventory item supplied in the batch."
         .to_string()
 }
 
-fn formalize_source_first_theorem_user_prompt(
+fn formalize_inventory_typed_transcription_user_prompt(
     arxiv_id: &str,
     title: &str,
-    source_candidate_pack: &str,
+    batch_index: usize,
+    batch_count: usize,
+    batch_items: &[serde_json::Value],
 ) -> String {
+    let batch_json = serde_json::to_string_pretty(batch_items).unwrap_or_else(|_| "[]".to_string());
     format!(
         "Paper: {arxiv_id}\nTitle: {title}\n\n\
-         Use the source candidates below to produce a compact theorem_graph for Lean authoring. \
-         Prefer theorem/proposition/corollary/lemma blocks from the file whose title matches the \
-         paper title. Emit the best 1-3 source-grounded theorem-level targets. Include definition/proof \
-         nodes only when they are needed for depends_on context. Preserve every selected block's \
-         source_tex exactly.\n\n\
-         <source_candidates>\n{source_candidate_pack}\n</source_candidates>"
+         Batch {}/{} from review_loop/theorem_inventory.json. \
+         Emit a theorem_graph node for every item in this JSON array. \
+         Do not choose only the most important items. Do not omit definitions; mark them as context/definition nodes. \
+         Use each item's `id`, `kind`, `file`, `char_start`, `refs`, and `source_tex` to fill schema-valid \
+         `id`, `type`, `section`, `depends_on`, and `source_tex` fields. \
+         Preserve every item's source_tex exactly.\n\n\
+         <theorem_inventory_batch>\n{batch_json}\n</theorem_inventory_batch>",
+        batch_index + 1,
+        batch_count
     )
 }
 
@@ -9176,23 +9267,74 @@ async fn hydrate_formalize_source_workdir(workdir: &Path, arxiv_id: &str) -> any
 }
 
 #[derive(Debug, Clone)]
+struct FormalizeSourceConfig {
+    source_context_max_blocks: usize,
+    source_context_max_chars: usize,
+    transcription_batch_items: usize,
+    transcription_batch_chars: usize,
+    source_extraction_timeout_secs: u32,
+}
+
+impl FormalizeSourceConfig {
+    fn from_env() -> Self {
+        Self {
+            source_context_max_blocks: formalize_env_usize(
+                "GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS",
+                240,
+            ),
+            source_context_max_chars: formalize_env_usize(
+                "GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_CHARS",
+                500_000,
+            ),
+            transcription_batch_items: formalize_env_usize(
+                "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
+                6,
+            )
+            .max(1),
+            transcription_batch_chars: formalize_env_usize(
+                "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
+                24_000,
+            )
+            .max(1),
+            source_extraction_timeout_secs: formalize_env_u32(
+                "GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS",
+                1_800,
+            ),
+        }
+    }
+}
+
+fn formalize_env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn formalize_env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+#[derive(Debug, Clone)]
 struct FormalizeSourceArchiveEntry {
     path: String,
     bytes: Vec<u8>,
 }
 
 const FORMALIZE_SOURCE_CONTEXT_FILE: &str = "theorem_source_context.md";
-const FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS: usize = 80;
-const FORMALIZE_SOURCE_CONTEXT_MAX_CHARS: usize = 220_000;
-const FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_BLOCKS: usize = 10;
-const FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_CHARS: usize = 18_000;
 
 fn write_formalize_source_archive_to_workdir(
     workdir: &Path,
     bytes: &[u8],
 ) -> anyhow::Result<usize> {
     let entries = read_formalize_source_archive_entries(bytes)?;
-    let source_context = build_formalize_latex_source_context(&entries);
+    let config = FormalizeSourceConfig::from_env();
+    let source_context = build_formalize_latex_source_context(&entries, &config);
     let mut written = 0usize;
     for entry in &entries {
         let rel = Path::new(&entry.path);
@@ -9223,12 +9365,16 @@ struct FormalizeLatexSourceBlock {
     env: String,
     kind: String,
     char_start: usize,
+    char_end: usize,
     source_tex: String,
     labels: Vec<String>,
     refs: Vec<String>,
 }
 
-fn build_formalize_latex_source_context(entries: &[FormalizeSourceArchiveEntry]) -> String {
+fn build_formalize_latex_source_context(
+    entries: &[FormalizeSourceArchiveEntry],
+    config: &FormalizeSourceConfig,
+) -> String {
     let aliases = formalize_latex_source_aliases(entries);
     let blocks = formalize_latex_source_blocks_from_entries(entries, &aliases);
 
@@ -9236,7 +9382,7 @@ fn build_formalize_latex_source_context(entries: &[FormalizeSourceArchiveEntry])
         return String::new();
     }
 
-    build_formalize_latex_source_context_from_blocks(&aliases, &blocks)
+    build_formalize_latex_source_context_from_blocks(&aliases, &blocks, config)
 }
 
 fn formalize_latex_source_aliases(
@@ -9254,7 +9400,8 @@ fn formalize_latex_source_aliases(
     }
 
     for (_, text) in formalize_source_text_entries(entries) {
-        for (env, kind) in formalize_latex_theorem_aliases(&text) {
+        let parsed_text = strip_latex_comments_preserve_len(&text);
+        for (env, kind) in formalize_latex_theorem_aliases(&parsed_text) {
             aliases.insert(env, kind);
         }
     }
@@ -9276,6 +9423,7 @@ fn formalize_latex_source_blocks_from_entries(
 fn build_formalize_latex_source_context_from_blocks(
     aliases: &BTreeMap<String, String>,
     blocks: &[FormalizeLatexSourceBlock],
+    config: &FormalizeSourceConfig,
 ) -> String {
     let mut out = String::new();
     out.push_str("# LaTeX Theorem Source Context\n\n");
@@ -9289,7 +9437,7 @@ fn build_formalize_latex_source_context_from_blocks(
 
     out.push_str("\n## Source Blocks\n\n");
     let mut emitted = 0usize;
-    for block in blocks.iter().take(FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS) {
+    for block in blocks.iter().take(config.source_context_max_blocks) {
         let labels = if block.labels.is_empty() {
             "none".to_string()
         } else {
@@ -9322,7 +9470,7 @@ fn build_formalize_latex_source_context_from_blocks(
             refs,
             block.source_tex.trim()
         );
-        if out.len() + next.len() > FORMALIZE_SOURCE_CONTEXT_MAX_CHARS {
+        if out.len() + next.len() > config.source_context_max_chars {
             out.push_str("Context truncated because the source contains more theorem-like blocks than fit in the extraction budget. Use `read_file` on the original TeX files for later blocks.\n");
             break;
         }
@@ -9338,6 +9486,91 @@ fn build_formalize_latex_source_context_from_blocks(
     out
 }
 
+fn build_formalize_theorem_inventory_from_workdir(
+    workdir: &Path,
+    arxiv_id: &str,
+    paper_title: &str,
+    config: &FormalizeSourceConfig,
+) -> anyhow::Result<serde_json::Value> {
+    let entries = read_formalize_source_workdir_entries(workdir)?;
+    Ok(build_formalize_theorem_inventory(
+        &entries,
+        arxiv_id,
+        paper_title,
+        config,
+    ))
+}
+
+fn build_formalize_theorem_inventory(
+    entries: &[FormalizeSourceArchiveEntry],
+    arxiv_id: &str,
+    paper_title: &str,
+    config: &FormalizeSourceConfig,
+) -> serde_json::Value {
+    let aliases = formalize_latex_source_aliases(entries);
+    let blocks = formalize_latex_source_blocks_from_entries(entries, &aliases);
+    let unknown_envs = formalize_unknown_theorem_like_envs(entries, &aliases);
+    let mut counts_by_kind = BTreeMap::<String, usize>::new();
+    for block in &blocks {
+        *counts_by_kind.entry(block.kind.clone()).or_default() += 1;
+    }
+    let items = blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| formalize_inventory_item(index, block))
+        .collect::<Vec<_>>();
+    let theorem_level_count = blocks
+        .iter()
+        .filter(|block| formalize_kind_is_theorem_level(&block.kind))
+        .count();
+
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "arxiv_id": arxiv_id,
+        "title": paper_title,
+        "source": "real_arxiv_tex",
+        "inventory_count": items.len(),
+        "theorem_level_count": theorem_level_count,
+        "counts_by_kind": counts_by_kind,
+        "items": items,
+        "diagnostics": {
+            "known_environment_count": aliases.len(),
+            "unknown_theorem_like_environment_count": unknown_envs.len(),
+            "unknown_theorem_like_environments": unknown_envs,
+            "transcription_batch_items": config.transcription_batch_items,
+            "transcription_batch_chars": config.transcription_batch_chars,
+        }
+    })
+}
+
+fn formalize_inventory_item(index: usize, block: &FormalizeLatexSourceBlock) -> serde_json::Value {
+    let stable_id = block.labels.first().cloned().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}",
+            block.file.replace(['/', '.', '-'], "_"),
+            block.env,
+            block.char_start
+        )
+    });
+    serde_json::json!({
+        "id": stable_id,
+        "ordinal": index + 1,
+        "kind": block.kind.clone(),
+        "role": if formalize_kind_is_theorem_level(&block.kind) { "lean_target" } else { "context" },
+        "env": block.env.clone(),
+        "file": block.file.clone(),
+        "char_start": block.char_start,
+        "char_end": block.char_end,
+        "labels": block.labels.clone(),
+        "refs": block.refs.clone(),
+        "source_tex": block.source_tex.clone(),
+    })
+}
+
+fn formalize_kind_is_theorem_level(kind: &str) -> bool {
+    matches!(kind, "theorem" | "lemma" | "proposition" | "corollary")
+}
+
 fn formalize_source_text_entries(entries: &[FormalizeSourceArchiveEntry]) -> Vec<(String, String)> {
     entries
         .iter()
@@ -9350,14 +9583,6 @@ fn formalize_source_text_entries(entries: &[FormalizeSourceArchiveEntry]) -> Vec
             Some((entry.path.clone(), text))
         })
         .collect()
-}
-
-fn build_formalize_latex_candidate_pack_from_workdir(
-    workdir: &Path,
-    paper_title: &str,
-) -> anyhow::Result<String> {
-    let entries = read_formalize_source_workdir_entries(workdir)?;
-    Ok(build_formalize_latex_candidate_pack(&entries, paper_title))
 }
 
 fn read_formalize_source_workdir_entries(
@@ -9401,123 +9626,38 @@ fn read_formalize_source_workdir_entries(
     Ok(entries)
 }
 
-fn build_formalize_latex_candidate_pack(
-    entries: &[FormalizeSourceArchiveEntry],
-    paper_title: &str,
-) -> String {
-    let aliases = formalize_latex_source_aliases(entries);
-    let blocks = formalize_latex_source_blocks_from_entries(entries, &aliases);
-    if blocks.is_empty() {
-        return String::new();
-    }
-
-    let text_entries = formalize_source_text_entries(entries)
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    let mut ranked = blocks
-        .iter()
-        .enumerate()
-        .map(|(index, block)| {
-            let file_text = text_entries
-                .get(&block.file)
-                .map(String::as_str)
-                .unwrap_or_default();
-            (
-                formalize_candidate_block_score(block, file_text, paper_title),
-                index,
-                block,
-            )
-        })
-        .collect::<Vec<_>>();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-
-    let mut out = String::new();
-    out.push_str("# Ranked Real arXiv TeX Theorem Candidates\n\n");
-    out.push_str(
-        "These candidates are exact LaTeX source blocks from the arXiv source bundle. They are not a theorem graph. Select faithful theorem-level targets from them and emit schema-valid theorem_graph nodes with typed_transcription and theorem_ir.\n\n",
-    );
-    let mut emitted = 0usize;
-    for (score, _, block) in ranked {
-        if emitted >= FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_BLOCKS {
-            break;
+fn formalize_inventory_batches(
+    items: &[serde_json::Value],
+    config: &FormalizeSourceConfig,
+) -> Vec<Vec<serde_json::Value>> {
+    let mut batches: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut current: Vec<serde_json::Value> = Vec::new();
+    let mut current_chars = 0usize;
+    for item in items {
+        let item_chars = serde_json::to_string(item).map(|s| s.len()).unwrap_or(0);
+        let would_exceed_items = current.len() >= config.transcription_batch_items;
+        let would_exceed_chars = !current.is_empty()
+            && current_chars.saturating_add(item_chars) > config.transcription_batch_chars;
+        if would_exceed_items || would_exceed_chars {
+            batches.push(std::mem::take(&mut current));
+            current_chars = 0;
         }
-        let labels = if block.labels.is_empty() {
-            "none".to_string()
-        } else {
-            block.labels.join(", ")
-        };
-        let refs = if block.refs.is_empty() {
-            "none".to_string()
-        } else {
-            block.refs.join(", ")
-        };
-        let next = format!(
-            "## Candidate {} (score {score})\nfile: {}\nenvironment: {} -> {}\nlabels: {}\nrefs: {}\n\n```tex\n{}\n```\n\n",
-            emitted + 1,
-            block.file,
-            block.env,
-            block.kind,
-            labels,
-            refs,
-            block.source_tex.trim()
-        );
-        if out.len() + next.len() > FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_CHARS {
-            out.push_str("\n[truncated: additional ranked source candidates omitted]\n");
-            break;
-        }
-        out.push_str(&next);
-        emitted += 1;
+        current.push(item.clone());
+        current_chars = current_chars.saturating_add(item_chars);
     }
-    out
-}
-
-fn formalize_candidate_block_score(
-    block: &FormalizeLatexSourceBlock,
-    file_text: &str,
-    paper_title: &str,
-) -> i32 {
-    let kind_score = match block.kind.as_str() {
-        "theorem" => 60,
-        "proposition" => 45,
-        "corollary" => 40,
-        "lemma" => 35,
-        "definition" => 15,
-        _ => 0,
-    };
-    let label_score = if block.labels.is_empty() { 0 } else { 8 };
-    let ref_score = (block.refs.len().min(4) as i32) * 3;
-    let title_score = formalize_title_overlap_score(file_text, paper_title);
-    kind_score + label_score + ref_score + title_score
-}
-
-fn formalize_title_overlap_score(file_text: &str, paper_title: &str) -> i32 {
-    let lower_file = file_text.to_ascii_lowercase();
-    let title_tokens = paper_title
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|token| token.to_ascii_lowercase())
-        .filter(|token| token.len() >= 4)
-        .collect::<BTreeSet<_>>();
-    if title_tokens.is_empty() {
-        return 0;
+    if !current.is_empty() {
+        batches.push(current);
     }
-    let matches = title_tokens
-        .iter()
-        .filter(|token| lower_file.contains(token.as_str()))
-        .count();
-    if matches == title_tokens.len() {
-        80
-    } else {
-        (matches as i32) * 12
-    }
+    batches
 }
 
 fn formalize_latex_theorem_aliases(text: &str) -> BTreeMap<String, String> {
-    let re = regex::Regex::new(
-        r"\\newtheorem\s*\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}(?:\[[^\]]*\])?\s*\{(?P<title>[^{}]+)\}",
+    let newtheorem_re = regex::Regex::new(
+        r"\\newtheorem\*?\s*\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}(?:\[[^\]]*\])?\s*\{(?P<title>[^{}]+)\}",
     )
     .expect("valid regex");
     let mut aliases = BTreeMap::new();
-    for caps in re.captures_iter(text) {
+    for caps in newtheorem_re.captures_iter(text) {
         let Some(env) = caps.name("env").map(|m| m.as_str()) else {
             continue;
         };
@@ -9528,7 +9668,30 @@ fn formalize_latex_theorem_aliases(text: &str) -> BTreeMap<String, String> {
             aliases.insert(env.to_string(), kind.to_string());
         }
     }
+    let declare_re = regex::Regex::new(
+        r"\\declaretheorem(?:\[(?P<opts>[^\]]*)\])?\s*\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}",
+    )
+    .expect("valid regex");
+    for caps in declare_re.captures_iter(text) {
+        let Some(env) = caps.name("env").map(|m| m.as_str()) else {
+            continue;
+        };
+        let title = caps
+            .name("opts")
+            .and_then(|opts| formalize_declaretheorem_name_option(opts.as_str()))
+            .unwrap_or(env);
+        if let Some(kind) = canonical_formalize_theorem_kind(title) {
+            aliases.insert(env.to_string(), kind.to_string());
+        }
+    }
     aliases
+}
+
+fn formalize_declaretheorem_name_option(opts: &str) -> Option<&str> {
+    opts.split(',')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("name=").map(str::trim))
+        .filter(|value| !value.is_empty())
 }
 
 fn canonical_formalize_theorem_kind(title: &str) -> Option<&'static str> {
@@ -9556,6 +9719,7 @@ fn formalize_latex_source_blocks(
     let label_re = regex::Regex::new(r"\\label\s*\{([^}]+)\}").expect("valid regex");
     let ref_re =
         regex::Regex::new(r"\\(?:ref|eqref|autoref|cref|Cref)\s*\{([^}]+)\}").expect("valid regex");
+    let parsed_text = strip_latex_comments_preserve_len(text);
     let mut blocks = Vec::new();
     for (env, kind) in aliases {
         if !matches!(
@@ -9573,8 +9737,8 @@ fn formalize_latex_source_blocks(
             Ok(re) => re,
             Err(_) => continue,
         };
-        for mat in re.find_iter(text) {
-            let source_tex = mat.as_str().trim().to_string();
+        for mat in re.find_iter(&parsed_text) {
+            let source_tex = text[mat.start()..mat.end()].trim().to_string();
             let labels = label_re
                 .captures_iter(&source_tex)
                 .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
@@ -9592,6 +9756,7 @@ fn formalize_latex_source_blocks(
                 env: env.clone(),
                 kind: kind.clone(),
                 char_start: mat.start(),
+                char_end: mat.end(),
                 source_tex,
                 labels,
                 refs,
@@ -9599,6 +9764,119 @@ fn formalize_latex_source_blocks(
         }
     }
     blocks
+}
+
+fn strip_latex_comments_preserve_len(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut in_comment = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if in_comment {
+            if byte == b'\n' || byte == b'\r' {
+                in_comment = false;
+                out.push(byte);
+            } else {
+                out.push(b' ');
+            }
+            continue;
+        }
+        if byte == b'%' && !latex_byte_is_escaped(bytes, index) {
+            in_comment = true;
+            out.push(b' ');
+            continue;
+        }
+        out.push(byte);
+    }
+    String::from_utf8(out).expect("comment stripping preserves UTF-8 outside comments")
+}
+
+fn latex_byte_is_escaped(bytes: &[u8], index: usize) -> bool {
+    let mut slash_count = 0usize;
+    let mut cursor = index;
+    while cursor > 0 {
+        cursor -= 1;
+        if bytes[cursor] == b'\\' {
+            slash_count += 1;
+        } else {
+            break;
+        }
+    }
+    slash_count % 2 == 1
+}
+
+fn formalize_unknown_theorem_like_envs(
+    entries: &[FormalizeSourceArchiveEntry],
+    aliases: &BTreeMap<String, String>,
+) -> Vec<serde_json::Value> {
+    let begin_re =
+        regex::Regex::new(r"\\begin\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}").expect("valid regex");
+    let mut unknown = BTreeMap::<String, usize>::new();
+    for (_, text) in formalize_source_text_entries(entries) {
+        let parsed_text = strip_latex_comments_preserve_len(&text);
+        for caps in begin_re.captures_iter(&parsed_text) {
+            let Some(env) = caps.name("env").map(|m| m.as_str()) else {
+                continue;
+            };
+            if aliases.contains_key(env) || formalize_common_non_theorem_env(env) {
+                continue;
+            }
+            if formalize_env_name_looks_theorem_like(env) {
+                *unknown.entry(env.to_string()).or_default() += 1;
+            }
+        }
+    }
+    unknown
+        .into_iter()
+        .map(|(env, count)| serde_json::json!({ "env": env, "count": count }))
+        .collect()
+}
+
+fn formalize_common_non_theorem_env(env: &str) -> bool {
+    matches!(
+        env,
+        "abstract"
+            | "aligned"
+            | "align"
+            | "align*"
+            | "array"
+            | "cases"
+            | "center"
+            | "document"
+            | "enumerate"
+            | "equation"
+            | "equation*"
+            | "figure"
+            | "itemize"
+            | "matrix"
+            | "multline"
+            | "multline*"
+            | "proof"
+            | "split"
+            | "tabular"
+            | "thebibliography"
+            | "tikzpicture"
+    )
+}
+
+fn formalize_env_name_looks_theorem_like(env: &str) -> bool {
+    let lower = env.to_ascii_lowercase();
+    [
+        "thm",
+        "theorem",
+        "lem",
+        "lemma",
+        "prop",
+        "proposition",
+        "coro",
+        "cor",
+        "definition",
+        "defn",
+        "claim",
+        "conj",
+        "fact",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn read_formalize_source_archive_entries(
@@ -12045,6 +12323,16 @@ async fn record_review_loop_node(
         .iter()
         .find(|stage| stage.id == node_id)
         .ok_or_else(|| anyhow::anyhow!("review-loop manifest missing node `{node_id}`"))?;
+    sqlx::query(
+        "delete from review_agents \
+         where review_id = $1 \
+           and dag_type = 'review-loop' \
+           and (node_id = $2 or role = $2)",
+    )
+    .bind(review_id)
+    .bind(node_id)
+    .execute(pool)
+    .await?;
     crate::db::insert_review_agent(
         pool,
         crate::db::ReviewAgentInsert {
@@ -15700,9 +15988,7 @@ mod tests {
 
     #[test]
     fn app_run_table_shows_review_id_and_queue_time() {
-        let created_at = chrono::Utc
-            .with_ymd_and_hms(2026, 6, 17, 12, 0, 0)
-            .unwrap();
+        let created_at = chrono::Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0).unwrap();
         let now = chrono::Utc
             .with_ymd_and_hms(2026, 6, 17, 12, 42, 0)
             .unwrap();
@@ -16772,7 +17058,8 @@ The pure braid group is polyfree.
             .to_vec(),
         }];
 
-        let context = build_formalize_latex_source_context(&entries);
+        let config = FormalizeSourceConfig::from_env();
+        let context = build_formalize_latex_source_context(&entries, &config);
 
         assert!(context.contains("newbraid.tex"));
         assert!(context.contains("thm -> theorem"));
@@ -16785,66 +17072,78 @@ The pure braid group is polyfree.
     }
 
     #[test]
-    fn formalize_latex_candidate_pack_prefers_title_matching_source_file() {
-        let entries = vec![
-            FormalizeSourceArchiveEntry {
-                path: "unrelated.tex".to_string(),
-                bytes: br#"\documentclass{article}
-\title{Unrelated Loops}
-\newtheorem{thm}{Theorem}
+    fn formalize_theorem_inventory_captures_all_active_theorem_blocks() {
+        let entries = vec![FormalizeSourceArchiveEntry {
+            path: "InterpolatingAJ.tex".to_string(),
+            bytes: br#"\documentclass{amsart}
+\usepackage{amsthm}
+\theoremstyle{definition}
+    \newtheorem{defn}{Definition}[section]
+    \newtheorem{rmk}[defn]{Remark}
+%   \declaretheorem[style=italic,name=Theorem]{commentedthm}
+\theoremstyle{plain}
+    \newtheorem{prop}[defn]{Proposition}
+    \newtheorem{lem}[defn]{Lemma}
+    \newtheorem{thm}[defn]{Theorem}
+    \newtheorem{coro}[defn]{Corollary}
 \begin{document}
-\begin{thm}\label{thm:unrelated}Every loop is a loop.\end{thm}
+\begin{defn}\label{D1}A definition.\end{defn}
+\begin{thm}\label{T1}First theorem.\end{thm}
+\begin{prop}\label{P1}First proposition.\end{prop}
+\begin{lem}\label{L1}First lemma.\end{lem}
+\begin{coro}\label{C1}First corollary.\end{coro}
+% \begin{commentedthm}\label{BAD}This is commented out.\end{commentedthm}
+\section{Late}
+\begin{lem}\label{L2}A late lemma.\end{lem}
+\begin{thm}\label{T2}A late theorem.\end{thm}
 \end{document}
 "#
-                .to_vec(),
-            },
-            FormalizeSourceArchiveEntry {
-                path: "newbraid.tex".to_string(),
-                bytes: br#"\documentclass{article}
-\title{Configuration spaces and braid groups}
-\newtheorem{thm}{Theorem}
-\newtheorem{prop}[thm]{Proposition}
-\begin{document}
-\begin{thm}[Fadell and Neuwirth]
-\label{thm:fib}
-Let $M$ be a manifold. The projection from the ordered configuration space is a locally trivial fibration.
-\end{thm}
-\begin{prop}\label{prop:braid}The braid group action preserves the fibration.\end{prop}
-\end{document}
-"#
-                .to_vec(),
-            },
-        ];
+            .to_vec(),
+        }];
+        let config = FormalizeSourceConfig::from_env();
 
-        let pack =
-            build_formalize_latex_candidate_pack(&entries, "Configuration Spaces and Braid Groups");
+        let inventory =
+            build_formalize_theorem_inventory(&entries, "2606.19113", "Interpolating AJ", &config);
+        let items = inventory["items"].as_array().expect("inventory items");
 
-        let first_newbraid = pack.find("newbraid.tex").expect("newbraid ranked");
-        let first_unrelated = pack.find("unrelated.tex").expect("unrelated present");
-        assert!(
-            first_newbraid < first_unrelated,
-            "title-matching file should rank first:\n{pack}"
-        );
-        assert!(pack.contains("thm:fib"));
-        assert!(!pack.contains("\"typed_transcription\""));
-        assert!(!pack.contains("\"theorem_ir\""));
+        assert_eq!(inventory["inventory_count"], 7);
+        assert_eq!(inventory["theorem_level_count"], 6);
+        assert_eq!(inventory["counts_by_kind"]["definition"], 1);
+        assert_eq!(inventory["counts_by_kind"]["theorem"], 2);
+        assert_eq!(inventory["counts_by_kind"]["lemma"], 2);
+        assert_eq!(inventory["counts_by_kind"]["proposition"], 1);
+        assert_eq!(inventory["counts_by_kind"]["corollary"], 1);
+        assert!(items.iter().any(|item| item["id"] == "L2"));
+        assert!(!items.iter().any(|item| item["id"] == "BAD"));
+        assert_eq!(items[0]["role"], "context");
+        assert_eq!(items[1]["role"], "lean_target");
     }
 
     #[test]
-    fn formalize_source_first_prompt_requires_typed_ir_without_unknown_placeholders() {
-        let system = formalize_source_first_theorem_system_prompt();
-        let user = formalize_source_first_theorem_user_prompt(
+    fn formalize_inventory_prompt_requires_typed_ir_without_sampling() {
+        let system = formalize_inventory_typed_transcription_system_prompt();
+        let batch_items = vec![serde_json::json!({
+            "id": "thm:fib",
+            "kind": "theorem",
+            "role": "lean_target",
+            "source_tex": "\\begin{thm}\\label{thm:fib}...\\end{thm}"
+        })];
+        let user = formalize_inventory_typed_transcription_user_prompt(
             "2606.17193",
             "Configuration Spaces and Braid Groups",
-            "## Candidate 1\nfile: newbraid.tex\n```tex\n\\begin{thm}\\label{thm:fib}...\\end{thm}\n```",
+            0,
+            1,
+            &batch_items,
         );
 
         assert!(system.contains("typed_transcription.status"));
         assert!(system.contains("theorem_ir"));
         assert!(system.contains("uninterpreted_predicate"));
         assert!(system.contains("Do not use unknown_prop"));
+        assert!(system.contains("Emit one theorem_graph node for every inventory item"));
         assert!(user.contains("2606.17193"));
-        assert!(user.contains("source-grounded theorem-level targets"));
+        assert!(user.contains("Emit a theorem_graph node for every item"));
+        assert!(!user.contains("best 1-3"));
         assert!(user.contains("thm:fib"));
     }
 
