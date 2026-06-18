@@ -396,6 +396,7 @@ pub fn build_proof_obligations(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}_formalized", lean_identifier(theorem_id)));
+        let deterministic_ready_reason = theorem_candidate_proof_target_issue(&theorem);
         let theorem_ir = theorem
             .get("theorem_ir")
             .cloned()
@@ -415,21 +416,31 @@ pub fn build_proof_obligations(
             "lean_skeleton": lean_skeleton,
             // Hint only: did the deterministic synthesizer already produce clean typed IR?
             // The LLM authors the faithful statement regardless; the kernel decides proved.
-            "deterministic_ready": theorem_candidate_proof_target_issue(&theorem).is_none(),
+            "deterministic_ready": deterministic_ready_reason.is_none(),
+            "deterministic_ready_reason": deterministic_ready_reason,
             "severity": "blocking",
             "expected_proof": "closed Lean theorem proof with no sorry, admit, or unapproved axiom",
         }));
     }
     if obligations.is_empty() {
-        let (skip_reason, message) = if skipped_targets.is_empty() {
+        let supporting_equation_count = semantic_ir
+            .get("supporting_equations")
+            .and_then(|v| v.as_array())
+            .map(Vec::len)
+            .unwrap_or(0);
+        let (skip_reason, lean_attempt_status, message) = if skipped_targets.is_empty()
+            && supporting_equation_count == 0
+        {
             (
-                "no_math_targets",
-                "No paper-derived formal mathematical statements were extracted for Lean verification.",
+                "no_math_found",
+                "no_math_found",
+                "No paper-derived mathematical statements were extracted for Lean verification.",
             )
         } else {
             (
-                "no_proof_ready_math_targets",
-                "Paper-derived mathematical statements were extracted, but none were reliable theorem-level targets for Lean verification.",
+                "not_formalizable",
+                "not_formalizable",
+                "Paper-derived mathematical statements were extracted, but no faithful Lean authoring target could be formed from the available source artifacts.",
             )
         };
         return json!({
@@ -439,6 +450,7 @@ pub fn build_proof_obligations(
             "haskell_status": haskell_status,
             "status": "skipped",
             "skip_reason": skip_reason,
+            "lean_attempt_status": lean_attempt_status,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "message": message,
             "obligations": [],
@@ -451,6 +463,7 @@ pub fn build_proof_obligations(
         "source": "review_loop/semantic_ir.json",
         "haskell_status": haskell_status,
         "status": "ready",
+        "lean_attempt_status": "pending",
         "obligations": obligations,
         "skipped_targets": skipped_targets,
     })
@@ -473,17 +486,22 @@ pub fn proof_obligations_skip_lean(proof_obligations: &serde_json::Value) -> boo
         proof_obligations
             .get("skip_reason")
             .and_then(|value| value.as_str()),
-        Some("no_math_targets" | "no_proof_ready_math_targets")
+        Some("no_math_found" | "not_formalizable" | "no_math_targets")
     )
 }
 
 pub fn build_lean_targets(proof_obligations: &serde_json::Value) -> serde_json::Value {
     if proof_obligations_skip_lean(proof_obligations) {
+        let lean_attempt_status = proof_obligations
+            .get("lean_attempt_status")
+            .cloned()
+            .unwrap_or_else(|| lean_attempt_status_from_skip_reason(proof_obligations));
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/proof_obligations.json",
             "status": "skipped",
-            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
+            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_found")),
+            "lean_attempt_status": lean_attempt_status,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "targets": [],
         });
@@ -520,12 +538,17 @@ pub fn build_theorem_map(
     lean_results: &serde_json::Value,
 ) -> serde_json::Value {
     if proof_obligations_skip_lean(proof_obligations) {
+        let lean_attempt_status = proof_obligations
+            .get("lean_attempt_status")
+            .cloned()
+            .unwrap_or_else(|| lean_attempt_status_from_skip_reason(proof_obligations));
         return json!({
             "schema_version": "1.0.0",
             "source": "review_loop/proof_obligations.json",
             "lean_results": "review_loop/lean/results.json",
             "status": "SKIPPED",
-            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_targets")),
+            "skip_reason": proof_obligations.get("skip_reason").cloned().unwrap_or_else(|| json!("no_math_found")),
+            "lean_attempt_status": lean_attempt_status,
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "entries": [],
         });
@@ -544,6 +567,8 @@ pub fn build_theorem_map(
                 .unwrap_or("unknown");
             let lean_declaration = obligation.get("lean_declaration").and_then(|v| v.as_str());
             let status = lean_entry_status(kind, lean_declaration, lean_results);
+            let lean_attempt_status =
+                lean_attempt_status_for_entry(kind, lean_declaration, lean_results);
             json!({
                 "obligation_id": obligation.get("id").cloned().unwrap_or_else(|| json!(null)),
                 "kind": kind,
@@ -551,6 +576,7 @@ pub fn build_theorem_map(
                 "source_span": obligation.get("source_span").cloned().unwrap_or_else(|| json!(null)),
                 "lean_declaration": obligation.get("lean_declaration").cloned().unwrap_or_else(|| json!(null)),
                 "status": status,
+                "lean_attempt_status": lean_attempt_status,
                 "statement": obligation.get("statement").cloned().unwrap_or_else(|| json!("")),
                 "emitted_statement": obligation.get("lean_statement").cloned().unwrap_or_else(|| json!(null)),
                 "verified_statement": lean_results
@@ -572,11 +598,22 @@ pub fn build_theorem_map(
         })
         .find(|status| *status != "PROVED")
         .unwrap_or("PROVED");
+    let top_lean_attempt_status = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("lean_attempt_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed_typecheck")
+        })
+        .find(|status| *status != "proved")
+        .unwrap_or("proved");
     json!({
         "schema_version": "1.0.0",
         "source": "review_loop/proof_obligations.json",
         "lean_results": "review_loop/lean/results.json",
         "status": top_status,
+        "lean_attempt_status": top_lean_attempt_status,
         "entries": entries,
     })
 }
@@ -611,16 +648,13 @@ pub fn build_semantic_adequacy(
             .unwrap_or(false)
     });
     if proof_map_skips_lean(theorem_map) || !lean_authored {
-        let skip_reason = theorem_map
-            .get("skip_reason")
-            .cloned()
-            .unwrap_or_else(|| {
-                if theorem_entries.is_empty() {
-                    json!("no_math_targets")
-                } else {
-                    json!("lean_not_run")
-                }
-            });
+        let skip_reason = theorem_map.get("skip_reason").cloned().unwrap_or_else(|| {
+            if theorem_entries.is_empty() {
+                json!("no_math_found")
+            } else {
+                json!("lean_not_run")
+            }
+        });
         let operator_status = if theorem_entries.is_empty() {
             "NOT_CONDUCIVE_TO_LEAN_PROOF"
         } else {
@@ -1328,12 +1362,10 @@ fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
     None
 }
 
-/// Gate for the LLM-authored Lean path: a candidate is a proof target when it is a real
+/// Gate for the LLM-authored Lean path: a candidate is authorable when it is a real
 /// discovered theorem (sourced from `theorem_graph.json`) carrying a non-empty statement.
-/// The LLM authors the faithful Lean statement from the paper text and the Lean kernel
-/// verifies the proof, so this no longer requires deterministic typed-IR readiness — that
-/// older gate filtered out every theorem on hard papers before the LLM could try.
-/// Honesty is preserved by the source-artifact check here plus the kernel downstream.
+/// Typed IR quality is recorded separately as `deterministic_ready`; weak IR is a reason
+/// for an honest failed Lean attempt, not a reason to skip authoring.
 fn theorem_candidate_llm_author_issue(theorem: &serde_json::Value) -> Option<&'static str> {
     if theorem
         .get("source_span")
@@ -1432,7 +1464,7 @@ fn proof_map_skips_lean(theorem_map: &serde_json::Value) -> bool {
         theorem_map
             .get("skip_reason")
             .and_then(|value| value.as_str()),
-        Some("no_math_targets" | "no_proof_ready_math_targets")
+        Some("no_math_found" | "not_formalizable" | "no_math_targets")
     )
 }
 
@@ -1504,8 +1536,120 @@ fn emit_prop(value: &serde_json::Value) -> String {
             emit_term(value.get("lhs").unwrap_or(&json!(null))),
             emit_term(value.get("rhs").unwrap_or(&json!(null)))
         ),
+        "less_equal" => format!(
+            "{} ≤ {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "less_than" => format!(
+            "{} < {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "greater_equal" => format!(
+            "{} ≥ {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "greater_than" => format!(
+            "{} > {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "implies" => format!(
+            "{} -> {}",
+            emit_prop(value.get("premise").unwrap_or(&json!(null))),
+            emit_prop(value.get("conclusion").unwrap_or(&json!(null)))
+        ),
+        "and" => value
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| format!("({})", emit_prop(item)))
+                    .collect::<Vec<_>>()
+                    .join(" ∧ ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "True".to_string()),
+        "or" => value
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| format!("({})", emit_prop(item)))
+                    .collect::<Vec<_>>()
+                    .join(" ∨ ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "True".to_string()),
+        "not" => format!(
+            "¬ ({})",
+            emit_prop(value.get("arg").unwrap_or(&json!(null)))
+        ),
+        "forall" => emit_quantified_prop("∀", value),
+        "exists" => emit_quantified_prop("∃", value),
+        "uninterpreted_predicate" => emit_uninterpreted_predicate(value),
         "unknown_prop" => "True".to_string(),
         _ => "True".to_string(),
+    }
+}
+
+fn emit_quantified_prop(quantifier: &str, value: &serde_json::Value) -> String {
+    let binders = value
+        .get("binders")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|binder| {
+                    let name = binder.get("name").and_then(|v| v.as_str())?;
+                    let ty = emit_type(
+                        binder
+                            .get("type")
+                            .unwrap_or(&json!({"kind": "unknown_type"})),
+                    );
+                    Some(format!("({name} : {ty})"))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let body = value
+        .get("body")
+        .map(emit_prop)
+        .unwrap_or_else(|| "True".to_string());
+    if binders.is_empty() {
+        body
+    } else {
+        format!("{quantifier} {binders}, {body}")
+    }
+}
+
+fn emit_uninterpreted_predicate(value: &serde_json::Value) -> String {
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(lean_identifier)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "PaperPredicate".to_string());
+    let args = value
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(emit_term)
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if args.is_empty() {
+        name
+    } else {
+        format!("{} {}", name, args.join(" "))
     }
 }
 
@@ -1522,11 +1666,43 @@ fn emit_term(value: &serde_json::Value) -> String {
             .and_then(|v| v.as_u64())
             .map(|value| value.to_string())
             .unwrap_or_else(|| "0".to_string()),
+        "int_lit" | "real_lit" => value
+            .get("value")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| value.as_i64().map(|n| n.to_string()))
+                    .or_else(|| value.as_f64().map(|n| n.to_string()))
+                    .unwrap_or_else(|| "0".to_string())
+            })
+            .unwrap_or_else(|| "0".to_string()),
         "add" => format!(
             "{} + {}",
             emit_term(value.get("lhs").unwrap_or(&json!(null))),
             emit_term(value.get("rhs").unwrap_or(&json!(null)))
         ),
+        "sub" => format!(
+            "{} - {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "mul" => format!(
+            "{} * {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "div" => format!(
+            "{} / {}",
+            emit_term(value.get("lhs").unwrap_or(&json!(null))),
+            emit_term(value.get("rhs").unwrap_or(&json!(null)))
+        ),
+        "pow" => format!(
+            "{} ^ {}",
+            emit_term(value.get("base").unwrap_or(&json!(null))),
+            emit_term(value.get("exponent").unwrap_or(&json!(null)))
+        ),
+        "neg" => format!("-{}", emit_term(value.get("arg").unwrap_or(&json!(null)))),
         "unknown_term" => "0".to_string(),
         _ => "0".to_string(),
     }
@@ -1734,6 +1910,60 @@ fn lean_entry_status(
     classify_lean_failure(&diagnostics)
 }
 
+fn lean_attempt_status_from_skip_reason(value: &serde_json::Value) -> serde_json::Value {
+    match value
+        .get("skip_reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("no_math_found")
+    {
+        "not_formalizable" => json!("not_formalizable"),
+        _ => json!("no_math_found"),
+    }
+}
+
+fn lean_attempt_status_for_entry(
+    kind: &str,
+    lean_declaration: Option<&str>,
+    lean_results: &serde_json::Value,
+) -> &'static str {
+    if kind == "semantic_gap" {
+        return "not_formalizable";
+    }
+    if let Some(decl_results) = lean_declaration.and_then(|decl| {
+        lean_results
+            .get("declarations")
+            .and_then(|map| map.get(decl))
+    }) {
+        return lean_attempt_status_from_results(decl_results);
+    }
+    lean_attempt_status_from_results(lean_results)
+}
+
+fn lean_attempt_status_from_results(results: &serde_json::Value) -> &'static str {
+    if results.get("status").and_then(|v| v.as_str()) == Some("pass") {
+        return "proved";
+    }
+    if let Some(skip_reason) = results.get("skip_reason").and_then(|v| v.as_str()) {
+        return match skip_reason {
+            "no_math_found" | "no_math_targets" => "no_math_found",
+            "not_formalizable" => "not_formalizable",
+            _ => "failed_typecheck",
+        };
+    }
+    let diagnostics = lean_status_diagnostics(results).to_ascii_lowercase();
+    if diagnostics.contains("not_formalizable")
+        || diagnostics.contains("not formalizable")
+        || diagnostics.contains("formalization blocker")
+        || diagnostics.contains("cannot faithfully formalize")
+    {
+        "not_formalizable"
+    } else if diagnostics.contains("unsolved goals") {
+        "failed_open_goal"
+    } else {
+        "failed_typecheck"
+    }
+}
+
 fn classify_lean_failure(diagnostics: &str) -> &'static str {
     if diagnostics.contains("sorry") {
         "USES_SORRY"
@@ -1804,7 +2034,10 @@ mod tests {
         // `<=` / `>=` / unicode forms become typed relations with no unknown nodes.
         let le = parse_proposition("a + b <= c");
         assert_eq!(le["kind"], "less_equal");
-        assert!(!contains_unknown_math_node(&le), "clean <= must be fully typed");
+        assert!(
+            !contains_unknown_math_node(&le),
+            "clean <= must be fully typed"
+        );
 
         let ge = parse_proposition("n ≥ 0");
         assert_eq!(ge["kind"], "greater_equal");
@@ -1841,13 +2074,19 @@ mod tests {
         // A theorem_graph-sourced node whose statement cannot be faithfully typed
         // must surface unknown math (-> partial -> skipped), never a fake target.
         let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-hard"});
-        let theorem_ir =
-            typed_theorem_ir_from_source("thm_hard", "\\|T_n - T\\| \\leq \\epsilon", &source_span, None, None);
+        let theorem_ir = typed_theorem_ir_from_source(
+            "thm_hard",
+            "\\|T_n - T\\| \\leq \\epsilon",
+            &source_span,
+            None,
+            None,
+        );
         assert!(
             contains_unknown_math_node(theorem_ir.get("conclusion").unwrap()),
             "norm inequality must remain unknown, not a fabricated less_equal(var, var)"
         );
-        let typed = typed_transcription_from_source("\\|T_n - T\\| \\leq \\epsilon", &theorem_ir, None);
+        let typed =
+            typed_transcription_from_source("\\|T_n - T\\| \\leq \\epsilon", &theorem_ir, None);
         assert_eq!(typed["status"], "partial");
     }
 
@@ -2164,7 +2403,64 @@ publisherReadyLowerBound = claimCount == 43
     }
 
     #[test]
-    fn proof_obligations_skip_body_fragments_but_author_theorem_graph_targets() {
+    fn proof_obligations_emit_uninterpreted_predicate_instead_of_true_placeholder() {
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": [
+                {
+                    "id": "theorem_thm_fib",
+                    "kind": "theorem",
+                    "formalization_class": "formal_math",
+                    "statement": "The projection from the ordered configuration space is a locally trivial fibration.",
+                    "source_claim_id": "thm:fib",
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": "thm:fib"},
+                    "typed_transcription": {
+                        "status": "transcribed",
+                        "source_text": "The projection from the ordered configuration space is a locally trivial fibration.",
+                        "math_objects": [],
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "uninterpreted_predicate",
+                            "name": "LocallyTrivialConfigurationProjection",
+                            "args": []
+                        }
+                    },
+                    "theorem_ir": {
+                        "theorem_name": "thm_fib",
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "uninterpreted_predicate",
+                            "name": "LocallyTrivialConfigurationProjection",
+                            "args": []
+                        }
+                    },
+                    "formalization_target": {
+                        "lean_declaration": "thm_fib",
+                        "expected_shape": "theorem"
+                    }
+                }
+            ]
+        });
+
+        let obligations =
+            build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
+        let item = &obligations["obligations"][0];
+
+        assert_eq!(obligations["status"], "ready");
+        assert_eq!(item["lean_declaration"], "thm_fib");
+        assert_eq!(
+            item["lean_statement"],
+            "theorem thm_fib : LocallyTrivialConfigurationProjection := by"
+        );
+        assert_ne!(item["lean_statement"], "theorem thm_fib : True := by");
+        assert!(proof_obligations_require_lean(&obligations));
+    }
+
+    #[test]
+    fn proof_obligations_attempt_source_backed_theorems_even_with_weak_typed_ir() {
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let semantic_ir = json!({
             "schema_version": "1.0.0",
@@ -2223,18 +2519,29 @@ publisherReadyLowerBound = claimCount == 43
         let obligations =
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
 
-        // Body-fragment sources are still skipped (not from the reliable theorem graph),
-        // but the theorem_graph-sourced statement is now an LLM-author target even though
-        // its deterministic transcription was only "partial": the LLM authors the faithful
-        // Lean statement and the kernel decides proved/not_proved.
+        // Body-fragment sources are skipped because they are not from the theorem graph, but
+        // source-backed theorem statements still get a Lean authoring attempt even when typed IR
+        // is weak. The LLM author works from the source statement; Lean reports the honest
+        // failure mode later.
         assert_eq!(obligations["status"], "ready");
-        let obls = obligations["obligations"].as_array().unwrap();
-        assert_eq!(obls.len(), 1);
-        assert_eq!(obls[0]["lean_declaration"], "thm_partial");
+        let obligation_items = obligations["obligations"].as_array().unwrap();
+        assert_eq!(obligation_items.len(), 1);
+        assert_eq!(obligation_items[0]["lean_declaration"], "thm_partial");
+        assert_eq!(obligation_items[0]["deterministic_ready"], false);
+        assert_eq!(
+            obligation_items[0]["deterministic_ready_reason"],
+            "typed_transcription_not_transcribed"
+        );
         let skipped = obligations["skipped_targets"].as_array().unwrap();
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0]["reason"], "not_from_reliable_theorem_graph");
         assert!(proof_obligations_require_lean(&obligations));
+
+        let lean_targets = build_lean_targets(&obligations);
+        assert_eq!(
+            lean_targets["targets"][0]["lean_declaration"],
+            "thm_partial"
+        );
     }
 
     #[test]
@@ -2318,7 +2625,8 @@ publisherReadyLowerBound = claimCount == 43
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
 
         assert_eq!(obligations["status"], "skipped");
-        assert_eq!(obligations["skip_reason"], "no_math_targets");
+        assert_eq!(obligations["skip_reason"], "no_math_found");
+        assert_eq!(obligations["lean_attempt_status"], "no_math_found");
         assert_eq!(
             obligations["operator_status"],
             "NOT_CONDUCIVE_TO_LEAN_PROOF"
@@ -2328,17 +2636,19 @@ publisherReadyLowerBound = claimCount == 43
 
         let lean_targets = build_lean_targets(&obligations);
         assert_eq!(lean_targets["status"], "skipped");
-        assert_eq!(lean_targets["skip_reason"], "no_math_targets");
+        assert_eq!(lean_targets["skip_reason"], "no_math_found");
+        assert_eq!(lean_targets["lean_attempt_status"], "no_math_found");
         assert!(lean_targets["targets"].as_array().unwrap().is_empty());
 
         let theorem_map = build_theorem_map(&obligations, &json!({"status": "skipped"}));
         assert_eq!(theorem_map["status"], "SKIPPED");
-        assert_eq!(theorem_map["skip_reason"], "no_math_targets");
+        assert_eq!(theorem_map["skip_reason"], "no_math_found");
+        assert_eq!(theorem_map["lean_attempt_status"], "no_math_found");
         assert!(theorem_map["entries"].as_array().unwrap().is_empty());
 
         let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
         assert_eq!(adequacy["status"], "skipped");
-        assert_eq!(adequacy["skip_reason"], "no_math_targets");
+        assert_eq!(adequacy["skip_reason"], "no_math_found");
         assert_eq!(adequacy["operator_status"], "NOT_CONDUCIVE_TO_LEAN_PROOF");
         assert!(adequacy["verdicts"].as_array().unwrap().is_empty());
     }
@@ -2913,7 +3223,9 @@ theorem thm_add_zero (n : Nat) : n + 0 = n := by
 end GrokRxiv
 "#;
         let issues = validate_lean_proof_code(with_sorry, &obligations);
-        assert!(issues.iter().any(|issue| issue.contains("forbidden term sorry")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("forbidden term sorry")));
 
         let missing_decl = r#"
 namespace GrokRxiv
@@ -2971,6 +3283,52 @@ end GrokRxiv
 
         assert_eq!(theorem_map["status"], "TYPE_ERROR");
         assert_eq!(theorem_map["entries"][0]["status"], "TYPE_ERROR");
+        assert_eq!(
+            theorem_map["entries"][0]["lean_attempt_status"],
+            "failed_open_goal"
+        );
+        assert_eq!(theorem_map["lean_attempt_status"], "failed_open_goal");
+    }
+
+    #[test]
+    fn theorem_map_reports_failed_typecheck_for_lean_syntax_or_type_errors() {
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_bad_claim",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "bad_claim",
+                    "statement": "A theorem candidate with an invalid Lean attempt."
+                }
+            ]
+        });
+        let lean_results = json!({
+            "status": "fail",
+            "declarations": {
+                "bad_claim": {
+                    "status": "fail",
+                    "attempts": [{
+                        "attempt": 1,
+                        "generation": {
+                            "code": "namespace GrokRxiv\n\ntheorem bad_claim : Nat := by\n  exact True\n\nend GrokRxiv\n"
+                        },
+                        "compile": {
+                            "status": "fail",
+                            "stdout": "GrokRxiv/Proofs.lean:3:21: error: type mismatch\n  True\nhas type\n  Prop\nbut is expected to have type\n  Nat",
+                            "stderr": ""
+                        }
+                    }]
+                }
+            }
+        });
+
+        let theorem_map = build_theorem_map(&obligations, &lean_results);
+
+        assert_eq!(
+            theorem_map["entries"][0]["lean_attempt_status"],
+            "failed_typecheck"
+        );
+        assert_eq!(theorem_map["lean_attempt_status"], "failed_typecheck");
     }
 
     #[test]
@@ -3034,9 +3392,18 @@ end GrokRxiv
             .iter()
             .find(|e| e["lean_declaration"] == "thm_two")
             .expect("thm_two entry");
-        assert_eq!(one["status"], "PROVED", "kernel-proved theorem must be PROVED");
-        assert_eq!(one["verified_statement"], "theorem thm_one : True := by trivial");
-        assert_eq!(two["status"], "TYPE_ERROR", "failed theorem must not be PROVED");
+        assert_eq!(
+            one["status"], "PROVED",
+            "kernel-proved theorem must be PROVED"
+        );
+        assert_eq!(
+            one["verified_statement"],
+            "theorem thm_one : True := by trivial"
+        );
+        assert_eq!(
+            two["status"], "TYPE_ERROR",
+            "failed theorem must not be PROVED"
+        );
         // Top-level map status is the first non-PROVED entry status (not blindly the
         // aggregate's `partial`), so the paper is not falsely reported fully proved.
         assert_ne!(theorem_map["status"], "PROVED");
@@ -3127,7 +3494,11 @@ end GrokRxiv
         // Sanity: the helper flags True, 0=0, x=x but NOT a real (non-reflexive) statement.
         assert!(lean_statement_is_placeholder("theorem t : True := by"));
         assert!(lean_statement_is_placeholder("theorem t : 0 = 0 := by"));
-        assert!(lean_statement_is_placeholder("theorem t (x : Nat) : x = x := by"));
-        assert!(!lean_statement_is_placeholder("theorem t (n : Nat) : n + 0 = n := by"));
+        assert!(lean_statement_is_placeholder(
+            "theorem t (x : Nat) : x = x := by"
+        ));
+        assert!(!lean_statement_is_placeholder(
+            "theorem t (n : Nat) : n + 0 = n := by"
+        ));
     }
 }

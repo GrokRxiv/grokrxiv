@@ -167,6 +167,9 @@ actions:
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics and artifact paths while formalizing.
+      - name: --no-external-actions
+        kind: flag
+        description: Run formalization and render artifacts without updating PR comments or commits.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

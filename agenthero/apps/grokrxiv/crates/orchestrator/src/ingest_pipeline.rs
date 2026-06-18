@@ -348,6 +348,9 @@ pub struct IngestOptions {
     /// Don't write Tier-2 (Supabase) artifacts. Tier-1 (Git) is still written
     /// to the local `grokrxiv-data` clone so the review path has a body.md.
     pub dry_run_storage: bool,
+    /// Run the heavyweight typed theorem IR agent during ingest. Normal review
+    /// keeps this off; formalization/enrichment owns typed IR by default.
+    pub typed_theorem_ir: bool,
 }
 
 impl IngestOptions {
@@ -377,10 +380,12 @@ impl IngestOptions {
                     .collect()
             })
             .unwrap_or_default();
+        let typed_theorem_ir = env_truthy("GROKRXIV_TYPED_THEOREM_IR");
         Self {
             no_cache,
             skip_stages,
             dry_run_storage,
+            typed_theorem_ir,
         }
     }
 }
@@ -1525,7 +1530,7 @@ fn extraction_budget_from_routing(
     }
 }
 
-fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
+pub(crate) fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
     let routing = load_extraction_routing(role);
     let (provider, model) = match routing.as_ref() {
         Some(r) => (r.provider.clone(), r.model.clone()),
@@ -1954,7 +1959,11 @@ fn citation_verify_budget() -> std::time::Duration {
 /// `transient_unknown`, which `build_citation_validation_report` does not treat
 /// as remediation, so a flaky provider never wrongly fails a paper.
 #[cfg(feature = "grokrxiv-verifier")]
-async fn populate_citation_validations(state: &AppState, extract: &PaperExtract, references: &mut Value) {
+async fn populate_citation_validations(
+    state: &AppState,
+    extract: &PaperExtract,
+    references: &mut Value,
+) {
     use grokrxiv_verifier::{CitationVerifier, Verifier, VerifierContext};
 
     let ctx = VerifierContext::for_paper(extract, &state.http);
@@ -1984,7 +1993,10 @@ async fn populate_citation_validations(state: &AppState, extract: &PaperExtract,
 /// projection are unit-testable without HTTP.
 #[cfg(feature = "grokrxiv-verifier")]
 fn apply_resolver_entries_to_references(references: &mut Value, entries: &[Value]) {
-    let Some(citations) = references.get_mut("citations").and_then(Value::as_array_mut) else {
+    let Some(citations) = references
+        .get_mut("citations")
+        .and_then(Value::as_array_mut)
+    else {
         return;
     };
     for citation in citations.iter_mut() {
@@ -2011,7 +2023,10 @@ fn match_resolver_entry<'a>(citation: &Value, entries: &'a [Value]) -> Option<&'
             .filter(|s| !s.is_empty())
     }
     if let Some(doi) = norm(citation, "doi") {
-        if let Some(entry) = entries.iter().find(|e| norm(e, "doi").as_deref() == Some(doi.as_str())) {
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| norm(e, "doi").as_deref() == Some(doi.as_str()))
+        {
             return Some(entry);
         }
     }
@@ -2023,7 +2038,11 @@ fn match_resolver_entry<'a>(citation: &Value, entries: &'a [Value]) -> Option<&'
             return Some(entry);
         }
     }
-    let raw = citation.get("raw").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let raw = citation
+        .get("raw")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(raw) = raw {
         if let Some(entry) = entries
             .iter()
@@ -2042,7 +2061,9 @@ fn match_resolver_entry<'a>(citation: &Value, entries: &'a [Value]) -> Option<&'
 fn validation_from_resolver_entry(entry: &Value) -> Option<Value> {
     let status = entry.get("status").and_then(Value::as_str)?;
     let mut validation = json!({ "status": status });
-    let obj = validation.as_object_mut().expect("validation is an object literal");
+    let obj = validation
+        .as_object_mut()
+        .expect("validation is an object literal");
     if let Some(source) = entry.get("source").and_then(Value::as_str) {
         obj.insert("source".to_string(), json!(source));
     }
@@ -2123,8 +2144,14 @@ fn build_citation_validation_report(references: &Value) -> Value {
                 // pipeline extraction gap is never flagged as a missing/unverifiable paper
                 // citation.
                 "insufficient_metadata"
-                | "unresolved" | "unverified" | "transient_unknown" | "malformed" | "conflict"
-                | "not_checked" | "retracted" | "not_found" => raw_status,
+                | "unresolved"
+                | "unverified"
+                | "transient_unknown"
+                | "malformed"
+                | "conflict"
+                | "not_checked"
+                | "retracted"
+                | "not_found" => raw_status,
                 _ => "not_checked",
             };
             let evidence = validation
@@ -2427,10 +2454,7 @@ fn should_run_typed_theorem_agent(body_md: &str, opts: &IngestOptions) -> bool {
     if opts.should_skip("theorems") {
         return false;
     }
-    if std::env::var("GROKRXIV_TYPED_THEOREM_IR")
-        .map(|v| v.eq_ignore_ascii_case("off") || v.trim() == "0")
-        .unwrap_or(false)
-    {
+    if !opts.typed_theorem_ir {
         return false;
     }
     body_has_theorem_signal_local(body_md)
@@ -4070,8 +4094,14 @@ mod a4_tests {
         })];
 
         apply_resolver_entries_to_references(&mut references, &entries);
-        assert_eq!(references["citations"][0]["validation"]["status"], "resolved");
-        assert_eq!(references["citations"][0]["validation"]["source"], "crossref");
+        assert_eq!(
+            references["citations"][0]["validation"]["status"],
+            "resolved"
+        );
+        assert_eq!(
+            references["citations"][0]["validation"]["source"],
+            "crossref"
+        );
         assert_eq!(
             references["citations"][0]["validation"]["evidence"][0],
             "crossref match"
@@ -4156,7 +4186,10 @@ mod a4_tests {
         })];
 
         apply_resolver_entries_to_references(&mut references, &entries);
-        assert_eq!(references["citations"][0]["validation"]["status"], "resolved");
+        assert_eq!(
+            references["citations"][0]["validation"]["status"],
+            "resolved"
+        );
         assert_eq!(references["citations"][0]["validation"]["source"], "arxiv");
         // No matching entry -> stays unchecked rather than borrowing another verdict.
         assert!(references["citations"][1]["validation"].is_null());
@@ -4166,27 +4199,30 @@ mod a4_tests {
     }
 
     #[test]
-    fn typed_theorem_agent_gate_respects_signal_skip_and_override() {
-        let theorem_body = "We prove the following.\n\\begin{theorem} For all n, n+0=n. \\end{theorem}";
+    fn typed_theorem_agent_gate_is_explicit_not_default() {
+        let theorem_body =
+            "We prove the following.\n\\begin{theorem} For all n, n+0=n. \\end{theorem}";
         let equation_only_body = "Energy is \\(E = mc^2\\) and \\begin{align} a &= b \\end{align}.";
         let plain_body = "This is a survey with prose only and no formal results.";
         let opts = IngestOptions {
             no_cache: false,
             skip_stages: vec![],
             dry_run_storage: false,
+            typed_theorem_ir: false,
         };
         let skip_opts = IngestOptions {
             no_cache: false,
             skip_stages: vec!["theorems".into()],
             dry_run_storage: false,
+            typed_theorem_ir: true,
         };
 
         let prev = std::env::var("GROKRXIV_TYPED_THEOREM_IR").ok();
         std::env::remove_var("GROKRXIV_TYPED_THEOREM_IR");
 
         assert!(
-            should_run_typed_theorem_agent(theorem_body, &opts),
-            "theorem signal should enable the typed-IR agent"
+            !should_run_typed_theorem_agent(theorem_body, &opts),
+            "synchronous ingest defaults to deterministic theorem detection only"
         );
         assert!(
             !should_run_typed_theorem_agent(equation_only_body, &opts),
@@ -4199,6 +4235,15 @@ mod a4_tests {
         assert!(
             !should_run_typed_theorem_agent(theorem_body, &skip_opts),
             "skipping the theorems stage disables the agent"
+        );
+
+        let typed_opts = IngestOptions {
+            typed_theorem_ir: true,
+            ..opts.clone()
+        };
+        assert!(
+            should_run_typed_theorem_agent(theorem_body, &typed_opts),
+            "formalization/enrichment can explicitly enable typed-IR extraction"
         );
 
         std::env::set_var("GROKRXIV_TYPED_THEOREM_IR", "off");

@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
-import { cacheTag } from "next/cache";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,9 +44,6 @@ async function loadReviewWithPaper(
   paper: Paper;
   rejection: { rationale_md: string; created_at: string } | null;
 } | null> {
-  "use cache";
-  cacheTag(`review:${id}`);
-  cacheTag("reviews-list");
   const review = await getReviewByIdAnon(id);
   if (!review) return null;
   // Hide non-public statuses (e.g. awaiting_moderation, withdrawn) from anon

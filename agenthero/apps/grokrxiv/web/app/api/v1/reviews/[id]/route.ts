@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PUBLIC_REVIEW_STATUSES } from "@/lib/types";
 import { isSupabaseConfigured } from "@/lib/env";
+import { withLatestAgentOutputs } from "@/lib/review-agents";
 
 const UuidParam = z.string().uuid();
 const SourceKeyParam = z
@@ -22,7 +23,7 @@ export async function GET(
   const supabase = await createSupabaseServerClient();
 
   const select =
-    "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes)";
+    "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(id, role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes, created_at)";
 
   const asUuid = UuidParam.safeParse(id);
   if (asUuid.success) {
@@ -36,7 +37,7 @@ export async function GET(
     if (error || !data) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    return NextResponse.json(data);
+    return NextResponse.json(withLatestAgentOutputs(data));
   }
 
   const asSourceKey = SourceKeyParam.safeParse(id);
@@ -61,7 +62,7 @@ export async function GET(
     if (error || !data) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    return NextResponse.json(data);
+    return NextResponse.json(withLatestAgentOutputs(data));
   }
 
   return NextResponse.json({ error: "bad_source_id" }, { status: 400 });

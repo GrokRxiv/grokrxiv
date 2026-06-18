@@ -416,12 +416,11 @@ fn normalize_theorem_graph_shape(obj: &mut serde_json::Map<String, Value>) {
                 ),
             };
             out.insert("depends_on".to_string(), depends_on);
-            if let Some(src_tex) = src.get("source_tex") {
-                out.insert("source_tex".to_string(), src_tex.clone());
+            for key in ["source_tex", "typed_transcription", "theorem_ir"] {
+                if let Some(value) = src.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
             }
-            // typed_transcription / theorem_ir have strict sub-schemas; drop them here so a
-            // malformed optional block can't sink an otherwise-correct extraction. The LLM
-            // Lean author works from `statement`, and the deterministic IR is only a hint.
             Some(Value::Object(out))
         })
         .collect();
@@ -520,7 +519,9 @@ mod tests {
         // Top level is exactly {theorem_graph, reason} — nodes/edges/title gone.
         let obj = normalized.as_object().unwrap();
         assert!(obj.contains_key("theorem_graph") && obj.contains_key("reason"));
-        assert!(!obj.contains_key("nodes") && !obj.contains_key("edges") && !obj.contains_key("title"));
+        assert!(
+            !obj.contains_key("nodes") && !obj.contains_key("edges") && !obj.contains_key("title")
+        );
         let tg = obj["theorem_graph"].as_array().unwrap();
         assert_eq!(tg.len(), 2);
         // kind->type, location->section, depends_on present (node's own kept; edge folded in).
@@ -534,6 +535,60 @@ mod tests {
         let agent = crate::extraction::theorems::TheoremGraphExtractorAgent::new();
         validate_submit(&normalized, agent.schema())
             .expect("normalized theorem graph must validate against theorems.schema.json");
+    }
+
+    #[test]
+    fn theorem_graph_normalizer_preserves_typed_ir_blocks() {
+        let typed_transcription = json!({
+            "status": "transcribed",
+            "source_text": "For all n, n + 0 = n.",
+            "math_objects": [{"name": "n", "type": {"kind": "nat"}}],
+            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "equals",
+                "lhs": {
+                    "kind": "add",
+                    "lhs": {"kind": "var", "name": "n"},
+                    "rhs": {"kind": "nat_lit", "value": 0}
+                },
+                "rhs": {"kind": "var", "name": "n"}
+            }
+        });
+        let theorem_ir = json!({
+            "theorem_name": "add_zero",
+            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "equals",
+                "lhs": {
+                    "kind": "add",
+                    "lhs": {"kind": "var", "name": "n"},
+                    "rhs": {"kind": "nat_lit", "value": 0}
+                },
+                "rhs": {"kind": "var", "name": "n"}
+            }
+        });
+        let payload = json!({
+            "nodes": [{
+                "id": "thm-add-zero",
+                "kind": "theorem",
+                "location": "sec-main",
+                "statement": "For all n, n + 0 = n.",
+                "typed_transcription": typed_transcription,
+                "theorem_ir": theorem_ir
+            }],
+            "reason": null
+        });
+
+        let normalized = normalize_submit_payload("theorem_graph_extractor", &payload);
+        let node = &normalized["theorem_graph"][0];
+
+        assert_eq!(node["typed_transcription"]["status"], "transcribed");
+        assert_eq!(node["theorem_ir"]["theorem_name"], "add_zero");
+        let agent = crate::extraction::theorems::TheoremGraphExtractorAgent::new();
+        validate_submit(&normalized, agent.schema())
+            .expect("typed theorem graph must still validate against theorems.schema.json");
     }
 
     use agenthero_agent_runtime::AgentSpec;

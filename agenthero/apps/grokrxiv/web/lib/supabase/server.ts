@@ -12,6 +12,7 @@ import {
   type ReviewSummary,
   type ReviewWithPaper,
 } from "@/lib/types";
+import { withLatestAgentOutputs } from "@/lib/review-agents";
 import { SUPABASE_AUTH_COOKIE_NAME } from "@/lib/supabase/cookie";
 import { supabaseErrorMessage } from "@/lib/supabase/errors";
 
@@ -89,12 +90,12 @@ export async function getReviewById(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, submitted_by, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes)",
+      "id, paper_id, status, visibility, submitted_by, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, paper:papers(*), agents:review_agents(id, role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes, created_at)",
     )
     .eq("id", id)
     .single();
   if (error || !data) return null;
-  return data as unknown as Review;
+  return withLatestAgentOutputs(data as unknown as Review);
 }
 
 async function findPaperBySourceKey(

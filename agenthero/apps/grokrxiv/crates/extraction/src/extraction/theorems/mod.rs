@@ -20,6 +20,8 @@ pub mod tools;
 
 /// Agent name (matches the role's snake-case identifier).
 pub const NAME: &str = "theorem_graph_extractor";
+const SOURCE_CONTEXT_FILE: &str = "theorem_source_context.md";
+const SOURCE_CONTEXT_PROMPT_MAX_BYTES: usize = 90_000;
 
 /// Bytes of the output schema, embedded so the agent doesn't need to read
 /// from disk at runtime.
@@ -77,8 +79,15 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
     }
     fn system_prompt(&self) -> String {
         "You are building the theorem dependency graph for this paper. \
-         Use `list_sections` to see structure, `read_section` to inspect specific \
-         sections, and `query_ast` to find theorem-like environments. For every \
+         The real LaTeX source files in the workdir are canonical. If \
+         `theorem_source_context.md` exists, read it first: it is a compact \
+         source index of exact TeX theorem-like blocks and aliases, not a final \
+         theorem graph. Then use `list_files` and `read_file` to verify source \
+         spans, inspect macros, and resolve dependencies as needed. Use \
+         `body.md`, `list_sections`, `read_section`, and `query_ast` as \
+         navigation/context only; do not treat an existing rendered theorem \
+         summary as ground truth when source TeX is available. \
+         For every \
          theorem/lemma/proposition/corollary/definition/proof block: extract its \
          id, type, complete statement with no ellipsis, raw source_tex when \
          available, and the section it lives in. For theorem/lemma/proposition/\
@@ -99,11 +108,15 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
             .to_string()
     }
     fn user_kickoff(&self, ctx: &ExtractionContext<'_>) -> String {
+        let source_context = theorem_source_context_prompt(ctx);
         format!(
             "Paper: {arxiv} (title: {title}). The unpacked source bundle is at \
-             ./ (workdir; `body.md` is the rendered markdown). Start by calling \
-             `list_sections` to map the document, then read sections that contain \
-             theorem-like blocks. For each theorem/lemma/proposition/corollary/\
+             ./ (workdir; `body.md` is rendered markdown context). Start by \
+             using the inlined LaTeX theorem source context below when present; \
+             call `list_files`/`read_file` only as needed to verify source spans, \
+             macros, labels, and dependencies. Use `body.md` only to orient \
+             section order when useful.{source_context} For each \
+             theorem/lemma/proposition/corollary/\
              definition/proof you find, record `id`, `type`, full `statement` \
              without `...`, `source_tex` when available, and `section`. For \
              theorem/lemma/proposition/corollary entries, fill \
@@ -132,6 +145,34 @@ impl ExtractionAgent for TheoremGraphExtractorAgent {
         let max_cost_usd = ctx.max_cost_usd;
         crate::extraction::run_tool_loop(self, runner, spec, ctx, max_iters, max_cost_usd).await
     }
+}
+
+fn theorem_source_context_prompt(ctx: &ExtractionContext<'_>) -> String {
+    let path = ctx.workdir.join(SOURCE_CONTEXT_FILE);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    let text = truncate_source_context_for_prompt(&text, SOURCE_CONTEXT_PROMPT_MAX_BYTES);
+    format!(
+        "\n\nLaTeX theorem source context from `{SOURCE_CONTEXT_FILE}`:\n<theorem_source_context>\n{text}\n</theorem_source_context>\n\n"
+    )
+}
+
+fn truncate_source_context_for_prompt(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n[truncated: use read_file on `{SOURCE_CONTEXT_FILE}` or the original TeX files for omitted source blocks]",
+        &text[..end]
+    )
 }
 
 #[cfg(test)]
@@ -291,6 +332,58 @@ mod tests {
         let a = TheoremGraphExtractorAgent::new();
         assert_eq!(a.role(), ExtractionRole::TheoremGraphExtractor);
         assert_eq!(a.name(), "theorem_graph_extractor");
+    }
+
+    #[test]
+    fn prompts_request_typed_ir_for_theorem_targets() {
+        let agent = TheoremGraphExtractorAgent::new();
+        let system = agent.system_prompt();
+
+        assert!(
+            system.contains("typed_transcription and theorem_ir"),
+            "system prompt must ask the extractor to emit typed IR, got: {system}"
+        );
+        assert!(
+            !system.contains("Do NOT produce"),
+            "system prompt must not prohibit typed IR, got: {system}"
+        );
+
+        let dir = tempdir();
+        std::fs::write(
+            dir.path().join("theorem_source_context.md"),
+            "# LaTeX Theorem Source Context\n\n\\begin{theorem}\\label{thm:add-zero} For every $n$, $n+0=n$.\\end{theorem}",
+        )
+        .unwrap();
+        let pe = paper_extract();
+        let registry = Arc::new(TheoremGraphExtractorAgent::build_registry());
+        let ctx = ExtractionContext {
+            workdir: dir.path(),
+            extract: &pe,
+            semantic_ast: None,
+            paper_id: uuid::Uuid::nil(),
+            arxiv_id: "2401.99999v1",
+            registry,
+            max_cost_usd: 1.0,
+            max_iters: 10,
+        };
+        let kickoff = agent.user_kickoff(&ctx);
+
+        assert!(
+            kickoff.contains("fill `typed_transcription` and `theorem_ir`"),
+            "kickoff prompt must ask the extractor to fill typed IR, got: {kickoff}"
+        );
+        assert!(
+            kickoff.contains("LaTeX theorem source context"),
+            "kickoff prompt must inline theorem_source_context.md when present, got: {kickoff}"
+        );
+        assert!(
+            kickoff.contains("thm:add-zero"),
+            "kickoff prompt must include source labels from theorem_source_context.md, got: {kickoff}"
+        );
+        assert!(
+            !kickoff.contains("Do NOT fill"),
+            "kickoff prompt must not prohibit typed IR, got: {kickoff}"
+        );
     }
 
     #[test]

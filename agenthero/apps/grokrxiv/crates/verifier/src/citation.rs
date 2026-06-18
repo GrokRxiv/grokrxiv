@@ -496,7 +496,9 @@ impl CitationVerifier {
                         "doi",
                         Some(doi.to_string()),
                         Some(format!("https://doi.org/{doi}")),
-                        format!("verified on well-formed DOI; live Crossref lookup unavailable ({err})"),
+                        format!(
+                            "verified on well-formed DOI; live Crossref lookup unavailable ({err})"
+                        ),
                     )
                 } else {
                     CitationLookup::unknown("crossref", err)
@@ -3190,7 +3192,9 @@ mod tests {
             "an ambient Gemini key must NOT add a billable resolver on the $0 CLI path"
         );
         // The free HTTP providers still run.
-        assert!(providers.iter().any(|provider| provider.source == "openalex"));
+        assert!(providers
+            .iter()
+            .any(|provider| provider.source == "openalex"));
     }
 
     #[tokio::test]
@@ -3382,8 +3386,14 @@ mod tests {
             host_of("https://export.arxiv.org/api/query?id_list=x"),
             "export.arxiv.org"
         );
-        assert_eq!(host_of("http://127.0.0.1:8080/works/10.1/x"), "127.0.0.1:8080");
-        assert_eq!(host_of("https://api.crossref.org/works"), "api.crossref.org");
+        assert_eq!(
+            host_of("http://127.0.0.1:8080/works/10.1/x"),
+            "127.0.0.1:8080"
+        );
+        assert_eq!(
+            host_of("https://api.crossref.org/works"),
+            "api.crossref.org"
+        );
     }
 
     #[test]

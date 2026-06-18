@@ -396,6 +396,64 @@ impl AgentRunner for CliRunner {
                 Ok(completion)
             }
             Err(first_err) => {
+                let extracted = extract_json_text(&spec.provider, &raw_stdout);
+
+                // (1) Deterministic salvage — recover the payload locally ($0, no model call) by
+                // fixing common malformations (raw control chars in strings, trailing commas).
+                // Accepted only when the repaired text parses AND the envelope is well-formed, so
+                // it never silently truncates or drops nodes.
+                if let Some(repaired) = repair_malformed_json(&extracted) {
+                    if let Ok(envelope) = parse_tool_envelope(&repaired, tools) {
+                        tracing::warn!(
+                            role = %spec.role,
+                            provider = %spec.provider,
+                            "CliRunner recovered a malformed tool-envelope via deterministic JSON salvage"
+                        );
+                        let mut completion = tool_completion_from_envelope(
+                            envelope,
+                            &spec.provider,
+                            &raw_stdout,
+                            &repaired,
+                        );
+                        completion.raw = enrich_cli_tool_raw(completion.raw, started.elapsed());
+                        return Ok(completion);
+                    }
+                }
+
+                // (2) LLM JSON-repair call — feed the malformed payload + the exact parse error
+                // back to the model, ask it to fix ONLY the syntax (preserving all content), and
+                // feed the corrected envelope back into the run. A large extraction must never be
+                // discarded over one bad character.
+                let repair_prompt = format!(
+                    "The text between <payload> and </payload> was meant to be a SINGLE JSON \
+                     tool-call envelope but failed to parse.\n\
+                     Parse error: {first_err}\n\n\
+                     Fix ONLY the JSON syntax so it parses. Preserve ALL content exactly — every \
+                     `tool_calls` entry and every field, especially the complete `arguments` (e.g. \
+                     the full `theorem_graph` array). Properly escape characters inside string \
+                     values (backslashes, double quotes, and newlines). Do not drop, summarize, or \
+                     add nodes. Return ONLY the corrected JSON object — no markdown, no code \
+                     fences, no commentary.\n\n\
+                     <payload>\n{extracted}\n</payload>"
+                );
+                let built_repair = build_tool_command(self, spec, &repair_prompt, ctx.workdir)?;
+                if let Ok(repaired_raw) =
+                    exec_and_capture(&built_repair, timeout_dur, &spec.role, &spec.provider).await
+                {
+                    if let Ok(mut completion) =
+                        parse_tool_completion(&spec.provider, &repaired_raw, tools)
+                    {
+                        tracing::warn!(
+                            role = %spec.role,
+                            provider = %spec.provider,
+                            "CliRunner recovered a malformed tool-envelope via LLM JSON-repair call"
+                        );
+                        completion.raw = enrich_cli_tool_raw(completion.raw, started.elapsed());
+                        return Ok(completion);
+                    }
+                }
+
+                // (3) Last resort — re-emit corrective retry (regenerate from the original prompt).
                 let corrective = format!(
                     "{prompt}\n\n\
                      Your previous response could not be parsed as a GrokRxiv tool-call \
@@ -421,8 +479,9 @@ impl AgentRunner for CliRunner {
                     })
                     .map_err(|second_err| {
                         anyhow::anyhow!(
-                            "CliRunner tool-envelope parse failure after corrective retry for \
-                             provider={} model={}: first={first_err}; retry={second_err}",
+                            "CliRunner tool-envelope parse failure after deterministic salvage, LLM \
+                             repair, and corrective retry for provider={} model={}: \
+                             first={first_err}; retry={second_err}",
                             spec.provider,
                             spec.model,
                         )
@@ -598,7 +657,18 @@ fn parse_tool_completion(
 ) -> anyhow::Result<ToolCompletion> {
     let extracted = extract_json_text(provider, raw_stdout);
     let envelope = parse_tool_envelope(&extracted, tools)?;
-    Ok(ToolCompletion {
+    Ok(tool_completion_from_envelope(
+        envelope, provider, raw_stdout, &extracted,
+    ))
+}
+
+fn tool_completion_from_envelope(
+    envelope: ParsedToolEnvelope,
+    provider: &str,
+    raw_stdout: &str,
+    extracted: &str,
+) -> ToolCompletion {
+    ToolCompletion {
         finish_reason: if envelope.tool_calls.is_empty() {
             FinishReason::Stop
         } else {
@@ -607,8 +677,110 @@ fn parse_tool_completion(
         text: envelope.text,
         tool_calls: envelope.tool_calls,
         usage: usage_from_cli_wrapper(provider, raw_stdout),
-        raw: raw_cli_payload(provider, raw_stdout, &extracted),
-    })
+        raw: raw_cli_payload(provider, raw_stdout, extracted),
+    }
+}
+
+/// Best-effort DETERMINISTIC repair of a malformed JSON tool-envelope so a large extraction
+/// payload is recovered locally ($0, no model round-trip) instead of being discarded. Conservative:
+/// returns `Some(repaired)` only when a repair pass yields parseable JSON (no silent truncation /
+/// data loss); otherwise `None`, and the caller escalates to an LLM JSON-repair call. Targets the
+/// common LLM mistakes on big LaTeX-dense payloads: raw control characters inside string values and
+/// trailing commas before `}`/`]`.
+fn repair_malformed_json(extracted: &str) -> Option<String> {
+    let base = strip_code_fences(extracted.trim()).to_string();
+    let escaped = escape_unescaped_control_chars(&base);
+    let candidates = [
+        escaped.clone(),
+        strip_trailing_commas(&escaped),
+        strip_trailing_commas(&base),
+    ];
+    candidates
+        .into_iter()
+        .find(|cand| serde_json::from_str::<serde_json::Value>(cand).is_ok())
+}
+
+/// Escape raw control characters (newlines/tabs/etc.) that appear INSIDE JSON string values — a
+/// frequent LLM mistake when emitting multi-line LaTeX/proof text. Characters outside strings are
+/// left untouched.
+fn escape_unescaped_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in s.chars() {
+        if in_string {
+            if escaped {
+                out.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                out.push(c);
+                escaped = true;
+            } else if c == '"' {
+                out.push(c);
+                in_string = false;
+            } else if c == '\n' {
+                out.push_str("\\n");
+            } else if c == '\r' {
+                out.push_str("\\r");
+            } else if c == '\t' {
+                out.push_str("\\t");
+            } else if (c as u32) < 0x20 {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            } else {
+                out.push(c);
+            }
+        } else {
+            if c == '"' {
+                in_string = true;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Remove trailing commas before `}` or `]` (e.g. `{"a":1,}` -> `{"a":1}`), ignoring commas inside
+/// string values.
+fn strip_trailing_commas(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            out.push(c as char);
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        if c == b',' {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
+                i += 1; // drop the trailing comma
+                continue;
+            }
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
 }
 
 #[derive(Debug)]
@@ -795,15 +967,22 @@ fn build_api_fallback_providers(
 /// The global env var stays available, but slow roles can now be tuned without
 /// loosening every CLI call.
 fn cli_timeout_for(spec: &AgentSpec) -> Duration {
+    // 1. Operator per-role override (`GROKRXIV_<ROLE>_TIMEOUT_SECS`) wins outright.
     if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
         return Duration::from_secs(secs);
     }
-    if let Some(secs) = timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS") {
+    // 2. Otherwise honor the MOST GENEROUS of the global cap and the role's explicit YAML
+    //    timeout. A generic global default (e.g. 360s tuned for fast review specialists) must
+    //    never silently cap a deliberately-slow role such as theorem extraction (YAML 2400s) and
+    //    force it into the lossy deterministic fallback; a global floor still applies to roles
+    //    that declare no YAML timeout. This never shortens a role below prior behavior — it only
+    //    lets an explicitly long-running role use its configured budget.
+    let global = timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS");
+    let yaml = (spec.timeout_secs > 0).then(|| u64::from(spec.timeout_secs));
+    if let Some(secs) = global.into_iter().chain(yaml).max() {
         return Duration::from_secs(secs);
     }
-    if spec.timeout_secs > 0 {
-        return Duration::from_secs(spec.timeout_secs.into());
-    }
+    // 3. Nothing configured → built-in default.
     Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
 }
 
@@ -1037,7 +1216,10 @@ async fn exec_and_capture(
             let _ = timeout(Duration::from_secs(5), child.kill()).await;
             stdout_task.abort();
             stderr_task.abort();
-            let reaped = matches!(timeout(Duration::from_secs(5), child.wait()).await, Ok(Ok(_)));
+            let reaped = matches!(
+                timeout(Duration::from_secs(5), child.wait()).await,
+                Ok(Ok(_))
+            );
             if !reaped {
                 tracing::warn!(
                     role,
@@ -1872,7 +2054,7 @@ mod tests {
             spec.timeout_secs = 999;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(77));
         }
-        // 2. invalid/blank per-role env var is ignored.
+        // 2. invalid/blank per-role env var is ignored; with no YAML timeout the global applies.
         {
             let _guard = EnvVarGuard::set(&[
                 ("GROKRXIV_CUSTOM_VALIDATOR_TIMEOUT_SECS", ""),
@@ -1880,15 +2062,24 @@ mod tests {
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.role = "custom_validator".to_string();
-            spec.timeout_secs = 999;
+            spec.timeout_secs = 0;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
-        // 3. global env var wins over YAML/spec.
+        // 3. global vs YAML: the MORE GENEROUS wins — a generic global default must never cap a
+        //    deliberately-long role, and a global floor still lifts a short YAML.
         {
-            let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "42")]);
+            // long YAML beats a small global (the theorem-extraction bug).
+            let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "360")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
-            spec.timeout_secs = 999;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+            spec.timeout_secs = 2400;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(2400));
+        }
+        {
+            // large global floor lifts a short YAML.
+            let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "999")]);
+            let mut spec = stub_spec("claude", "claude-haiku-4-5");
+            spec.timeout_secs = 42;
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(999));
         }
         // 4. no env var → spec wins over default.
         {
@@ -2310,6 +2501,47 @@ mod tests {
             err.to_string().contains("schema validation failed"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn repair_malformed_json_escapes_raw_newline_in_string() {
+        // Model emitted a literal newline inside a `source_tex` string (common on multi-line
+        // LaTeX/proof text) — invalid JSON. Deterministic salvage should escape it and parse.
+        let bad = "{\"tool_calls\":[{\"id\":\"c\",\"name\":\"submit\",\"arguments\":{\"theorem_graph\":[{\"id\":\"p\",\"source_tex\":\"::: proof\n*Proof.* x ◻\n:::\"}]}}]}";
+        assert!(
+            serde_json::from_str::<serde_json::Value>(bad).is_err(),
+            "fixture must be invalid JSON as-is"
+        );
+        let repaired = repair_malformed_json(bad).expect("salvage should recover the payload");
+        let v: serde_json::Value = serde_json::from_str(&repaired).expect("repaired parses");
+        assert_eq!(
+            v["tool_calls"][0]["arguments"]["theorem_graph"][0]["source_tex"],
+            "::: proof\n*Proof.* x ◻\n:::"
+        );
+    }
+
+    #[test]
+    fn repair_malformed_json_strips_trailing_commas() {
+        let bad = "{\"a\":[1,2,],\"b\":{\"x\":1,},}";
+        assert!(serde_json::from_str::<serde_json::Value>(bad).is_err());
+        let repaired = repair_malformed_json(bad).expect("salvage trailing commas");
+        let v: serde_json::Value = serde_json::from_str(&repaired).expect("parses");
+        assert_eq!(v["a"], serde_json::json!([1, 2]));
+        assert_eq!(v["b"]["x"], 1);
+    }
+
+    #[test]
+    fn repair_malformed_json_returns_none_when_unrepairable() {
+        // An unescaped quote mid-string is not in scope for deterministic salvage; caller
+        // escalates to the LLM repair call rather than guessing.
+        let bad = "{\"a\":\"he said \"hi\" loudly\"}";
+        assert!(repair_malformed_json(bad).is_none());
+    }
+
+    #[test]
+    fn escape_unescaped_control_chars_leaves_valid_json_untouched() {
+        let good = "{\"a\":\"line1\\nline2\",\"b\":[1,2]}";
+        assert_eq!(escape_unescaped_control_chars(good), good);
     }
 
     #[test]

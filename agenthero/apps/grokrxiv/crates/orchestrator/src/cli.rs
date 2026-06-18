@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt as _;
 use uuid::Uuid;
 
@@ -28,6 +29,7 @@ use crate::runtime_config::{
     role_env_suffix, role_model_override_env_var, ExtractorKind, RuntimeConfig,
     RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV,
 };
+use grokrxiv_extraction::extraction::{ExtractionAgent, ExtractionContext};
 
 type PaperListRow = (
     Uuid,
@@ -899,26 +901,13 @@ pub async fn run_grokrxiv_action(
             .await
         }
         "formalize" => {
-            let mut review_id: Option<Uuid> = None;
-            let mut debug = false;
-            for a in args {
-                match a.as_str() {
-                    "--debug" => debug = true,
-                    other => {
-                        if review_id.is_none() {
-                            review_id = Some(
-                                Uuid::parse_str(other)
-                                    .context("formalize: review_id must be a UUID")?,
-                            );
-                        } else {
-                            anyhow::bail!("formalize: unexpected argument `{other}`");
-                        }
-                    }
-                }
-            }
-            let review_id =
-                review_id.ok_or_else(|| anyhow::anyhow!("formalize requires a review_id"))?;
-            formalize_review(review_id, debug).await
+            let request = parse_formalize_args(args)?;
+            formalize_review(
+                request.review_id,
+                request.debug_output,
+                request.external_actions_enabled,
+            )
+            .await
         }
         "review-extracted" => {
             let request = parse_review_extracted_args(args)?;
@@ -1156,6 +1145,12 @@ struct ReviewExtractedArgs {
     force: bool,
 }
 
+struct FormalizeArgs {
+    review_id: Uuid,
+    debug_output: bool,
+    external_actions_enabled: bool,
+}
+
 struct ReviewIdActionArgs {
     review_id: Uuid,
     force: bool,
@@ -1258,6 +1253,32 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
         }
     }
     Ok(parsed)
+}
+
+fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
+    let mut review_id: Option<Uuid> = None;
+    let mut debug_output = false;
+    let mut external_actions_enabled = true;
+    for arg in args {
+        match arg.as_str() {
+            "--debug" => debug_output = true,
+            "--no-external-actions" => external_actions_enabled = false,
+            other => {
+                if review_id.is_none() {
+                    review_id = Some(
+                        Uuid::parse_str(other).context("formalize: review_id must be a UUID")?,
+                    );
+                } else {
+                    anyhow::bail!("formalize: unexpected argument `{other}`");
+                }
+            }
+        }
+    }
+    Ok(FormalizeArgs {
+        review_id: review_id.ok_or_else(|| anyhow::anyhow!("formalize requires a review_id"))?,
+        debug_output,
+        external_actions_enabled,
+    })
 }
 
 fn parse_ingest_args(args: Vec<String>) -> anyhow::Result<IngestArgs> {
@@ -2570,11 +2591,12 @@ async fn extract_many(arxiv_ids: &[String], json: bool) -> anyhow::Result<()> {
         let mut outputs = Vec::with_capacity(arxiv_ids.len());
         let mut failures = Vec::new();
 
-        for id in arxiv_ids {
+        for source in arxiv_ids {
+            let id = normalize_arxiv_source_arg(source);
             crate::cli_status::emit(format!(
                 "extract {id}: fetch -> Pandoc parse -> local extraction -> artifact audit"
             ));
-            let result = crate::ingest_pipeline::run_ingest_pipeline(&state, id, &opts).await?;
+            let result = crate::ingest_pipeline::run_ingest_pipeline(&state, &id, &opts).await?;
             let audit = audit_review_input_artifacts(
                 &repo_root,
                 Some(&result.pointer.git_path),
@@ -4107,6 +4129,10 @@ fn parse_arxiv_source(s: &str) -> Option<String> {
     None
 }
 
+fn normalize_arxiv_source_arg(source: &str) -> String {
+    parse_arxiv_source(source).unwrap_or_else(|| source.trim().to_string())
+}
+
 fn parse_bare_modern(s: &str) -> Option<String> {
     // YYMM.NNNNN with optional version
     let mut parts = s.splitn(2, 'v');
@@ -4256,6 +4282,10 @@ async fn resolve_source(
             corpus_id: None,
         }]);
     }
+    // arXiv URLs always resolve as canonical arXiv sources, even when the URL path is
+    // `/pdf/<id>` or the caller supplied `--type pdf`. The arXiv pipeline tries e-print/LaTeX
+    // first and uses the PDF only as fallback/archive material; treating arXiv PDF URLs as
+    // generic PDFs would bypass the LaTeX source we need for theorem extraction.
     if let Some(id) = parse_arxiv_source(source) {
         return Ok(vec![ResolvedSource::Arxiv(id)]);
     }
@@ -5089,6 +5119,131 @@ struct ReviewLoopOutcome {
     report: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormalizationQueueReason {
+    ForcedByFlag,
+    AutoMathDetected,
+}
+
+impl FormalizationQueueReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ForcedByFlag => "forced_by_flag",
+            Self::AutoMathDetected => "auto_math_detected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormalizationQueueSkipReason {
+    NoMathDetected,
+    AutoDisabledByEnv,
+}
+
+impl FormalizationQueueSkipReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoMathDetected => "skipped_no_math",
+            Self::AutoDisabledByEnv => "disabled_by_env",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormalizationQueueDecision {
+    Queue {
+        reason: FormalizationQueueReason,
+    },
+    Skip {
+        reason: FormalizationQueueSkipReason,
+    },
+}
+
+fn decide_formalization_queue(
+    with_lean: bool,
+    auto_lean_env: Option<&str>,
+    has_formalizable_math: bool,
+) -> FormalizationQueueDecision {
+    if with_lean {
+        return FormalizationQueueDecision::Queue {
+            reason: FormalizationQueueReason::ForcedByFlag,
+        };
+    }
+    if auto_lean_env.map(auto_lean_disabled).unwrap_or(false) {
+        return FormalizationQueueDecision::Skip {
+            reason: FormalizationQueueSkipReason::AutoDisabledByEnv,
+        };
+    }
+    if has_formalizable_math {
+        FormalizationQueueDecision::Queue {
+            reason: FormalizationQueueReason::AutoMathDetected,
+        }
+    } else {
+        FormalizationQueueDecision::Skip {
+            reason: FormalizationQueueSkipReason::NoMathDetected,
+        }
+    }
+}
+
+fn auto_lean_disabled(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+fn paper_math_sources_has_formalizable_math(value: &serde_json::Value) -> bool {
+    let theorem_nodes = value
+        .get("theorem_graph")
+        .and_then(|doc| doc.get("nodes").or_else(|| doc.get("theorem_graph")))
+        .and_then(|nodes| nodes.as_array())
+        .map(|nodes| {
+            nodes.iter().any(|node| {
+                matches!(
+                    node.get("type")
+                        .or_else(|| node.get("kind"))
+                        .and_then(|kind| kind.as_str())
+                        .map(|kind| kind.to_ascii_lowercase())
+                        .as_deref(),
+                    Some("theorem" | "lemma" | "proposition" | "corollary")
+                ) && node
+                    .get("statement")
+                    .or_else(|| node.get("statement_preview"))
+                    .and_then(|statement| statement.as_str())
+                    .map(|statement| !statement.trim().is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    let equation_nodes = value
+        .get("equations")
+        .and_then(|doc| doc.get("equations"))
+        .and_then(|nodes| nodes.as_array())
+        .map(|nodes| {
+            nodes.iter().any(|node| {
+                node.get("canonical_tex")
+                    .or_else(|| node.get("tex"))
+                    .or_else(|| node.get("statement"))
+                    .and_then(|statement| statement.as_str())
+                    .map(|statement| !statement.trim().is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    theorem_nodes
+        || equation_nodes
+        || value_contains_theorem_signal(value.get("body").unwrap_or(&serde_json::Value::Null))
+}
+
+fn value_contains_theorem_signal(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => body_has_theorem_signal(text),
+        serde_json::Value::Array(items) => items.iter().any(value_contains_theorem_signal),
+        serde_json::Value::Object(map) => map.values().any(value_contains_theorem_signal),
+        _ => false,
+    }
+}
+
 fn review_loop_corpus_contexts_from_yaml(
     corpus_yaml: &str,
 ) -> anyhow::Result<Vec<ReviewLoopCorpusContext>> {
@@ -5676,7 +5831,7 @@ fn review_loop_agent_input_requirements(
                 json_pointer: "/base/proof_obligations",
                 artifact: "review_loop/proof_obligations.json",
                 reason: "Lean proof completion must consume deterministic proof obligations",
-                remediation: "rerun proof_obligation_generator or emit skip_reason=no_math_targets before lean_review_fix_code",
+                remediation: "rerun proof_obligation_generator or emit skip_reason=no_math_found before lean_review_fix_code",
             },
             ReviewLoopInputRequirement {
                 json_pointer: "/base/lean_targets",
@@ -6865,9 +7020,7 @@ async fn run_per_theorem_lean_loop(
         .unwrap_or_default();
     let theorem_obligations = obligations
         .iter()
-        .filter(|item| {
-            item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization")
-        })
+        .filter(|item| item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization"))
         .collect::<Vec<_>>();
 
     let requirements = serde_json::json!([
@@ -6916,12 +7069,9 @@ async fn run_per_theorem_lean_loop(
             .saturating_add(300),
     );
 
-    let mut results: Vec<LeanTargetResult> = futures::stream::iter(
-        theorem_obligations
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, obligation)| {
+    let mut results: Vec<LeanTargetResult> =
+        futures::stream::iter(theorem_obligations.iter().copied().enumerate().map(
+            |(index, obligation)| {
                 run_one_lean_target(
                     state,
                     paper_id,
@@ -6940,11 +7090,11 @@ async fn run_per_theorem_lean_loop(
                     debug_output,
                     target_budget,
                 )
-            }),
-    )
-    .buffer_unordered(concurrency)
-    .collect()
-    .await;
+            },
+        ))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
     results.sort_by_key(|r| r.index);
 
     let mut hang_rows: Vec<serde_json::Value> = Vec::with_capacity(results.len());
@@ -7062,6 +7212,172 @@ struct LeanTargetResult {
     retried: bool,
 }
 
+fn source_theorem_node_for_obligation(
+    obligation: &serde_json::Value,
+    theorem_nodes: &[serde_json::Value],
+) -> Option<serde_json::Value> {
+    let source_claim_id = obligation
+        .get("source_claim_id")
+        .and_then(|value| value.as_str())?;
+    theorem_nodes
+        .iter()
+        .find(|node| {
+            node.get("id")
+                .or_else(|| node.get("label"))
+                .and_then(|value| value.as_str())
+                == Some(source_claim_id)
+        })
+        .cloned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lean_target_base_artifact(
+    review_id: Uuid,
+    requirements: &serde_json::Value,
+    obligation: &serde_json::Value,
+    lean_declaration: &str,
+    statement: &str,
+    dependencies: &[serde_json::Value],
+    source_theorem_node: Option<&serde_json::Value>,
+    semantic_model: &serde_json::Value,
+    proof_obligations: &serde_json::Value,
+    lean_targets: &serde_json::Value,
+) -> serde_json::Value {
+    let compact_proof_obligations =
+        compact_proof_obligations_for_target(proof_obligations, obligation);
+    let compact_lean_targets = compact_lean_targets_for_obligation(lean_targets, obligation);
+    let compact_semantic_ir =
+        compact_semantic_ir_for_lean_target(review_id, obligation, source_theorem_node);
+    serde_json::json!({
+        "review_id": review_id,
+        "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
+        "requirements": requirements,
+        "obligation": obligation,
+        "lean_declaration": lean_declaration,
+        "paper_theorem": statement,
+        "source_theorem_node": source_theorem_node,
+        "dependencies": dependencies,
+        "proof_obligations": compact_proof_obligations,
+        "lean_targets": compact_lean_targets,
+        "semantic_ir": compact_semantic_ir,
+        "semantic_model": {
+            "schema_version": semantic_model.get("schema_version").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "semantic_ir": semantic_model.get("semantic_ir").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "paper_math_sources": semantic_model.get("paper_math_sources").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "theorem_candidate_count": semantic_model.get("theorem_candidate_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "definition_count": semantic_model.get("definition_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "assumption_count": semantic_model.get("assumption_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        },
+        "proof_obligations_summary": {
+            "status": proof_obligations.get("status").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "source": proof_obligations.get("source").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "obligation_count": proof_obligations
+                .get("obligations")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0),
+        },
+        "lean_targets_summary": {
+            "status": lean_targets.get("status").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "target_count": lean_targets
+                .get("targets")
+                .or_else(|| lean_targets.get("lean_targets"))
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0),
+        }
+    })
+}
+
+fn compact_proof_obligations_for_target(
+    proof_obligations: &serde_json::Value,
+    obligation: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": proof_obligations.get("schema_version").cloned().unwrap_or_else(|| serde_json::json!("1.0.0")),
+        "review_id": proof_obligations.get("review_id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "source": proof_obligations.get("source").cloned().unwrap_or_else(|| serde_json::json!("review_loop/semantic_ir.json")),
+        "status": proof_obligations.get("status").cloned().unwrap_or_else(|| serde_json::json!("ready")),
+        "obligations": [obligation.clone()],
+    })
+}
+
+fn compact_lean_targets_for_obligation(
+    lean_targets: &serde_json::Value,
+    obligation: &serde_json::Value,
+) -> serde_json::Value {
+    let obligation_id = obligation.get("id").and_then(|value| value.as_str());
+    let lean_declaration = obligation
+        .get("lean_declaration")
+        .and_then(|value| value.as_str());
+    let target = lean_targets
+        .get("targets")
+        .and_then(|value| value.as_array())
+        .and_then(|targets| {
+            targets
+                .iter()
+                .find(|target| {
+                    target.get("obligation_id").and_then(|value| value.as_str())
+                        == obligation_id
+                        || target
+                            .get("lean_declaration")
+                            .and_then(|value| value.as_str())
+                            == lean_declaration
+                })
+                .cloned()
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "obligation_id": obligation_id,
+                "lean_declaration": lean_declaration,
+                "lean_statement": obligation.get("lean_statement").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "lean_skeleton": obligation.get("lean_skeleton").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "statement": obligation.get("statement").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "source_claim_id": obligation.get("source_claim_id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "source_span": obligation.get("source_span").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "theorem_ir": obligation.get("theorem_ir").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            })
+        });
+    serde_json::json!({
+        "schema_version": lean_targets.get("schema_version").cloned().unwrap_or_else(|| serde_json::json!("1.0.0")),
+        "source": lean_targets.get("source").cloned().unwrap_or_else(|| serde_json::json!("review_loop/proof_obligations.json")),
+        "targets": [target],
+    })
+}
+
+fn compact_semantic_ir_for_lean_target(
+    review_id: Uuid,
+    obligation: &serde_json::Value,
+    source_theorem_node: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let theorem_candidate = serde_json::json!({
+        "id": obligation.get("source_claim_id").cloned().unwrap_or_else(|| obligation.get("id").cloned().unwrap_or_else(|| serde_json::json!("theorem"))),
+        "kind": "theorem",
+        "formalization_class": "formal_math",
+        "statement": obligation.get("statement").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "source_claim_id": obligation.get("source_claim_id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "source_span": obligation.get("source_span").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "typed_transcription": source_theorem_node
+            .and_then(|node| node.get("typed_transcription").cloned())
+            .unwrap_or_else(|| serde_json::json!(null)),
+        "theorem_ir": obligation.get("theorem_ir").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "formalization_target": {
+            "lean_declaration": obligation.get("lean_declaration").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            "expected_shape": "theorem"
+        }
+    });
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "source": "review_loop/semantic_ir.json",
+        "theorem_candidates": [theorem_candidate],
+        "definitions": [],
+        "assumptions": [],
+        "supporting_equations": [],
+        "nonformal_review_claims": [],
+    })
+}
+
 /// Author -> `lake env lean` -> review/fix one theorem in its own isolated harness, bounded by a
 /// `target_budget` watchdog. If the whole pipeline wedges past the budget, the in-flight future
 /// is dropped (its CLI subprocess is killed by its own per-call timeout) and the target is
@@ -7078,7 +7394,7 @@ async fn run_one_lean_target(
     requirements: &serde_json::Value,
     proof_obligations: &serde_json::Value,
     lean_targets: &serde_json::Value,
-    semantic_ir: &serde_json::Value,
+    _semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
     theorem_nodes: &[serde_json::Value],
     lean_dir: &Path,
@@ -7150,20 +7466,19 @@ async fn run_one_lean_target(
     // resolved from semantic_ir so the author formalizes against them rather than restating a
     // referenced object as an opaque `True`.
     let dependencies = resolve_obligation_dependencies(obligation, theorem_nodes);
-
-    let base_artifact = serde_json::json!({
-        "review_id": review_id,
-        "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
-        "requirements": requirements,
-        "obligation": obligation,
-        "lean_declaration": lean_declaration,
-        "paper_theorem": statement,
-        "dependencies": dependencies,
-        "proof_obligations": proof_obligations,
-        "lean_targets": lean_targets,
-        "semantic_ir": semantic_ir,
-        "semantic_model": semantic_model,
-    });
+    let source_theorem_node = source_theorem_node_for_obligation(obligation, theorem_nodes);
+    let base_artifact = lean_target_base_artifact(
+        review_id,
+        requirements,
+        obligation,
+        &lean_declaration,
+        statement,
+        &dependencies,
+        source_theorem_node.as_ref(),
+        semantic_model,
+        proof_obligations,
+        lean_targets,
+    );
 
     let mut retried = false;
     let mut outcome = "completed";
@@ -7380,9 +7695,7 @@ async fn run_lean_faithfulness_stage(
         .map(|entries| {
             entries
                 .iter()
-                .filter(|entry| {
-                    entry.get("status").and_then(|v| v.as_str()) == Some("PROVED")
-                })
+                .filter(|entry| entry.get("status").and_then(|v| v.as_str()) == Some("PROVED"))
                 .cloned()
                 .collect::<Vec<_>>()
         })
@@ -7634,6 +7947,10 @@ fn resolve_shared_mathlib_dir() -> Option<std::path::PathBuf> {
         if dir.join("lakefile.lean").is_file() || dir.join("lakefile.toml").is_file() {
             return Some(dir);
         }
+    }
+    let candidate = crate::dag_apps::app_root("grokrxiv").join("evals/lean/.lake/packages/mathlib");
+    if candidate.join("lakefile.lean").is_file() || candidate.join("lakefile.toml").is_file() {
+        return Some(candidate);
     }
     let mut base = std::env::current_dir().ok()?;
     for _ in 0..6 {
@@ -8213,6 +8530,970 @@ fn ensure_min_cli_timeout_secs(floor: u64) {
     }
 }
 
+async fn refresh_formalization_math_artifacts(
+    state: &super::AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    review_id: Uuid,
+    artifact_dir: &Path,
+    existing_paper_math_sources: serde_json::Value,
+) -> serde_json::Value {
+    let mut paper_math_sources = existing_paper_math_sources;
+    if !paper_math_sources_has_formalizable_math(&paper_math_sources) {
+        return paper_math_sources;
+    }
+    match run_formalize_typed_theorem_extraction(
+        state,
+        pool,
+        paper_id,
+        review_id,
+        &paper_math_sources,
+    )
+    .await
+    {
+        Ok(Some(theorem_graph)) => {
+            if let Some(obj) = paper_math_sources.as_object_mut() {
+                obj.insert("theorem_graph".to_string(), theorem_graph);
+                append_paper_math_source(
+                    obj,
+                    "formalize:theorem_graph_extractor_typed_ir".to_string(),
+                );
+            }
+        }
+        Ok(None) => append_paper_math_warning(
+            &mut paper_math_sources,
+            "formalize typed-IR theorem extraction returned no theorem nodes".to_string(),
+        ),
+        Err(err) => append_paper_math_warning(
+            &mut paper_math_sources,
+            format!("formalize typed-IR theorem extraction failed: {err:#}"),
+        ),
+    }
+    let _ = write_loop_json(
+        &artifact_dir.join("paper_math_sources.json"),
+        &paper_math_sources,
+    )
+    .await;
+    paper_math_sources
+}
+
+async fn run_formalize_typed_theorem_extraction(
+    state: &super::AppState,
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    review_id: Uuid,
+    paper_math_sources: &serde_json::Value,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let body_md = paper_math_sources_body_markdown(paper_math_sources);
+    if body_md.trim().is_empty() || !body_has_theorem_signal(&body_md) {
+        return Ok(None);
+    }
+    let runner = state
+        .runners
+        .get(&AgentRunnerKind::Cli)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("formalize typed-IR enrichment requires CLI runner"))?;
+    let seed = crate::db::load_paper_review_seed(pool, paper_id).await?;
+    let workdir = tempfile::tempdir().context("formalize typed-IR workdir")?;
+    crate::ingest_pipeline::write_body_md_to_workdir(workdir.path(), &body_md).await?;
+    let mut source_candidate_pack = String::new();
+    match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
+        Ok(count) if count > 0 => {
+            cli_status::emit(format!(
+                "formalize {review_id}: hydrated {count} arXiv source files for typed-IR extraction"
+            ));
+            source_candidate_pack =
+                build_formalize_latex_candidate_pack_from_workdir(workdir.path(), &seed.title)
+                    .unwrap_or_default();
+        }
+        Ok(_) => cli_status::emit(format!(
+            "formalize {review_id}: arXiv source hydration yielded no source files"
+        )),
+        Err(err) => cli_status::emit(format!(
+            "formalize {review_id}: arXiv source hydration skipped: {err:#}"
+        )),
+    }
+    let extract = grokrxiv_ingest::PaperExtract {
+        arxiv_id: seed.arxiv_id.clone(),
+        title: seed.title.clone(),
+        authors: Vec::new(),
+        abstract_: seed.abstract_.clone().unwrap_or_default(),
+        field: seed.field.clone(),
+        sections: vec![grokrxiv_ingest::Section {
+            heading: "Paper body".to_string(),
+            body_markdown: body_md,
+        }],
+        figures: Vec::new(),
+        bibliography: Vec::new(),
+        source_format: Some("review_loop_artifact".to_string()),
+    };
+    let agent = grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::new();
+    let mut spec =
+        crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
+    spec.timeout_secs = spec.timeout_secs.max(1800);
+    spec.schema = Arc::new(agent.schema().clone());
+    if !source_candidate_pack.trim().is_empty() {
+        cli_status::emit(format!(
+            "formalize {review_id}: source-first typed-IR theorem extraction starting"
+        ));
+        match run_formalize_source_first_theorem_extraction(
+            runner.clone(),
+            &spec,
+            paper_id,
+            review_id,
+            &seed,
+            &source_candidate_pack,
+            workdir.path(),
+        )
+        .await
+        {
+            Ok(Some(theorem_graph)) => return Ok(Some(theorem_graph)),
+            Ok(None) => cli_status::emit(format!(
+                "formalize {review_id}: source-first typed-IR theorem extraction returned no nodes; falling back to tool loop"
+            )),
+            Err(err) => cli_status::emit(format!(
+                "formalize {review_id}: source-first typed-IR theorem extraction failed: {err:#}; falling back to tool loop"
+            )),
+        }
+    }
+    let registry = Arc::new(
+        grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::build_registry(),
+    );
+    let budget = crate::ingest_pipeline::extraction_budget_for("theorems");
+    let ctx = ExtractionContext {
+        workdir: workdir.path(),
+        extract: &extract,
+        semantic_ast: paper_math_sources.get("semantic_ast"),
+        paper_id,
+        arxiv_id: &seed.arxiv_id,
+        registry,
+        max_cost_usd: f32::MAX,
+        max_iters: budget.max_iters,
+    };
+    cli_status::emit(format!(
+        "formalize {review_id}: typed-IR theorem extraction starting"
+    ));
+    let run = agent.run(runner, &spec, ctx).await?;
+    let nodes = run
+        .output
+        .get("theorem_graph")
+        .or_else(|| run.output.get("nodes"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if nodes.is_empty() {
+        return Ok(None);
+    }
+    cli_status::emit(format!(
+        "formalize {review_id}: typed-IR theorem extraction ok nodes={} iters={}",
+        nodes.len(),
+        run.iters
+    ));
+    Ok(Some(serde_json::json!({
+        "artifact": "theorem_graph.json",
+        "arxiv_id": seed.arxiv_id,
+        "nodes": nodes,
+        "source": "formalize_typed_ir_theorem_extractor",
+    })))
+}
+
+async fn run_formalize_source_first_theorem_extraction(
+    runner: Arc<dyn crate::agents::AgentRunner>,
+    spec: &crate::agents::AgentSpec,
+    paper_id: Uuid,
+    review_id: Uuid,
+    seed: &crate::db::PaperReviewSeedRow,
+    source_candidate_pack: &str,
+    workdir: &Path,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let mut spec = spec.clone();
+    spec.role = "formalize_source_theorem_graph_extractor".to_string();
+    spec.timeout_secs = spec.timeout_secs.max(900);
+
+    let artifact = serde_json::json!({
+        "review_id": review_id,
+        "paper_id": paper_id,
+        "arxiv_id": &seed.arxiv_id,
+        "title": &seed.title,
+        "task": "Extract source-grounded theorem graph nodes with typed_transcription/theorem_ir from real arXiv TeX candidates.",
+        "source_candidate_pack": source_candidate_pack,
+    });
+    let input = AgentInput {
+        context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
+        role: spec.role.clone(),
+        content_hash_material: artifact.clone(),
+        artifact,
+        system_prompt: formalize_source_first_theorem_system_prompt(),
+        user_prompt: formalize_source_first_theorem_user_prompt(
+            &seed.arxiv_id,
+            &seed.title,
+            source_candidate_pack,
+        ),
+        source_bundle_path: Some(workdir.display().to_string()),
+    };
+    let run = runner.run(&spec, &input).await?;
+    let nodes = run
+        .output
+        .get("theorem_graph")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if nodes.is_empty() {
+        return Ok(None);
+    }
+    cli_status::emit(format!(
+        "formalize {review_id}: source-first typed-IR theorem extraction ok nodes={} latency_ms={}",
+        nodes.len(),
+        run.latency_ms
+    ));
+    Ok(Some(serde_json::json!({
+        "artifact": "theorem_graph.json",
+        "arxiv_id": &seed.arxiv_id,
+        "nodes": nodes,
+        "source": "formalize_source_first_theorem_graph_extractor",
+    })))
+}
+
+fn formalize_source_first_theorem_system_prompt() -> String {
+    "You are GrokRxiv role `formalize_source_theorem_graph_extractor`. \
+     Extract theorem graph nodes from real arXiv LaTeX source candidates. \
+     The candidate pack is only a source index; it is not a theorem graph. \
+     Return one raw JSON object matching the supplied schema exactly. \
+     Do not add undeclared fields. Set `reason` to null when candidates exist. \
+     Do not invent theorems that are not present in `source_tex`. \
+     For theorem/lemma/proposition/corollary nodes, preserve the exact source_tex, \
+     write a faithful plain-language statement, set typed_transcription.status to \
+     `transcribed`, and fill theorem_ir. For topology, algebra, category, or group \
+     theory statements that do not fit arithmetic/equality constructors, use \
+     math_type `{ \"kind\": \"custom\", \"name\": \"...\" }` and proposition \
+     `{ \"kind\": \"uninterpreted_predicate\", \"name\": \"...\", \"args\": [...] }`. \
+     Do not use unknown_prop, raw_term, or unknown_term for a theorem-level target \
+     unless the TeX block is genuinely not a mathematical statement. \
+     Resolve depends_on from labels referenced in the same source block when possible."
+        .to_string()
+}
+
+fn formalize_source_first_theorem_user_prompt(
+    arxiv_id: &str,
+    title: &str,
+    source_candidate_pack: &str,
+) -> String {
+    format!(
+        "Paper: {arxiv_id}\nTitle: {title}\n\n\
+         Use the source candidates below to produce a compact theorem_graph for Lean authoring. \
+         Prefer theorem/proposition/corollary/lemma blocks from the file whose title matches the \
+         paper title. Emit the best 1-3 source-grounded theorem-level targets. Include definition/proof \
+         nodes only when they are needed for depends_on context. Preserve every selected block's \
+         source_tex exactly.\n\n\
+         <source_candidates>\n{source_candidate_pack}\n</source_candidates>"
+    )
+}
+
+async fn hydrate_formalize_source_workdir(workdir: &Path, arxiv_id: &str) -> anyhow::Result<usize> {
+    let source_url = grokrxiv_ingest::source_url(arxiv_id);
+    let bytes = grokrxiv_ingest::download_source(&source_url)
+        .await
+        .with_context(|| format!("download arXiv source {source_url}"))?;
+    write_formalize_source_archive_to_workdir(workdir, bytes.as_ref())
+}
+
+#[derive(Debug, Clone)]
+struct FormalizeSourceArchiveEntry {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+const FORMALIZE_SOURCE_CONTEXT_FILE: &str = "theorem_source_context.md";
+const FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS: usize = 80;
+const FORMALIZE_SOURCE_CONTEXT_MAX_CHARS: usize = 220_000;
+const FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_BLOCKS: usize = 10;
+const FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_CHARS: usize = 18_000;
+
+fn write_formalize_source_archive_to_workdir(
+    workdir: &Path,
+    bytes: &[u8],
+) -> anyhow::Result<usize> {
+    let entries = read_formalize_source_archive_entries(bytes)?;
+    let source_context = build_formalize_latex_source_context(&entries);
+    let mut written = 0usize;
+    for entry in &entries {
+        let rel = Path::new(&entry.path);
+        if rel.is_absolute() {
+            continue;
+        }
+        let path = workdir.join(rel);
+        let canonical_parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("source archive path has no parent: {}", entry.path))?;
+        std::fs::create_dir_all(canonical_parent)
+            .with_context(|| format!("create source dir {}", canonical_parent.display()))?;
+        std::fs::write(&path, &entry.bytes)
+            .with_context(|| format!("write source file {}", path.display()))?;
+        written += 1;
+    }
+    if !source_context.trim().is_empty() {
+        let context_path = workdir.join(FORMALIZE_SOURCE_CONTEXT_FILE);
+        std::fs::write(&context_path, source_context)
+            .with_context(|| format!("write {}", context_path.display()))?;
+    }
+    Ok(written)
+}
+
+#[derive(Debug)]
+struct FormalizeLatexSourceBlock {
+    file: String,
+    env: String,
+    kind: String,
+    char_start: usize,
+    source_tex: String,
+    labels: Vec<String>,
+    refs: Vec<String>,
+}
+
+fn build_formalize_latex_source_context(entries: &[FormalizeSourceArchiveEntry]) -> String {
+    let aliases = formalize_latex_source_aliases(entries);
+    let blocks = formalize_latex_source_blocks_from_entries(entries, &aliases);
+
+    if aliases.is_empty() && blocks.is_empty() {
+        return String::new();
+    }
+
+    build_formalize_latex_source_context_from_blocks(&aliases, &blocks)
+}
+
+fn formalize_latex_source_aliases(
+    entries: &[FormalizeSourceArchiveEntry],
+) -> BTreeMap<String, String> {
+    let mut aliases = BTreeMap::new();
+    for (env, kind) in [
+        ("theorem", "theorem"),
+        ("lemma", "lemma"),
+        ("proposition", "proposition"),
+        ("corollary", "corollary"),
+        ("definition", "definition"),
+    ] {
+        aliases.insert(env.to_string(), kind.to_string());
+    }
+
+    for (_, text) in formalize_source_text_entries(entries) {
+        for (env, kind) in formalize_latex_theorem_aliases(&text) {
+            aliases.insert(env, kind);
+        }
+    }
+    aliases
+}
+
+fn formalize_latex_source_blocks_from_entries(
+    entries: &[FormalizeSourceArchiveEntry],
+    aliases: &BTreeMap<String, String>,
+) -> Vec<FormalizeLatexSourceBlock> {
+    let mut blocks = Vec::new();
+    for (file, text) in formalize_source_text_entries(entries) {
+        blocks.extend(formalize_latex_source_blocks(&file, &text, aliases));
+    }
+    blocks.sort_by(|a, b| a.file.cmp(&b.file).then(a.char_start.cmp(&b.char_start)));
+    blocks
+}
+
+fn build_formalize_latex_source_context_from_blocks(
+    aliases: &BTreeMap<String, String>,
+    blocks: &[FormalizeLatexSourceBlock],
+) -> String {
+    let mut out = String::new();
+    out.push_str("# LaTeX Theorem Source Context\n\n");
+    out.push_str(
+        "This file is a source index for the theorem extractor. It is not a theorem graph, typed transcription, theorem_ir, proof obligation, or Lean artifact. Use it to locate exact TeX source blocks, then emit the schema-required theorem graph yourself.\n\n",
+    );
+    out.push_str("## Theorem Environment Aliases\n\n");
+    for (env, kind) in aliases {
+        out.push_str(&format!("- `{env} -> {kind}`\n"));
+    }
+
+    out.push_str("\n## Source Blocks\n\n");
+    let mut emitted = 0usize;
+    for block in blocks.iter().take(FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS) {
+        let labels = if block.labels.is_empty() {
+            "none".to_string()
+        } else {
+            block
+                .labels
+                .iter()
+                .map(|label| format!("`{label}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let refs = if block.refs.is_empty() {
+            "none".to_string()
+        } else {
+            block
+                .refs
+                .iter()
+                .map(|label| format!("`{label}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let next = format!(
+            "### Candidate {}: {} from `{}`\n\nSource file: `{}`\nEnvironment: `{}` -> `{}`\nLabels: {}\nRefs: {}\n\n```tex\n{}\n```\n\n",
+            emitted + 1,
+            block.kind,
+            block.env,
+            block.file,
+            block.env,
+            block.kind,
+            labels,
+            refs,
+            block.source_tex.trim()
+        );
+        if out.len() + next.len() > FORMALIZE_SOURCE_CONTEXT_MAX_CHARS {
+            out.push_str("Context truncated because the source contains more theorem-like blocks than fit in the extraction budget. Use `read_file` on the original TeX files for later blocks.\n");
+            break;
+        }
+        out.push_str(&next);
+        emitted += 1;
+    }
+    if blocks.len() > emitted {
+        out.push_str(&format!(
+            "\nAdditional source blocks omitted from this index: {}. Use `read_file` on the TeX source files if needed.\n",
+            blocks.len() - emitted
+        ));
+    }
+    out
+}
+
+fn formalize_source_text_entries(entries: &[FormalizeSourceArchiveEntry]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let lower = entry.path.to_ascii_lowercase();
+            if !(lower.ends_with(".tex") || lower.ends_with(".sty") || lower.ends_with(".cls")) {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&entry.bytes).into_owned();
+            Some((entry.path.clone(), text))
+        })
+        .collect()
+}
+
+fn build_formalize_latex_candidate_pack_from_workdir(
+    workdir: &Path,
+    paper_title: &str,
+) -> anyhow::Result<String> {
+    let entries = read_formalize_source_workdir_entries(workdir)?;
+    Ok(build_formalize_latex_candidate_pack(&entries, paper_title))
+}
+
+fn read_formalize_source_workdir_entries(
+    workdir: &Path,
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    let mut stack = vec![workdir.to_path_buf()];
+    let mut entries = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for item in std::fs::read_dir(&dir)
+            .with_context(|| format!("read source workdir {}", dir.display()))?
+        {
+            let item = item?;
+            let path = item.path();
+            let meta = item.metadata()?;
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !matches!(ext.to_ascii_lowercase().as_str(), "tex" | "sty" | "cls") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(workdir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            entries.push(FormalizeSourceArchiveEntry {
+                path: rel,
+                bytes: std::fs::read(&path)
+                    .with_context(|| format!("read source file {}", path.display()))?,
+            });
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+fn build_formalize_latex_candidate_pack(
+    entries: &[FormalizeSourceArchiveEntry],
+    paper_title: &str,
+) -> String {
+    let aliases = formalize_latex_source_aliases(entries);
+    let blocks = formalize_latex_source_blocks_from_entries(entries, &aliases);
+    if blocks.is_empty() {
+        return String::new();
+    }
+
+    let text_entries = formalize_source_text_entries(entries)
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let mut ranked = blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let file_text = text_entries
+                .get(&block.file)
+                .map(String::as_str)
+                .unwrap_or_default();
+            (
+                formalize_candidate_block_score(block, file_text, paper_title),
+                index,
+                block,
+            )
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    let mut out = String::new();
+    out.push_str("# Ranked Real arXiv TeX Theorem Candidates\n\n");
+    out.push_str(
+        "These candidates are exact LaTeX source blocks from the arXiv source bundle. They are not a theorem graph. Select faithful theorem-level targets from them and emit schema-valid theorem_graph nodes with typed_transcription and theorem_ir.\n\n",
+    );
+    let mut emitted = 0usize;
+    for (score, _, block) in ranked {
+        if emitted >= FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_BLOCKS {
+            break;
+        }
+        let labels = if block.labels.is_empty() {
+            "none".to_string()
+        } else {
+            block.labels.join(", ")
+        };
+        let refs = if block.refs.is_empty() {
+            "none".to_string()
+        } else {
+            block.refs.join(", ")
+        };
+        let next = format!(
+            "## Candidate {} (score {score})\nfile: {}\nenvironment: {} -> {}\nlabels: {}\nrefs: {}\n\n```tex\n{}\n```\n\n",
+            emitted + 1,
+            block.file,
+            block.env,
+            block.kind,
+            labels,
+            refs,
+            block.source_tex.trim()
+        );
+        if out.len() + next.len() > FORMALIZE_SOURCE_CANDIDATE_PACK_MAX_CHARS {
+            out.push_str("\n[truncated: additional ranked source candidates omitted]\n");
+            break;
+        }
+        out.push_str(&next);
+        emitted += 1;
+    }
+    out
+}
+
+fn formalize_candidate_block_score(
+    block: &FormalizeLatexSourceBlock,
+    file_text: &str,
+    paper_title: &str,
+) -> i32 {
+    let kind_score = match block.kind.as_str() {
+        "theorem" => 60,
+        "proposition" => 45,
+        "corollary" => 40,
+        "lemma" => 35,
+        "definition" => 15,
+        _ => 0,
+    };
+    let label_score = if block.labels.is_empty() { 0 } else { 8 };
+    let ref_score = (block.refs.len().min(4) as i32) * 3;
+    let title_score = formalize_title_overlap_score(file_text, paper_title);
+    kind_score + label_score + ref_score + title_score
+}
+
+fn formalize_title_overlap_score(file_text: &str, paper_title: &str) -> i32 {
+    let lower_file = file_text.to_ascii_lowercase();
+    let title_tokens = paper_title
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|token| token.to_ascii_lowercase())
+        .filter(|token| token.len() >= 4)
+        .collect::<BTreeSet<_>>();
+    if title_tokens.is_empty() {
+        return 0;
+    }
+    let matches = title_tokens
+        .iter()
+        .filter(|token| lower_file.contains(token.as_str()))
+        .count();
+    if matches == title_tokens.len() {
+        80
+    } else {
+        (matches as i32) * 12
+    }
+}
+
+fn formalize_latex_theorem_aliases(text: &str) -> BTreeMap<String, String> {
+    let re = regex::Regex::new(
+        r"\\newtheorem\s*\{(?P<env>[A-Za-z][A-Za-z0-9*]*)\}(?:\[[^\]]*\])?\s*\{(?P<title>[^{}]+)\}",
+    )
+    .expect("valid regex");
+    let mut aliases = BTreeMap::new();
+    for caps in re.captures_iter(text) {
+        let Some(env) = caps.name("env").map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(title) = caps.name("title").map(|m| m.as_str()) else {
+            continue;
+        };
+        if let Some(kind) = canonical_formalize_theorem_kind(title) {
+            aliases.insert(env.to_string(), kind.to_string());
+        }
+    }
+    aliases
+}
+
+fn canonical_formalize_theorem_kind(title: &str) -> Option<&'static str> {
+    let normalized = title
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "theorem" => Some("theorem"),
+        "lemma" => Some("lemma"),
+        "proposition" => Some("proposition"),
+        "corollary" => Some("corollary"),
+        "definition" => Some("definition"),
+        "claim" => Some("lemma"),
+        _ => None,
+    }
+}
+
+fn formalize_latex_source_blocks(
+    file: &str,
+    text: &str,
+    aliases: &BTreeMap<String, String>,
+) -> Vec<FormalizeLatexSourceBlock> {
+    let label_re = regex::Regex::new(r"\\label\s*\{([^}]+)\}").expect("valid regex");
+    let ref_re =
+        regex::Regex::new(r"\\(?:ref|eqref|autoref|cref|Cref)\s*\{([^}]+)\}").expect("valid regex");
+    let mut blocks = Vec::new();
+    for (env, kind) in aliases {
+        if !matches!(
+            kind.as_str(),
+            "theorem" | "lemma" | "proposition" | "corollary" | "definition"
+        ) {
+            continue;
+        }
+        let env_pat = regex::escape(env);
+        let pat = format!(
+            r"(?s)\\begin\{{{env}\}}(?:\s*\[[^\]]*\])?(?P<body>.*?)\\end\{{{env}\}}",
+            env = env_pat
+        );
+        let re = match regex::Regex::new(&pat) {
+            Ok(re) => re,
+            Err(_) => continue,
+        };
+        for mat in re.find_iter(text) {
+            let source_tex = mat.as_str().trim().to_string();
+            let labels = label_re
+                .captures_iter(&source_tex)
+                .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let refs = ref_re
+                .captures_iter(&source_tex)
+                .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            blocks.push(FormalizeLatexSourceBlock {
+                file: file.to_string(),
+                env: env.clone(),
+                kind: kind.clone(),
+                char_start: mat.start(),
+                source_tex,
+                labels,
+                refs,
+            });
+        }
+    }
+    blocks
+}
+
+fn read_formalize_source_archive_entries(
+    bytes: &[u8],
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    read_formalize_source_archive_entries_targz(bytes)
+        .or_else(|_| read_formalize_source_archive_entries_tar(bytes))
+        .or_else(|_| read_formalize_source_archive_entries_gzip_single(bytes))
+        .or_else(|_| read_formalize_source_archive_entries_raw_tex(bytes))
+}
+
+fn read_formalize_source_archive_entries_targz(
+    bytes: &[u8],
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    use std::io::Cursor;
+    let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
+    read_formalize_source_tar_entries(decoder)
+}
+
+fn read_formalize_source_archive_entries_tar(
+    bytes: &[u8],
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    use std::io::Cursor;
+    read_formalize_source_tar_entries(Cursor::new(bytes))
+}
+
+fn read_formalize_source_tar_entries<R: std::io::Read>(
+    reader: R,
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    let mut archive = tar::Archive::new(reader);
+    let mut out = Vec::new();
+    for entry in archive.entries().context("read source archive entries")? {
+        let mut entry = entry.context("read source archive entry")?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().context("read source archive entry path")?;
+        let Some(path) = safe_formalize_source_archive_path(&path) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)
+            .context("read source archive entry bytes")?;
+        out.push(FormalizeSourceArchiveEntry { path, bytes });
+    }
+    if out.is_empty() {
+        anyhow::bail!("source archive contained no safe files");
+    }
+    Ok(out)
+}
+
+fn read_formalize_source_archive_entries_gzip_single(
+    bytes: &[u8],
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    use std::io::Read as _;
+    let mut decoder = flate2::read::GzDecoder::new(bytes);
+    let mut text = String::new();
+    decoder
+        .read_to_string(&mut text)
+        .context("read gzipped single TeX source")?;
+    if !looks_like_tex_source(&text) {
+        anyhow::bail!("gzipped source is not TeX");
+    }
+    Ok(vec![FormalizeSourceArchiveEntry {
+        path: "main.tex".to_string(),
+        bytes: text.into_bytes(),
+    }])
+}
+
+fn read_formalize_source_archive_entries_raw_tex(
+    bytes: &[u8],
+) -> anyhow::Result<Vec<FormalizeSourceArchiveEntry>> {
+    let text = std::str::from_utf8(bytes).context("source is not UTF-8 TeX")?;
+    if !looks_like_tex_source(text) {
+        anyhow::bail!("source is not TeX");
+    }
+    Ok(vec![FormalizeSourceArchiveEntry {
+        path: "main.tex".to_string(),
+        bytes: bytes.to_vec(),
+    }])
+}
+
+fn looks_like_tex_source(text: &str) -> bool {
+    text.contains("\\documentclass")
+        || text.contains("\\begin{document}")
+        || text.contains("\\newtheorem")
+}
+
+fn safe_formalize_source_archive_path(path: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_string_lossy().to_string()),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let rel = parts.join("/");
+    (!rel.is_empty()).then_some(rel)
+}
+
+fn paper_math_sources_body_markdown(value: &serde_json::Value) -> String {
+    let theorem_statements = paper_math_sources_theorem_statement_markdown(value);
+    if theorem_graph_has_reliable_typed_targets(value) && !theorem_statements.trim().is_empty() {
+        return theorem_statements;
+    }
+    let body = value.get("body").unwrap_or(&serde_json::Value::Null);
+    if let Some(text) = body.get("text").and_then(|value| value.as_str()) {
+        return text.to_string();
+    }
+    let mut parts = Vec::new();
+    if let Some(sections) = body.get("sections").and_then(|value| value.as_array()) {
+        for section in sections {
+            if let Some(heading) = section.get("heading").and_then(|value| value.as_str()) {
+                if !heading.trim().is_empty() {
+                    parts.push(format!("## {}", heading.trim()));
+                }
+            }
+            if let Some(text) = section
+                .get("body_markdown")
+                .or_else(|| section.get("text"))
+                .or_else(|| section.get("content"))
+                .and_then(|value| value.as_str())
+            {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    let body_markdown = parts.join("\n\n");
+    if !body_markdown.trim().is_empty() {
+        return body_markdown;
+    }
+    theorem_statements
+}
+
+fn theorem_graph_has_reliable_typed_targets(value: &serde_json::Value) -> bool {
+    let Some(nodes) = value
+        .get("theorem_graph")
+        .and_then(|doc| doc.get("nodes").or_else(|| doc.get("theorem_graph")))
+        .and_then(|nodes| nodes.as_array())
+    else {
+        return false;
+    };
+    nodes.iter().any(theorem_node_is_reliable_typed_target)
+}
+
+fn theorem_node_is_reliable_typed_target(node: &serde_json::Value) -> bool {
+    let kind = node
+        .get("type")
+        .or_else(|| node.get("kind"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_ascii_lowercase());
+    if !matches!(
+        kind.as_deref(),
+        Some("theorem" | "lemma" | "proposition" | "corollary")
+    ) {
+        return false;
+    }
+    if node
+        .get("statement")
+        .or_else(|| node.get("statement_preview"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    if node
+        .get("typed_transcription")
+        .and_then(|typed| typed.get("status"))
+        .and_then(|value| value.as_str())
+        != Some("transcribed")
+    {
+        return false;
+    }
+    let Some(theorem_ir) = node.get("theorem_ir") else {
+        return false;
+    };
+    !contains_unknown_typed_ir_node(theorem_ir)
+}
+
+fn contains_unknown_typed_ir_node(value: &serde_json::Value) -> bool {
+    if matches!(
+        value.get("kind").and_then(|kind| kind.as_str()),
+        Some("unknown_prop" | "unknown_term" | "unknown_type" | "raw_term")
+    ) {
+        return true;
+    }
+    match value {
+        serde_json::Value::Array(items) => items.iter().any(contains_unknown_typed_ir_node),
+        serde_json::Value::Object(map) => map.values().any(contains_unknown_typed_ir_node),
+        _ => false,
+    }
+}
+
+fn paper_math_sources_theorem_statement_markdown(value: &serde_json::Value) -> String {
+    let Some(nodes) = value
+        .get("theorem_graph")
+        .and_then(|doc| doc.get("nodes").or_else(|| doc.get("theorem_graph")))
+        .and_then(|nodes| nodes.as_array())
+    else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for node in nodes {
+        let kind = node
+            .get("type")
+            .or_else(|| node.get("kind"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("theorem")
+            .to_ascii_lowercase();
+        if !matches!(
+            kind.as_str(),
+            "theorem" | "lemma" | "proposition" | "corollary"
+        ) {
+            continue;
+        }
+        let statement = node
+            .get("statement")
+            .or_else(|| node.get("statement_preview"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(statement) = statement else {
+            continue;
+        };
+        let id = node
+            .get("id")
+            .or_else(|| node.get("label"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("theorem");
+        let mut part = format!("## {kind} {id}\n\n{statement}");
+        if let Some(source_tex) = node
+            .get("source_tex")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            part.push_str("\n\n```tex\n");
+            part.push_str(source_tex);
+            part.push_str("\n```");
+        }
+        parts.push(part);
+    }
+    parts.join("\n\n")
+}
+
+fn append_paper_math_source(obj: &mut serde_json::Map<String, serde_json::Value>, source: String) {
+    match obj.get_mut("artifact_sources") {
+        Some(serde_json::Value::Array(items)) => items.push(serde_json::Value::String(source)),
+        _ => {
+            obj.insert(
+                "artifact_sources".to_string(),
+                serde_json::Value::Array(vec![serde_json::Value::String(source)]),
+            );
+        }
+    }
+}
+
+fn append_paper_math_warning(value: &mut serde_json::Value, warning: String) {
+    if let Some(obj) = value.as_object_mut() {
+        match obj.get_mut("warnings") {
+            Some(serde_json::Value::Array(items)) => items.push(serde_json::Value::String(warning)),
+            _ => {
+                obj.insert(
+                    "warnings".to_string(),
+                    serde_json::Value::Array(vec![serde_json::Value::String(warning)]),
+                );
+            }
+        }
+    }
+}
+
 /// Experimental Lean formalization for an already-reviewed paper, run ASYNCHRONOUSLY from the
 /// verdict (via the `formalize` app action / worker job, or directly). Reloads the review-loop
 /// state the synchronous review persisted (semantic_ir / proof_obligations / lean_targets /
@@ -8222,7 +9503,11 @@ fn ensure_min_cli_timeout_secs(floor: u64) {
 /// deterministic_status / recommendation / blocking_issues, re-renders review.md, and
 /// best-effort updates the PR. Anti-hallucination invariant unchanged: a target is `proved`
 /// only on a clean `lake env lean` kernel pass with no sorry/admit/axiom.
-async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result<()> {
+async fn formalize_review(
+    review_id: Uuid,
+    debug_output: bool,
+    external_actions_enabled: bool,
+) -> anyhow::Result<()> {
     use grokrxiv_schemas::VerifierStatus;
     if debug_output {
         cli_status::set_enabled(true);
@@ -8246,29 +9531,94 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(serde_json::Value::Null)
     };
-    let semantic_ir = read_json("semantic_ir.json");
-    let semantic_model = read_json("semantic_model.json");
-    let proof_obligations = read_json("proof_obligations.json");
-    let lean_targets = read_json("lean_targets.json");
+    let existing_paper_math_sources = read_json("paper_math_sources.json");
+    if existing_paper_math_sources.is_null() {
+        anyhow::bail!(
+            "formalize {review_id}: no review_loop/paper_math_sources.json — run the review first"
+        );
+    }
+    let paper_math_sources = refresh_formalization_math_artifacts(
+        &state,
+        pool,
+        paper_id,
+        review_id,
+        &artifact_dir,
+        existing_paper_math_sources,
+    )
+    .await;
+    let claims_value = match read_json("claims.json") {
+        serde_json::Value::Null => serde_json::json!({"review_id": review_id, "claims": []}),
+        value => value,
+    };
+    let knowledge_graph = match read_json("knowledge_graph.json") {
+        serde_json::Value::Null => serde_json::json!({"nodes": [], "edges": []}),
+        value => value,
+    };
+    let semantic_ir = grokrxiv_review_loop::build_semantic_ir_from_paper_math(
+        review_id,
+        &paper_math_sources,
+        &claims_value,
+        &knowledge_graph,
+    );
+    write_loop_json(&artifact_dir.join("semantic_ir.json"), &semantic_ir).await?;
+    let semantic_model = serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "semantic_ir": "review_loop/semantic_ir.json",
+        "paper_math_sources": "review_loop/paper_math_sources.json",
+        "theorem_candidate_count": semantic_ir["theorem_candidates"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+        "definition_count": semantic_ir["definitions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+        "assumption_count": semantic_ir["assumptions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+    });
+    write_loop_json(&artifact_dir.join("semantic_model.json"), &semantic_model).await?;
+    let haskell_results = serde_json::json!({
+        "status": "retired",
+        "note": "Haskell intermediate retired; LLM authors Lean directly.",
+    });
+    let proof_obligations =
+        grokrxiv_review_loop::build_proof_obligations(review_id, &semantic_ir, &haskell_results);
+    write_loop_json(
+        &artifact_dir.join("proof_obligations.json"),
+        &proof_obligations,
+    )
+    .await?;
+    let lean_targets = grokrxiv_review_loop::build_lean_targets(&proof_obligations);
+    write_loop_json(&artifact_dir.join("lean_targets.json"), &lean_targets).await?;
     // Paper dependency graph (A1): the extractor records each theorem's "uses" edges on its
     // `proof:<id>` node here, which `resolve_obligation_dependencies` mines to give the Lean
     // author the referenced definitions/lemmas instead of an isolated statement.
-    let paper_math_sources = read_json("paper_math_sources.json");
     let theorem_nodes: Vec<serde_json::Value> = paper_math_sources
         .get("theorem_graph")
         .and_then(|tg| tg.get("nodes").or_else(|| tg.get("theorem_graph")))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if proof_obligations.is_null() {
-        anyhow::bail!(
-            "formalize {review_id}: no review_loop/proof_obligations.json — run the review first"
-        );
-    }
 
     let proof_obligations_ready =
         grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
     let proof_targets_skip = grokrxiv_review_loop::proof_obligations_skip_lean(&proof_obligations);
+    record_review_loop_node(
+        pool,
+        review_id,
+        &stages,
+        "proof_obligation_generator",
+        proof_obligations.clone(),
+        VerifierStatus::Pass,
+        serde_json::json!({
+            "artifact_path": "review_loop/proof_obligations.json",
+            "lean_targets": "review_loop/lean_targets.json"
+        }),
+    )
+    .await?;
 
     let lean_dir = artifact_dir.join("lean");
     let lean_src_dir = lean_dir.join("GrokRxiv");
@@ -8318,14 +9668,20 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
             .unwrap_or("No paper-derived formal mathematical statements were available for Lean.");
         let _ = write_review_loop_code_file(
             &lean_final_path,
-            &format!("/- Lean formalization skipped: {reason} -/\n"),
+            &format!("/- Lean formalization not authored: {reason} -/\n"),
         )
         .await;
         let skip = proof_obligations
             .get("skip_reason")
             .and_then(|v| v.as_str())
-            .unwrap_or("no_math_targets");
-        skipped_review_fix_code_results_with_status(&lean_task, &lean_final_path, reason, "skipped", skip)
+            .unwrap_or("no_math_found");
+        skipped_review_fix_code_results_with_status(
+            &lean_task,
+            &lean_final_path,
+            reason,
+            "skipped",
+            skip,
+        )
     };
     let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
     let lean_pass = lean_results["status"] == "pass";
@@ -8384,7 +9740,11 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
 
     let semantic_adequacy =
         grokrxiv_review_loop::build_semantic_adequacy(&semantic_ir, &theorem_map);
-    write_loop_json(&artifact_dir.join("semantic_adequacy.json"), &semantic_adequacy).await?;
+    write_loop_json(
+        &artifact_dir.join("semantic_adequacy.json"),
+        &semantic_adequacy,
+    )
+    .await?;
     // A `skipped` adequacy check (Lean not run / no formalizable targets) is non-blocking
     // and must never render as a faithfulness FAILURE.
     let semantic_adequacy_pass = matches!(
@@ -8409,6 +9769,7 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
     // Update ONLY the advisory `formal` view in policy_gate.json — never the verdict
     // (deterministic_status / recommendation / blocking_issues), which already shipped.
     let policy_path = artifact_dir.join("policy_gate.json");
+    let mut refreshed_policy_gate = read_json("policy_gate.json");
     if let Ok(text) = std::fs::read_to_string(&policy_path) {
         if let Ok(mut policy) = serde_json::from_str::<serde_json::Value>(&text) {
             let lean_label = if lean_pass {
@@ -8425,49 +9786,247 @@ async fn formalize_review(review_id: Uuid, debug_output: bool) -> anyhow::Result
             } else {
                 "not_proved"
             };
-            if let Some(cs) = policy.get_mut("component_status").and_then(|v| v.as_object_mut()) {
+            if let Some(cs) = policy
+                .get_mut("component_status")
+                .and_then(|v| v.as_object_mut())
+            {
                 cs.insert("lean".to_string(), serde_json::json!(lean_label));
-                cs.insert("semantic_adequacy".to_string(), semantic_adequacy["status"].clone());
+                cs.insert(
+                    "semantic_adequacy".to_string(),
+                    semantic_adequacy["status"].clone(),
+                );
             }
             if let Some(pv) = policy
                 .get_mut("publishability_vector")
                 .and_then(|v| v.as_object_mut())
             {
                 pv.insert("formal".to_string(), serde_json::json!(formal));
-                pv.insert("semantic_adequacy".to_string(), semantic_adequacy["status"].clone());
+                pv.insert(
+                    "semantic_adequacy".to_string(),
+                    semantic_adequacy["status"].clone(),
+                );
             }
             let _ = write_loop_json(&policy_path, &policy).await;
+            let policy_integrity_failed = policy
+                .get("publishability_vector")
+                .and_then(|value| value.get("integrity"))
+                .and_then(|value| value.as_str())
+                == Some("fail");
+            record_review_loop_node(
+                pool,
+                review_id,
+                &stages,
+                "policy_gate",
+                policy.clone(),
+                if policy_integrity_failed {
+                    VerifierStatus::Fail
+                } else {
+                    VerifierStatus::Pass
+                },
+                serde_json::json!({"artifact_path": "review_loop/policy_gate.json"}),
+            )
+            .await?;
+            refreshed_policy_gate = policy;
         }
     }
+
+    refresh_formalize_review_loop_report(
+        pool,
+        review_id,
+        &stages,
+        &artifact_dir,
+        &lean_results,
+        &theorem_map,
+        &semantic_adequacy,
+        &refreshed_policy_gate,
+        debug_output,
+    )
+    .await?;
 
     if let Err(err) = super::supervisor::render_to_disk(&state, review_id).await {
         cli_status::emit(format!("formalize {review_id}: re-render skipped: {err:#}"));
     }
-    // Refresh the gate-feedback COMMENT (idempotent — does not touch committed files).
-    if let Err(err) = open_review_pr_for_gate(&state, review_id, false, false).await {
-        cli_status::emit(format!("formalize {review_id}: PR comment update skipped: {err:#}"));
-    }
-    // The async formalize authored the real Lean AFTER the review PR was opened (with a
-    // placeholder Proofs.lean), and the PR-open path is idempotent on an existing PR, so it
-    // never re-commits files. Explicitly stack a NEW commit carrying the authored Lean onto
-    // the existing PR branch so the proofs actually land in git.
-    match commit_lean_files_to_existing_pr(&state, review_id).await {
-        Ok(Some(sha)) => cli_status::emit(format!(
-            "formalize {review_id}: committed Lean to PR (commit {})",
-            sha.get(0..8).unwrap_or(&sha)
-        )),
-        Ok(None) => cli_status::emit(format!(
-            "formalize {review_id}: no open PR or no Lean files to commit"
-        )),
-        Err(err) => {
-            cli_status::emit(format!("formalize {review_id}: Lean PR commit skipped: {err:#}"))
+    if external_actions_enabled {
+        // Refresh the gate-feedback COMMENT (idempotent — does not touch committed files).
+        if let Err(err) = open_review_pr_for_gate(&state, review_id, false, false).await {
+            cli_status::emit(format!(
+                "formalize {review_id}: PR comment update skipped: {err:#}"
+            ));
         }
+        // The async formalize authored the real Lean AFTER the review PR was opened (with a
+        // placeholder Proofs.lean), and the PR-open path is idempotent on an existing PR, so it
+        // never re-commits files. Explicitly stack a NEW commit carrying the authored Lean onto
+        // the existing PR branch so the proofs actually land in git.
+        match commit_lean_files_to_existing_pr(&state, review_id).await {
+            Ok(Some(sha)) => cli_status::emit(format!(
+                "formalize {review_id}: committed Lean to PR (commit {})",
+                sha.get(0..8).unwrap_or(&sha)
+            )),
+            Ok(None) => cli_status::emit(format!(
+                "formalize {review_id}: no open PR or no Lean files to commit"
+            )),
+            Err(err) => cli_status::emit(format!(
+                "formalize {review_id}: Lean PR commit skipped: {err:#}"
+            )),
+        }
+    } else {
+        cli_status::emit(format!(
+            "formalize {review_id}: external actions disabled; skipped PR comment and Lean commit"
+        ));
     }
     cli_status::emit(format!(
         "formalize {review_id}: done (lean status={})",
-        lean_results.get("status").and_then(|v| v.as_str()).unwrap_or("?")
+        lean_results
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
     ));
     Ok(())
+}
+
+async fn refresh_formalize_review_loop_report(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    stages: &[ReviewLoopStage],
+    artifact_dir: &Path,
+    lean_results: &serde_json::Value,
+    theorem_map: &serde_json::Value,
+    semantic_adequacy: &serde_json::Value,
+    policy_gate: &serde_json::Value,
+    debug_output: bool,
+) -> anyhow::Result<serde_json::Value> {
+    use grokrxiv_schemas::VerifierStatus;
+
+    let report_path = artifact_dir.join("review_loop_report.json");
+    let mut report = tokio::fs::read_to_string(&report_path)
+        .await
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "review_id": review_id,
+                "dag_type": "review-loop",
+                "artifact_paths": {
+                    "lean": "review_loop/lean/results.json",
+                    "lean_theorem_map": "review_loop/lean/theorem_map.json",
+                    "lean_verification_report": "review_loop/lean/verification_report.json",
+                    "semantic_adequacy": "review_loop/semantic_adequacy.json",
+                    "policy_gate": "review_loop/policy_gate.json",
+                    "proof_obligations": "review_loop/proof_obligations.json",
+                }
+            })
+        });
+    report = refresh_formalize_review_loop_report_value(
+        report,
+        review_id,
+        lean_results,
+        theorem_map,
+        semantic_adequacy,
+        policy_gate,
+    );
+
+    write_loop_json(&report_path, &report).await?;
+    let bundle_failed = report
+        .get("bundle_completeness")
+        .and_then(|value| value.get("status"))
+        .and_then(|value| value.as_str())
+        == Some("fail");
+    record_review_loop_node(
+        pool,
+        review_id,
+        stages,
+        "review_loop_report",
+        report.clone(),
+        if bundle_failed {
+            VerifierStatus::Fail
+        } else {
+            VerifierStatus::Pass
+        },
+        serde_json::json!({"artifact_path": "review_loop/review_loop_report.json"}),
+    )
+    .await?;
+    emit_review_loop_node_debug(
+        "review_loop_report",
+        !bundle_failed,
+        "review_loop/review_loop_report.json",
+        debug_output,
+        "formalization report refreshed",
+    );
+
+    Ok(report)
+}
+
+fn refresh_formalize_review_loop_report_value(
+    mut report: serde_json::Value,
+    review_id: Uuid,
+    lean_results: &serde_json::Value,
+    theorem_map: &serde_json::Value,
+    semantic_adequacy: &serde_json::Value,
+    policy_gate: &serde_json::Value,
+) -> serde_json::Value {
+    if !report.is_object() {
+        report = serde_json::json!({
+            "review_id": review_id,
+            "dag_type": "review-loop",
+        });
+    }
+    let obj = report
+        .as_object_mut()
+        .expect("review_loop_report object checked above");
+
+    obj.insert("review_id".to_string(), serde_json::json!(review_id));
+    obj.insert("dag_type".to_string(), serde_json::json!("review-loop"));
+    obj.insert("theorem_formalization".to_string(), theorem_map.clone());
+    obj.insert("semantic_adequacy".to_string(), semantic_adequacy.clone());
+
+    if let Some(blocking_issues) = policy_gate.get("blocking_issues") {
+        obj.insert("blocking_issues".to_string(), blocking_issues.clone());
+    }
+    if let Some(publishability_vector) = policy_gate.get("publishability_vector") {
+        obj.insert(
+            "publishability_vector".to_string(),
+            publishability_vector.clone(),
+        );
+    }
+    if let Some(release_tier) = policy_gate.get("release_tier") {
+        obj.insert("release_tier".to_string(), release_tier.clone());
+    }
+
+    let fix_attempts = obj
+        .entry("fix_attempts".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !fix_attempts.is_object() {
+        *fix_attempts = serde_json::json!({});
+    }
+    if let Some(fix_attempts) = fix_attempts.as_object_mut() {
+        fix_attempts.insert(
+            "lean".to_string(),
+            lean_results
+                .get("attempts")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        );
+    }
+
+    let audits = obj
+        .entry("agent_output_audits".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !audits.is_object() {
+        *audits = serde_json::json!({});
+    }
+    if let Some(audits) = audits.as_object_mut() {
+        audits.insert(
+            "lean".to_string(),
+            lean_results
+                .get("agent_output_audit_summary")
+                .cloned()
+                .unwrap_or_else(|| {
+                    review_fix_loop_agent_output_audit_summary(&serde_json::Value::Null)
+                }),
+        );
+    }
+
+    report
 }
 
 async fn run_review_loop_for_review(
@@ -8706,7 +10265,7 @@ async fn run_review_loop_for_review(
     let proof_skip_reason = proof_obligations
         .get("skip_reason")
         .and_then(|value| value.as_str())
-        .unwrap_or("no_math_targets");
+        .unwrap_or("no_math_found");
     let proof_obligations_accepted = proof_obligations_ready || proof_targets_skip;
     record_review_loop_node(
         pool,
@@ -8774,7 +10333,11 @@ async fn run_review_loop_for_review(
     // `review --with-lean`). The synchronous review NEVER runs Lean inline, so its verdict is
     // fully independent of formalization. These nodes record a skipped/advisory state; the
     // `formalize` job recomputes lean/faithfulness/semantic_adequacy later and re-renders.
-    let _ = (proof_obligations_ready, proof_targets_skip, proof_skip_reason);
+    let _ = (
+        proof_obligations_ready,
+        proof_targets_skip,
+        proof_skip_reason,
+    );
     let reason =
         "Lean formalization runs asynchronously via the `formalize` job; queue with --with-lean.";
     let _ = write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
@@ -9740,6 +11303,10 @@ fn annotate_lean_review_fix_code_results(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("FAILED");
+    let lean_attempt_status = theorem_map
+        .get("lean_attempt_status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("failed_typecheck");
     let verdict = if proof_status == "PROVED" {
         "PROVED"
     } else {
@@ -9748,6 +11315,10 @@ fn annotate_lean_review_fix_code_results(
     if let Some(object) = results.as_object_mut() {
         object.insert("verdict".to_string(), serde_json::json!(verdict));
         object.insert("proof_status".to_string(), serde_json::json!(proof_status));
+        object.insert(
+            "lean_attempt_status".to_string(),
+            serde_json::json!(lean_attempt_status),
+        );
         if grokrxiv_review_loop::proof_obligations_skip_lean(proof_obligations) {
             object.insert(
                 "operator_status".to_string(),
@@ -10948,9 +12519,18 @@ async fn enqueue_formalize_app_run(
     pool: &sqlx::PgPool,
     review_id: Uuid,
     json: bool,
+    debug_output: bool,
+    external_actions_enabled: bool,
 ) -> anyhow::Result<Uuid> {
+    let mut args = vec![review_id.to_string()];
+    if debug_output {
+        args.push("--debug".to_string());
+    }
+    if !external_actions_enabled {
+        args.push("--no-external-actions".to_string());
+    }
     let input = serde_json::json!({
-        "args": [review_id.to_string()],
+        "args": args,
         "dry_run": false,
         "json": json,
         "retry": { "max_attempts": 2 },
@@ -10968,6 +12548,50 @@ async fn enqueue_formalize_app_run(
     Ok(job_id)
 }
 
+async fn maybe_enqueue_formalization_app_run(
+    pool: &sqlx::PgPool,
+    review_id: Uuid,
+    json: bool,
+    debug_output: bool,
+    external_actions_enabled: bool,
+    decision: FormalizationQueueDecision,
+) {
+    match decision {
+        FormalizationQueueDecision::Queue { reason } => {
+            match enqueue_formalize_app_run(
+                pool,
+                review_id,
+                json,
+                debug_output,
+                external_actions_enabled,
+            )
+            .await
+            {
+                Ok(job_id) => crate::cli_status::emit(format!(
+                    "review {review_id}: Lean formalization queued (app_runs job {job_id}, reason={})",
+                    reason.as_str()
+                )),
+                Err(err) => crate::cli_status::emit(format!(
+                    "review {review_id}: failed to queue Lean formalization: {err:#}"
+                )),
+            }
+        }
+        FormalizationQueueDecision::Skip { reason } => crate::cli_status::emit(format!(
+            "review {review_id}: Lean formalization not queued ({})",
+            reason.as_str()
+        )),
+    }
+}
+
+fn review_loop_outcome_has_formalizable_math(outcome: &ReviewLoopOutcome) -> bool {
+    let path = Path::new(&outcome.artifact_dir).join("paper_math_sources.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .map(|value| paper_math_sources_has_formalizable_math(&value))
+        .unwrap_or(false)
+}
+
 async fn open_review_pr_after_optional_loop(
     state: &super::AppState,
     review_id: Uuid,
@@ -10982,25 +12606,17 @@ async fn open_review_pr_after_optional_loop(
     } else {
         None
     };
-    // Lean formalization is an experimental, advisory feature that runs ASYNCHRONOUSLY so it
-    // never blocks the review's verdict. `--with-lean` enqueues a `formalize(review_id)` job on
-    // the platform worker (app_runs); a worker dispatches `grokrxiv-app formalize <review_id>`
-    // which runs the per-theorem Lean loop, re-renders, and updates the PR when done. Without a
-    // worker running, the job stays queued; run `agh app run grokrxiv formalize <id>` to do it
-    // inline.
-    if with_lean {
-        if let Some(pool) = state.db.as_ref() {
-            match enqueue_formalize_app_run(pool, review_id, json).await {
-                Ok(job_id) => crate::cli_status::emit(format!(
-                    "review {review_id}: Lean formalization queued (app_runs job {job_id})"
-                )),
-                Err(err) => crate::cli_status::emit(format!(
-                    "review {review_id}: failed to queue Lean formalization: {err:#}"
-                )),
-            }
-        }
-    }
+    let has_formalizable_math = loop_outcome
+        .as_ref()
+        .filter(|outcome| !review_loop_outcome_halted(outcome))
+        .map(review_loop_outcome_has_formalizable_math)
+        .unwrap_or(false);
+    let auto_lean_env = std::env::var("GROKRXIV_AUTO_LEAN").ok();
+    let formalization_decision =
+        decide_formalization_queue(with_lean, auto_lean_env.as_deref(), has_formalizable_math);
     if !review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref()) {
+        let formalize_external_actions_enabled =
+            review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref());
         if loop_outcome
             .as_ref()
             .is_some_and(review_loop_outcome_halted)
@@ -11010,6 +12626,18 @@ async fn open_review_pr_after_optional_loop(
                 "review {review_id}: review-loop halted; skipped PR [{}]",
                 outcome.kind.as_str()
             ));
+            maybe_enqueue_formalization_app_run(
+                state
+                    .db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("review: DATABASE_URL not configured"))?,
+                review_id,
+                json,
+                debug_output,
+                formalize_external_actions_enabled,
+                formalization_decision,
+            )
+            .await;
             return Ok((outcome, loop_outcome));
         }
         let pool = state
@@ -11022,9 +12650,29 @@ async fn open_review_pr_after_optional_loop(
             "review {review_id}: external actions disabled; skipped PR [{}]",
             outcome.kind.as_str()
         ));
+        maybe_enqueue_formalization_app_run(
+            pool,
+            review_id,
+            json,
+            debug_output,
+            formalize_external_actions_enabled,
+            formalization_decision,
+        )
+        .await;
         return Ok((outcome, loop_outcome));
     }
     let pr = open_review_pr_for_gate(state, review_id, json, false).await?;
+    if let Some(pool) = state.db.as_ref() {
+        maybe_enqueue_formalization_app_run(
+            pool,
+            review_id,
+            json,
+            debug_output,
+            true,
+            formalization_decision,
+        )
+        .await;
+    }
     Ok((pr, loop_outcome))
 }
 
@@ -14422,6 +16070,452 @@ mod tests {
     }
 
     #[test]
+    fn formalization_queue_decision_auto_detects_math_and_honors_override() {
+        assert_eq!(
+            decide_formalization_queue(false, None, true),
+            FormalizationQueueDecision::Queue {
+                reason: FormalizationQueueReason::AutoMathDetected,
+            }
+        );
+        assert_eq!(
+            decide_formalization_queue(false, Some("off"), true),
+            FormalizationQueueDecision::Skip {
+                reason: FormalizationQueueSkipReason::AutoDisabledByEnv,
+            }
+        );
+        assert_eq!(
+            decide_formalization_queue(true, Some("off"), false),
+            FormalizationQueueDecision::Queue {
+                reason: FormalizationQueueReason::ForcedByFlag,
+            }
+        );
+        assert_eq!(
+            decide_formalization_queue(false, None, false),
+            FormalizationQueueDecision::Skip {
+                reason: FormalizationQueueSkipReason::NoMathDetected,
+            }
+        );
+    }
+
+    #[test]
+    fn paper_math_sources_detect_formalizable_theorem_signal() {
+        let paper_math_sources = serde_json::json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": [{
+                    "id": "sec-main",
+                    "body_markdown": "We prove the following.\\n\\\\begin{theorem} For all n, n + 0 = n. \\\\end{theorem}"
+                }]
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": []
+            }
+        });
+        let no_math = serde_json::json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": [{"id": "sec-intro", "body_markdown": "This is prose."}]
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": []
+            }
+        });
+
+        assert!(paper_math_sources_has_formalizable_math(
+            &paper_math_sources
+        ));
+        assert!(!paper_math_sources_has_formalizable_math(&no_math));
+    }
+
+    #[test]
+    fn paper_math_sources_detect_equation_signal_for_auto_formalization() {
+        let paper_math_sources = serde_json::json!({
+            "body": {
+                "artifact": "body.md",
+                "sections": [{"id": "sec-main", "body_markdown": "The recurrence is central."}]
+            },
+            "theorem_graph": {
+                "artifact": "theorem_graph.json",
+                "nodes": []
+            },
+            "equations": {
+                "artifact": "equations.json",
+                "equations": [
+                    {"id": "eq-main", "canonical_tex": "a_{n+1}=a_n+1"}
+                ]
+            }
+        });
+
+        assert!(paper_math_sources_has_formalizable_math(
+            &paper_math_sources
+        ));
+    }
+
+    #[test]
+    fn formalize_typed_ir_input_prefers_theorem_graph_statements() {
+        let paper_math_sources = serde_json::json!({
+            "body": {
+                "text": "Full paper body with many unrelated sections."
+            },
+            "theorem_graph": {
+                "nodes": [
+                    {
+                        "id": "proof-1",
+                        "type": "proof",
+                        "statement": "Proof. This should not be sent as a theorem target."
+                    },
+                    {
+                        "id": "thm-add-zero",
+                        "type": "theorem",
+                        "statement": "For every n : Nat, n + 0 = n.",
+                        "source_tex": "\\\\begin{theorem}For every n : Nat, n + 0 = n.\\\\end{theorem}",
+                        "typed_transcription": {"status": "transcribed"},
+                        "theorem_ir": {
+                            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+                            "assumptions": [],
+                            "conclusion": {
+                                "kind": "equals",
+                                "lhs": {"kind": "add", "lhs": {"kind": "var", "name": "n"}, "rhs": {"kind": "nat_lit", "value": 0}},
+                                "rhs": {"kind": "var", "name": "n"}
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+
+        let body = paper_math_sources_body_markdown(&paper_math_sources);
+
+        assert!(body.contains("## theorem thm-add-zero"));
+        assert!(body.contains("For every n : Nat, n + 0 = n."));
+        assert!(body.contains("\\\\begin{theorem}"));
+        assert!(!body.contains("Full paper body"));
+        assert!(!body.contains("Proof. This should not be sent"));
+    }
+
+    #[test]
+    fn formalize_typed_ir_input_bypasses_unreliable_theorem_graph_for_source_body() {
+        let paper_math_sources = serde_json::json!({
+            "body": {
+                "text": "**Theorem 7**. *Let M be either R^2 or a closed 2-manifold of genus at least 1. Then F(M - Q_m,k) is a K(pi,1)-space.*"
+            },
+            "theorem_graph": {
+                "nodes": [
+                    {
+                        "id": "proof-1",
+                        "type": "proof",
+                        "statement": "Proof. This should not be sent as a theorem target."
+                    },
+                    {
+                        "id": "thm-5",
+                        "type": "lemma",
+                        "statement": "We state a refined form of the five lemma here as a convenient quick reference.",
+                        "typed_transcription": {"status": "untranscribed"},
+                        "theorem_ir": {"conclusion": {"kind": "unknown_prop"}}
+                    }
+                ]
+            }
+        });
+
+        let body = paper_math_sources_body_markdown(&paper_math_sources);
+
+        assert!(body.contains("**Theorem 7**"));
+        assert!(body.contains("K(pi,1)-space"));
+        assert!(!body.contains("## lemma thm-5"));
+        assert!(!body.contains("Proof. This should not be sent"));
+    }
+
+    #[test]
+    fn formalize_source_workdir_unpacks_tex_bundle_for_llm_tools() {
+        let mut archive_bytes = Vec::new();
+        {
+            let encoder =
+                flate2::write::GzEncoder::new(&mut archive_bytes, flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let tex = "\\documentclass{article}\n\\newtheorem{thm}{Theorem}\n\\begin{document}\n\\begin{thm}\\label{thm:add-zero}For every $n$, $n + 0 = n$.\\end{thm}\n\\end{document}\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(tex.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "paper/main.tex", tex.as_bytes())
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let workdir = tempfile::tempdir().unwrap();
+
+        write_formalize_source_archive_to_workdir(workdir.path(), &archive_bytes).unwrap();
+
+        let hydrated = std::fs::read_to_string(workdir.path().join("paper/main.tex")).unwrap();
+        assert!(hydrated.contains("\\newtheorem{thm}{Theorem}"));
+        assert!(hydrated.contains("\\begin{thm}"));
+    }
+
+    #[test]
+    fn formalize_latex_source_context_indexes_alias_blocks_without_typed_ir() {
+        let entries = vec![FormalizeSourceArchiveEntry {
+            path: "newbraid.tex".to_string(),
+            bytes: br#"\documentclass{article}
+\newtheorem{thm}{Theorem}[section]
+\newtheorem{prop}[thm]{Proposition}
+\begin{document}
+\begin{thm}
+\label{thm:Kpi1}
+Let $M$ be either $\mathbb{R}^2$ or a closed 2-manifold of genus $\geq 1$.
+Then $F(M-Q_m,k)$ is a $K(\pi,1)$-space.
+\end{thm}
+\begin{prop}
+\label{prop:polyfree}
+The pure braid group is polyfree.
+\end{prop}
+\end{document}
+"#
+            .to_vec(),
+        }];
+
+        let context = build_formalize_latex_source_context(&entries);
+
+        assert!(context.contains("newbraid.tex"));
+        assert!(context.contains("thm -> theorem"));
+        assert!(context.contains("prop -> proposition"));
+        assert!(context.contains("thm:Kpi1"));
+        assert!(context.contains("\\begin{thm}"));
+        assert!(context.contains("prop:polyfree"));
+        assert!(!context.contains("\"typed_transcription\""));
+        assert!(!context.contains("\"theorem_ir\""));
+    }
+
+    #[test]
+    fn formalize_latex_candidate_pack_prefers_title_matching_source_file() {
+        let entries = vec![
+            FormalizeSourceArchiveEntry {
+                path: "unrelated.tex".to_string(),
+                bytes: br#"\documentclass{article}
+\title{Unrelated Loops}
+\newtheorem{thm}{Theorem}
+\begin{document}
+\begin{thm}\label{thm:unrelated}Every loop is a loop.\end{thm}
+\end{document}
+"#
+                .to_vec(),
+            },
+            FormalizeSourceArchiveEntry {
+                path: "newbraid.tex".to_string(),
+                bytes: br#"\documentclass{article}
+\title{Configuration spaces and braid groups}
+\newtheorem{thm}{Theorem}
+\newtheorem{prop}[thm]{Proposition}
+\begin{document}
+\begin{thm}[Fadell and Neuwirth]
+\label{thm:fib}
+Let $M$ be a manifold. The projection from the ordered configuration space is a locally trivial fibration.
+\end{thm}
+\begin{prop}\label{prop:braid}The braid group action preserves the fibration.\end{prop}
+\end{document}
+"#
+                .to_vec(),
+            },
+        ];
+
+        let pack =
+            build_formalize_latex_candidate_pack(&entries, "Configuration Spaces and Braid Groups");
+
+        let first_newbraid = pack.find("newbraid.tex").expect("newbraid ranked");
+        let first_unrelated = pack.find("unrelated.tex").expect("unrelated present");
+        assert!(
+            first_newbraid < first_unrelated,
+            "title-matching file should rank first:\n{pack}"
+        );
+        assert!(pack.contains("thm:fib"));
+        assert!(!pack.contains("\"typed_transcription\""));
+        assert!(!pack.contains("\"theorem_ir\""));
+    }
+
+    #[test]
+    fn formalize_source_first_prompt_requires_typed_ir_without_unknown_placeholders() {
+        let system = formalize_source_first_theorem_system_prompt();
+        let user = formalize_source_first_theorem_user_prompt(
+            "2606.17193",
+            "Configuration Spaces and Braid Groups",
+            "## Candidate 1\nfile: newbraid.tex\n```tex\n\\begin{thm}\\label{thm:fib}...\\end{thm}\n```",
+        );
+
+        assert!(system.contains("typed_transcription.status"));
+        assert!(system.contains("theorem_ir"));
+        assert!(system.contains("uninterpreted_predicate"));
+        assert!(system.contains("Do not use unknown_prop"));
+        assert!(user.contains("2606.17193"));
+        assert!(user.contains("source-grounded theorem-level targets"));
+        assert!(user.contains("thm:fib"));
+    }
+
+    #[test]
+    fn parse_formalize_args_accepts_no_external_actions() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--debug".to_string(),
+            "--no-external-actions".to_string(),
+        ])
+        .expect("formalize args parse");
+
+        assert_eq!(
+            parsed.review_id,
+            Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
+        );
+        assert!(parsed.debug_output);
+        assert!(!parsed.external_actions_enabled);
+    }
+
+    #[test]
+    fn lean_target_base_artifact_omits_full_semantic_ir_blob() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_theorem_thm_Hall",
+            "source_claim_id": "thm: Hall",
+            "statement": "If N and Q are finitely presented, then G is finitely presented.",
+            "theorem_ir": {
+                "theorem_name": "thm_Hall",
+                "binders": [],
+                "assumptions": [],
+                "conclusion": {"kind": "uninterpreted_predicate", "name": "finitely_presented", "args": []}
+            }
+        });
+        let source_node = serde_json::json!({
+            "id": "thm: Hall",
+            "source_tex": "\\begin{thm}[P. Hall] ... \\end{thm}"
+        });
+        let semantic_model = serde_json::json!({
+            "schema_version": "1.0.0",
+            "semantic_ir": "review_loop/semantic_ir.json",
+            "paper_math_sources": "review_loop/paper_math_sources.json",
+            "theorem_candidate_count": 3,
+            "definition_count": 0,
+            "assumption_count": 0,
+            "large_accidental_payload": "x".repeat(20_000)
+        });
+        let proof_obligations = serde_json::json!({
+            "status": "ready",
+            "source": "review_loop/semantic_ir.json",
+            "obligations": [obligation.clone()]
+        });
+        let lean_targets = serde_json::json!({"status": "ready", "targets": [{"id": "lean"}]});
+
+        let artifact = lean_target_base_artifact(
+            review_id,
+            &serde_json::json!(["requirement"]),
+            &obligation,
+            "thm_Hall",
+            "If N and Q are finitely presented, then G is finitely presented.",
+            &[],
+            Some(&source_node),
+            &semantic_model,
+            &proof_obligations,
+            &lean_targets,
+        );
+        let rendered = serde_json::to_string(&artifact).unwrap();
+
+        assert!(rendered.contains("thm: Hall"));
+        assert!(rendered.contains("review_loop/semantic_ir.json"));
+        assert!(!rendered.contains("large_accidental_payload"));
+        assert!(
+            rendered.len() < 12_000,
+            "artifact too large: {}",
+            rendered.len()
+        );
+    }
+
+    #[test]
+    fn formalize_report_refresh_replaces_stale_theorem_formalization() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let stale_report = serde_json::json!({
+            "review_id": review_id,
+            "dag_type": "review-loop",
+            "fix_attempts": {
+                "lean": [{
+                    "status": "fail",
+                    "verified_statement": "theorem thm_5 : True := by"
+                }],
+                "pr_review": []
+            },
+            "agent_output_audits": {
+                "lean": {"total": 1, "accepted": 1, "rejected": 0}
+            },
+            "theorem_formalization": {
+                "status": "failed",
+                "results": [{
+                    "emitted_statement": "theorem thm_5 : True := by",
+                    "verified_statement": "theorem thm_5 : True := by"
+                }]
+            },
+            "semantic_adequacy": {"status": "fail"},
+            "publishability_vector": {"formal": "failed"}
+        });
+        let lean_results = serde_json::json!({
+            "status": "skipped",
+            "skip_reason": "not_formalizable",
+            "lean_attempt_status": "not_formalizable",
+            "attempts": [],
+            "agent_output_audit_summary": {
+                "total": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "by_role": {}
+            }
+        });
+        let theorem_map = serde_json::json!({
+            "status": "skipped",
+            "skip_reason": "not_formalizable",
+            "lean_attempt_status": "not_formalizable",
+            "results": [{
+                "target_id": "theorem_thm_5",
+                "status": "skipped",
+                "skip_reason": "typed_transcription_not_transcribed"
+            }]
+        });
+        let semantic_adequacy = serde_json::json!({
+            "status": "skipped",
+            "skip_reason": "not_formalizable"
+        });
+        let policy_gate = serde_json::json!({
+            "blocking_issues": ["revision required"],
+            "publishability_vector": {
+                "formal": "not_conducive_to_lean_proof",
+                "semantic_adequacy": "skipped"
+            },
+            "release_tier": {
+                "tier": "in_review",
+                "lifecycle_state": "needs_update"
+            }
+        });
+
+        let refreshed = refresh_formalize_review_loop_report_value(
+            stale_report,
+            review_id,
+            &lean_results,
+            &theorem_map,
+            &semantic_adequacy,
+            &policy_gate,
+        );
+        let rendered = serde_json::to_string(&refreshed).unwrap();
+
+        assert!(!rendered.contains("theorem thm_5 : True := by"));
+        assert_eq!(
+            refreshed["theorem_formalization"]["skip_reason"],
+            "not_formalizable"
+        );
+        assert_eq!(
+            refreshed["publishability_vector"]["formal"],
+            "not_conducive_to_lean_proof"
+        );
+        assert_eq!(
+            refreshed["fix_attempts"]["lean"].as_array().unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
     fn review_loop_stage_plan_is_loaded_from_manifest() {
         let stages = review_loop_stage_plan().expect("review-loop stage plan");
 
@@ -14721,6 +16815,38 @@ mod tests {
             parse_arxiv_source("https://arxiv.org/pdf/2407.07620v4.pdf").as_deref(),
             Some("2407.07620v4")
         );
+    }
+
+    #[test]
+    fn direct_extract_normalizes_arxiv_urls_before_ingest() {
+        assert_eq!(
+            normalize_arxiv_source_arg("https://arxiv.org/abs/2606.19113"),
+            "2606.19113"
+        );
+        assert_eq!(
+            normalize_arxiv_source_arg("https://arxiv.org/pdf/2606.19113.pdf"),
+            "2606.19113"
+        );
+        assert_eq!(normalize_arxiv_source_arg("2606.19113"), "2606.19113");
+    }
+
+    #[tokio::test]
+    async fn arxiv_urls_resolve_to_arxiv_pipeline_even_with_pdf_hint() {
+        for (source, expected) in [
+            ("https://arxiv.org/abs/2401.00001", "2401.00001"),
+            ("https://arxiv.org/pdf/2401.00001.pdf", "2401.00001"),
+            ("https://arxiv.org/pdf/2401.00001v2.pdf", "2401.00001v2"),
+        ] {
+            let resolved = resolve_source(source, Some(SourceType::Pdf))
+                .await
+                .unwrap_or_else(|err| panic!("{source} should resolve: {err}"));
+
+            assert_eq!(resolved.len(), 1);
+            match &resolved[0] {
+                ResolvedSource::Arxiv(id) => assert_eq!(id, expected),
+                other => panic!("arXiv URL must use the arXiv/LaTeX pipeline, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -15750,7 +17876,7 @@ obligationToLean = LeanTarget\n";
     }
 
     #[test]
-    fn skipped_lean_review_fix_code_reports_no_math_targets_as_skip() {
+    fn skipped_lean_review_fix_code_reports_no_math_found_as_skip() {
         let task = ReviewFixCodeTask {
             target_id: "lean",
             language: "lean",
@@ -15770,7 +17896,8 @@ obligationToLean = LeanTarget\n";
         };
         let proof_obligations = serde_json::json!({
             "status": "skipped",
-            "skip_reason": "no_math_targets",
+            "skip_reason": "no_math_found",
+            "lean_attempt_status": "no_math_found",
             "operator_status": "NOT_CONDUCIVE_TO_LEAN_PROOF",
             "message": "No paper-derived formal mathematical statements were extracted for Lean verification.",
             "obligations": []
@@ -15781,12 +17908,13 @@ obligationToLean = LeanTarget\n";
             std::path::Path::new("review_loop/lean/GrokRxiv/Proofs.lean"),
             "No paper-derived formal mathematical statements were extracted for Lean verification.",
             "skipped",
-            "no_math_targets",
+            "no_math_found",
         );
         let results = annotate_lean_review_fix_code_results(skipped, &proof_obligations);
 
         assert_eq!(results["status"], "skipped");
-        assert_eq!(results["skip_reason"], "no_math_targets");
+        assert_eq!(results["skip_reason"], "no_math_found");
+        assert_eq!(results["lean_attempt_status"], "no_math_found");
         assert_eq!(results["operator_status"], "NOT_CONDUCIVE_TO_LEAN_PROOF");
         assert_eq!(results["proof_status"], "SKIPPED");
         assert_eq!(results["entries"].as_array().unwrap().len(), 0);
@@ -15834,7 +17962,12 @@ obligationToLean = LeanTarget\n";
         assert_eq!(results["status"], "fail");
         assert_eq!(results["verdict"], "NOT_PROVED");
         assert_eq!(results["proof_status"], "SEMANTIC_GAP");
+        assert_eq!(results["lean_attempt_status"], "not_formalizable");
         assert_eq!(results["entries"][0]["status"], "SEMANTIC_GAP");
+        assert_eq!(
+            results["entries"][0]["lean_attempt_status"],
+            "not_formalizable"
+        );
         assert!(review_fix_loop_summary(&results).contains("verdict=NOT_PROVED"));
     }
 
@@ -15882,7 +18015,12 @@ obligationToLean = LeanTarget\n";
         assert_eq!(annotated["status"], "fail");
         assert_eq!(annotated["verdict"], "NOT_PROVED");
         assert_eq!(annotated["proof_status"], "TYPE_ERROR");
+        assert_eq!(annotated["lean_attempt_status"], "failed_open_goal");
         assert_eq!(annotated["entries"][0]["status"], "TYPE_ERROR");
+        assert_eq!(
+            annotated["entries"][0]["lean_attempt_status"],
+            "failed_open_goal"
+        );
         assert!(review_fix_loop_summary(&annotated).contains("verdict=NOT_PROVED"));
     }
 

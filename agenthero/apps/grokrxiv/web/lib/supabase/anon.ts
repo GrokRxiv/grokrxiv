@@ -15,6 +15,7 @@ import {
   type ReviewSummary,
   type ReviewWithPaper,
 } from "@/lib/types";
+import { withLatestAgentOutputs } from "@/lib/review-agents";
 
 function client() {
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -83,7 +84,7 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
   const { data, error } = await supabase
     .from("reviews")
     .select(
-      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes)",
+      "id, paper_id, status, visibility, github_pr_url, github_review_url, models_used, meta_review, created_at, published_at, agents:review_agents(id, role, dag_type, node_id, agent_type, model, output, verifier_status, verifier_notes, created_at)",
     )
     .eq("id", id)
     .eq("visibility", "public")
@@ -105,7 +106,7 @@ export async function getReviewByIdAnon(id: string): Promise<Review | null> {
       gateFailure.action_required_md ?? gateFailure.details_md ?? null;
     review.gate_failure_comment_url = gateFailure.github_comment_url ?? null;
   }
-  return review;
+  return withLatestAgentOutputs(review);
 }
 
 /// Phase 4: fetch the moderator's rationale for a rejected review. Returns

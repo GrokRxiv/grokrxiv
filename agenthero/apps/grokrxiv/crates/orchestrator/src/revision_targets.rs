@@ -1225,8 +1225,14 @@ mod tests {
         // The whole mermaid fenced block must contain NO backslash-escaped quote and NO raw
         // quote/paren inside a node label (only the wrapping `["` / `"]` quotes are allowed).
         assert!(graph.contains("```mermaid"));
-        assert!(!graph.contains("\\\""), "backslash-escaped quote breaks GitHub mermaid:\n{graph}");
-        assert!(graph.contains("#quot;"), "expected entity-encoded quote:\n{graph}");
+        assert!(
+            !graph.contains("\\\""),
+            "backslash-escaped quote breaks GitHub mermaid:\n{graph}"
+        );
+        assert!(
+            graph.contains("#quot;"),
+            "expected entity-encoded quote:\n{graph}"
+        );
         for line in graph
             .lines()
             .filter(|l| l.trim_start().starts_with("nweakness_") && l.contains("[\""))

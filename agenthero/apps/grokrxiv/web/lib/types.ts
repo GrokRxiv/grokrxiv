@@ -104,6 +104,7 @@ export interface RevisionTarget {
 }
 
 export interface AgentOutput {
+  id?: string;
   role: AgentRole;
   dag_type?: string | null;
   node_id?: string | null;
@@ -112,6 +113,7 @@ export interface AgentOutput {
   output: unknown;
   verifier_status: VerifierStatus;
   verifier_notes?: unknown | null;
+  created_at?: string;
 }
 
 export interface SummaryReviewOutput {

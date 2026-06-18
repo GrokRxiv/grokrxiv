@@ -117,7 +117,33 @@ function displayVerifierStatus(agent: AgentOutput): {
   if (agent.role === "citation" && citationWasNotChecked(agent.verifier_notes)) {
     return { status: "fail", label: "Not checked" };
   }
+  if (agent.role === "lean_review_fix_code" && isRecord(agent.output)) {
+    const leanAttemptStatus = stringField(agent.output, "lean_attempt_status");
+    if (leanAttemptStatus) {
+      return {
+        status: agent.verifier_status,
+        label: leanAttemptStatusLabel(leanAttemptStatus),
+      };
+    }
+  }
   return { status: agent.verifier_status };
+}
+
+function leanAttemptStatusLabel(status: string): string {
+  switch (status) {
+    case "proved":
+      return "Lean proved";
+    case "failed_open_goal":
+      return "Open goals";
+    case "failed_typecheck":
+      return "Typecheck failed";
+    case "not_formalizable":
+      return "Not formalizable";
+    case "no_math_found":
+      return "No math found";
+    default:
+      return humanizeRole(status);
+  }
 }
 
 function citationWasNotChecked(verifierNotes: unknown): boolean {
@@ -134,6 +160,11 @@ function recordField(
 ): Record<string, unknown> | null {
   const value = record[key];
   return isRecord(value) ? value : null;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
