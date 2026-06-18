@@ -233,11 +233,49 @@ pub enum AppCommand {
         /// Optional app id filter.
         #[arg(long)]
         app: Option<String>,
+        /// Optional action id filter.
+        #[arg(long)]
+        action: Option<String>,
+        /// Optional state filter.
+        #[arg(long)]
+        state: Option<String>,
+        /// Maximum rows to return.
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
     },
     /// Show one app run record.
     Status {
         /// App run UUID.
         run_id: Uuid,
+    },
+    /// Cancel one queued or running app run.
+    Cancel {
+        /// App run UUID.
+        run_id: Uuid,
+        /// Operator-visible cancellation reason.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Cancel queued app runs matching a safe filter.
+    CancelQueued {
+        /// App id to cancel queued runs for.
+        #[arg(long)]
+        app: String,
+        /// Optional action id filter.
+        #[arg(long)]
+        action: Option<String>,
+        /// Keep these run UUIDs queued.
+        #[arg(long = "except")]
+        except: Vec<Uuid>,
+        /// Only cancel runs older than this many minutes.
+        #[arg(long = "older-than-mins")]
+        older_than_mins: Option<i64>,
+        /// Print matching runs without changing state.
+        #[arg(long)]
+        dry_run: bool,
+        /// Operator-visible cancellation reason.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -692,8 +730,42 @@ async fn app_command(command: AppCommand, json: bool, dry_run: bool) -> anyhow::
         AppCommand::List => app_list(json),
         AppCommand::Show { app } => app_show(&app, json),
         AppCommand::Run { app, args } => app_args_command(&app, args, json, dry_run).await,
-        AppCommand::Runs { app } => app_runs(app.as_deref(), json).await,
+        AppCommand::Runs {
+            app,
+            action,
+            state,
+            limit,
+        } => {
+            app_runs(
+                app.as_deref(),
+                action.as_deref(),
+                state.as_deref(),
+                limit,
+                json,
+            )
+            .await
+        }
         AppCommand::Status { run_id } => app_status(run_id, json).await,
+        AppCommand::Cancel { run_id, reason } => app_cancel(run_id, reason.as_deref(), json).await,
+        AppCommand::CancelQueued {
+            app,
+            action,
+            except,
+            older_than_mins,
+            dry_run,
+            reason,
+        } => {
+            app_cancel_queued(
+                &app,
+                action.as_deref(),
+                &except,
+                older_than_mins,
+                dry_run,
+                reason.as_deref(),
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -1006,21 +1078,45 @@ pub async fn run_grokrxiv_action(
     }
 }
 
-async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
+#[derive(Debug, Clone)]
+struct AppRunListRow {
+    id: String,
+    app_id: String,
+    action_id: String,
+    state: String,
+    review_id: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn app_runs(
+    app: Option<&str>,
+    action: Option<&str>,
+    state: Option<&str>,
+    limit: u32,
+    json: bool,
+) -> anyhow::Result<()> {
     let config = super::Config::from_env();
     let state_obj = super::AppState::from_config(config).await?;
     let pool = state_obj
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("app runs: DATABASE_URL not configured"))?;
+    let limit = limit.clamp(1, 500) as i64;
     let rows = sqlx::query(
-        "select id::text, app_id, action_id, state, created_at, started_at, finished_at \
+        "select id::text, app_id, action_id, state, input, created_at, started_at, finished_at \
          from app_runs \
          where ($1::text is null or app_id = $1) \
+           and ($2::text is null or action_id = $2) \
+           and ($3::text is null or state = $3) \
          order by created_at desc \
-         limit 50",
+         limit $4",
     )
     .bind(app)
+    .bind(action)
+    .bind(state)
+    .bind(limit)
     .fetch_all(pool)
     .await
     .context("list app runs")?;
@@ -1030,14 +1126,16 @@ async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
             .iter()
             .map(|row: &sqlx::postgres::PgRow| {
                 use sqlx::Row as _;
+                let input = row.get::<serde_json::Value, _>(4);
                 serde_json::json!({
                     "id": row.get::<String, _>(0),
                     "app_id": row.get::<String, _>(1),
                     "action_id": row.get::<String, _>(2),
                     "state": row.get::<String, _>(3),
-                    "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(4),
-                    "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(5),
-                    "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(6),
+                    "review_id": app_run_review_id(&input),
+                    "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(5),
+                    "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(6),
+                    "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(7),
                 })
             })
             .collect::<Vec<_>>();
@@ -1048,16 +1146,24 @@ async fn app_runs(app: Option<&str>, json: bool) -> anyhow::Result<()> {
     } else if rows.is_empty() {
         println!("No app runs found.");
     } else {
-        for row in rows {
+        let rows = rows
+            .iter()
+            .map(|row| {
             use sqlx::Row as _;
-            println!(
-                "{} {}:{} {}",
-                row.get::<String, _>(0),
-                row.get::<String, _>(1),
-                row.get::<String, _>(2),
-                row.get::<String, _>(3)
-            );
-        }
+                let input = row.get::<serde_json::Value, _>(4);
+                AppRunListRow {
+                    id: row.get(0),
+                    app_id: row.get(1),
+                    action_id: row.get(2),
+                    state: row.get(3),
+                    review_id: app_run_review_id(&input),
+                    created_at: row.get(5),
+                    started_at: row.get(6),
+                    finished_at: row.get(7),
+                }
+            })
+            .collect::<Vec<_>>();
+        print!("{}", format_app_run_table(&rows, chrono::Utc::now()));
     }
     Ok(())
 }
@@ -1108,6 +1214,278 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state_obj = super::AppState::from_config(config).await?;
+    let pool = state_obj
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("app cancel: DATABASE_URL not configured"))?;
+    let reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Cancelled by operator");
+    let row = sqlx::query(
+        "update app_runs \
+         set state = 'cancelled', finished_at = coalesce(finished_at, now()), updated_at = now(), \
+             error_code = 'operator_cancelled', error_message = $2, error_retryable = false \
+         where id = $1 and state in ('queued', 'running') \
+         returning id::text, app_id, action_id, state, input, created_at, started_at, finished_at",
+    )
+    .bind(run_id)
+    .bind(reason)
+    .fetch_optional(pool)
+    .await
+    .context("cancel app run")?;
+
+    if row.is_some() {
+        sqlx::query(
+            "update worker_leases set state = 'failed', updated_at = now() \
+             where app_run_id = $1 and state = 'leased'",
+        )
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .context("release cancelled app run leases")?;
+        insert_app_run_event(pool, run_id, "info", "app_run.cancelled", reason).await?;
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": run_id,
+                "cancelled": row.is_some(),
+                "reason": reason,
+            }))?
+        );
+    } else if let Some(row) = row {
+        use sqlx::Row as _;
+        let input = row.get::<serde_json::Value, _>(4);
+        let listed = AppRunListRow {
+            id: row.get(0),
+            app_id: row.get(1),
+            action_id: row.get(2),
+            state: row.get(3),
+            review_id: app_run_review_id(&input),
+            created_at: row.get(5),
+            started_at: row.get(6),
+            finished_at: row.get(7),
+        };
+        println!("Cancelled app run:");
+        print!("{}", format_app_run_table(&[listed], chrono::Utc::now()));
+    } else {
+        println!("No queued/running app run cancelled for id {run_id}.");
+    }
+    Ok(())
+}
+
+async fn app_cancel_queued(
+    app: &str,
+    action: Option<&str>,
+    except: &[Uuid],
+    older_than_mins: Option<i64>,
+    dry_run: bool,
+    reason: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let config = super::Config::from_env();
+    let state_obj = super::AppState::from_config(config).await?;
+    let pool = state_obj
+        .db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("app cancel-queued: DATABASE_URL not configured"))?;
+    let cutoff = older_than_mins
+        .filter(|mins| *mins > 0)
+        .map(|mins| chrono::Utc::now() - chrono::Duration::minutes(mins));
+    let rows = sqlx::query(
+        "select id::text, app_id, action_id, state, input, created_at, started_at, finished_at \
+         from app_runs \
+         where app_id = $1 \
+           and state = 'queued' \
+           and ($2::text is null or action_id = $2) \
+           and ($3::timestamptz is null or created_at < $3) \
+           and not (id = any($4::uuid[])) \
+         order by created_at asc",
+    )
+    .bind(app)
+    .bind(action)
+    .bind(cutoff)
+    .bind(except)
+    .fetch_all(pool)
+    .await
+    .context("load queued app runs to cancel")?;
+    let listed = rows
+        .iter()
+        .map(|row| {
+            use sqlx::Row as _;
+            let input = row.get::<serde_json::Value, _>(4);
+            AppRunListRow {
+                id: row.get(0),
+                app_id: row.get(1),
+                action_id: row.get(2),
+                state: row.get(3),
+                review_id: app_run_review_id(&input),
+                created_at: row.get(5),
+                started_at: row.get(6),
+                finished_at: row.get(7),
+            }
+        })
+        .collect::<Vec<_>>();
+    if dry_run {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "matched": listed.len(),
+                    "runs": app_run_rows_json(&listed),
+                }))?
+            );
+        } else if listed.is_empty() {
+            println!("No queued app runs matched.");
+        } else {
+            println!("Queued app runs that would be cancelled:");
+            print!("{}", format_app_run_table(&listed, chrono::Utc::now()));
+        }
+        return Ok(());
+    }
+
+    let ids = listed
+        .iter()
+        .filter_map(|row| Uuid::parse_str(&row.id).ok())
+        .collect::<Vec<_>>();
+    let reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Cancelled stale queued app run");
+    if !ids.is_empty() {
+        sqlx::query(
+            "update app_runs \
+             set state = 'cancelled', finished_at = now(), updated_at = now(), \
+                 error_code = 'operator_cancelled', error_message = $2, error_retryable = false \
+             where id = any($1::uuid[])",
+        )
+        .bind(&ids)
+        .bind(reason)
+        .execute(pool)
+        .await
+        .context("cancel queued app runs")?;
+        for id in ids {
+            insert_app_run_event(pool, id, "info", "app_run.cancelled", reason).await?;
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "cancelled": listed.len(),
+                "reason": reason,
+                "runs": app_run_rows_json(&listed),
+            }))?
+        );
+    } else if listed.is_empty() {
+        println!("No queued app runs matched.");
+    } else {
+        println!("Cancelled queued app runs:");
+        print!("{}", format_app_run_table(&listed, chrono::Utc::now()));
+    }
+    Ok(())
+}
+
+async fn insert_app_run_event(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+    level: &str,
+    event_type: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "insert into dag_events (app_run_id, level, event_type, message, payload) \
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(run_id)
+    .bind(level)
+    .bind(event_type)
+    .bind(message)
+    .bind(serde_json::json!({"operator": "cli"}))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn app_run_review_id(input: &serde_json::Value) -> Option<String> {
+    input
+        .get("args")
+        .and_then(|args| args.as_array())
+        .and_then(|args| args.first())
+        .and_then(|value| value.as_str())
+        .filter(|value| Uuid::parse_str(value).is_ok())
+        .map(ToOwned::to_owned)
+}
+
+fn app_run_rows_json(rows: &[AppRunListRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "app_id": row.app_id,
+                "action_id": row.action_id,
+                "state": row.state,
+                "review_id": row.review_id,
+                "created_at": row.created_at,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+            })
+        })
+        .collect()
+}
+
+fn format_app_run_table(rows: &[AppRunListRow], now: chrono::DateTime<chrono::Utc>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<14} {:<20} {:<36} {:<8} {:<17} {:<17} {:<17} {}\n",
+        "STATE", "APP:ACTION", "REVIEW_ID", "AGE", "QUEUED_AT", "STARTED_AT", "FINISHED_AT", "RUN_ID"
+    ));
+    for row in rows {
+        out.push_str(&format!(
+            "{:<14} {:<20} {:<36} {:<8} {:<17} {:<17} {:<17} {}\n",
+            row.state,
+            format!("{}:{}", row.app_id, row.action_id),
+            row.review_id.as_deref().unwrap_or("-"),
+            format_app_run_age(row.created_at, now),
+            format_app_run_ts(Some(row.created_at)),
+            format_app_run_ts(row.started_at),
+            format_app_run_ts(row.finished_at),
+            row.id
+        ));
+    }
+    out
+}
+
+fn format_app_run_ts(ts: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    ts.map(|ts| ts.format("%m-%d %H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_app_run_age(
+    created_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let secs = now
+        .signed_duration_since(created_at)
+        .num_seconds()
+        .max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
 }
 
 struct ResearchReviewArgs {
@@ -15223,10 +15601,129 @@ fn open_review(review_id: Uuid) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::source_display::source_display_ref;
+    use chrono::TimeZone as _;
     use clap::{CommandFactory, Parser};
     use std::sync::{Mutex, MutexGuard};
 
     static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn app_runs_filters_and_cancel_commands_parse() {
+        let keep = Uuid::parse_str("68c3a3dd-4ae0-402a-82cc-953153b36702").unwrap();
+        let runs = Cli::try_parse_from([
+            "agh",
+            "app",
+            "runs",
+            "--app",
+            "grokrxiv",
+            "--action",
+            "formalize",
+            "--state",
+            "queued",
+            "--limit",
+            "20",
+        ])
+        .expect("app runs filters should parse");
+        match runs.command {
+            Command::App {
+                command:
+                    AppCommand::Runs {
+                        app,
+                        action,
+                        state,
+                        limit,
+                    },
+            } => {
+                assert_eq!(app.as_deref(), Some("grokrxiv"));
+                assert_eq!(action.as_deref(), Some("formalize"));
+                assert_eq!(state.as_deref(), Some("queued"));
+                assert_eq!(limit, 20);
+            }
+            other => panic!("expected app runs, got {other:?}"),
+        }
+
+        let cancel = Cli::try_parse_from([
+            "agh",
+            "app",
+            "cancel",
+            &keep.to_string(),
+            "--reason",
+            "stale",
+        ])
+        .expect("app cancel should parse");
+        match cancel.command {
+            Command::App {
+                command: AppCommand::Cancel { run_id, reason },
+            } => {
+                assert_eq!(run_id, keep);
+                assert_eq!(reason.as_deref(), Some("stale"));
+            }
+            other => panic!("expected app cancel, got {other:?}"),
+        }
+
+        let bulk = Cli::try_parse_from([
+            "agh",
+            "app",
+            "cancel-queued",
+            "--app",
+            "grokrxiv",
+            "--action",
+            "formalize",
+            "--except",
+            &keep.to_string(),
+            "--older-than-mins",
+            "10",
+            "--dry-run",
+        ])
+        .expect("app cancel-queued should parse");
+        match bulk.command {
+            Command::App {
+                command:
+                    AppCommand::CancelQueued {
+                        app,
+                        action,
+                        except,
+                        older_than_mins,
+                        dry_run,
+                        ..
+                    },
+            } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(action.as_deref(), Some("formalize"));
+                assert_eq!(except, vec![keep]);
+                assert_eq!(older_than_mins, Some(10));
+                assert!(dry_run);
+            }
+            other => panic!("expected app cancel-queued, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_run_table_shows_review_id_and_queue_time() {
+        let created_at = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 17, 12, 0, 0)
+            .unwrap();
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 17, 12, 42, 0)
+            .unwrap();
+        let rows = vec![AppRunListRow {
+            id: "68c3a3dd-4ae0-402a-82cc-953153b36702".to_string(),
+            app_id: "grokrxiv".to_string(),
+            action_id: "formalize".to_string(),
+            state: "queued".to_string(),
+            review_id: Some("dc06005a-9bc1-4222-8779-10d4c26dd7e2".to_string()),
+            created_at,
+            started_at: None,
+            finished_at: None,
+        }];
+
+        let table = format_app_run_table(&rows, now);
+
+        assert!(table.contains("QUEUED_AT"));
+        assert!(table.contains("dc06005a-9bc1-4222-8779-10d4c26dd7e2"));
+        assert!(table.contains("42m"));
+        assert!(table.contains("06-17 12:00:00Z"));
+    }
 
     #[test]
     fn resolve_obligation_dependencies_unions_proof_node_edges() {

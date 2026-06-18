@@ -123,6 +123,9 @@ pub enum AppCommand {
         /// Optional app id filter.
         #[arg(long)]
         app: Option<String>,
+        /// Optional action id filter.
+        #[arg(long)]
+        action: Option<String>,
         /// Optional state filter.
         #[arg(long)]
         state: Option<String>,
@@ -134,6 +137,35 @@ pub enum AppCommand {
     Status {
         /// App run UUID.
         run_id: Uuid,
+    },
+    /// Cancel one queued or running app run.
+    Cancel {
+        /// App run UUID.
+        run_id: Uuid,
+        /// Operator-visible cancellation reason.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Cancel queued app runs matching a safe filter.
+    CancelQueued {
+        /// App id to cancel queued runs for.
+        #[arg(long)]
+        app: String,
+        /// Optional action id filter.
+        #[arg(long)]
+        action: Option<String>,
+        /// Keep these run UUIDs queued.
+        #[arg(long = "except")]
+        except: Vec<Uuid>,
+        /// Only cancel runs older than this many minutes.
+        #[arg(long = "older-than-mins")]
+        older_than_mins: Option<i64>,
+        /// Print matching runs without changing state.
+        #[arg(long)]
+        dry_run: bool,
+        /// Operator-visible cancellation reason.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -351,10 +383,42 @@ async fn app_command(
             )
             .await
         }
-        AppCommand::Runs { app, state, limit } => {
-            app_runs(app.as_deref(), state.as_deref(), limit, json).await
+        AppCommand::Runs {
+            app,
+            action,
+            state,
+            limit,
+        } => {
+            app_runs(
+                app.as_deref(),
+                action.as_deref(),
+                state.as_deref(),
+                limit,
+                json,
+            )
+            .await
         }
         AppCommand::Status { run_id } => app_status(run_id, json).await,
+        AppCommand::Cancel { run_id, reason } => app_cancel(run_id, reason.as_deref(), json).await,
+        AppCommand::CancelQueued {
+            app,
+            action,
+            except,
+            older_than_mins,
+            dry_run,
+            reason,
+        } => {
+            app_cancel_queued(
+                &app,
+                action.as_deref(),
+                &except,
+                older_than_mins,
+                dry_run,
+                reason.as_deref(),
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -900,8 +964,38 @@ fn app_run_adapter_input(
     input
 }
 
+#[derive(Debug, Clone)]
+struct AppRunListRow {
+    id: String,
+    app_id: String,
+    action_id: String,
+    state: String,
+    review_id: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct AppRunLeaseSummary {
+    state: String,
+    leased_until: chrono::DateTime<chrono::Utc>,
+    worker_name: Option<String>,
+    worker_state: Option<String>,
+    worker_last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct AppRunEventSummary {
+    level: String,
+    event_type: String,
+    message: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
 async fn app_runs(
     app: Option<&str>,
+    action: Option<&str>,
     state: Option<&str>,
     limit: u32,
     json: bool,
@@ -909,14 +1003,16 @@ async fn app_runs(
     let pool = connect_db().await?;
     let limit = limit.clamp(1, 500) as i64;
     let rows = sqlx::query(
-        "select id::text, app_id, action_id, state, created_at, started_at, finished_at \
+        "select id::text, app_id, action_id, state, input, created_at, started_at, finished_at \
          from app_runs \
          where ($1::text is null or app_id = $1) \
-           and ($2::text is null or state = $2) \
+           and ($2::text is null or action_id = $2) \
+           and ($3::text is null or state = $3) \
          order by created_at desc \
-         limit $3",
+         limit $4",
     )
     .bind(app)
+    .bind(action)
     .bind(state)
     .bind(limit)
     .fetch_all(&pool)
@@ -926,14 +1022,16 @@ async fn app_runs(
     let values = rows
         .iter()
         .map(|row| {
+            let input = row.get::<serde_json::Value, _>(4);
             json!({
                 "id": row.get::<String, _>(0),
                 "app_id": row.get::<String, _>(1),
                 "action_id": row.get::<String, _>(2),
                 "state": row.get::<String, _>(3),
-                "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(4),
-                "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(5),
-                "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(6),
+                "review_id": app_run_review_id(&input),
+                "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(5),
+                "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(6),
+                "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(7),
             })
         })
         .collect::<Vec<_>>();
@@ -945,15 +1043,11 @@ async fn app_runs(
     } else if values.is_empty() {
         println!("No app runs found.");
     } else {
-        for value in values {
-            println!(
-                "{} {}:{} {}",
-                value["id"].as_str().unwrap_or_default(),
-                value["app_id"].as_str().unwrap_or_default(),
-                value["action_id"].as_str().unwrap_or_default(),
-                value["state"].as_str().unwrap_or_default()
-            );
-        }
+        let rows = values
+            .iter()
+            .filter_map(app_run_list_row_from_value)
+            .collect::<Vec<_>>();
+        print!("{}", format_app_run_table(&rows, chrono::Utc::now()));
     }
     Ok(())
 }
@@ -962,38 +1056,490 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
     let pool = connect_db().await?;
     let row = sqlx::query(
         "select id::text, app_id, action_id, state, input, output, error_code, error_message, \
-                created_at, started_at, finished_at \
+                created_at, started_at, finished_at, attempt \
          from app_runs where id = $1",
     )
     .bind(run_id)
     .fetch_optional(&pool)
     .await?
     .ok_or_else(|| anyhow::anyhow!("app run not found: {run_id}"))?;
+    let lease = load_latest_app_run_lease(&pool, run_id).await?;
+    let events = load_recent_app_run_events(&pool, run_id).await?;
+    let input = row.get::<serde_json::Value, _>(4);
+    let state = row.get::<String, _>(3);
+    let created_at = row.get::<chrono::DateTime<chrono::Utc>, _>(8);
+    let started_at = row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(9);
+    let finished_at = row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(10);
+    let now = chrono::Utc::now();
+    let diagnosis = diagnose_app_run_status(
+        &state,
+        lease.as_ref().map(|lease| lease.state.as_str()),
+        lease.as_ref().map(|lease| lease.leased_until),
+        lease
+            .as_ref()
+            .and_then(|lease| lease.worker_name.as_deref()),
+        now,
+    );
     let payload = json!({
         "id": row.get::<String, _>(0),
         "app_id": row.get::<String, _>(1),
         "action_id": row.get::<String, _>(2),
-        "state": row.get::<String, _>(3),
-        "input": row.get::<serde_json::Value, _>(4),
+        "state": state,
+        "diagnosis": diagnosis,
+        "review_id": app_run_review_id(&input),
+        "age": format_app_run_age(created_at, now),
+        "attempt": row.get::<i32, _>(11),
+        "input": input,
         "output": row.get::<serde_json::Value, _>(5),
         "error_code": row.get::<Option<String>, _>(6),
         "error_message": row.get::<Option<String>, _>(7),
-        "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>(8),
-        "started_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(9),
-        "finished_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(10),
+        "created_at": created_at,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "latest_lease": lease.as_ref().map(app_run_lease_json),
+        "recent_events": events.iter().map(app_run_event_json).collect::<Vec<_>>(),
     });
     if json {
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         println!(
-            "{} {}:{} {}",
-            payload["id"].as_str().unwrap_or_default(),
+            "run_id       {}",
+            payload["id"].as_str().unwrap_or_default()
+        );
+        println!(
+            "app_action   {}:{}",
             payload["app_id"].as_str().unwrap_or_default(),
-            payload["action_id"].as_str().unwrap_or_default(),
+            payload["action_id"].as_str().unwrap_or_default()
+        );
+        println!(
+            "state        {}",
             payload["state"].as_str().unwrap_or_default()
         );
+        println!(
+            "diagnosis    {}",
+            payload["diagnosis"].as_str().unwrap_or_default()
+        );
+        println!(
+            "review_id    {}",
+            payload["review_id"].as_str().unwrap_or("-")
+        );
+        println!("attempt      {}", payload["attempt"]);
+        println!(
+            "age          {}",
+            payload["age"].as_str().unwrap_or_default()
+        );
+        println!("queued_at    {}", format_app_run_ts(Some(created_at)));
+        println!("started_at   {}", format_app_run_ts(started_at));
+        println!("finished_at  {}", format_app_run_ts(finished_at));
+        if let Some(lease) = lease {
+            println!(
+                "lease        {} until {} worker={} heartbeat={}",
+                lease.state,
+                format_app_run_ts(Some(lease.leased_until)),
+                lease.worker_name.as_deref().unwrap_or("-"),
+                format_app_run_ts(lease.worker_last_heartbeat_at)
+            );
+        } else {
+            println!("lease        -");
+        }
+        if let Some(error) = payload["error_message"].as_str() {
+            println!("error        {error}");
+        }
+        if !events.is_empty() {
+            println!("events");
+            for event in events {
+                println!(
+                    "  {} {:<5} {:<28} {}",
+                    format_app_run_ts(Some(event.created_at)),
+                    event.level,
+                    event.event_type,
+                    event.message.as_deref().unwrap_or("")
+                );
+            }
+        }
     }
     Ok(())
+}
+
+async fn load_latest_app_run_lease(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+) -> anyhow::Result<Option<AppRunLeaseSummary>> {
+    let row = sqlx::query(
+        "select wl.state, wl.leased_until, wn.name, wn.state, wn.last_heartbeat_at \
+         from worker_leases wl \
+         left join worker_nodes wn on wn.id = wl.worker_id \
+         where wl.app_run_id = $1 \
+         order by wl.created_at desc \
+         limit 1",
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| AppRunLeaseSummary {
+        state: row.get(0),
+        leased_until: row.get(1),
+        worker_name: row.get(2),
+        worker_state: row.get(3),
+        worker_last_heartbeat_at: row.get(4),
+    }))
+}
+
+async fn load_recent_app_run_events(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+) -> anyhow::Result<Vec<AppRunEventSummary>> {
+    let rows = sqlx::query(
+        "select level, event_type, message, created_at \
+         from dag_events \
+         where app_run_id = $1 \
+         order by created_at desc, id desc \
+         limit 10",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| AppRunEventSummary {
+            level: row.get(0),
+            event_type: row.get(1),
+            message: row.get(2),
+            created_at: row.get(3),
+        })
+        .collect())
+}
+
+async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let pool = connect_db().await?;
+    let reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Cancelled by operator");
+    let row = sqlx::query(
+        "update app_runs \
+         set state = 'cancelled', finished_at = coalesce(finished_at, now()), updated_at = now(), \
+             error_code = 'operator_cancelled', error_message = $2, error_retryable = false \
+         where id = $1 and state in ('queued', 'running') \
+         returning id::text, app_id, action_id, state, input, created_at, started_at, finished_at",
+    )
+    .bind(run_id)
+    .bind(reason)
+    .fetch_optional(&pool)
+    .await
+    .context("cancel app run")?;
+
+    if row.is_some() {
+        sqlx::query(
+            "update worker_leases set state = 'failed', updated_at = now() \
+             where app_run_id = $1 and state = 'leased'",
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .context("release cancelled app run leases")?;
+        insert_app_run_event(&pool, run_id, "info", "app_run.cancelled", reason).await?;
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "id": run_id,
+                "cancelled": row.is_some(),
+                "reason": reason,
+            }))?
+        );
+    } else if let Some(row) = row {
+        let input = row.get::<serde_json::Value, _>(4);
+        let listed = AppRunListRow {
+            id: row.get(0),
+            app_id: row.get(1),
+            action_id: row.get(2),
+            state: row.get(3),
+            review_id: app_run_review_id(&input),
+            created_at: row.get(5),
+            started_at: row.get(6),
+            finished_at: row.get(7),
+        };
+        println!("Cancelled app run:");
+        print!("{}", format_app_run_table(&[listed], chrono::Utc::now()));
+    } else {
+        println!("No queued/running app run cancelled for id {run_id}.");
+    }
+    Ok(())
+}
+
+async fn app_cancel_queued(
+    app: &str,
+    action: Option<&str>,
+    except: &[Uuid],
+    older_than_mins: Option<i64>,
+    dry_run: bool,
+    reason: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let pool = connect_db().await?;
+    let cutoff = older_than_mins
+        .filter(|mins| *mins > 0)
+        .map(|mins| chrono::Utc::now() - chrono::Duration::minutes(mins));
+    let rows = sqlx::query(
+        "select id::text, app_id, action_id, state, input, created_at, started_at, finished_at \
+         from app_runs \
+         where app_id = $1 \
+           and state = 'queued' \
+           and ($2::text is null or action_id = $2) \
+           and ($3::timestamptz is null or created_at < $3) \
+           and not (id = any($4::uuid[])) \
+         order by created_at asc",
+    )
+    .bind(app)
+    .bind(action)
+    .bind(cutoff)
+    .bind(except)
+    .fetch_all(&pool)
+    .await
+    .context("load queued app runs to cancel")?;
+    let listed = rows
+        .iter()
+        .map(|row| {
+            let input = row.get::<serde_json::Value, _>(4);
+            AppRunListRow {
+                id: row.get(0),
+                app_id: row.get(1),
+                action_id: row.get(2),
+                state: row.get(3),
+                review_id: app_run_review_id(&input),
+                created_at: row.get(5),
+                started_at: row.get(6),
+                finished_at: row.get(7),
+            }
+        })
+        .collect::<Vec<_>>();
+    if dry_run {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "dry_run": true,
+                    "matched": listed.len(),
+                    "runs": app_run_rows_json(&listed),
+                }))?
+            );
+        } else if listed.is_empty() {
+            println!("No queued app runs matched.");
+        } else {
+            println!("Queued app runs that would be cancelled:");
+            print!("{}", format_app_run_table(&listed, chrono::Utc::now()));
+        }
+        return Ok(());
+    }
+
+    let ids = listed
+        .iter()
+        .filter_map(|row| Uuid::parse_str(&row.id).ok())
+        .collect::<Vec<_>>();
+    let reason = reason
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Cancelled stale queued app run");
+    if !ids.is_empty() {
+        sqlx::query(
+            "update app_runs \
+             set state = 'cancelled', finished_at = now(), updated_at = now(), \
+                 error_code = 'operator_cancelled', error_message = $2, error_retryable = false \
+             where id = any($1::uuid[])",
+        )
+        .bind(&ids)
+        .bind(reason)
+        .execute(&pool)
+        .await
+        .context("cancel queued app runs")?;
+        for id in ids {
+            insert_app_run_event(&pool, id, "info", "app_run.cancelled", reason).await?;
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "cancelled": listed.len(),
+                "reason": reason,
+                "runs": app_run_rows_json(&listed),
+            }))?
+        );
+    } else if listed.is_empty() {
+        println!("No queued app runs matched.");
+    } else {
+        println!("Cancelled queued app runs:");
+        print!("{}", format_app_run_table(&listed, chrono::Utc::now()));
+    }
+    Ok(())
+}
+
+async fn insert_app_run_event(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+    level: &str,
+    event_type: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "insert into dag_events (app_run_id, level, event_type, message, payload) \
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(run_id)
+    .bind(level)
+    .bind(event_type)
+    .bind(message)
+    .bind(json!({"operator": "cli"}))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn app_run_review_id(input: &serde_json::Value) -> Option<String> {
+    input
+        .get("args")
+        .and_then(|args| args.as_array())
+        .and_then(|args| args.first())
+        .and_then(|value| value.as_str())
+        .filter(|value| Uuid::parse_str(value).is_ok())
+        .map(ToOwned::to_owned)
+}
+
+fn app_run_list_row_from_value(value: &serde_json::Value) -> Option<AppRunListRow> {
+    Some(AppRunListRow {
+        id: value.get("id")?.as_str()?.to_string(),
+        app_id: value.get("app_id")?.as_str()?.to_string(),
+        action_id: value.get("action_id")?.as_str()?.to_string(),
+        state: value.get("state")?.as_str()?.to_string(),
+        review_id: value
+            .get("review_id")
+            .and_then(|review_id| review_id.as_str())
+            .map(ToOwned::to_owned),
+        created_at: value
+            .get("created_at")?
+            .as_str()?
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .ok()?,
+        started_at: value
+            .get("started_at")
+            .and_then(|ts| ts.as_str())
+            .and_then(|ts| ts.parse::<chrono::DateTime<chrono::Utc>>().ok()),
+        finished_at: value
+            .get("finished_at")
+            .and_then(|ts| ts.as_str())
+            .and_then(|ts| ts.parse::<chrono::DateTime<chrono::Utc>>().ok()),
+    })
+}
+
+fn app_run_rows_json(rows: &[AppRunListRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "app_id": row.app_id,
+                "action_id": row.action_id,
+                "state": row.state,
+                "review_id": row.review_id,
+                "created_at": row.created_at,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+            })
+        })
+        .collect()
+}
+
+fn app_run_lease_json(lease: &AppRunLeaseSummary) -> serde_json::Value {
+    json!({
+        "state": lease.state,
+        "leased_until": lease.leased_until,
+        "worker_name": lease.worker_name,
+        "worker_state": lease.worker_state,
+        "worker_last_heartbeat_at": lease.worker_last_heartbeat_at,
+    })
+}
+
+fn app_run_event_json(event: &AppRunEventSummary) -> serde_json::Value {
+    json!({
+        "level": event.level,
+        "event_type": event.event_type,
+        "message": event.message,
+        "created_at": event.created_at,
+    })
+}
+
+fn format_app_run_table(rows: &[AppRunListRow], now: chrono::DateTime<chrono::Utc>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<14} {:<20} {:<36} {:<8} {:<17} {:<17} {:<17} {}\n",
+        "STATE",
+        "APP:ACTION",
+        "REVIEW_ID",
+        "AGE",
+        "QUEUED_AT",
+        "STARTED_AT",
+        "FINISHED_AT",
+        "RUN_ID"
+    ));
+    for row in rows {
+        out.push_str(&format!(
+            "{:<14} {:<20} {:<36} {:<8} {:<17} {:<17} {:<17} {}\n",
+            row.state,
+            format!("{}:{}", row.app_id, row.action_id),
+            row.review_id.as_deref().unwrap_or("-"),
+            format_app_run_age(row.created_at, now),
+            format_app_run_ts(Some(row.created_at)),
+            format_app_run_ts(row.started_at),
+            format_app_run_ts(row.finished_at),
+            row.id
+        ));
+    }
+    out
+}
+
+fn format_app_run_ts(ts: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    ts.map(|ts| ts.format("%m-%d %H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_app_run_age(
+    created_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let secs = now.signed_duration_since(created_at).num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
+fn diagnose_app_run_status(
+    state: &str,
+    lease_state: Option<&str>,
+    leased_until: Option<chrono::DateTime<chrono::Utc>>,
+    worker_name: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> &'static str {
+    match state {
+        "queued" => "queued_unclaimed",
+        "running" => match (lease_state, leased_until, worker_name) {
+            (Some("leased"), Some(until), Some(_)) if until > now => "running_with_active_lease",
+            (Some("leased"), Some(_), Some(_)) => "running_with_expired_lease",
+            (Some("leased"), _, None) => "running_with_lease_missing_worker",
+            (Some(other), _, _) if other != "leased" => "running_with_inactive_lease",
+            _ => "running_without_lease",
+        },
+        "done" | "partial" => "finished",
+        "failed" | "system_failed" => "failed",
+        "cancelled" => "cancelled",
+        _ => "unknown",
+    }
 }
 
 async fn dag_command(command: DagCommand, json: bool) -> anyhow::Result<()> {
@@ -1646,6 +2192,7 @@ async fn connect_db() -> anyhow::Result<sqlx::PgPool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
 
     #[test]
     fn app_run_adapter_input_carries_status_and_debug_flags() {
@@ -1656,5 +2203,60 @@ mod tests {
         assert_eq!(input.values["dag_type"], json!("demo-dag"));
         assert_eq!(input.values["stream_stderr"], json!(true));
         assert_eq!(input.values["debug_logs"], json!(true));
+    }
+
+    #[test]
+    fn app_run_table_shows_review_id_and_queue_time() {
+        let created_at = chrono::Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0).unwrap();
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 6, 17, 12, 42, 0)
+            .unwrap();
+        let rows = vec![AppRunListRow {
+            id: "68c3a3dd-4ae0-402a-82cc-953153b36702".to_string(),
+            app_id: "demo".to_string(),
+            action_id: "formalize".to_string(),
+            state: "queued".to_string(),
+            review_id: Some("dc06005a-9bc1-4222-8779-10d4c26dd7e2".to_string()),
+            created_at,
+            started_at: None,
+            finished_at: None,
+        }];
+
+        let table = format_app_run_table(&rows, now);
+
+        assert!(table.contains("QUEUED_AT"));
+        assert!(table.contains("dc06005a-9bc1-4222-8779-10d4c26dd7e2"));
+        assert!(table.contains("42m"));
+        assert!(table.contains("06-17 12:00:00Z"));
+    }
+
+    #[test]
+    fn app_run_status_diagnosis_distinguishes_unclaimed_and_expired_runs() {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            diagnose_app_run_status("queued", None, None, None, now),
+            "queued_unclaimed"
+        );
+        assert_eq!(
+            diagnose_app_run_status(
+                "running",
+                Some("leased"),
+                Some(now - chrono::Duration::minutes(1)),
+                Some("worker-1"),
+                now,
+            ),
+            "running_with_expired_lease"
+        );
+        assert_eq!(
+            diagnose_app_run_status(
+                "running",
+                Some("leased"),
+                Some(now + chrono::Duration::minutes(1)),
+                Some("worker-1"),
+                now,
+            ),
+            "running_with_active_lease"
+        );
     }
 }

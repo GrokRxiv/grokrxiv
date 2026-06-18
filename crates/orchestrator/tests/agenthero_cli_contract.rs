@@ -303,11 +303,13 @@ fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
     for expected in [
         "paper_review",
         "claim_extractor",
+        "paper_math_source_collector",
         "knowledge_graph_builder",
         "semantic_category_mapper",
-        "haskell_review_fix_code",
         "proof_obligation_generator",
         "lean_review_fix_code",
+        "lean_faithfulness_check",
+        "semantic_adequacy_checker",
         "citation_validation",
         "pr_fixer",
         "pr_review_fix_code",
@@ -325,9 +327,6 @@ fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
         .and_then(|value| value.as_sequence())
         .expect("roles array");
     for expected in [
-        "haskell_semantic_author",
-        "haskell_code_reviewer",
-        "haskell_code_fixer",
         "lean_proof_author",
         "lean_code_reviewer",
         "lean_code_fixer",
@@ -342,11 +341,7 @@ fn review_loop_manifest_declares_full_semantic_fix_publish_flow() {
         );
     }
 
-    for loop_id in [
-        "haskell_review_fix_code",
-        "lean_review_fix_code",
-        "pr_review_fix_code",
-    ] {
+    for loop_id in ["lean_review_fix_code", "pr_review_fix_code"] {
         let node = nodes
             .iter()
             .find(|node| node.get("id").and_then(|id| id.as_str()) == Some(loop_id))
@@ -547,18 +542,99 @@ fn app_run_nested_action_help_resolves_manifest_command_path() {
 #[test]
 fn app_runs_accepts_state_and_limit_filters() {
     let cli = Cli::try_parse_from([
-        "agh", "app", "runs", "--app", "grokrxiv", "--state", "queued", "--limit", "10",
+        "agh",
+        "app",
+        "runs",
+        "--app",
+        "grokrxiv",
+        "--action",
+        "formalize",
+        "--state",
+        "queued",
+        "--limit",
+        "10",
     ])
     .expect("app runs filters should parse");
 
     match cli.command {
         Command::App { command } => match command {
-            AppCommand::Runs { app, state, limit } => {
+            AppCommand::Runs {
+                app,
+                action,
+                state,
+                limit,
+            } => {
                 assert_eq!(app.as_deref(), Some("grokrxiv"));
+                assert_eq!(action.as_deref(), Some("formalize"));
                 assert_eq!(state.as_deref(), Some("queued"));
                 assert_eq!(limit, 10);
             }
             other => panic!("expected App::Runs command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_cancel_commands_parse_for_operator_cleanup() {
+    let run_id = uuid::Uuid::parse_str("68c3a3dd-4ae0-402a-82cc-953153b36702").unwrap();
+    let cancel = Cli::try_parse_from([
+        "agh",
+        "app",
+        "cancel",
+        &run_id.to_string(),
+        "--reason",
+        "stale formalize job",
+    ])
+    .expect("app cancel should parse");
+
+    match cancel.command {
+        Command::App { command } => match command {
+            AppCommand::Cancel {
+                run_id: parsed,
+                reason,
+            } => {
+                assert_eq!(parsed, run_id);
+                assert_eq!(reason.as_deref(), Some("stale formalize job"));
+            }
+            other => panic!("expected App::Cancel command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+
+    let bulk = Cli::try_parse_from([
+        "agh",
+        "app",
+        "cancel-queued",
+        "--app",
+        "grokrxiv",
+        "--action",
+        "formalize",
+        "--except",
+        &run_id.to_string(),
+        "--older-than-mins",
+        "10",
+        "--dry-run",
+    ])
+    .expect("app cancel-queued should parse");
+
+    match bulk.command {
+        Command::App { command } => match command {
+            AppCommand::CancelQueued {
+                app,
+                action,
+                except,
+                older_than_mins,
+                dry_run,
+                ..
+            } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(action.as_deref(), Some("formalize"));
+                assert_eq!(except, vec![run_id]);
+                assert_eq!(older_than_mins, Some(10));
+                assert!(dry_run);
+            }
+            other => panic!("expected App::CancelQueued command, got {other:?}"),
         },
         other => panic!("expected App command, got {other:?}"),
     }
@@ -737,6 +813,7 @@ fn sample_grokrxiv_args(action: &str, review_id: &str) -> Vec<String> {
         ],
         "ingest-daily" | "batch-list" | "validate-citations" => vec![],
         "re-review"
+        | "formalize"
         | "verify"
         | "render"
         | "refresh-review"

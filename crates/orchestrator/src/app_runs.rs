@@ -94,6 +94,8 @@ pub struct AppRunRecord {
 pub struct ClaimedAppRun {
     /// Run id.
     pub id: Uuid,
+    /// Worker id that claimed this run.
+    pub worker_id: Uuid,
     /// Product app id.
     pub app_id: String,
     /// App action id.
@@ -207,6 +209,31 @@ pub async fn register_worker(pool: &PgPool, name: &str) -> anyhow::Result<Uuid> 
     .await?)
 }
 
+/// Refresh a worker heartbeat while it is polling or executing work.
+pub async fn heartbeat_worker(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "update worker_nodes set state = 'online', last_heartbeat_at = now(), updated_at = now() \
+         where id = $1",
+    )
+    .bind(worker_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Extend an active app-run lease for long-running app actions.
+pub async fn renew_lease(pool: &PgPool, lease_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "update worker_leases \
+         set leased_until = now() + interval '15 minutes', updated_at = now() \
+         where id = $1 and state = 'leased'",
+    )
+    .bind(lease_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Claim the next queued app run for a worker.
 pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option<ClaimedAppRun>> {
     let mut tx = pool.begin().await?;
@@ -250,6 +277,7 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
     let input: StoredAppRunInput = serde_json::from_value(input_value)?;
     Ok(Some(ClaimedAppRun {
         id,
+        worker_id,
         app_id: row.get("app_id"),
         action_id: row.get("action_id"),
         input,

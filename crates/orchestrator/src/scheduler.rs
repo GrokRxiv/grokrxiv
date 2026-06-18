@@ -39,6 +39,7 @@ async fn worker_loop(pool: Arc<PgPool>, name: String, interval: Duration) -> any
     let worker_id = app_runs::register_worker(&pool, &name).await?;
     let mut idle_polls = 0u32;
     loop {
+        app_runs::heartbeat_worker(&pool, worker_id).await?;
         let recovery = app_runs::recover_expired_leases(&pool).await?;
         if recovery.requeued > 0 || recovery.system_failed > 0 {
             tracing::warn!(
@@ -86,8 +87,22 @@ async fn execute_claimed(pool: &PgPool, run: ClaimedAppRun) -> anyhow::Result<()
         run.input.json,
         run.input.dry_run,
         idempotency_key,
-    )
-    .await;
+    );
+    tokio::pin!(response);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    let response = loop {
+        tokio::select! {
+            result = &mut response => break result,
+            _ = heartbeat.tick() => {
+                if let Err(err) = app_runs::heartbeat_worker(pool, run.worker_id).await {
+                    tracing::warn!(err = %err, run_id = %run.id, "failed to refresh app-run worker heartbeat");
+                }
+                if let Err(err) = app_runs::renew_lease(pool, run.lease_id).await {
+                    tracing::warn!(err = %err, run_id = %run.id, "failed to renew app-run lease");
+                }
+            }
+        }
+    };
 
     match response {
         Ok(response) if response.ok => {
