@@ -964,6 +964,7 @@ pub async fn run_grokrxiv_action(
                     exclude: request.exclude,
                     loop_enabled: request.loop_enabled,
                     with_lean: request.with_lean,
+                    no_lean: request.no_lean,
                     debug_output: request.debug_output,
                     no_external_actions: request.no_external_actions,
                 },
@@ -1492,6 +1493,7 @@ fn format_app_run_age(
     }
 }
 
+#[derive(Debug)]
 struct ResearchReviewArgs {
     source: String,
     source_type: Option<SourceType>,
@@ -1506,6 +1508,7 @@ struct ResearchReviewArgs {
     exclude: Vec<String>,
     loop_enabled: bool,
     with_lean: bool,
+    no_lean: bool,
     debug_output: bool,
     no_external_actions: bool,
 }
@@ -1596,6 +1599,7 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
         // no-op alias. Lean formalization is opt-in via `--with-lean`.
         loop_enabled: true,
         with_lean: false,
+        no_lean: false,
         debug_output: false,
         no_external_actions: false,
     };
@@ -1629,10 +1633,14 @@ fn parse_grokrxiv_review_args(args: Vec<String>) -> anyhow::Result<ResearchRevie
             // `--loop` is now the default (consolidated); kept as a no-op alias.
             "--loop" => parsed.loop_enabled = true,
             "--with-lean" => parsed.with_lean = true,
+            "--no-lean" => parsed.no_lean = true,
             "--debug" => parsed.debug_output = true,
             "--no-external-actions" => parsed.no_external_actions = true,
             other => anyhow::bail!("unknown GrokRxiv review argument `{other}`"),
         }
+    }
+    if parsed.with_lean && parsed.no_lean {
+        anyhow::bail!("cannot combine --with-lean and --no-lean");
     }
     Ok(parsed)
 }
@@ -4433,6 +4441,7 @@ struct ReviewSourceOptions {
     exclude: Vec<String>,
     loop_enabled: bool,
     with_lean: bool,
+    no_lean: bool,
     debug_output: bool,
     no_external_actions: bool,
 }
@@ -4958,6 +4967,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.with_lean,
+                    options.no_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -4997,6 +5007,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.with_lean,
+                    options.no_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -5043,6 +5054,7 @@ async fn review_resolved_sources(
                     review_id,
                     options.loop_enabled,
                     options.with_lean,
+                    options.no_lean,
                     options.debug_output,
                     external_actions_enabled,
                     json,
@@ -5520,6 +5532,7 @@ impl FormalizationQueueReason {
 enum FormalizationQueueSkipReason {
     NoMathDetected,
     AutoDisabledByEnv,
+    DisabledByFlag,
 }
 
 impl FormalizationQueueSkipReason {
@@ -5527,6 +5540,7 @@ impl FormalizationQueueSkipReason {
         match self {
             Self::NoMathDetected => "skipped_no_math",
             Self::AutoDisabledByEnv => "disabled_by_env",
+            Self::DisabledByFlag => "disabled_by_flag",
         }
     }
 }
@@ -5543,12 +5557,18 @@ enum FormalizationQueueDecision {
 
 fn decide_formalization_queue(
     with_lean: bool,
+    no_lean: bool,
     auto_lean_env: Option<&str>,
     has_formalizable_math: bool,
 ) -> FormalizationQueueDecision {
     if with_lean {
         return FormalizationQueueDecision::Queue {
             reason: FormalizationQueueReason::ForcedByFlag,
+        };
+    }
+    if no_lean {
+        return FormalizationQueueDecision::Skip {
+            reason: FormalizationQueueSkipReason::DisabledByFlag,
         };
     }
     if auto_lean_env.map(auto_lean_disabled).unwrap_or(false) {
@@ -13401,6 +13421,7 @@ async fn open_review_pr_after_optional_loop(
     review_id: Uuid,
     loop_enabled: bool,
     with_lean: bool,
+    no_lean: bool,
     debug_output: bool,
     external_actions_enabled: bool,
     json: bool,
@@ -13416,8 +13437,12 @@ async fn open_review_pr_after_optional_loop(
         .map(review_loop_outcome_has_formalizable_math)
         .unwrap_or(false);
     let auto_lean_env = std::env::var("GROKRXIV_AUTO_LEAN").ok();
-    let formalization_decision =
-        decide_formalization_queue(with_lean, auto_lean_env.as_deref(), has_formalizable_math);
+    let formalization_decision = decide_formalization_queue(
+        with_lean,
+        no_lean,
+        auto_lean_env.as_deref(),
+        has_formalizable_math,
+    );
     if !review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref()) {
         let formalize_external_actions_enabled =
             review_loop_external_actions_allowed(external_actions_enabled, loop_outcome.as_ref());
@@ -17036,27 +17061,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_grokrxiv_review_args_accepts_no_lean_and_rejects_conflict() {
+        let parsed = parse_grokrxiv_review_args(vec![
+            "https://arxiv.org/abs/2606.00799".to_string(),
+            "--no-lean".to_string(),
+        ])
+        .expect("review --no-lean args parse");
+
+        assert!(parsed.no_lean);
+
+        let err = parse_grokrxiv_review_args(vec![
+            "https://arxiv.org/abs/2606.00799".to_string(),
+            "--with-lean".to_string(),
+            "--no-lean".to_string(),
+        ])
+        .expect_err("--with-lean and --no-lean are mutually exclusive");
+        assert!(
+            err.to_string()
+                .contains("cannot combine --with-lean and --no-lean"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
     fn formalization_queue_decision_auto_detects_math_and_honors_override() {
         assert_eq!(
-            decide_formalization_queue(false, None, true),
+            decide_formalization_queue(false, false, None, true),
             FormalizationQueueDecision::Queue {
                 reason: FormalizationQueueReason::AutoMathDetected,
             }
         );
         assert_eq!(
-            decide_formalization_queue(false, Some("off"), true),
+            decide_formalization_queue(false, false, Some("off"), true),
             FormalizationQueueDecision::Skip {
                 reason: FormalizationQueueSkipReason::AutoDisabledByEnv,
             }
         );
         assert_eq!(
-            decide_formalization_queue(true, Some("off"), false),
+            decide_formalization_queue(true, false, Some("off"), false),
             FormalizationQueueDecision::Queue {
                 reason: FormalizationQueueReason::ForcedByFlag,
             }
         );
         assert_eq!(
-            decide_formalization_queue(false, None, false),
+            decide_formalization_queue(false, true, None, true),
+            FormalizationQueueDecision::Skip {
+                reason: FormalizationQueueSkipReason::DisabledByFlag,
+            }
+        );
+        assert_eq!(
+            decide_formalization_queue(false, false, None, false),
             FormalizationQueueDecision::Skip {
                 reason: FormalizationQueueSkipReason::NoMathDetected,
             }

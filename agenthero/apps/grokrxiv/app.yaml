@@ -144,6 +144,9 @@ actions:
       - name: --with-lean
         kind: flag
         description: Run experimental Lean formalization (advisory, never affects the verdict).
+      - name: --no-lean
+        kind: flag
+        description: Do not queue Lean formalization for this review, even when formalizable math is auto-detected.
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.

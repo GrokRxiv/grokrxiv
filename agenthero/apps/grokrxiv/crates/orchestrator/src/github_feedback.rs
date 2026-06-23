@@ -136,9 +136,82 @@ fn gate_details_markdown(
     } else {
         format!("\n\n## Revision Dependency Graph\n\n{revision_dependency_graph}")
     };
+    let meta_summary = readable_meta_summary_markdown(meta_summary);
     format!(
         "## Gate Result\n\n{summary}\n\n## Meta-review Summary\n\n{meta_summary}\n\n## Weaknesses\n\n{weaknesses}\n\n## Targeted Revisions\n\n{revision_targets}{dependency_section}\n\n## Questions\n\n{questions}"
     )
+}
+
+fn readable_meta_summary_markdown(summary: &str) -> String {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return "No meta-review summary was recorded.".to_string();
+    }
+    if summary.contains("\n\n") {
+        return summary
+            .split("\n\n")
+            .map(|part| collapse_inline_whitespace(part).trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (idx, ch) in summary.char_indices() {
+        if !matches!(ch, '.' | '!' | '?') || !is_sentence_boundary(summary, idx) {
+            continue;
+        }
+        let end = idx + ch.len_utf8();
+        let sentence = collapse_inline_whitespace(&summary[start..end]);
+        if !sentence.trim().is_empty() {
+            sentences.push(sentence.trim().to_string());
+        }
+        start = summary[end..]
+            .find(|c: char| !c.is_whitespace())
+            .map(|offset| end + offset)
+            .unwrap_or(summary.len());
+    }
+    if start < summary.len() {
+        let sentence = collapse_inline_whitespace(&summary[start..]);
+        if !sentence.trim().is_empty() {
+            sentences.push(sentence.trim().to_string());
+        }
+    }
+    if sentences.len() <= 1 {
+        collapse_inline_whitespace(summary).trim().to_string()
+    } else {
+        sentences.join("\n\n")
+    }
+}
+
+fn is_sentence_boundary(text: &str, punctuation_idx: usize) -> bool {
+    let after = &text[punctuation_idx + 1..];
+    if after.is_empty() {
+        return true;
+    }
+    let Some(next) = after.chars().find(|c| !c.is_whitespace()) else {
+        return true;
+    };
+    if !after.chars().next().is_some_and(char::is_whitespace) {
+        return false;
+    }
+    if previous_token_is_initial(&text[..punctuation_idx]) {
+        return false;
+    }
+    next.is_uppercase() || next == '`' || next == '\'' || next == '"' || next == '('
+}
+
+fn previous_token_is_initial(prefix: &str) -> bool {
+    let token = prefix
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| !ch.is_alphanumeric());
+    token.chars().count() == 1 && token.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
+fn collapse_inline_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Build the stable GitHub failure comment body.
@@ -350,5 +423,30 @@ mod tests {
         assert!(body.contains("## Revision Dependency Graph"));
         assert!(body.contains("nweakness_2 --> nweakness_1"));
         assert!(!failure.action_required_md.contains("## Targeted Revisions"));
+    }
+
+    #[test]
+    fn gate_failure_comment_breaks_long_meta_summary_into_readable_paragraphs() {
+        let gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+        let meta = serde_json::json!({
+            "summary": "The paper makes a new theoretical contribution that is likely worth preserving. The technical review identifies one major proof gap in the main theorem and asks for a rigorous converse argument. The reproducibility review asks for a compact computational artifact because the field is code-amenable and the claim is checkable. The citation review finds only minor clerical issues, so the requested revision should focus on proof support and verification artifacts.",
+            "weaknesses": [],
+            "questions": []
+        });
+        let failure = gate_failure_from_publication_gate(Uuid::nil(), &gate, Some(&meta));
+
+        assert!(failure
+            .details_md
+            .contains("worth preserving.\n\nThe technical review identifies"));
+        assert!(failure
+            .details_md
+            .contains("converse argument.\n\nThe reproducibility review asks"));
+        assert!(!failure
+            .details_md
+            .contains("worth preserving. The technical review identifies"));
     }
 }

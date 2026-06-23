@@ -227,6 +227,14 @@ fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
             .and_then(|value| value.as_str()),
         Some("flag")
     );
+    let no_lean_option = options
+        .iter()
+        .find(|option| option.get("name").and_then(|name| name.as_str()) == Some("--no-lean"))
+        .expect("review action should advertise --no-lean");
+    assert_eq!(
+        no_lean_option.get("kind").and_then(|value| value.as_str()),
+        Some("flag")
+    );
 }
 
 #[test]
