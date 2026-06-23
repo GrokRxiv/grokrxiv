@@ -86,7 +86,7 @@ command -v curl >/dev/null || fail "curl not on PATH"
 if [[ "${GROKRXIV_RUNNER}" == "cli" || "${GROKRXIV_EXTRACTOR}" == "cli" ]]; then
   command -v claude >/dev/null || fail "claude CLI not on PATH"
   command -v codex  >/dev/null || fail "codex CLI not on PATH"
-  command -v gemini >/dev/null || fail "gemini CLI not on PATH"
+  command -v agy >/dev/null || fail "Antigravity agy CLI not on PATH"
 fi
 
 if [[ -n "${AGENTHERO_BIN:-}" ]]; then

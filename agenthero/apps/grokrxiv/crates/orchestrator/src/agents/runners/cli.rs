@@ -1,6 +1,6 @@
 //! `CliRunner` — local CLI subprocess for tool-using agents.
 //!
-//! Spawns `claude` / `codex` / `gemini` based on `spec.provider`. No runtime
+//! Spawns `claude` / `codex` / `agy` based on `spec.provider`. No runtime
 //! `--cli-agent` flag — the YAML's existing `provider:` field is the source
 //! of truth.
 //!
@@ -131,11 +131,12 @@ You MUST output a SINGLE JSON object that validates against the schema. NO prose
 /// exactly once per orchestrator process.
 static CLAUDE_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 static CODEX_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
-static GEMINI_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
+static ANTIGRAVITY_AUTH_LOGGED: OnceLock<()> = OnceLock::new();
 
-/// Spawns local CLI binaries (`claude` / `codex` / `gemini`) based on
+/// Spawns local CLI binaries (`claude` / `codex` / `agy`) based on
 /// `spec.provider`. The binary path for each is overridable via
-/// `AGENTHERO_CLAUDE_BIN` / `AGENTHERO_CODEX_BIN` / `AGENTHERO_GEMINI_BIN`.
+/// `AGENTHERO_CLAUDE_BIN` / `AGENTHERO_CODEX_BIN` /
+/// `AGENTHERO_ANTIGRAVITY_BIN`.
 /// Default timeout 360s via `AGENTHERO_CLI_TIMEOUT_SECS`.
 #[derive(Default)]
 pub struct CliRunner;
@@ -157,26 +158,30 @@ impl CliRunner {
             "openai" => {
                 Ok(std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()))
             }
-            "gemini" => {
-                Ok(std::env::var("AGENTHERO_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()))
-            }
+            "gemini" => Ok(antigravity_binary()),
             other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
         }
     }
+}
+
+fn antigravity_binary() -> String {
+    std::env::var("AGENTHERO_ANTIGRAVITY_BIN")
+        .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
+        .unwrap_or_else(|_| "agy".to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliProviderBackend {
     Claude,
     Codex,
-    GeminiLegacy,
+    Antigravity,
 }
 
 fn cli_provider_backend(provider: &str, _program: &str) -> anyhow::Result<CliProviderBackend> {
     match provider {
         "claude" => Ok(CliProviderBackend::Claude),
         "openai" => Ok(CliProviderBackend::Codex),
-        "gemini" => Ok(CliProviderBackend::GeminiLegacy),
+        "gemini" => Ok(CliProviderBackend::Antigravity),
         other => anyhow::bail!("unsupported provider for CliRunner: {other}"),
     }
 }
@@ -369,7 +374,7 @@ impl AgentRunner for CliRunner {
         let backend = cli_provider_backend(&spec.provider, &program)?;
         if !matches!(
             backend,
-            CliProviderBackend::Claude | CliProviderBackend::GeminiLegacy
+            CliProviderBackend::Claude | CliProviderBackend::Antigravity
         ) {
             anyhow::bail!(
                 "CliRunner.complete_with_tools: provider `{}` is not supported for native \
@@ -628,13 +633,11 @@ fn build_tool_command(
             "--output-format".to_string(),
             "json".to_string(),
         ],
-        CliProviderBackend::GeminiLegacy => vec![
+        CliProviderBackend::Antigravity => vec![
             "-p".to_string(),
             prompt.to_string(),
             "--model".to_string(),
             spec.model.clone(),
-            "-o".to_string(),
-            "json".to_string(),
         ],
         CliProviderBackend::Codex => {
             anyhow::bail!("unsupported provider for CLI tool loop: {}", spec.provider)
@@ -1042,13 +1045,13 @@ fn build_command(
     let backend = cli_provider_backend(&spec.provider, &program)?;
     let role_slug = role_slug(&spec.role);
 
-    // A7: for claude and legacy gemini, the JSON-only output contract is enforced
+    // A7: for claude and Antigravity, the JSON-only output contract is enforced
     // via the `/grokrxiv-review` skill which both CLIs resolve from a
     // `/skill-name` prefix on the prompt body (neither CLI has a `--skill`
     // flag). codex uses `--output-schema`.
     let provider_prompt = if matches!(
         backend,
-        CliProviderBackend::Claude | CliProviderBackend::GeminiLegacy
+        CliProviderBackend::Claude | CliProviderBackend::Antigravity
     ) {
         format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
     } else {
@@ -1102,20 +1105,15 @@ fn build_command(
             ];
             (args, Some(path), false)
         }
-        CliProviderBackend::GeminiLegacy => {
-            // A7: emit JSON via `-o json`. Gemini's headless mode wraps the
-            // model output in `{"session_id": ..., "response": "<inner>",
-            // "stats": {...}}` — `extract_json_text` unwraps that wrapper
-            // before schema validation. Do not add `--approval-mode plan` here:
-            // plan mode makes Gemini return a strategy/confirmation prompt
-            // instead of the schema JSON for review roles.
+        CliProviderBackend::Antigravity => {
+            // Antigravity (`agy`) print mode emits the model response directly.
+            // Keep the JSON contract in the prompt and avoid the deprecated
+            // Gemini CLI `-o json` wrapper flag.
             let args = vec![
                 "-p".to_string(),
                 provider_prompt.clone(),
                 "--model".to_string(),
                 spec.model.clone(),
-                "-o".to_string(),
-                "json".to_string(),
             ];
             (args, None, false)
         }
@@ -1152,12 +1150,6 @@ async fn exec_and_capture(
     cmd.kill_on_drop(true);
     configure_process_group(&mut cmd);
     scrub_provider_api_env(&mut cmd);
-    if provider == "gemini" {
-        // Extraction and review subprocesses run in isolated temp workdirs so
-        // CLI tools cannot scan the repo root. Gemini requires an explicit
-        // trust signal for headless automation in such directories.
-        cmd.env("GEMINI_CLI_TRUST_WORKSPACE", "true");
-    }
     tracing::info!(
         provider = %provider,
         program = %built.program,
@@ -1659,21 +1651,20 @@ fn log_auth_path_once(_provider: &str, backend: CliProviderBackend) {
                 );
             }
         }
-        CliProviderBackend::GeminiLegacy => {
-            if GEMINI_AUTH_LOGGED.set(()).is_ok() {
-                let (auth_method, account, quota_project) = inspect_gemini_auth();
+        CliProviderBackend::Antigravity => {
+            if ANTIGRAVITY_AUTH_LOGGED.set(()).is_ok() {
+                let (auth_method, state) = inspect_antigravity_auth();
                 tracing::info!(
                     event = "cli_auth_path",
                     provider = "gemini",
                     auth_method = %auth_method,
-                    account = %account,
-                    quota_project = %quota_project,
-                    "gemini CLI auth path"
+                    state = %state,
+                    "Antigravity CLI auth path"
                 );
                 tracing::info!(
                     provider = "gemini",
                     auth_method = %auth_method,
-                    "gemini CLI uses local CLI auth; provider API key env is scrubbed"
+                    "Antigravity CLI uses local CLI/keyring auth; provider API key env is scrubbed"
                 );
             }
         }
@@ -1765,77 +1756,28 @@ fn inspect_codex_auth() -> (String, String) {
     (auth_method.into(), plan_type)
 }
 
-/// Best-effort read of the legacy local Gemini CLI auth files. The old
-/// `/auth` flow stores OAuth credentials under `~/.gemini/oauth_creds.json`
-/// and the selected method under `~/.gemini/settings.json`; prefer those over
-/// any unrelated gcloud ADC file that may also exist on the machine. Returns
-/// `(auth_method, account, quota_project)`.
-fn inspect_gemini_auth() -> (String, String, String) {
+/// Best-effort check for Antigravity CLI state. Antigravity migrates session
+/// tokens into native keyring storage, so this reports only local non-secret
+/// state markers and never tries to read tokens.
+fn inspect_antigravity_auth() -> (String, String) {
     let Ok(home) = std::env::var("HOME") else {
-        return ("unknown".into(), "unknown".into(), "unknown".into());
+        return ("unknown".into(), "unknown".into());
     };
-    let gemini_dir = PathBuf::from(&home).join(".gemini");
-    let settings = gemini_dir.join("settings.json");
-    let selected_type = std::fs::read(&settings)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|val| {
-            val.pointer("/security/auth/selectedType")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        });
-    let account = std::fs::read(gemini_dir.join("google_accounts.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|val| {
-            val.get("active")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-    if gemini_dir.join("oauth_creds.json").exists() {
-        let auth_method = match selected_type.as_deref() {
-            Some("oauth-personal") => "gemini_cli_oauth_personal",
-            Some("compute-default-credentials") => "gemini_cli_compute_adc",
-            Some("gemini-api-key") => "gemini_cli_api_key",
-            Some("vertex-ai") => "gemini_cli_vertex_ai",
-            Some(other) => other,
-            None => "gemini_cli_oauth",
-        };
-        return (auth_method.into(), account, "n/a".into());
+    let home = PathBuf::from(home);
+    let markers = [
+        home.join(".gemini").join("antigravity"),
+        home.join(".gemini").join("antigravity-cli"),
+        home.join("Library")
+            .join("Application Support")
+            .join("Antigravity"),
+    ];
+    if let Some(marker) = markers.iter().find(|path| path.exists()) {
+        return (
+            "antigravity_keyring".into(),
+            format!("present ({})", marker.display()),
+        );
     }
-
-    let path = PathBuf::from(home)
-        .join(".config")
-        .join("gcloud")
-        .join("application_default_credentials.json");
-    let Ok(bytes) = std::fs::read(&path) else {
-        return ("unknown".into(), "unknown".into(), "unknown".into());
-    };
-    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return ("unknown".into(), "unknown".into(), "unknown".into());
-    };
-    let typ = val
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let account = val
-        .get("account")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let quota_project = val
-        .get("quota_project_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let auth_method = match typ {
-        "authorized_user" => "gcloud_oauth",
-        "service_account" => "service_account",
-        _ => "unknown",
-    }
-    .to_string();
-    (auth_method, account, quota_project)
+    ("unknown".into(), "unknown".into())
 }
 
 /// Minimal JWT claim decoder. Splits on `.`, base64url-decodes the payload,
@@ -1935,9 +1877,7 @@ pub fn ensure_grokrxiv_review_skill_installed() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::agents::types::{AgentSpec, SandboxPolicy};
-    use std::sync::{Mutex, MutexGuard};
-
-    static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
+    use std::sync::MutexGuard;
 
     fn stub_spec(provider: &str, model: &str) -> AgentSpec {
         let mut s = AgentSpec::api_default("summary", provider.to_string(), model.to_string());
@@ -1953,7 +1893,7 @@ mod tests {
 
     impl EnvVarGuard {
         fn set(vars: &[(&'static str, &'static str)]) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -1965,7 +1905,7 @@ mod tests {
         }
 
         fn set_owned(vars: &[(&'static str, String)]) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -1977,7 +1917,7 @@ mod tests {
         }
 
         fn clear(vars: &[&'static str]) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let saved = vars
                 .iter()
                 .map(|key| (*key, std::env::var(key).ok()))
@@ -2006,22 +1946,23 @@ mod tests {
         let _env = EnvVarGuard::clear(&[
             "AGENTHERO_CLAUDE_BIN",
             "AGENTHERO_CODEX_BIN",
-            "AGENTHERO_GEMINI_BIN",
+            "AGENTHERO_ANTIGRAVITY_BIN",
+            "AGENTHERO_AGY_BIN",
         ]);
 
         let r = CliRunner::new();
         assert_eq!(r.binary_for("claude").unwrap(), "claude");
         assert_eq!(r.binary_for("openai").unwrap(), "codex");
-        assert_eq!(r.binary_for("gemini").unwrap(), "gemini");
+        assert_eq!(r.binary_for("gemini").unwrap(), "agy");
 
         // Now exercise the env override path.
         std::env::set_var("AGENTHERO_CLAUDE_BIN", "/opt/bin/claude-test");
         assert_eq!(r.binary_for("claude").unwrap(), "/opt/bin/claude-test");
         std::env::remove_var("AGENTHERO_CLAUDE_BIN");
 
-        std::env::set_var("AGENTHERO_GEMINI_BIN", "/opt/bin/gemini");
-        assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/gemini");
-        std::env::remove_var("AGENTHERO_GEMINI_BIN");
+        std::env::set_var("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy");
+        assert_eq!(r.binary_for("gemini").unwrap(), "/opt/bin/agy");
+        std::env::remove_var("AGENTHERO_ANTIGRAVITY_BIN");
     }
 
     #[test]
@@ -2306,13 +2247,13 @@ mod tests {
     #[test]
     fn test_command_construction_gemini() {
         let r = CliRunner::new();
-        let _env = EnvVarGuard::clear(&["AGENTHERO_GEMINI_BIN"]);
+        let _env = EnvVarGuard::clear(&["AGENTHERO_ANTIGRAVITY_BIN", "AGENTHERO_AGY_BIN"]);
         let spec = stub_spec("gemini", "gemini-2.5-pro");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
         assert!(
-            built.program.ends_with("gemini"),
-            "program should be gemini binary, got {}",
+            built.program.ends_with("agy"),
+            "program should be Antigravity agy binary, got {}",
             built.program
         );
 
@@ -2335,8 +2276,8 @@ mod tests {
             "gemini args should include --model gemini-2.5-pro: {args:?}"
         );
         assert!(
-            args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
-            "gemini args should request JSON wrapper output: {args:?}"
+            !args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
+            "agy prints the model response directly and should not request the legacy Gemini JSON wrapper: {args:?}"
         );
 
         assert!(
@@ -2349,13 +2290,13 @@ mod tests {
     }
 
     #[test]
-    fn test_command_construction_legacy_gemini_when_explicitly_requested() {
-        let _env = EnvVarGuard::set(&[("AGENTHERO_GEMINI_BIN", "gemini")]);
+    fn test_command_construction_antigravity_override() {
+        let _env = EnvVarGuard::set(&[("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy")]);
         let r = CliRunner::new();
         let spec = stub_spec("gemini", "gemini-2.5-pro");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
-        assert!(built.program.ends_with("gemini"));
+        assert_eq!(built.program, "/opt/bin/agy");
         assert!(built.args.windows(2).any(|w| w[0] == "-p"));
         assert!(built
             .args
@@ -2364,7 +2305,7 @@ mod tests {
         assert!(built
             .args
             .windows(2)
-            .any(|w| w[0] == "-o" && w[1] == "json"));
+            .all(|w| !(w[0] == "-o" && w[1] == "json")));
 
         assert!(built.schema_path.is_none());
     }
@@ -2852,26 +2793,29 @@ exit 1
     async fn run_uses_explicit_openai_cli_fallback_when_gemini_quota_is_exhausted() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
-        let gemini = dir.path().join("fake-gemini.sh");
+        let agy = dir.path().join("fake-agy.sh");
         let codex = dir.path().join("fake-codex.sh");
         std::fs::write(
-            &gemini,
+            &agy,
             "#!/bin/sh\nprintf 'RESOURCE_EXHAUSTED (code 429): Individual quota reached' >&2\nexit 1\n",
         )
-        .expect("write fake gemini");
+        .expect("write fake agy");
         std::fs::write(
             &codex,
             "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}}'\n",
         )
         .expect("write fake codex");
-        for path in [&gemini, &codex] {
+        for path in [&agy, &codex] {
             let mut perms = std::fs::metadata(path).unwrap().permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(path, perms).unwrap();
         }
 
         let _env = EnvVarGuard::set_owned(&[
-            ("AGENTHERO_GEMINI_BIN", gemini.to_string_lossy().to_string()),
+            (
+                "AGENTHERO_ANTIGRAVITY_BIN",
+                agy.to_string_lossy().to_string(),
+            ),
             ("AGENTHERO_CODEX_BIN", codex.to_string_lossy().to_string()),
             (
                 "AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER",
@@ -3088,7 +3032,7 @@ exit 0
         std::fs::write(
             &script,
             r#"#!/bin/sh
-printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemini":"%s","marker":"%s","gemini_trust":"%s"}\n' "${ANTHROPIC_API_KEY+x}" "${OPENAI_API_KEY+x}" "${GOOGLE_GENERATIVE_AI_API_KEY+x}" "${GOOGLE_API_KEY+x}" "${GEMINI_API_KEY+x}" "${GROKRXIV_CLI_API_ENV_SCRUBBED:-}" "${GEMINI_CLI_TRUST_WORKSPACE:-}"
+printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemini":"%s","marker":"%s"}\n' "${ANTHROPIC_API_KEY+x}" "${OPENAI_API_KEY+x}" "${GOOGLE_GENERATIVE_AI_API_KEY+x}" "${GOOGLE_API_KEY+x}" "${GEMINI_API_KEY+x}" "${GROKRXIV_CLI_API_ENV_SCRUBBED:-}"
 "#,
         )
         .expect("write fake script");
@@ -3117,42 +3061,6 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
         assert_eq!(observed["google"], "");
         assert_eq!(observed["gemini"], "");
         assert_eq!(observed["marker"], "1");
-        assert_eq!(observed["gemini_trust"], "true");
-    }
-
-    #[tokio::test]
-    async fn legacy_gemini_child_sets_trust_workspace() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = std::env::temp_dir().join("grokrxiv-legacy-gemini-env-test");
-        let _ = std::fs::create_dir_all(&dir);
-        let script = dir.join("gemini");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
-"#,
-        )
-        .expect("write fake script");
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
-
-        let built = BuiltCommand {
-            program: script.to_string_lossy().to_string(),
-            args: vec![],
-            stdin_payload: String::new(),
-            pipe_stdin: false,
-            schema_path: None,
-            cwd: None,
-        };
-
-        let stdout = exec_and_capture(&built, Duration::from_secs(5), "summary", "gemini")
-            .await
-            .expect("subprocess should succeed");
-        let observed: serde_json::Value =
-            serde_json::from_str(&stdout).expect("fake script should emit JSON");
-        assert_eq!(observed["gemini_trust"], "true");
     }
 
     #[tokio::test]
@@ -3208,38 +3116,15 @@ printf '{"gemini_trust":"%s"}\n' "${GEMINI_CLI_TRUST_WORKSPACE:-}"
     }
 
     #[test]
-    fn gemini_auth_prefers_local_oauth_creds_over_gcloud_adc() {
+    fn antigravity_auth_reports_local_state_marker() {
         let home = tempfile::tempdir().unwrap();
-        let gemini = home.path().join(".gemini");
-        let gcloud = home.path().join(".config").join("gcloud");
-        std::fs::create_dir_all(&gemini).unwrap();
-        std::fs::create_dir_all(&gcloud).unwrap();
-        std::fs::write(
-            gemini.join("settings.json"),
-            r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            gemini.join("google_accounts.json"),
-            r#"{"active":"mlong168@gmail.com","old":[]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            gemini.join("oauth_creds.json"),
-            r#"{"access_token":"redacted","refresh_token":"redacted"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            gcloud.join("application_default_credentials.json"),
-            r#"{"type":"authorized_user","quota_project_id":"wrong-project"}"#,
-        )
-        .unwrap();
+        let marker = home.path().join(".gemini").join("antigravity");
+        std::fs::create_dir_all(&marker).unwrap();
 
         let _home = EnvVarGuard::set_owned(&[("HOME", home.path().to_string_lossy().into_owned())]);
-        let (auth_method, account, quota_project) = inspect_gemini_auth();
-        assert_eq!(auth_method, "gemini_cli_oauth_personal");
-        assert_eq!(account, "mlong168@gmail.com");
-        assert_eq!(quota_project, "n/a");
+        let (auth_method, state) = inspect_antigravity_auth();
+        assert_eq!(auth_method, "antigravity_keyring");
+        assert!(state.contains(".gemini/antigravity"), "{state}");
     }
 
     /// Reference base64url encoder for the JWT decoder unit test.

@@ -108,8 +108,8 @@ services:
       - ${HOME}/.claude.json:/run/secrets/grokrxiv-cli-auth/.claude.json:ro
       - ${HOME}/.claude/docker-claude-code-credentials.secret:/run/secrets/grokrxiv-cli-auth/.claude/docker-claude-code-credentials.secret:ro
       - ${HOME}/.codex/auth.json:/run/secrets/grokrxiv-cli-auth/.codex/auth.json:ro
-      - ${HOME}/.gemini/oauth_creds.json:/run/secrets/grokrxiv-cli-auth/.gemini/oauth_creds.json:ro
-      - ${HOME}/.gemini/google_accounts.json:/run/secrets/grokrxiv-cli-auth/.gemini/google_accounts.json:ro
+      - ${HOME}/.gemini/antigravity-cli:/run/secrets/grokrxiv-cli-auth/.gemini/antigravity-cli:ro
+      - ${HOME}/.gemini/antigravity:/run/secrets/grokrxiv-cli-auth/.gemini/antigravity:ro
     healthcheck:
       test:
         [

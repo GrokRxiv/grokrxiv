@@ -66,11 +66,12 @@ RUN set -eux; \
       apt-get purge -y --auto-remove curl; \
     fi; \
     if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
-      npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli; \
-      node_arch="$(node -p 'process.arch')"; \
-      mkdir -p /usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep; \
-      ln -sf /usr/bin/rg "/usr/local/lib/node_modules/@google/gemini-cli/bundle/vendor/ripgrep/rg-linux-${node_arch}"; \
+      apt-get install -y --no-install-recommends curl tar; \
+      npm install -g @anthropic-ai/claude-code @openai/codex; \
+      curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin; \
+      agy --version; \
       npm cache clean --force; \
+      apt-get purge -y --auto-remove curl; \
     fi; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --create-home --shell /usr/sbin/nologin grokrxiv

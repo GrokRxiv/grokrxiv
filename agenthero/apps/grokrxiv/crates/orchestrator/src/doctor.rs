@@ -65,7 +65,7 @@ pub struct DoctorReport {
     pub supabase_migrations: Option<CheckResult>,
     /// Per-API runner key check.
     pub api_runners: ApiRunnerStatus,
-    /// CLI runners (claude / codex / Gemini-family CLI).
+    /// CLI runners (claude / codex / Antigravity for Gemini-family roles).
     pub cli_runners: CliRunnerStatus,
     /// Publisher (GitHub) status.
     pub publisher: Option<CheckResult>,
@@ -103,7 +103,7 @@ pub struct CliRunnerStatus {
     pub claude: Option<CheckResult>,
     /// `codex` CLI on PATH.
     pub codex: Option<CheckResult>,
-    /// `gemini` CLI on PATH.
+    /// Antigravity `agy` CLI on PATH for Gemini-family roles.
     pub gemini: Option<CheckResult>,
 }
 
@@ -186,7 +186,7 @@ impl DoctorReport {
         println!("CLI runners:");
         print_line("claude", self.cli_runners.claude.as_ref());
         print_line("codex", self.cli_runners.codex.as_ref());
-        print_line("gemini-cli", self.cli_runners.gemini.as_ref());
+        print_line("antigravity-cli", self.cli_runners.gemini.as_ref());
         println!();
         println!("Publisher:");
         print_line("github", self.publisher.as_ref());
@@ -465,7 +465,9 @@ fn cli_binary_for_cli_name(name: &str) -> String {
     match name {
         "claude" => std::env::var("AGENTHERO_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string()),
         "codex" => std::env::var("AGENTHERO_CODEX_BIN").unwrap_or_else(|_| "codex".to_string()),
-        "gemini" => std::env::var("AGENTHERO_GEMINI_BIN").unwrap_or_else(|_| "gemini".to_string()),
+        "gemini" => std::env::var("AGENTHERO_ANTIGRAVITY_BIN")
+            .or_else(|_| std::env::var("AGENTHERO_AGY_BIN"))
+            .unwrap_or_else(|_| "agy".to_string()),
         other => other.to_string(),
     }
 }
@@ -495,11 +497,19 @@ fn cli_auth_status(name: &str, _binary: &str, home: &Path) -> Option<&'static st
             .join("auth.json")
             .is_file()
             .then_some("present (.codex/auth.json)"),
-        "gemini" => home
-            .join(".gemini")
-            .join("oauth_creds.json")
-            .is_file()
-            .then_some("present (.gemini/oauth_creds.json)"),
+        "gemini" => {
+            let markers = [
+                home.join(".gemini").join("antigravity"),
+                home.join(".gemini").join("antigravity-cli"),
+                home.join("Library")
+                    .join("Application Support")
+                    .join("Antigravity"),
+            ];
+            markers
+                .iter()
+                .any(|path| path.exists())
+                .then_some("present (Antigravity keyring state)")
+        }
         _ => None,
     }
 }
@@ -861,13 +871,16 @@ fn check_extraction_agent_yaml_with(report: &mut DoctorReport, config: &Extracti
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::MutexGuard;
 
     struct EnvVarGuard {
+        _lock: MutexGuard<'static, ()>,
         saved: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvVarGuard {
         fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let lock = crate::test_env_lock();
             let saved = vars
                 .iter()
                 .map(|(key, _)| (*key, std::env::var(key).ok()))
@@ -875,10 +888,11 @@ mod tests {
             for (key, value) in vars {
                 std::env::set_var(key, value);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
 
         fn clear(keys: &[&'static str]) -> Self {
+            let lock = crate::test_env_lock();
             let saved = keys
                 .iter()
                 .map(|key| (*key, std::env::var(key).ok()))
@@ -886,7 +900,7 @@ mod tests {
             for key in keys {
                 std::env::remove_var(key);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
     }
 
@@ -1097,17 +1111,15 @@ max_cost_usd: 0.01
 
     #[cfg(unix)]
     #[test]
-    fn cli_binary_for_provider_uses_gemini_cli() {
-        let _clear = EnvVarGuard::clear(&["AGENTHERO_GEMINI_BIN"]);
+    fn cli_binary_for_provider_uses_antigravity_cli_for_gemini_provider() {
+        {
+            let _clear = EnvVarGuard::clear(&["AGENTHERO_ANTIGRAVITY_BIN", "AGENTHERO_AGY_BIN"]);
+            assert_eq!(cli_binary_for_provider("gemini").unwrap(), "agy");
+            assert_eq!(cli_binary_for_cli_name("gemini"), "agy");
+        }
 
-        assert_eq!(cli_binary_for_provider("gemini").unwrap(), "gemini");
-        assert_eq!(cli_binary_for_cli_name("gemini"), "gemini");
-
-        let _set = EnvVarGuard::set(&[("AGENTHERO_GEMINI_BIN", "/opt/bin/gemini")]);
-        assert_eq!(
-            cli_binary_for_provider("gemini").unwrap(),
-            "/opt/bin/gemini"
-        );
+        let _set = EnvVarGuard::set(&[("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy")]);
+        assert_eq!(cli_binary_for_provider("gemini").unwrap(), "/opt/bin/agy");
     }
 
     #[cfg(unix)]
@@ -1129,7 +1141,7 @@ max_cost_usd: 0.01
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&bin_dir).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        for name in ["claude", "codex", "gemini"] {
+        for name in ["claude", "codex", "agy"] {
             let bin = fake_bin(&tmp, name, &format!("echo '{name} ok'"));
             std::fs::rename(&bin, bin_dir.join(name)).unwrap();
         }
@@ -1137,7 +1149,7 @@ max_cost_usd: 0.01
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
-        std::fs::write(home.join(".gemini").join("oauth_creds.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".gemini").join("antigravity")).unwrap();
 
         let config = CliRunnerCheckConfig {
             path: std::env::join_paths([bin_dir.as_path()]).unwrap(),
