@@ -1,7 +1,7 @@
 //! `agh` CLI surface.
 
 use std::collections::HashSet;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use agenthero_dag_runtime::{
@@ -118,6 +118,14 @@ pub enum AppCommand {
         #[arg(num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// Queue one installed app action in app_runs without executing it immediately.
+    Enqueue {
+        /// Installed app id.
+        app: String,
+        /// App command path and action-specific arguments.
+        #[arg(num_args = 1.., allow_hyphen_values = true, trailing_var_arg = true)]
+        args: Vec<String>,
+    },
     /// List app run records from the runtime database.
     Runs {
         /// Optional app id filter.
@@ -137,6 +145,26 @@ pub enum AppCommand {
     Status {
         /// App run UUID.
         run_id: Uuid,
+    },
+    /// Show the durable stderr log for one app run.
+    Logs {
+        /// App run UUID.
+        run_id: Uuid,
+        /// Number of trailing lines to print before exiting or following.
+        #[arg(long, default_value_t = 120)]
+        tail: usize,
+        /// Continue streaming until the app run reaches a terminal state.
+        #[arg(long, short = 'f')]
+        follow: bool,
+    },
+    /// Claim and execute one queued app run, then exit.
+    Work {
+        /// Optional app run UUID to claim. Without this, claims the oldest queued run.
+        #[arg(long = "run-id")]
+        run_id: Option<Uuid>,
+        /// Optional worker name persisted in worker_nodes.
+        #[arg(long = "worker-name")]
+        worker_name: Option<String>,
     },
     /// Cancel one queued or running app run.
     Cancel {
@@ -383,6 +411,9 @@ async fn app_command(
             )
             .await
         }
+        AppCommand::Enqueue { app, args } => {
+            app_enqueue(&app, args, json, dry_run, debug_logs).await
+        }
         AppCommand::Runs {
             app,
             action,
@@ -399,6 +430,15 @@ async fn app_command(
             .await
         }
         AppCommand::Status { run_id } => app_status(run_id, json).await,
+        AppCommand::Logs {
+            run_id,
+            tail,
+            follow,
+        } => app_logs(run_id, tail, follow, json).await,
+        AppCommand::Work {
+            run_id,
+            worker_name,
+        } => app_work(run_id, worker_name, json, stream_app_stderr, debug_logs).await,
         AppCommand::Cancel { run_id, reason } => app_cancel(run_id, reason.as_deref(), json).await,
         AppCommand::CancelQueued {
             app,
@@ -946,6 +986,63 @@ async fn app_run_command(
     Ok(())
 }
 
+async fn app_enqueue(
+    app: &str,
+    args: Vec<String>,
+    json: bool,
+    dry_run: bool,
+    debug_logs: bool,
+) -> anyhow::Result<()> {
+    let manifest = crate::dag_apps::load_app_manifest_by_slug(app)?;
+    let resolved = crate::dag_apps::resolve_app_action_args_in_manifest(&manifest, &args)?;
+    let pool = connect_db().await?;
+    let input = app_run_adapter_input(
+        &manifest.slug,
+        &resolved.id,
+        &resolved.dag_type,
+        true,
+        debug_logs,
+    );
+    let run_id = crate::app_runs::insert_queued(
+        &pool,
+        &manifest.slug,
+        &resolved.id,
+        crate::app_runs::AppRunRequest {
+            args: resolved.args,
+            input,
+            dry_run,
+            json,
+        },
+    )
+    .await?;
+    let work_command = format!("agh app work --run-id {run_id}");
+    let logs_command = format!("agh app logs {run_id} --follow");
+    let log_path = crate::dag_apps::app_run_log_path(run_id);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "id": run_id,
+                "app_id": manifest.slug,
+                "action_id": resolved.id,
+                "dag_type": resolved.dag_type,
+                "state": "queued",
+                "work_command": work_command,
+                "logs_command": logs_command,
+                "log_path": log_path.to_string_lossy(),
+            }))?
+        );
+    } else {
+        println!("queued app run {run_id}");
+        println!("app_action   {}:{}", manifest.slug, resolved.id);
+        println!("dag_type     {}", resolved.dag_type);
+        println!("run          {work_command}");
+        println!("logs         {logs_command}");
+        println!("log_path     {}", log_path.display());
+    }
+    Ok(())
+}
+
 fn app_run_adapter_input(
     app: &str,
     action: &str,
@@ -991,6 +1088,12 @@ struct AppRunEventSummary {
     event_type: String,
     message: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct AppRunQueueSummary {
+    older_queued_count: i64,
+    running_same_action: Vec<AppRunListRow>,
 }
 
 async fn app_runs(
@@ -1067,10 +1170,19 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
     let events = load_recent_app_run_events(&pool, run_id).await?;
     let input = row.get::<serde_json::Value, _>(4);
     let state = row.get::<String, _>(3);
+    let app_id = row.get::<String, _>(1);
+    let action_id = row.get::<String, _>(2);
     let created_at = row.get::<chrono::DateTime<chrono::Utc>, _>(8);
     let started_at = row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(9);
     let finished_at = row.get::<Option<chrono::DateTime<chrono::Utc>>, _>(10);
+    let log_path = crate::dag_apps::app_run_log_path(run_id);
+    let log_exists = log_path.is_file();
     let now = chrono::Utc::now();
+    let queue_summary = if state == "queued" {
+        Some(load_app_run_queue_summary(&pool, run_id, &app_id, &action_id, created_at).await?)
+    } else {
+        None
+    };
     let diagnosis = diagnose_app_run_status(
         &state,
         lease.as_ref().map(|lease| lease.state.as_str()),
@@ -1082,8 +1194,8 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
     );
     let payload = json!({
         "id": row.get::<String, _>(0),
-        "app_id": row.get::<String, _>(1),
-        "action_id": row.get::<String, _>(2),
+        "app_id": app_id,
+        "action_id": action_id,
         "state": state,
         "diagnosis": diagnosis,
         "review_id": app_run_review_id(&input),
@@ -1096,7 +1208,10 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
         "created_at": created_at,
         "started_at": started_at,
         "finished_at": finished_at,
+        "log_path": log_path.to_string_lossy(),
+        "log_exists": log_exists,
         "latest_lease": lease.as_ref().map(app_run_lease_json),
+        "queue": queue_summary.as_ref().map(app_run_queue_summary_json),
         "recent_events": events.iter().map(app_run_event_json).collect::<Vec<_>>(),
     });
     if json {
@@ -1131,6 +1246,15 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
         println!("queued_at    {}", format_app_run_ts(Some(created_at)));
         println!("started_at   {}", format_app_run_ts(started_at));
         println!("finished_at  {}", format_app_run_ts(finished_at));
+        println!(
+            "log          {}{}",
+            payload["log_path"].as_str().unwrap_or_default(),
+            if payload["log_exists"].as_bool() == Some(true) {
+                ""
+            } else {
+                " (missing)"
+            }
+        );
         if let Some(lease) = lease {
             println!(
                 "lease        {} until {} worker={} heartbeat={}",
@@ -1141,6 +1265,21 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
             );
         } else {
             println!("lease        -");
+        }
+        if let Some(summary) = &queue_summary {
+            println!(
+                "queue        position={} older_queued={} running_same_action={}",
+                summary.older_queued_count.saturating_add(1),
+                summary.older_queued_count,
+                summary.running_same_action.len()
+            );
+            if !summary.running_same_action.is_empty() {
+                println!("running_same_action");
+                print!(
+                    "{}",
+                    format_app_run_table(&summary.running_same_action, chrono::Utc::now())
+                );
+            }
         }
         if let Some(error) = payload["error_message"].as_str() {
             println!("error        {error}");
@@ -1159,6 +1298,206 @@ async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn app_logs(run_id: Uuid, tail: usize, follow: bool, json: bool) -> anyhow::Result<()> {
+    if json && follow {
+        anyhow::bail!("agh app logs --json cannot be combined with --follow");
+    }
+    let log_path = crate::dag_apps::app_run_log_path(run_id);
+    let exists = log_path.is_file();
+    let tail_text = if exists {
+        Some(
+            read_log_tail(&log_path, tail)
+                .with_context(|| format!("read app run log tail from {}", log_path.display()))?,
+        )
+    } else {
+        None
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "run_id": run_id,
+                "log_path": log_path.to_string_lossy(),
+                "exists": exists,
+                "tail": tail_text.unwrap_or_default(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    if let Some(text) = tail_text {
+        print!("{text}");
+    } else if !follow {
+        println!("No log file for app run {run_id}.");
+        println!("expected_log {}", log_path.display());
+        return Ok(());
+    } else {
+        eprintln!("Waiting for app run log {}", log_path.display());
+    }
+
+    if follow {
+        let offset = std::fs::metadata(&log_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        follow_app_run_log(run_id, &log_path, offset).await?;
+    }
+    Ok(())
+}
+
+fn read_log_tail(path: &Path, tail: usize) -> anyhow::Result<String> {
+    let text = String::from_utf8_lossy(&std::fs::read(path)?).to_string();
+    if tail == 0 {
+        return Ok(text);
+    }
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(tail);
+    let mut out = lines[start..].join("\n");
+    if text.ends_with('\n') && !out.is_empty() {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+async fn follow_app_run_log(run_id: Uuid, path: &Path, mut offset: u64) -> anyhow::Result<()> {
+    let pool = connect_db().await?;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        offset = print_log_since(path, offset)?;
+        if let Some(state) = load_app_run_state(&pool, run_id).await? {
+            if app_run_state_is_terminal(&state) {
+                let _ = print_log_since(path, offset)?;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_log_since(path: &Path, offset: u64) -> anyhow::Result<u64> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(offset);
+    };
+    let mut offset = if meta.len() < offset { 0 } else { offset };
+    if meta.len() == offset {
+        return Ok(offset);
+    }
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut chunk = String::new();
+    file.read_to_string(&mut chunk)?;
+    offset = meta.len();
+    print!("{chunk}");
+    Ok(offset)
+}
+
+async fn load_app_run_state(pool: &sqlx::PgPool, run_id: Uuid) -> anyhow::Result<Option<String>> {
+    Ok(
+        sqlx::query_scalar::<_, String>("select state from app_runs where id = $1")
+            .bind(run_id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+fn app_run_state_is_terminal(state: &str) -> bool {
+    matches!(
+        state,
+        "done" | "partial" | "failed" | "system_failed" | "cancelled"
+    )
+}
+
+async fn app_work(
+    run_id: Option<Uuid>,
+    worker_name: Option<String>,
+    json: bool,
+    stream_app_stderr: bool,
+    debug_logs: bool,
+) -> anyhow::Result<()> {
+    let pool = connect_db().await?;
+    let claimed = crate::scheduler::work_once(
+        pool.clone(),
+        run_id,
+        worker_name,
+        stream_app_stderr,
+        debug_logs,
+    )
+    .await?;
+    let no_claim = if claimed.is_none() {
+        match run_id {
+            Some(run_id) => load_app_work_no_claim_summary(&pool, run_id).await?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "claimed": claimed.is_some(),
+                "run_id": claimed,
+                "existing_run": no_claim.as_ref().map(app_work_no_claim_summary_json),
+            }))?
+        );
+    } else if let Some(run_id) = claimed {
+        println!("app run {run_id} completed");
+    } else if let Some(run_id) = run_id {
+        if let Some(summary) = no_claim {
+            println!(
+                "No queued app run claimed for id {run_id} (state={}, diagnosis={}).",
+                summary.state, summary.diagnosis
+            );
+            println!(
+                "log          {}",
+                crate::dag_apps::app_run_log_path(run_id).display()
+            );
+        } else {
+            println!("No queued app run claimed for id {run_id}.");
+        }
+    } else {
+        println!("No queued app run claimed.");
+    }
+    Ok(())
+}
+
+struct AppWorkNoClaimSummary {
+    state: String,
+    diagnosis: &'static str,
+}
+
+fn app_work_no_claim_summary_json(summary: &AppWorkNoClaimSummary) -> serde_json::Value {
+    json!({
+        "state": summary.state,
+        "diagnosis": summary.diagnosis,
+    })
+}
+
+async fn load_app_work_no_claim_summary(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+) -> anyhow::Result<Option<AppWorkNoClaimSummary>> {
+    let row = sqlx::query("select state from app_runs where id = $1")
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let state = row.get::<String, _>(0);
+    let lease = load_latest_app_run_lease(pool, run_id).await?;
+    let diagnosis = diagnose_app_run_status(
+        &state,
+        lease.as_ref().map(|lease| lease.state.as_str()),
+        lease.as_ref().map(|lease| lease.leased_until),
+        lease
+            .as_ref()
+            .and_then(|lease| lease.worker_name.as_deref()),
+        chrono::Utc::now(),
+    );
+    Ok(Some(AppWorkNoClaimSummary { state, diagnosis }))
 }
 
 async fn load_latest_app_run_lease(
@@ -1208,6 +1547,64 @@ async fn load_recent_app_run_events(
             created_at: row.get(3),
         })
         .collect())
+}
+
+async fn load_app_run_queue_summary(
+    pool: &sqlx::PgPool,
+    run_id: Uuid,
+    app_id: &str,
+    action_id: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<AppRunQueueSummary> {
+    let older_queued_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from app_runs \
+         where app_id = $1 \
+           and action_id = $2 \
+           and state = 'queued' \
+           and created_at < $3 \
+           and id <> $4",
+    )
+    .bind(app_id)
+    .bind(action_id)
+    .bind(created_at)
+    .bind(run_id)
+    .fetch_one(pool)
+    .await?;
+
+    let rows = sqlx::query(
+        "select id::text, app_id, action_id, state, input, created_at, started_at, finished_at \
+         from app_runs \
+         where app_id = $1 \
+           and action_id = $2 \
+           and state = 'running' \
+         order by started_at asc nulls last, created_at asc \
+         limit 5",
+    )
+    .bind(app_id)
+    .bind(action_id)
+    .fetch_all(pool)
+    .await?;
+    let running_same_action = rows
+        .into_iter()
+        .map(|row| {
+            let input = row.get::<serde_json::Value, _>(4);
+            AppRunListRow {
+                id: row.get(0),
+                app_id: row.get(1),
+                action_id: row.get(2),
+                state: row.get(3),
+                review_id: app_run_review_id(&input),
+                created_at: row.get(5),
+                started_at: row.get(6),
+                finished_at: row.get(7),
+            }
+        })
+        .collect();
+
+    Ok(AppRunQueueSummary {
+        older_queued_count,
+        running_same_action,
+    })
 }
 
 async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::Result<()> {
@@ -1466,6 +1863,15 @@ fn app_run_event_json(event: &AppRunEventSummary) -> serde_json::Value {
         "event_type": event.event_type,
         "message": event.message,
         "created_at": event.created_at,
+    })
+}
+
+fn app_run_queue_summary_json(summary: &AppRunQueueSummary) -> serde_json::Value {
+    json!({
+        "position": summary.older_queued_count.saturating_add(1),
+        "older_queued_count": summary.older_queued_count,
+        "running_same_action_count": summary.running_same_action.len(),
+        "running_same_action": app_run_rows_json(&summary.running_same_action),
     })
 }
 
@@ -2258,5 +2664,30 @@ mod tests {
             ),
             "running_with_active_lease"
         );
+    }
+
+    #[test]
+    fn app_logs_tail_reads_last_requested_lines() {
+        let run_id = Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("agenthero-tail-test-{run_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.log");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+
+        assert_eq!(read_log_tail(&path, 2).unwrap(), "two\nthree\n");
+        assert_eq!(read_log_tail(&path, 0).unwrap(), "one\ntwo\nthree\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn app_logs_follow_stops_on_terminal_app_run_states() {
+        assert!(app_run_state_is_terminal("done"));
+        assert!(app_run_state_is_terminal("partial"));
+        assert!(app_run_state_is_terminal("failed"));
+        assert!(app_run_state_is_terminal("system_failed"));
+        assert!(app_run_state_is_terminal("cancelled"));
+        assert!(!app_run_state_is_terminal("queued"));
+        assert!(!app_run_state_is_terminal("running"));
     }
 }

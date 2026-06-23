@@ -640,6 +640,98 @@ fn app_cancel_commands_parse_for_operator_cleanup() {
     }
 }
 
+#[test]
+fn app_work_command_parses_for_one_shot_run_claim() {
+    let run_id = uuid::Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "work",
+        "--run-id",
+        &run_id.to_string(),
+        "--worker-name",
+        "test-worker",
+    ])
+    .expect("app work should parse");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Work {
+                run_id: parsed,
+                worker_name,
+            } => {
+                assert_eq!(parsed, Some(run_id));
+                assert_eq!(worker_name.as_deref(), Some("test-worker"));
+            }
+            other => panic!("expected App::Work command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_logs_command_parses_for_operator_log_inspection() {
+    let run_id = uuid::Uuid::parse_str("2d0a1d88-b9f9-4e8f-848e-605b86717330").unwrap();
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "logs",
+        &run_id.to_string(),
+        "--tail",
+        "200",
+        "--follow",
+    ])
+    .expect("app logs should parse");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Logs {
+                run_id: parsed,
+                tail,
+                follow,
+            } => {
+                assert_eq!(parsed, run_id);
+                assert_eq!(tail, 200);
+                assert!(follow);
+            }
+            other => panic!("expected App::Logs command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_enqueue_command_parses_for_tracked_app_run() {
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "enqueue",
+        "grokrxiv",
+        "formalize",
+        "fb7eaf59-ec86-4240-93b5-1ef32f57b3a4",
+        "--debug",
+    ])
+    .expect("app enqueue should parse");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Enqueue { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(
+                    args,
+                    vec![
+                        "formalize",
+                        "fb7eaf59-ec86-4240-93b5-1ef32f57b3a4",
+                        "--debug"
+                    ]
+                );
+            }
+            other => panic!("expected App::Enqueue command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn app_run_http_write_route_requires_service_token() {
     let response = agenthero_orchestrator::router()

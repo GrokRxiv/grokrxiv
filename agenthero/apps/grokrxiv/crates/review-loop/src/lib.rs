@@ -2,6 +2,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 const LEAN_NAMESPACE: &str = "GrokRxiv";
+const DEFAULT_LEAN_MAX_TARGETS: usize = 8;
 
 pub fn build_semantic_ir(
     review_id: Uuid,
@@ -355,13 +356,10 @@ pub fn build_proof_obligations(
         .unwrap_or_default();
     let mut obligations = Vec::new();
     let mut skipped_targets = Vec::new();
-    // The default best-effort mode attempts every theorem-level target. Operators may set
-    // a positive cap for an explicit budgeted run; capped targets are reported, never
-    // silently dropped.
-    let max_targets = std::env::var("GROKRXIV_LEAN_MAX_TARGETS")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0);
+    // MVP best-effort mode defaults to a bounded Lean target set. Operators may set 0 for
+    // full mode, or another positive value for an explicit budgeted run. Capped targets are
+    // reported, never silently dropped.
+    let max_targets = lean_max_targets_from_env();
     for theorem in &theorem_candidates {
         if theorem.get("formalization_class").and_then(|v| v.as_str()) != Some("formal_math") {
             continue;
@@ -477,6 +475,18 @@ pub fn build_proof_obligations(
         "obligations": obligations,
         "skipped_targets": skipped_targets,
     })
+}
+
+fn lean_max_targets_from_env() -> Option<usize> {
+    match std::env::var("GROKRXIV_LEAN_MAX_TARGETS") {
+        Ok(value) => value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|target_cap| *target_cap > 0),
+        Err(std::env::VarError::NotPresent) => Some(DEFAULT_LEAN_MAX_TARGETS),
+        Err(std::env::VarError::NotUnicode(_)) => Some(DEFAULT_LEAN_MAX_TARGETS),
+    }
 }
 
 pub fn proof_obligations_require_lean(proof_obligations: &serde_json::Value) -> bool {
@@ -2046,6 +2056,48 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static REVIEW_LOOP_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn clear(key: &'static str) -> Self {
+            let lock = REVIEW_LOOP_ENV_LOCK.lock().expect("review-loop env lock");
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = REVIEW_LOOP_ENV_LOCK.lock().expect("review-loop env lock");
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn parse_proposition_types_simple_inequalities_and_implications() {
@@ -2421,11 +2473,10 @@ publisherReadyLowerBound = claimCount == 43
     }
 
     #[test]
-    fn proof_obligations_default_attempts_all_source_backed_theorem_targets() {
-        let prior = std::env::var("GROKRXIV_LEAN_MAX_TARGETS").ok();
-        std::env::remove_var("GROKRXIV_LEAN_MAX_TARGETS");
+    fn proof_obligations_default_caps_source_backed_theorem_targets_for_mvp() {
+        let _env = EnvVarGuard::clear("GROKRXIV_LEAN_MAX_TARGETS");
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
-        let theorem_candidates = (0..8)
+        let theorem_candidates = (0..10)
             .map(|index| {
                 json!({
                     "id": format!("theorem_full_{index}"),
@@ -2460,13 +2511,61 @@ publisherReadyLowerBound = claimCount == 43
         let obligations =
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
 
-        if let Some(value) = prior {
-            std::env::set_var("GROKRXIV_LEAN_MAX_TARGETS", value);
-        }
-        assert_eq!(obligations["candidate_count"], 8);
+        assert_eq!(obligations["candidate_count"], 10);
         assert_eq!(obligations["selected_count"], 8);
-        assert_eq!(obligations["omitted_count"], 0);
+        assert_eq!(obligations["omitted_count"], 2);
+        assert_eq!(obligations["explicit_target_cap"], 8);
         assert_eq!(obligations["obligations"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            obligations["skipped_targets"][0]["reason"],
+            "deferred_lean_target_budget"
+        );
+    }
+
+    #[test]
+    fn proof_obligations_explicit_zero_attempts_all_source_backed_theorem_targets() {
+        let _env = EnvVarGuard::set("GROKRXIV_LEAN_MAX_TARGETS", "0");
+        let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
+        let theorem_candidates = (0..10)
+            .map(|index| {
+                json!({
+                    "id": format!("theorem_full_{index}"),
+                    "kind": "theorem",
+                    "formalization_class": "formal_math",
+                    "statement": format!("Source-backed theorem {index}."),
+                    "source_claim_id": format!("thm:{index}"),
+                    "source_span": {"artifact": "theorem_graph.json", "paper_source_id": format!("thm:{index}")},
+                    "typed_transcription": {"status": "transcribed"},
+                    "theorem_ir": {
+                        "theorem_name": format!("thm_full_{index}"),
+                        "binders": [],
+                        "assumptions": [],
+                        "conclusion": {
+                            "kind": "uninterpreted_predicate",
+                            "name": format!("TheoremFull{index}"),
+                            "args": []
+                        }
+                    },
+                    "formalization_target": {
+                        "lean_declaration": format!("thm_full_{index}"),
+                        "expected_shape": "theorem"
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let semantic_ir = json!({
+            "schema_version": "1.0.0",
+            "theorem_candidates": theorem_candidates,
+        });
+
+        let obligations =
+            build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
+
+        assert_eq!(obligations["candidate_count"], 10);
+        assert_eq!(obligations["selected_count"], 10);
+        assert_eq!(obligations["omitted_count"], 0);
+        assert_eq!(obligations["explicit_target_cap"], serde_json::Value::Null);
+        assert_eq!(obligations["obligations"].as_array().unwrap().len(), 10);
     }
 
     #[test]

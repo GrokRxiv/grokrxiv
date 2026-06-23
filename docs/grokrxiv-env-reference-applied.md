@@ -92,11 +92,15 @@ files are gitignored.
 | `GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES` | `32`             | Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS` | `240`          | Maximum TeX theorem-inventory blocks mirrored into the local source context file for fallback tool-loop diagnostics |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_CHARS` | `500000`        | Character budget for the local source context file; does not cap `theorem_inventory.json` |
-| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS` | `6`            | Maximum theorem-inventory items sent to one typed-transcription LLM batch |
-| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS` | `24000`        | Character budget for one typed-transcription LLM batch |
+| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS` | `8`            | Maximum theorem-inventory items sent to one typed-transcription LLM batch |
+| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS` | `30000`        | Character budget for one typed-transcription LLM batch |
 | `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory typed transcription calls |
-| `GROKRXIV_LEAN_TARGET_CONCURRENCY` | `4`                        | Maximum concurrent per-theorem Lean author/check/fix jobs |
-| `GROKRXIV_LEAN_MAX_TARGETS`      | `0`                         | `0`/unset means attempt all theorem-level targets; positive values explicitly cap a run and report omitted targets |
+| `GROKRXIV_FORMALIZE_QUEUE_AUTOSTART` | `1`                    | Start a one-shot `agh app work --run-id <job>` worker after queueing Lean formalization; set `0`/`false`/`no`/`off` to require manual workers |
+| `GROKRXIV_LEAN_TARGET_CONCURRENCY` | `3`                        | Maximum concurrent per-theorem Lean author/check/fix jobs |
+| `GROKRXIV_LEAN_MAX_TARGETS`      | `8`                         | MVP default Lean target cap; set `0` for full theorem-level mode, or another positive value for an explicit budget |
+| `AGENTHERO_AGH_BIN`              | `agh`                       | Binary used by GrokRxiv when autostarting a one-shot app-run worker |
+| `AGENTHERO_RUNTIME_ROOT`         | repo-root `.agenthero`       | AgentHero runtime state root; app-run logs are written under `$AGENTHERO_RUNTIME_ROOT/app_runs/` |
+| `AGENTHERO_SCHEDULER_WORKERS`    | `1`                         | Number of local app-run scheduler workers started by `agh serve` |
 | `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
 | `GROKRXIV_DOCKER_INSTALL_PANDOC` | `1`                       | docker-compose build arg. Set `0` before build to omit Pandoc from the orchestrator image |

@@ -5574,6 +5574,65 @@ fn auto_lean_disabled(raw: &str) -> bool {
     )
 }
 
+const FORMALIZE_QUEUE_AUTOSTART_ENV: &str = "GROKRXIV_FORMALIZE_QUEUE_AUTOSTART";
+const AGENTHERO_AGH_BIN_ENV: &str = "AGENTHERO_AGH_BIN";
+
+fn formalize_queue_autostart_enabled() -> bool {
+    std::env::var(FORMALIZE_QUEUE_AUTOSTART_ENV)
+        .map(|raw| !auto_lean_disabled(&raw))
+        .unwrap_or(true)
+}
+
+fn agh_worker_bin() -> String {
+    std::env::var(AGENTHERO_AGH_BIN_ENV)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| "agh".to_string())
+}
+
+fn formalize_app_run_worker_name(review_id: Uuid) -> String {
+    format!("grokrxiv-formalize-{review_id}")
+}
+
+fn formalize_app_run_worker_args(job_id: Uuid, review_id: Uuid) -> Vec<String> {
+    vec![
+        "app".to_string(),
+        "work".to_string(),
+        "--run-id".to_string(),
+        job_id.to_string(),
+        "--worker-name".to_string(),
+        formalize_app_run_worker_name(review_id),
+    ]
+}
+
+fn formalize_app_run_worker_command_display(job_id: Uuid, review_id: Uuid) -> String {
+    let mut parts = vec![agh_worker_bin()];
+    parts.extend(formalize_app_run_worker_args(job_id, review_id));
+    parts.join(" ")
+}
+
+fn formalize_app_run_logs_command_display(job_id: Uuid) -> String {
+    format!("{} app logs {job_id} --follow", agh_worker_bin())
+}
+
+fn spawn_formalize_app_run_worker(job_id: Uuid, review_id: Uuid) -> anyhow::Result<()> {
+    let bin = agh_worker_bin();
+    let args = formalize_app_run_worker_args(job_id, review_id);
+    let display = std::iter::once(bin.clone())
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    std::process::Command::new(&bin)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn Lean formalization worker: {display}"))?;
+    Ok(())
+}
+
 fn paper_math_sources_has_formalizable_math(value: &serde_json::Value) -> bool {
     let theorem_nodes = value
         .get("theorem_graph")
@@ -7439,11 +7498,7 @@ async fn run_per_theorem_lean_loop(
     // longer blocks the others. Buffered-stream pattern mirrors agents/review/facts.rs; each
     // target is wrapped in a watchdog (see `run_one_lean_target`) that kills + retries a wedge.
     use futures::stream::StreamExt as _;
-    let concurrency = std::env::var("GROKRXIV_LEAN_TARGET_CONCURRENCY")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(4);
+    let concurrency = lean_target_concurrency_from_env();
     let per_call_secs: u64 = 600;
     let target_budget = std::time::Duration::from_secs(
         (lean_task.max_attempts.max(1) as u64)
@@ -7758,6 +7813,14 @@ fn compact_semantic_ir_for_lean_target(
         "supporting_equations": [],
         "nonformal_review_claims": [],
     })
+}
+
+fn lean_target_concurrency_from_env() -> usize {
+    std::env::var("GROKRXIV_LEAN_TARGET_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(3)
 }
 
 /// Author -> `lake env lean` -> review/fix one theorem in its own isolated harness, bounded by a
@@ -8921,9 +8984,6 @@ async fn refresh_formalization_math_artifacts(
     existing_paper_math_sources: serde_json::Value,
 ) -> serde_json::Value {
     let mut paper_math_sources = existing_paper_math_sources;
-    if !paper_math_sources_has_formalizable_math(&paper_math_sources) {
-        return paper_math_sources;
-    }
     match run_formalize_typed_theorem_extraction(
         state,
         pool,
@@ -8969,6 +9029,19 @@ async fn refresh_formalization_math_artifacts(
     paper_math_sources
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FormalizeExtractionPlan {
+    try_source_inventory: bool,
+    allow_body_tool_loop: bool,
+}
+
+fn formalize_extraction_plan(body_md: &str) -> FormalizeExtractionPlan {
+    FormalizeExtractionPlan {
+        try_source_inventory: true,
+        allow_body_tool_loop: !body_md.trim().is_empty() && body_has_theorem_signal(body_md),
+    }
+}
+
 async fn run_formalize_typed_theorem_extraction(
     state: &super::AppState,
     pool: &sqlx::PgPool,
@@ -8978,9 +9051,7 @@ async fn run_formalize_typed_theorem_extraction(
     paper_math_sources: &serde_json::Value,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let body_md = paper_math_sources_body_markdown(paper_math_sources);
-    if body_md.trim().is_empty() || !body_has_theorem_signal(&body_md) {
-        return Ok(None);
-    }
+    let plan = formalize_extraction_plan(&body_md);
     let runner = state
         .runners
         .get(&AgentRunnerKind::Cli)
@@ -8988,42 +9059,49 @@ async fn run_formalize_typed_theorem_extraction(
         .ok_or_else(|| anyhow::anyhow!("formalize typed-IR enrichment requires CLI runner"))?;
     let seed = crate::db::load_paper_review_seed(pool, paper_id).await?;
     let workdir = tempfile::tempdir().context("formalize typed-IR workdir")?;
-    crate::ingest_pipeline::write_body_md_to_workdir(workdir.path(), &body_md).await?;
+    if !body_md.trim().is_empty() {
+        crate::ingest_pipeline::write_body_md_to_workdir(workdir.path(), &body_md).await?;
+    }
     let formalize_config = FormalizeSourceConfig::from_env();
     let mut theorem_inventory = serde_json::Value::Null;
-    match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
-        Ok(count) if count > 0 => {
-            cli_status::emit(format!(
-                "formalize {review_id}: hydrated {count} arXiv source files for typed-IR extraction"
-            ));
-            theorem_inventory = build_formalize_theorem_inventory_from_workdir(
-                workdir.path(),
-                &seed.arxiv_id,
-                &seed.title,
-                &formalize_config,
-            )
-            .unwrap_or_else(|err| {
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "arxiv_id": seed.arxiv_id,
-                    "title": seed.title,
-                    "items": [],
-                    "inventory_count": 0usize,
-                    "warnings": [format!("failed to build theorem inventory: {err:#}")],
-                })
-            });
-            write_loop_json(
-                &artifact_dir.join("theorem_inventory.json"),
-                &theorem_inventory,
-            )
-            .await?;
+    if plan.try_source_inventory {
+        cli_status::emit(format!(
+            "formalize {review_id}: hydrating real arXiv source for typed-IR extraction"
+        ));
+        match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
+            Ok(count) if count > 0 => {
+                cli_status::emit(format!(
+                    "formalize {review_id}: hydrated {count} arXiv source files for typed-IR extraction"
+                ));
+                theorem_inventory = build_formalize_theorem_inventory_from_workdir(
+                    workdir.path(),
+                    &seed.arxiv_id,
+                    &seed.title,
+                    &formalize_config,
+                )
+                .unwrap_or_else(|err| {
+                    serde_json::json!({
+                        "schema_version": "1.0.0",
+                        "arxiv_id": seed.arxiv_id,
+                        "title": seed.title,
+                        "items": [],
+                        "inventory_count": 0usize,
+                        "warnings": [format!("failed to build theorem inventory: {err:#}")],
+                    })
+                });
+                write_loop_json(
+                    &artifact_dir.join("theorem_inventory.json"),
+                    &theorem_inventory,
+                )
+                .await?;
+            }
+            Ok(_) => cli_status::emit(format!(
+                "formalize {review_id}: arXiv source hydration yielded no source files"
+            )),
+            Err(err) => cli_status::emit(format!(
+                "formalize {review_id}: arXiv source hydration skipped: {err:#}"
+            )),
         }
-        Ok(_) => cli_status::emit(format!(
-            "formalize {review_id}: arXiv source hydration yielded no source files"
-        )),
-        Err(err) => cli_status::emit(format!(
-            "formalize {review_id}: arXiv source hydration skipped: {err:#}"
-        )),
     }
     let extract = grokrxiv_ingest::PaperExtract {
         arxiv_id: seed.arxiv_id.clone(),
@@ -9076,6 +9154,9 @@ async fn run_formalize_typed_theorem_extraction(
                 "formalize {review_id}: source-first typed-IR theorem extraction failed: {err:#}; falling back to tool loop"
             )),
         }
+    }
+    if !plan.allow_body_tool_loop {
+        return Ok(None);
     }
     let registry = Arc::new(
         grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::build_registry(),
@@ -9288,12 +9369,12 @@ impl FormalizeSourceConfig {
             ),
             transcription_batch_items: formalize_env_usize(
                 "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
-                6,
+                8,
             )
             .max(1),
             transcription_batch_chars: formalize_env_usize(
                 "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
-                24_000,
+                30_000,
             )
             .max(1),
             source_extraction_timeout_secs: formalize_env_u32(
@@ -10168,18 +10249,27 @@ async fn formalize_review(
     if debug_output {
         cli_status::set_enabled(true);
     }
+    cli_status::emit(format!("formalize {review_id}: loading runtime config"));
     ensure_min_cli_timeout_secs(1800);
     let config = super::Config::from_env();
+    cli_status::emit(format!("formalize {review_id}: initializing app state"));
     let state = super::AppState::from_config(config).await?;
+    cli_status::emit(format!("formalize {review_id}: app state ready"));
     let pool = state
         .db
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("formalize: DATABASE_URL not configured"))?;
+    cli_status::emit(format!("formalize {review_id}: loading review paper id"));
     let paper_id = paper_id_for_review(pool, review_id)
         .await
         .context("formalize: load paper_id for review")?;
+    cli_status::emit(format!("formalize {review_id}: paper_id={paper_id}"));
     let stages = review_loop_stage_plan()?;
     let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+    cli_status::emit(format!(
+        "formalize {review_id}: loading review-loop artifacts from {}",
+        artifact_dir.display()
+    ));
 
     let read_json = |name: &str| -> serde_json::Value {
         std::fs::read_to_string(artifact_dir.join(name))
@@ -10193,6 +10283,9 @@ async fn formalize_review(
             "formalize {review_id}: no review_loop/paper_math_sources.json — run the review first"
         );
     }
+    cli_status::emit(format!(
+        "formalize {review_id}: refreshing source-first math artifacts"
+    ));
     let paper_math_sources = refresh_formalization_math_artifacts(
         &state,
         pool,
@@ -13195,12 +13288,7 @@ async fn enqueue_formalize_app_run(
     if !external_actions_enabled {
         args.push("--no-external-actions".to_string());
     }
-    let input = serde_json::json!({
-        "args": args,
-        "dry_run": false,
-        "json": json,
-        "retry": { "max_attempts": 2 },
-    });
+    let input = formalize_app_run_input(args, json);
     let job_id = sqlx::query_scalar::<_, Uuid>(
         "insert into app_runs (app_id, action_id, state, input) \
          values ($1, $2, 'queued', $3) returning id",
@@ -13211,7 +13299,35 @@ async fn enqueue_formalize_app_run(
     .fetch_one(pool)
     .await
     .context("enqueue formalize app run")?;
+    sqlx::query(
+        "insert into dag_events (app_run_id, level, event_type, message, payload) \
+         values ($1, 'info', 'app_run.queued', 'app run queued', $2)",
+    )
+    .bind(job_id)
+    .bind(serde_json::json!({
+        "app": "grokrxiv",
+        "action": "formalize",
+        "retry": { "max_attempts": 2 },
+    }))
+    .execute(pool)
+    .await
+    .context("record formalize app run queued event")?;
     Ok(job_id)
+}
+
+fn formalize_app_run_input(args: Vec<String>, json: bool) -> serde_json::Value {
+    serde_json::json!({
+        "args": args,
+        "input": {
+            "values": {
+                "stream_stderr": true
+            },
+            "artifacts": {}
+        },
+        "dry_run": false,
+        "json": json,
+        "retry": { "max_attempts": 2 },
+    })
 }
 
 async fn maybe_enqueue_formalization_app_run(
@@ -13233,10 +13349,32 @@ async fn maybe_enqueue_formalization_app_run(
             )
             .await
             {
-                Ok(job_id) => crate::cli_status::emit(format!(
-                    "review {review_id}: Lean formalization queued (app_runs job {job_id}, reason={})",
-                    reason.as_str()
-                )),
+                Ok(job_id) => {
+                    crate::cli_status::emit(format!(
+                        "review {review_id}: Lean formalization queued (app_runs job {job_id}, reason={})",
+                        reason.as_str()
+                    ));
+                    crate::cli_status::emit(format!(
+                        "review {review_id}: Lean formalization logs: {}",
+                        formalize_app_run_logs_command_display(job_id)
+                    ));
+                    if formalize_queue_autostart_enabled() {
+                        match spawn_formalize_app_run_worker(job_id, review_id) {
+                            Ok(()) => crate::cli_status::emit(format!(
+                                "review {review_id}: Lean formalization worker started for app_runs job {job_id}"
+                            )),
+                            Err(err) => crate::cli_status::emit(format!(
+                                "review {review_id}: Lean formalization queued but worker autostart failed: {err:#}; run: {}",
+                                formalize_app_run_worker_command_display(job_id, review_id)
+                            )),
+                        }
+                    } else {
+                        crate::cli_status::emit(format!(
+                            "review {review_id}: Lean formalization worker autostart disabled by {FORMALIZE_QUEUE_AUTOSTART_ENV}; run: {}",
+                            formalize_app_run_worker_command_display(job_id, review_id)
+                        ));
+                    }
+                }
                 Err(err) => crate::cli_status::emit(format!(
                     "review {review_id}: failed to queue Lean formalization: {err:#}"
                 )),
@@ -16092,11 +16230,27 @@ mod tests {
         _lock: MutexGuard<'static, ()>,
     }
 
+    struct EnvVarsGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
     impl EnvVarGuard {
         fn clear(key: &'static str) -> Self {
             let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
             let previous = std::env::var(key).ok();
             std::env::remove_var(key);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
             Self {
                 key,
                 previous,
@@ -16110,6 +16264,35 @@ mod tests {
             match &self.previous {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    impl EnvVarsGuard {
+        fn clear(keys: &[&'static str]) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let previous = keys
+                .iter()
+                .map(|key| {
+                    let previous = std::env::var(key).ok();
+                    std::env::remove_var(key);
+                    (*key, previous)
+                })
+                .collect();
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarsGuard {
+        fn drop(&mut self) {
+            for (key, previous) in &self.previous {
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
@@ -16878,6 +17061,120 @@ mod tests {
                 reason: FormalizationQueueSkipReason::NoMathDetected,
             }
         );
+    }
+
+    #[test]
+    fn formalize_queue_autostart_defaults_on_and_honors_env_override() {
+        {
+            let _env = EnvVarGuard::clear(FORMALIZE_QUEUE_AUTOSTART_ENV);
+            assert!(formalize_queue_autostart_enabled());
+        }
+        for disabled in ["0", "false", "no", "off"] {
+            let _env = EnvVarGuard::set(FORMALIZE_QUEUE_AUTOSTART_ENV, disabled);
+            assert!(!formalize_queue_autostart_enabled());
+        }
+        {
+            let _env = EnvVarGuard::set(FORMALIZE_QUEUE_AUTOSTART_ENV, "1");
+            assert!(formalize_queue_autostart_enabled());
+        }
+    }
+
+    #[test]
+    fn lean_target_concurrency_defaults_to_mvp_value_and_honors_env_override() {
+        {
+            let _env = EnvVarGuard::clear("GROKRXIV_LEAN_TARGET_CONCURRENCY");
+            assert_eq!(lean_target_concurrency_from_env(), 3);
+        }
+        {
+            let _env = EnvVarGuard::set("GROKRXIV_LEAN_TARGET_CONCURRENCY", "7");
+            assert_eq!(lean_target_concurrency_from_env(), 7);
+        }
+        {
+            let _env = EnvVarGuard::set("GROKRXIV_LEAN_TARGET_CONCURRENCY", "0");
+            assert_eq!(lean_target_concurrency_from_env(), 3);
+        }
+    }
+
+    #[test]
+    fn formalize_source_config_defaults_to_mvp_transcription_batches() {
+        let _env = EnvVarsGuard::clear(&[
+            "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
+            "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
+        ]);
+
+        let config = FormalizeSourceConfig::from_env();
+
+        assert_eq!(config.transcription_batch_items, 8);
+        assert_eq!(config.transcription_batch_chars, 30_000);
+    }
+
+    #[test]
+    fn formalize_worker_args_target_exact_app_run() {
+        let job_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+        let review_id = Uuid::parse_str("fb7eaf59-ec86-4240-93b5-1ef32f57b3a4").unwrap();
+
+        assert_eq!(
+            formalize_app_run_worker_args(job_id, review_id),
+            vec![
+                "app",
+                "work",
+                "--run-id",
+                "5ec729c1-9ca6-4535-8a6f-677f91ca05fa",
+                "--worker-name",
+                "grokrxiv-formalize-fb7eaf59-ec86-4240-93b5-1ef32f57b3a4",
+            ]
+        );
+    }
+
+    #[test]
+    fn formalize_worker_binary_uses_env_override() {
+        {
+            let _env = EnvVarGuard::clear(AGENTHERO_AGH_BIN_ENV);
+            assert_eq!(agh_worker_bin(), "agh");
+        }
+        {
+            let _env = EnvVarGuard::set(AGENTHERO_AGH_BIN_ENV, "/opt/bin/agh");
+            assert_eq!(agh_worker_bin(), "/opt/bin/agh");
+        }
+    }
+
+    #[test]
+    fn formalize_logs_command_targets_exact_app_run() {
+        let job_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+
+        {
+            let _env = EnvVarGuard::clear(AGENTHERO_AGH_BIN_ENV);
+            assert_eq!(
+                formalize_app_run_logs_command_display(job_id),
+                "agh app logs 5ec729c1-9ca6-4535-8a6f-677f91ca05fa --follow"
+            );
+        }
+        {
+            let _env = EnvVarGuard::set(AGENTHERO_AGH_BIN_ENV, "/opt/bin/agh");
+            assert_eq!(
+                formalize_app_run_logs_command_display(job_id),
+                "/opt/bin/agh app logs 5ec729c1-9ca6-4535-8a6f-677f91ca05fa --follow"
+            );
+        }
+    }
+
+    #[test]
+    fn formalize_app_run_input_streams_worker_status() {
+        let review_id = Uuid::parse_str("fb7eaf59-ec86-4240-93b5-1ef32f57b3a4").unwrap();
+        let input = formalize_app_run_input(vec![review_id.to_string()], true);
+
+        assert_eq!(input["args"][0], review_id.to_string());
+        assert_eq!(input["json"], true);
+        assert_eq!(input["input"]["values"]["stream_stderr"], true);
+        assert_eq!(input["retry"]["max_attempts"], 2);
+    }
+
+    #[test]
+    fn formalize_source_inventory_is_not_blocked_by_review_loop_body_signal() {
+        let plan = formalize_extraction_plan("This artifact only contains proof prose.");
+
+        assert!(plan.try_source_inventory);
+        assert!(!plan.allow_body_tool_loop);
     }
 
     #[test]

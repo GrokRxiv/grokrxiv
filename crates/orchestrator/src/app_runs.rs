@@ -286,6 +286,62 @@ pub async fn claim_next(pool: &PgPool, worker_id: Uuid) -> anyhow::Result<Option
     }))
 }
 
+/// Claim one specific queued app run for a worker.
+pub async fn claim_run(
+    pool: &PgPool,
+    worker_id: Uuid,
+    run_id: Uuid,
+) -> anyhow::Result<Option<ClaimedAppRun>> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        "select id, app_id, action_id, input, attempt \
+         from app_runs \
+         where id = $1 \
+           and state = 'queued' \
+           and attempt < coalesce((input #>> '{retry,max_attempts}')::int, 2) \
+         for update skip locked",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    let id: Uuid = row.get("id");
+    let attempt = row.get::<i32, _>("attempt") + 1;
+    sqlx::query(
+        "update app_runs set state = 'running', attempt = attempt + 1, \
+         started_at = coalesce(started_at, now()), finished_at = null, updated_at = now() \
+         where id = $1",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    let lease_id = sqlx::query_scalar::<_, Uuid>(
+        "insert into worker_leases (worker_id, app_run_id, state, leased_until) \
+         values ($1, $2, 'leased', now() + interval '15 minutes') returning id",
+    )
+    .bind(worker_id)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let input_value: serde_json::Value = row.get("input");
+    let input: StoredAppRunInput = serde_json::from_value(input_value)?;
+    Ok(Some(ClaimedAppRun {
+        id,
+        worker_id,
+        app_id: row.get("app_id"),
+        action_id: row.get("action_id"),
+        input,
+        lease_id,
+        attempt,
+    }))
+}
+
 /// Recover app runs whose worker lease expired while still marked running.
 ///
 /// Runs are requeued until the stored action retry budget is exhausted; after

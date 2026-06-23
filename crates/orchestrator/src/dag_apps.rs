@@ -13,9 +13,13 @@ use agenthero_dag_executor::{DagExecutionReport, DagIo};
 use agenthero_dag_runtime::DagManifest;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
 
 const DEFAULT_ADAPTER_TIMEOUT_SECS: u64 = 60 * 60 * 2;
 const DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+/// `DagIo.values` key used to pass a durable app-run stderr log path to adapters.
+pub const APP_RUN_LOG_PATH_INPUT_KEY: &str = "app_run_log_path";
+const AGENTHERO_RUNTIME_ROOT_ENV: &str = "AGENTHERO_RUNTIME_ROOT";
 
 /// Metadata for one DAG type discovered from installed app manifests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -705,6 +709,7 @@ pub async fn run_app_action_with_idempotency_key(
     idempotency_key: String,
 ) -> anyhow::Result<AppAdapterResponse> {
     let manifest = load_app_manifest_by_slug(app_id)?;
+    let stream_stderr = app_action_stream_stderr_requested(&input);
     run_app_action_with_manifest_and_key(
         &manifest,
         action_id,
@@ -712,7 +717,7 @@ pub async fn run_app_action_with_idempotency_key(
         input,
         json,
         dry_run,
-        false,
+        stream_stderr,
         Some(idempotency_key),
     )
     .await
@@ -894,9 +899,11 @@ async fn run_adapter_process(
         .take()
         .ok_or_else(|| anyhow::anyhow!("adapter `{}` stderr unavailable", manifest.slug))?;
     let stdout_task = tokio::spawn(async move { read_limited(&mut stdout, output_limit).await });
+    let stderr_log_path = app_action_log_path_requested(&request.input);
     let stderr_task = tokio::spawn(async move {
-        if stream_stderr {
-            read_limited_and_tee_stderr(&mut stderr, output_limit).await
+        if stream_stderr || stderr_log_path.is_some() {
+            read_limited_and_tee_stderr(&mut stderr, output_limit, stream_stderr, stderr_log_path)
+                .await
         } else {
             read_limited(&mut stderr, output_limit).await
         }
@@ -1017,10 +1024,26 @@ where
 async fn read_limited_and_tee_stderr<R>(
     reader: &mut R,
     limit: usize,
+    stream_stderr: bool,
+    log_path: Option<PathBuf>,
 ) -> anyhow::Result<LimitedOutput>
 where
     R: AsyncRead + Unpin,
 {
+    let mut log_file = if let Some(path) = log_path {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        Some(
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await?,
+        )
+    } else {
+        None
+    };
     let mut err = tokio::io::stderr();
     let mut out = Vec::new();
     let mut truncated = false;
@@ -1033,7 +1056,12 @@ where
                 truncated,
             });
         }
-        err.write_all(&buf[..read]).await?;
+        if stream_stderr {
+            err.write_all(&buf[..read]).await?;
+        }
+        if let Some(file) = &mut log_file {
+            file.write_all(&buf[..read]).await?;
+        }
         let remaining = limit.saturating_sub(out.len());
         if remaining == 0 {
             truncated = true;
@@ -1119,6 +1147,32 @@ fn adapter_workdir() -> PathBuf {
         })
 }
 
+/// Root directory for AgentHero runtime-local state such as app-run logs.
+pub fn agenthero_runtime_root() -> PathBuf {
+    if let Some(path) = std::env::var_os(AGENTHERO_RUNTIME_ROOT_ENV) {
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+    }
+    discover_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join(".agenthero")
+}
+
+/// Deterministic stderr log path for one queued app run.
+pub fn app_run_log_path(run_id: Uuid) -> PathBuf {
+    app_run_log_path_for_runtime_root(&agenthero_runtime_root(), run_id)
+}
+
+fn app_run_log_path_for_runtime_root(runtime_root: &Path, run_id: Uuid) -> PathBuf {
+    runtime_root.join("app_runs").join(format!("{run_id}.log"))
+}
+
 fn truncate_for_error(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         value.to_string()
@@ -1151,6 +1205,78 @@ pub fn apps_root() -> PathBuf {
 /// Root directory for one installed DAGOps app.
 pub fn app_root(app: &str) -> PathBuf {
     apps_root().join(app)
+}
+
+fn app_action_stream_stderr_requested(input: &DagIo) -> bool {
+    ["stream_stderr", "debug_logs"]
+        .iter()
+        .any(|key| input.values.get(*key).and_then(|value| value.as_bool()) == Some(true))
+}
+
+fn app_action_log_path_requested(input: &DagIo) -> Option<PathBuf> {
+    input
+        .values
+        .get(APP_RUN_LOG_PATH_INPUT_KEY)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn queued_app_run_stream_flag_requests_outer_adapter_stderr_streaming() {
+        let mut input = DagIo::default();
+        input
+            .values
+            .insert("stream_stderr".to_string(), json!(true));
+
+        assert!(app_action_stream_stderr_requested(&input));
+    }
+
+    #[test]
+    fn queued_app_run_debug_logs_requests_outer_adapter_stderr_streaming() {
+        let mut input = DagIo::default();
+        input.values.insert("debug_logs".to_string(), json!(true));
+
+        assert!(app_action_stream_stderr_requested(&input));
+    }
+
+    #[test]
+    fn app_run_log_path_lives_under_runtime_app_runs_dir() {
+        let run_id = uuid::Uuid::parse_str("2d0a1d88-b9f9-4e8f-848e-605b86717330").unwrap();
+        let runtime_root = Path::new("/tmp/agenthero-runtime");
+
+        assert_eq!(
+            app_run_log_path_for_runtime_root(runtime_root, run_id),
+            runtime_root
+                .join("app_runs")
+                .join("2d0a1d88-b9f9-4e8f-848e-605b86717330.log")
+        );
+    }
+
+    #[tokio::test]
+    async fn stderr_reader_writes_durable_log_file_without_streaming() {
+        let run_id = uuid::Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("agenthero-log-test-{run_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("run.log");
+        let mut reader: &[u8] = b"line one\nline two\n";
+
+        let output = read_limited_and_tee_stderr(&mut reader, 1024, false, Some(log_path.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(output.bytes, b"line one\nline two\n");
+        assert_eq!(
+            std::fs::read_to_string(&log_path).unwrap(),
+            "line one\nline two\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 fn discover_workspace_root() -> Option<PathBuf> {
