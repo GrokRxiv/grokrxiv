@@ -1,0 +1,57 @@
+id: theorem-triage
+version: 1
+accepts:
+  - extractor
+  - verifier
+  - synthesizer
+  - renderer
+concurrency: 1
+roles:
+  - id: pipeline_reader
+    kind: extractor
+  - id: status_auditor
+    kind: verifier
+  - id: target_locker
+    kind: synthesizer
+  - id: queue_writer
+    kind: synthesizer
+  - id: triage_reporter
+    kind: renderer
+nodes:
+  - id: load_pipeline_and_queue
+    kind: prepare_inputs
+    role: pipeline_reader
+    outputs: [pipeline_snapshot.md, queue_snapshot.md]
+    required: true
+  - id: audit_current_status
+    kind: verify
+    role: status_auditor
+    inputs: [pipeline_snapshot.md, queue_snapshot.md]
+    outputs: [STATUS.md]
+    required: true
+  - id: lock_target
+    kind: synthesizer
+    role: target_locker
+    inputs: [STATUS.md]
+    outputs: [locked_target.json]
+    required: true
+  - id: update_queue
+    kind: synthesizer
+    role: queue_writer
+    inputs: [locked_target.json]
+    outputs: [QUEUE_UPDATE.md]
+  - id: triage_report
+    kind: render_artifacts
+    role: triage_reporter
+    inputs: [STATUS.md, locked_target.json, QUEUE_UPDATE.md]
+    outputs: [REPORT.md]
+    required: true
+edges:
+  - from: load_pipeline_and_queue
+    to: audit_current_status
+  - from: audit_current_status
+    to: lock_target
+  - from: lock_target
+    to: update_queue
+  - from: update_queue
+    to: triage_report

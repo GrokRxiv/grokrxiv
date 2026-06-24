@@ -1,4 +1,5 @@
 packages:
+  - "agenthero/apps/formal-proofs"
   - "agenthero/apps/*/web"
   - "agenthero/apps/*/skills"
   - "agenthero/apps/*/tests/*"

@@ -1,0 +1,61 @@
+id: certificate-verify
+version: 1
+accepts:
+  - extractor
+  - verifier
+  - synthesizer
+  - renderer
+concurrency: 1
+roles:
+  - id: candidate_loader
+    kind: extractor
+  - id: lean_checker
+    kind: verifier
+  - id: haskell_checker
+    kind: verifier
+  - id: sat_checker
+    kind: verifier
+  - id: verification_synthesizer
+    kind: synthesizer
+  - id: certificate_reporter
+    kind: renderer
+nodes:
+  - id: load_candidate
+    kind: prepare_inputs
+    role: candidate_loader
+    outputs: [candidate.json]
+    required: true
+  - id: lean_check
+    kind: verify
+    role: lean_checker
+    inputs: [candidate.json]
+    outputs: [lean_result.json]
+  - id: haskell_check
+    kind: verify
+    role: haskell_checker
+    inputs: [candidate.json]
+    outputs: [haskell_result.json]
+  - id: sat_check
+    kind: verify
+    role: sat_checker
+    inputs: [candidate.json]
+    outputs: [sat_result.json]
+  - id: synthesize_verifier_result
+    kind: synthesizer
+    role: verification_synthesizer
+    inputs: [lean_result.json, haskell_result.json, sat_result.json]
+    outputs: [verifier_result.json]
+    required: true
+  - id: certificate_report
+    kind: render_artifacts
+    role: certificate_reporter
+    inputs: [candidate.json, verifier_result.json]
+    outputs: [REPORT.md]
+    required: true
+edges:
+  - from: load_candidate
+    to: [lean_check, haskell_check, sat_check]
+  - from: [lean_check, haskell_check, sat_check]
+    to: synthesize_verifier_result
+  - from: synthesize_verifier_result
+    to: certificate_report

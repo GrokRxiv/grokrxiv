@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthero.local/formal-proofs/schemas/open_problem_run.schema.json",
+  "title": "Formal Proofs Open Problem Run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target",
+    "pipeline",
+    "queue",
+    "max_rounds",
+    "proposers",
+    "workspace",
+    "started_at",
+    "completed_at",
+    "report"
+  ],
+  "properties": {
+    "target": { "type": "string", "minLength": 1 },
+    "pipeline": { "type": "string", "minLength": 1 },
+    "queue": { "type": "string", "minLength": 1 },
+    "max_rounds": { "type": "number" },
+    "proposers": { "type": "array", "items": { "type": "string" } },
+    "workspace": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "report": { "$ref": "report.schema.json" }
+  }
+}

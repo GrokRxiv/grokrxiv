@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthero.local/formal-proofs/schemas/verifier_result.schema.json",
+  "title": "Formal Proofs Verifier Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "trusted",
+    "status",
+    "expected_checker",
+    "commands",
+    "evidence_path",
+    "notes"
+  ],
+  "properties": {
+    "candidate_id": { "type": "string", "minLength": 1 },
+    "trusted": { "type": "boolean" },
+    "status": {
+      "type": "string",
+      "enum": ["verified", "failed", "unverified", "checker_unavailable"]
+    },
+    "expected_checker": {
+      "type": "string",
+      "enum": ["lean", "haskell", "sat", "manual", "unknown"]
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code", "stdout", "stderr", "duration_ms"],
+        "properties": {
+          "command": { "type": "array", "items": { "type": "string" } },
+          "exit_code": { "type": ["number", "null"] },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "duration_ms": { "type": "number" }
+        }
+      }
+    },
+    "evidence_path": { "type": ["string", "null"] },
+    "notes": { "type": "string" }
+  }
+}

@@ -8,7 +8,14 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 fn app_registry_groups_dag_types_behind_product_apps() {
     let _guard = EnvGuard::clear_apps_root();
     let ids = agenthero_orchestrator::dag_apps::registered_app_ids().expect("registered app ids");
-    assert_eq!(ids, vec!["c2rust".to_string(), "grokrxiv".to_string()]);
+    assert_eq!(
+        ids,
+        vec![
+            "c2rust".to_string(),
+            "formal-proofs".to_string(),
+            "grokrxiv".to_string()
+        ]
+    );
 
     let grokrxiv = agenthero_orchestrator::dag_apps::registered_app("grokrxiv")
         .expect("GrokRxiv app descriptor loads")
@@ -79,6 +86,35 @@ fn app_registry_groups_dag_types_behind_product_apps() {
             .collect::<Vec<_>>(),
         vec!["c2rust"]
     );
+
+    let formal_proofs = agenthero_orchestrator::dag_apps::registered_app("formal-proofs")
+        .expect("formal-proofs app descriptor loads")
+        .expect("formal-proofs app descriptor");
+    let action_ids = formal_proofs
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        action_ids,
+        vec![
+            "open-problem-search",
+            "certificate-verify",
+            "theorem-triage"
+        ]
+    );
+    assert_eq!(
+        formal_proofs
+            .actions
+            .iter()
+            .map(|action| action.dag_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "open-problem-search",
+            "certificate-verify",
+            "theorem-triage"
+        ]
+    );
 }
 
 #[test]
@@ -91,13 +127,16 @@ fn registry_contains_grokrxiv_chain_and_c2rust_apps() {
         ids,
         vec![
             "c2rust".to_string(),
+            "certificate-verify".to_string(),
             "citation-validation".to_string(),
+            "open-problem-search".to_string(),
             "paper-extract".to_string(),
             "paper-ingest".to_string(),
             "paper-publish".to_string(),
             "paper-review".to_string(),
             "paper-revise".to_string(),
             "review-loop".to_string(),
+            "theorem-triage".to_string(),
         ]
     );
 }
@@ -603,7 +642,7 @@ fn app_contracts_are_owned_by_app_roots() {
     let _guard = EnvGuard::clear_apps_root();
     let root = workspace_root();
 
-    for app in ["grokrxiv", "c2rust"] {
+    for app in ["grokrxiv", "c2rust", "formal-proofs"] {
         let app_root = root.join("agenthero").join("apps").join(app);
         assert!(
             app_root.join("app.yaml").is_file(),
