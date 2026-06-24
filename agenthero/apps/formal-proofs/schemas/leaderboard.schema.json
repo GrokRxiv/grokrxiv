@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthero.local/formal-proofs/schemas/leaderboard.schema.json",
+  "title": "Formal Proofs Leaderboard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["locked_open_problem", "entries"],
+  "properties": {
+    "locked_open_problem": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rank",
+          "candidate_id",
+          "proposer",
+          "verified",
+          "verifier_status",
+          "score",
+          "notes"
+        ],
+        "properties": {
+          "rank": { "type": "number" },
+          "candidate_id": { "type": "string", "minLength": 1 },
+          "proposer": { "type": "string", "minLength": 1 },
+          "verified": { "type": "boolean" },
+          "verifier_status": {
+            "type": "string",
+            "enum": ["verified", "failed", "unverified", "checker_unavailable"]
+          },
+          "score": { "type": "number" },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}

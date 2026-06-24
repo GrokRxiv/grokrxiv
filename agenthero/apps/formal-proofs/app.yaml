@@ -1,0 +1,83 @@
+version: 1
+slug: formal-proofs
+label: Formal Proofs
+description: Open-problem search, certificate verification, and theorem triage DAG app.
+adapter:
+  kind: process
+  command: agenthero-dag-app-formal-proofs
+  fallback_command: pnpm
+  fallback_args: ["--dir", "agenthero/apps/formal-proofs", "exec", "tsx", "src/adapter.ts"]
+  timeout_secs: 7200
+  output_limit_bytes: 8388608
+actions:
+  - id: open-problem-search
+    command: [open-problem-search]
+    dag_type: open-problem-search
+    description: Run a proposer, verifier, fixer, leaderboard, and report loop against one locked open problem.
+    retry:
+      max_attempts: 1
+    options:
+      - name: --pipeline
+        kind: flag
+        value_name: PATH
+        description: Research pipeline Markdown contract. Defaults to app-owned inputs/RESEARCH_PIPELINE.md.
+      - name: --queue
+        kind: flag
+        value_name: PATH
+        description: Active target queue. Defaults to app-owned inputs/QUEUE.md.
+      - name: --target
+        kind: flag
+        value_name: TARGET
+        required: true
+        description: Locked target id, initially e677-fin-e255.
+      - name: --max-rounds
+        kind: flag
+        value_name: N
+        description: Maximum proposer/verifier/fixer rounds.
+      - name: --proposers
+        kind: flag
+        value_name: CSV
+        description: Comma-separated proposer ids such as claude,gpt-5,gemini,fixture.
+      - name: --workspace
+        kind: flag
+        value_name: PATH
+        description: Directory where run artifacts should be written.
+  - id: certificate-verify
+    command: [certificate-verify]
+    dag_type: certificate-verify
+    description: Verify one candidate certificate through trusted Lean, Haskell, or SAT evidence.
+    retry:
+      max_attempts: 1
+    options:
+      - name: --candidate
+        kind: flag
+        value_name: PATH
+        required: true
+        description: Candidate JSON file to verify.
+      - name: --workspace
+        kind: flag
+        value_name: PATH
+        description: Directory where verifier artifacts should be written.
+  - id: theorem-triage
+    command: [theorem-triage]
+    dag_type: theorem-triage
+    description: Audit and lock targets from pipeline and queue files before proof/search work.
+    retry:
+      max_attempts: 1
+    options:
+      - name: --pipeline
+        kind: flag
+        value_name: PATH
+        description: Research pipeline Markdown contract.
+      - name: --queue
+        kind: flag
+        value_name: PATH
+        description: Active target queue.
+      - name: --target
+        kind: flag
+        value_name: TARGET
+        description: Target id to audit and lock.
+      - name: --workspace
+        kind: flag
+        value_name: PATH
+        description: Directory where triage artifacts should be written.

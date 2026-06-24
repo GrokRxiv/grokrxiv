@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthero.local/formal-proofs/schemas/report.schema.json",
+  "title": "Formal Proofs Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "open_problem_solved",
+    "trusted_status",
+    "locked_open_problem",
+    "verifier_commands",
+    "failure_reason",
+    "partial_artifacts",
+    "workspace"
+  ],
+  "properties": {
+    "open_problem_solved": { "type": "boolean" },
+    "trusted_status": {
+      "type": "string",
+      "enum": ["solved", "not_solved", "partial", "failed"]
+    },
+    "locked_open_problem": { "type": "string", "minLength": 1 },
+    "verifier_commands": { "type": "array", "items": { "type": "string" } },
+    "failure_reason": { "type": ["string", "null"] },
+    "partial_artifacts": { "type": "array", "items": { "type": "string" } },
+    "workspace": { "type": "string", "minLength": 1 }
+  }
+}

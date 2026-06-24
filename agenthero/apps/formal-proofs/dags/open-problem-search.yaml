@@ -1,0 +1,89 @@
+id: open-problem-search
+version: 1
+accepts:
+  - extractor
+  - code_generator
+  - synthesizer
+  - verifier
+  - renderer
+concurrency: 1
+roles:
+  - id: status_auditor
+    kind: extractor
+  - id: proposer_claude
+    kind: code_generator
+  - id: proposer_gpt5
+    kind: code_generator
+  - id: proposer_gemini
+    kind: code_generator
+  - id: candidate_normalizer
+    kind: synthesizer
+  - id: search_agent
+    kind: code_generator
+  - id: lean_or_sat_verifier
+    kind: verifier
+  - id: fixer_agent
+    kind: code_generator
+  - id: leaderboard_agent
+    kind: synthesizer
+  - id: reporter_agent
+    kind: renderer
+nodes:
+  - id: status_lock
+    kind: prepare_inputs
+    role: status_auditor
+    outputs: [STATUS.md]
+    required: true
+  - id: proposer_claude
+    kind: agent
+    role: proposer_claude
+    inputs: [STATUS.md, PROPOSER_PROMPTS.md]
+    outputs: [candidates/raw.jsonl]
+  - id: proposer_gpt5
+    kind: agent
+    role: proposer_gpt5
+    inputs: [STATUS.md, PROPOSER_PROMPTS.md]
+    outputs: [candidates/raw.jsonl]
+  - id: proposer_gemini
+    kind: agent
+    role: proposer_gemini
+    inputs: [STATUS.md, PROPOSER_PROMPTS.md]
+    outputs: [candidates/raw.jsonl]
+  - id: normalize_candidates
+    kind: synthesizer
+    role: candidate_normalizer
+    inputs: [candidates/raw.jsonl]
+    outputs: [candidates/normalized.jsonl, candidates/rejected.jsonl]
+    required: true
+  - id: search_verify_fix_loop
+    kind: loop
+    role: lean_or_sat_verifier
+    inputs: [candidates/normalized.jsonl]
+    outputs: [VERIFIER_LOG.md, FIXER_LOG.md, ITERATION_LOG.md]
+    required: true
+    loop:
+      max_rounds: 3
+      continue_key: loop_continue
+  - id: leaderboard
+    kind: synthesizer
+    role: leaderboard_agent
+    inputs: [candidates/normalized.jsonl, VERIFIER_LOG.md]
+    outputs: [LEADERBOARD.md]
+    required: true
+  - id: report
+    kind: render_artifacts
+    role: reporter_agent
+    inputs: [STATUS.md, VERIFIER_LOG.md, LEADERBOARD.md, ITERATION_LOG.md]
+    outputs: [REPORT.md]
+    required: true
+edges:
+  - from: status_lock
+    to: [proposer_claude, proposer_gpt5, proposer_gemini]
+  - from: [proposer_claude, proposer_gpt5, proposer_gemini]
+    to: normalize_candidates
+  - from: normalize_candidates
+    to: search_verify_fix_loop
+  - from: search_verify_fix_loop
+    to: leaderboard
+  - from: leaderboard
+    to: report

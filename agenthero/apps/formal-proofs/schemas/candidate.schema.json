@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthero.local/formal-proofs/schemas/candidate.schema.json",
+  "title": "Formal Proofs Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "lane",
+    "locked_open_problem",
+    "claim_type",
+    "object",
+    "parameters",
+    "claimed_improvement",
+    "verification_target",
+    "expected_checker",
+    "proposer",
+    "notes"
+  ],
+  "properties": {
+    "candidate_id": { "type": "string", "minLength": 1 },
+    "lane": { "type": "string", "minLength": 1 },
+    "locked_open_problem": { "type": "string", "minLength": 1 },
+    "claim_type": {
+      "type": "string",
+      "enum": [
+        "construction",
+        "countermodel",
+        "lower_bound",
+        "upper_bound",
+        "identity",
+        "proof_sketch"
+      ]
+    },
+    "object": { "type": "object", "additionalProperties": true },
+    "parameters": { "type": "object", "additionalProperties": true },
+    "claimed_improvement": { "type": "string", "minLength": 1 },
+    "verification_target": { "type": "string", "minLength": 1 },
+    "expected_checker": {
+      "type": "string",
+      "enum": ["lean", "haskell", "sat", "manual", "unknown"]
+    },
+    "proposer": { "type": "string", "minLength": 1 },
+    "notes": { "type": "string" }
+  }
+}
