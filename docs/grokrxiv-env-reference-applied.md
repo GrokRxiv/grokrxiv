@@ -100,6 +100,7 @@ files are gitignored.
 | `GROKRXIV_LEAN_MAX_TARGETS`      | `8`                         | MVP default Lean target cap; set `0` for full theorem-level mode, or another positive value for an explicit budget |
 | `AGENTHERO_AGH_BIN`              | `agh`                       | Binary used by GrokRxiv when autostarting a one-shot app-run worker |
 | `AGENTHERO_RUNTIME_ROOT`         | repo-root `.agenthero`       | AgentHero runtime state root; app-run logs are written under `$AGENTHERO_RUNTIME_ROOT/app_runs/` |
+| `AGENTHERO_LOG_FILE`             | _none_                      | Optional structured AgentHero process log destination; writes JSONL diagnostics for audit pipelines |
 | `AGENTHERO_SCHEDULER_WORKERS`    | `1`                         | Number of local app-run scheduler workers started by `agh serve` |
 | `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |

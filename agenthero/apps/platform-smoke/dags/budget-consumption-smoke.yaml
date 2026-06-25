@@ -1,0 +1,39 @@
+id: budget-consumption-smoke
+version: 1
+accepts: []
+concurrency: 2
+tools:
+  - id: first_budgeted_tool
+    executor: cli
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"node":"%s","tool":"%s","budget":"%s"}\n' "$AGENTHERO_NODE_ID" "$AGENTHERO_TOOL_ID" "$AGENTHERO_BUDGET_UNITS" > first_budget.json
+    timeout_secs: 10
+    policy:
+      budget_units: 2
+  - id: second_budgeted_tool
+    executor: cli
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"spawned":true}\n' > second_should_not_spawn.json
+    timeout_secs: 10
+    policy:
+      budget_units: 2
+nodes:
+  - id: first_budgeted_tool
+    kind: tool
+    tool: first_budgeted_tool
+    outputs: [first_budget.json]
+    required: true
+  - id: second_budgeted_tool
+    kind: tool
+    tool: second_budgeted_tool
+    outputs: [second_should_not_spawn.json]
+    required: true
+edges:
+  - from: first_budgeted_tool
+    to: second_budgeted_tool

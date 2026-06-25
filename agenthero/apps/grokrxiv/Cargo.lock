@@ -80,6 +80,7 @@ dependencies = [
  "grokrxiv-app-runtime",
  "grokrxiv-extraction",
  "grokrxiv-ingest",
+ "grokrxiv-review-loop",
  "hex",
  "idna_adapter",
  "image",
@@ -105,10 +106,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "nix 0.29.0",
+ "reqwest",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -747,7 +753,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f3f22f1a586604e62efd23f78218f3ccdecf7a33c4500db2d37d85a24fe994"
 dependencies = [
- "nix",
+ "nix 0.26.4",
  "terminfo",
  "thiserror 1.0.69",
  "which",
@@ -783,7 +789,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5080df6b0f0ecb76cab30808f00d937ba725cebe266a3da8cd89dff92f2a9916"
 dependencies = [
  "async-trait",
- "nix",
+ "nix 0.26.4",
  "tokio",
  "winapi",
 ]
@@ -3073,6 +3079,18 @@ dependencies = [
  "libc",
  "memoffset",
  "pin-utils",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.11.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -6172,7 +6190,7 @@ dependencies = [
  "futures",
  "ignore-files",
  "miette",
- "nix",
+ "nix 0.26.4",
  "normalize-path",
  "notify",
  "once_cell",
@@ -6190,7 +6208,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01603bbe02fd75918f010dadad456d47eda14fb8fdcab276b0b4b8362f142ae3"
 dependencies = [
- "nix",
+ "nix 0.26.4",
  "notify",
  "watchexec-signals",
 ]
@@ -6229,7 +6247,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc2a5df96c388901c94ca04055fcd51d4196ca3e971c5e805bd4a4b61dd6a7e5"
 dependencies = [
  "miette",
- "nix",
+ "nix 0.26.4",
  "thiserror 1.0.69",
 ]
 

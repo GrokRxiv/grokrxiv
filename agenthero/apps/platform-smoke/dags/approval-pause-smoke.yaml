@@ -1,0 +1,29 @@
+id: approval-pause-smoke
+version: 1
+accepts: []
+concurrency: 1
+tools:
+  - id: human_release
+    executor: approval_gate
+  - id: write_release_report
+    executor: cli
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"dag":"%s","node":"%s","tool":"%s","approved":true}\n' "$AGENTHERO_DAG_TYPE" "$AGENTHERO_NODE_ID" "$AGENTHERO_TOOL_ID" > released.json
+    timeout_secs: 10
+nodes:
+  - id: wait_for_release
+    kind: tool
+    tool: human_release
+    required: true
+  - id: write_release_report
+    kind: tool
+    tool: write_release_report
+    inputs: []
+    outputs: [released.json]
+    required: true
+edges:
+  - from: wait_for_release
+    to: write_release_report

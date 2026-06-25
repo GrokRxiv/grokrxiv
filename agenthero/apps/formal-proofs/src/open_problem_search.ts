@@ -16,9 +16,11 @@ import {
   writeText
 } from "./artifacts.js";
 import { proposerPrompt, runProposers } from "./proposers.js";
+import { runtimeNode, runtimeReport } from "./runtime_report.js";
 import { verifyCandidates } from "./verifier.js";
 import type {
   DagExecutionReport,
+  DagIo,
   FinalReport,
   NormalizedCandidate,
   RejectedCandidate
@@ -133,7 +135,8 @@ export function normalizeCandidateRecords(records: string[]): {
 
 export async function runOpenProblemSearch(
   args: string[],
-  idempotencyKey = "manual"
+  idempotencyKey = "manual",
+  input?: DagIo
 ): Promise<OpenProblemSearchResult> {
   const options = parseOpenProblemSearchArgs(args, idempotencyKey);
   const lockedOpenProblem = lockedOpenProblemForTarget(options.target);
@@ -187,7 +190,7 @@ export async function runOpenProblemSearch(
   await writeText(options.workspace, "REPORT.md", reportMarkdown(finalReport));
 
   return {
-    report: dagReport(options.workspace, finalReport),
+    report: dagReport(options.workspace, finalReport, input),
     finalReport,
     workspace: options.workspace
   };
@@ -357,38 +360,27 @@ function iterationLogMarkdown(
   ].join("\n");
 }
 
-function dagReport(workspace: string, finalReport: FinalReport): DagExecutionReport {
-  const nodes: Array<[string, string, string[]]> = [
-    ["status_lock", "prepare_inputs", ["STATUS.md"]],
-    ["proposer_claude", "agent", ["candidates/raw.jsonl"]],
-    ["proposer_gpt5", "agent", ["candidates/raw.jsonl"]],
-    ["proposer_gemini", "agent", ["candidates/raw.jsonl"]],
-    ["normalize_candidates", "synthesizer", ["candidates/normalized.jsonl", "candidates/rejected.jsonl"]],
-    ["search_verify_fix_loop", "loop", ["VERIFIER_LOG.md", "FIXER_LOG.md", "ITERATION_LOG.md"]],
-    ["leaderboard", "synthesizer", ["LEADERBOARD.md"]],
-    ["report", "render_artifacts", ["REPORT.md"]]
+function dagReport(workspace: string, finalReport: FinalReport, input?: DagIo): DagExecutionReport {
+  const nodes: Array<[string, string, string, string[]]> = [
+    ["status_lock", "prepare_inputs", "status_auditor", ["STATUS.md"]],
+    ["proposer_claude", "agent", "proposer_claude", ["candidates/raw.jsonl"]],
+    ["proposer_gpt5", "agent", "proposer_gpt5", ["candidates/raw.jsonl"]],
+    ["proposer_gemini", "agent", "proposer_gemini", ["candidates/raw.jsonl"]],
+    ["normalize_candidates", "synthesizer", "candidate_normalizer", ["candidates/normalized.jsonl", "candidates/rejected.jsonl"]],
+    ["search_verify_fix_loop", "loop", "lean_or_sat_verifier", ["VERIFIER_LOG.md", "FIXER_LOG.md", "ITERATION_LOG.md"]],
+    ["leaderboard", "synthesizer", "leaderboard_agent", ["LEADERBOARD.md"]],
+    ["report", "render_artifacts", "reporter_agent", ["REPORT.md"]]
   ];
-  return {
-    dag_type: "open-problem-search",
-    status: "ok",
-    nodes: nodes.map(([node_id, kind, outputs]) => ({
-      node_id,
-      kind,
-      status: "ok",
-      executor: "typescript",
-      inputs: [],
-      outputs,
-      warning: null,
-      error: null,
-      latency_ms: 0,
-      trace: {}
-    })),
-    outputs: {
+  return runtimeReport(
+    "open-problem-search",
+    nodes.map(([node_id, kind, role, outputs]) => runtimeNode(workspace, node_id, kind, outputs, { role })),
+    {
       values: {
         report: finalReport,
         workspace
       },
       artifacts: artifactRefs(workspace)
-    }
-  };
+    },
+    { input }
+  );
 }

@@ -263,6 +263,37 @@ pub async fn run_review_dag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::MutexGuard;
+
+    struct EnvVarGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        fn clear(keys: &[&'static str]) -> Self {
+            let lock = crate::test_env_lock();
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     #[cfg(feature = "grokrxiv-ingest")]
     struct NeverCompletesRunner;
@@ -576,6 +607,11 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_rejects_enqueue_after_shutdown() {
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_APPS_ROOT",
+            "AGENTHERO_DAGS_DIR",
+            "AGENTHERO_AGENTS_DIR",
+        ]);
         let mut config = crate::Config::from_env();
         config.database_url = None;
         let state = crate::AppState::from_config(config)
@@ -654,6 +690,11 @@ mod tests {
     #[cfg(feature = "grokrxiv-ingest")]
     #[tokio::test]
     async fn apply_revisions_errors_without_db() {
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_APPS_ROOT",
+            "AGENTHERO_DAGS_DIR",
+            "AGENTHERO_AGENTS_DIR",
+        ]);
         let mut config = crate::Config::from_env();
         config.database_url = None;
         let state = crate::AppState::from_config(config)

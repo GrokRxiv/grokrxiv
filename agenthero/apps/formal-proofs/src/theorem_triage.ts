@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 
 import { ensureRunWorkspace, statusMarkdown, writeText } from "./artifacts.js";
 import { lockedOpenProblemForTarget, resolveDefaultInputPath } from "./open_problem_search.js";
-import type { DagExecutionReport } from "./types.js";
+import { artifactOutput, runtimeNode, runtimeReport } from "./runtime_report.js";
+import type { DagExecutionReport, DagIo } from "./types.js";
 
 export interface TheoremTriageResult {
   report: DagExecutionReport;
@@ -12,7 +13,11 @@ export interface TheoremTriageResult {
   workspace: string;
 }
 
-export async function runTheoremTriage(args: string[], idempotencyKey = "manual"): Promise<TheoremTriageResult> {
+export async function runTheoremTriage(
+  args: string[],
+  idempotencyKey = "manual",
+  input?: DagIo
+): Promise<TheoremTriageResult> {
   const options = parseTheoremTriageArgs(args, idempotencyKey);
   const lockedOpenProblem = lockedOpenProblemForTarget(options.target);
   if (!lockedOpenProblem) {
@@ -24,6 +29,8 @@ export async function runTheoremTriage(args: string[], idempotencyKey = "manual"
   const pipelineText = await readFile(options.pipeline, "utf8");
   const queueText = await readFile(options.queue, "utf8");
 
+  await writeText(options.workspace, "pipeline_snapshot.md", pipelineText);
+  await writeText(options.workspace, "queue_snapshot.md", queueText);
   await writeText(options.workspace, "STATUS.md", statusMarkdown(lockedOpenProblem, options.pipeline, options.queue));
   await writeText(
     options.workspace,
@@ -56,7 +63,7 @@ export async function runTheoremTriage(args: string[], idempotencyKey = "manual"
   );
 
   return {
-    report: dagReport(options.workspace, options.target, lockedOpenProblem),
+    report: dagReport(options.workspace, options.target, lockedOpenProblem, input),
     lockedOpenProblem,
     workspace: options.workspace
   };
@@ -89,46 +96,46 @@ function parseTheoremTriageArgs(args: string[], idempotencyKey: string) {
   };
 }
 
-function dagReport(workspace: string, target: string, lockedOpenProblem: string): DagExecutionReport {
-  return {
-    dag_type: "theorem-triage",
-    status: "ok",
-    nodes: [
-      node("load_pipeline_and_queue", "prepare_inputs", ["pipeline_snapshot.md", "queue_snapshot.md"]),
-      node("audit_current_status", "verify", ["STATUS.md"]),
-      node("lock_target", "synthesizer", ["locked_target.json"]),
-      node("update_queue", "synthesizer", ["QUEUE_UPDATE.md"]),
-      node("triage_report", "render_artifacts", ["REPORT.md"])
+function dagReport(workspace: string, target: string, lockedOpenProblem: string, input?: DagIo): DagExecutionReport {
+  return runtimeReport(
+    "theorem-triage",
+    [
+      runtimeNode(workspace, "load_pipeline_and_queue", "prepare_inputs", [
+        "pipeline_snapshot.md",
+        "queue_snapshot.md"
+      ], {
+        role: "pipeline_reader"
+      }),
+      runtimeNode(workspace, "audit_current_status", "verify", ["STATUS.md"], {
+        role: "status_auditor"
+      }),
+      runtimeNode(workspace, "lock_target", "synthesizer", ["locked_target.json"], {
+        role: "target_locker"
+      }),
+      runtimeNode(workspace, "update_queue", "synthesizer", ["QUEUE_UPDATE.md"], {
+        role: "queue_writer"
+      }),
+      runtimeNode(workspace, "triage_report", "render_artifacts", ["REPORT.md"], {
+        role: "triage_reporter"
+      })
     ],
-    outputs: {
+    {
       values: {
         target,
         locked_open_problem: lockedOpenProblem,
         workspace
       },
-      artifacts: {
-        "STATUS.md": { uri: join(workspace, "STATUS.md"), media_type: "text/markdown", metadata: {} },
-        "locked_target.json": { uri: join(workspace, "locked_target.json"), media_type: "application/json", metadata: {} },
-        "QUEUE_UPDATE.md": { uri: join(workspace, "QUEUE_UPDATE.md"), media_type: "text/markdown", metadata: {} },
-        "REPORT.md": { uri: join(workspace, "REPORT.md"), media_type: "text/markdown", metadata: {} }
-      }
-    }
-  };
-}
-
-function node(node_id: string, kind: string, outputs: string[]) {
-  return {
-    node_id,
-    kind,
-    status: "ok" as const,
-    executor: "typescript",
-    inputs: [],
-    outputs,
-    warning: null,
-    error: null,
-    latency_ms: 0,
-    trace: {}
-  };
+      artifacts: artifactOutput(workspace, [
+        "pipeline_snapshot.md",
+        "queue_snapshot.md",
+        "STATUS.md",
+        "locked_target.json",
+        "QUEUE_UPDATE.md",
+        "REPORT.md"
+      ])
+    },
+    { input }
+  );
 }
 
 function assertReadable(path: string, flag: string): void {

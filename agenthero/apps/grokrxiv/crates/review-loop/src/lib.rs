@@ -636,14 +636,22 @@ pub fn build_theorem_map(
         })
         .find(|status| *status != "proved")
         .unwrap_or("proved");
-    json!({
+    let mut theorem_map = json!({
         "schema_version": "1.0.0",
         "source": "review_loop/proof_obligations.json",
         "lean_results": "review_loop/lean/results.json",
         "status": top_status,
         "lean_attempt_status": top_lean_attempt_status,
         "entries": entries,
-    })
+    });
+    if top_status == "AWAITING_FORMALIZATION" {
+        theorem_map["skip_reason"] = lean_results
+            .get("skip_reason")
+            .cloned()
+            .unwrap_or_else(|| json!("lean_not_run"));
+        theorem_map["operator_status"] = json!("AWAITING_FORMALIZATION");
+    }
+    theorem_map
 }
 
 pub fn build_semantic_adequacy(
@@ -1492,7 +1500,14 @@ fn proof_map_skips_lean(theorem_map: &serde_json::Value) -> bool {
         theorem_map
             .get("skip_reason")
             .and_then(|value| value.as_str()),
-        Some("no_math_found" | "not_formalizable" | "no_math_targets")
+        Some(
+            "no_math_found"
+                | "not_formalizable"
+                | "no_math_targets"
+                | "lean_execution_not_enabled_in_gated_manifest_dag"
+                | "lean_not_run"
+                | "awaiting_formalization"
+        )
     )
 }
 
@@ -1925,11 +1940,17 @@ fn lean_entry_status(
             .get("declarations")
             .and_then(|map| map.get(decl))
     }) {
+        if lean_results_deferred(decl_results) {
+            return "AWAITING_FORMALIZATION";
+        }
         if decl_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
             return "PROVED";
         }
         let diagnostics = lean_status_diagnostics(decl_results);
         return classify_lean_failure(&diagnostics);
+    }
+    if lean_results_deferred(lean_results) {
+        return "AWAITING_FORMALIZATION";
     }
     if lean_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
         return "PROVED";
@@ -1944,6 +1965,9 @@ fn lean_attempt_status_from_skip_reason(value: &serde_json::Value) -> serde_json
         .and_then(|value| value.as_str())
         .unwrap_or("no_math_found")
     {
+        "lean_execution_not_enabled_in_gated_manifest_dag"
+        | "lean_not_run"
+        | "awaiting_formalization" => json!("not_run"),
         "not_formalizable" => json!("not_formalizable"),
         _ => json!("no_math_found"),
     }
@@ -1975,6 +1999,9 @@ fn lean_attempt_status_from_results(results: &serde_json::Value) -> &'static str
         return match skip_reason {
             "no_math_found" | "no_math_targets" => "no_math_found",
             "not_formalizable" => "not_formalizable",
+            "lean_execution_not_enabled_in_gated_manifest_dag"
+            | "lean_not_run"
+            | "awaiting_formalization" => "not_run",
             _ => "failed_typecheck",
         };
     }
@@ -1990,6 +2017,18 @@ fn lean_attempt_status_from_results(results: &serde_json::Value) -> &'static str
     } else {
         "failed_typecheck"
     }
+}
+
+fn lean_results_deferred(results: &serde_json::Value) -> bool {
+    results.get("status").and_then(|v| v.as_str()) == Some("skipped")
+        && matches!(
+            results.get("skip_reason").and_then(|v| v.as_str()),
+            Some(
+                "lean_execution_not_enabled_in_gated_manifest_dag"
+                    | "lean_not_run"
+                    | "awaiting_formalization"
+            )
+        )
 }
 
 fn classify_lean_failure(diagnostics: &str) -> &'static str {
@@ -3495,6 +3534,56 @@ end GrokRxiv
             "failed_typecheck"
         );
         assert_eq!(theorem_map["lean_attempt_status"], "failed_typecheck");
+    }
+
+    #[test]
+    fn theorem_map_reports_deferred_lean_without_false_failure() {
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_deferred_claim",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "deferred_claim",
+                    "source_claim_id": "claim-deferred",
+                    "statement": "A theorem candidate awaiting Lean execution.",
+                    "lean_statement": "theorem deferred_claim : True := by"
+                }
+            ]
+        });
+        let lean_results = json!({
+            "status": "skipped",
+            "skipped": true,
+            "skip_reason": "lean_execution_not_enabled_in_gated_manifest_dag"
+        });
+
+        let theorem_map = build_theorem_map(&obligations, &lean_results);
+
+        assert_eq!(theorem_map["status"], "AWAITING_FORMALIZATION");
+        assert_eq!(theorem_map["lean_attempt_status"], "not_run");
+        assert_eq!(
+            theorem_map["entries"][0]["status"],
+            "AWAITING_FORMALIZATION"
+        );
+        assert_eq!(theorem_map["entries"][0]["lean_attempt_status"], "not_run");
+
+        let semantic_ir = json!({
+            "theorem_candidates": [
+                {
+                    "id": "theorem_deferred",
+                    "source_claim_id": "claim-deferred",
+                    "statement": "A theorem candidate awaiting Lean execution."
+                }
+            ]
+        });
+        let adequacy = build_semantic_adequacy(&semantic_ir, &theorem_map);
+
+        assert_eq!(adequacy["status"], "skipped");
+        assert_eq!(
+            adequacy["skip_reason"],
+            "lean_execution_not_enabled_in_gated_manifest_dag"
+        );
+        assert_eq!(adequacy["operator_status"], "AWAITING_FORMALIZATION");
+        assert!(adequacy["verdicts"].as_array().unwrap().is_empty());
     }
 
     #[test]

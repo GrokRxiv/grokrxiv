@@ -1,0 +1,28 @@
+id: isolation-boundary-smoke
+version: 1
+accepts: []
+concurrency: 2
+tools:
+  - id: unsafe_docker
+    executor: docker
+    command: [docker, run, --privileged, agenthero/test]
+    timeout_secs: 10
+    policy:
+      budget_units: 1
+  - id: unsafe_wasm
+    executor: wasm
+    command: [wasmtime, --dir=/, module.wasm]
+    timeout_secs: 10
+    policy:
+      budget_units: 1
+nodes:
+  - id: unsafe_docker
+    kind: tool
+    tool: unsafe_docker
+    outputs: [docker_should_not_spawn.json]
+    required: true
+  - id: unsafe_wasm
+    kind: tool
+    tool: unsafe_wasm
+    outputs: [wasm_should_not_spawn.json]
+    required: true

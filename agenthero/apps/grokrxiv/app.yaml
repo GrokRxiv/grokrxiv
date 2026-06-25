@@ -9,6 +9,28 @@ adapter:
   fallback_args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--"]
   timeout_secs: 7200
   output_limit_bytes: 8388608
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
 deployments:
   - kind: vercel
     id: web
@@ -88,7 +110,7 @@ actions:
   - id: review
     command: [review]
     dag_type: review-loop
-    description: Run the research review DAG and optional semantic/proof/citation loop for a paper source.
+    description: Run the research review DAG with the semantic/proof/citation loop for a paper source.
     retry:
       max_attempts: 2
     options:
@@ -138,15 +160,14 @@ actions:
         value_name: GLOB
         multiple: true
         description: Exclude corpus paths matching this pattern.
-      - name: --loop
-        kind: flag
-        description: Deprecated no-op — the semantic/citation/fix/publish loop now always runs.
       - name: --with-lean
         kind: flag
-        description: Run experimental Lean formalization (advisory, never affects the verdict).
+        conflicts_with: [--no-lean]
+        description: Force Lean verification/formalization for this review when targets are available (advisory, never affects the verdict).
       - name: --no-lean
         kind: flag
-        description: Do not queue Lean formalization for this review, even when formalizable math is auto-detected.
+        conflicts_with: [--with-lean]
+        description: Disable Lean verification/formalization for this review, even when formalizable math is auto-detected.
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.

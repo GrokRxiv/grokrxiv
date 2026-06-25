@@ -5,9 +5,10 @@
 //! Wave-2 extraction agents.
 //!
 //! Four tools live here:
-//! - `list_citation_sites` — scans `body.md` for every `[@key]` occurrence
-//!   (including grouped `[@a; @b; @c]` form), tagging each site with its
-//!   containing section and the surrounding sentence.
+//! - `list_citation_sites` — scans `body.md` for every `[@key]` and common
+//!   TeX citation occurrence (including grouped `[@a; @b; @c]` and
+//!   `\cites{a,b}` forms), tagging each site with its containing section and
+//!   the surrounding sentence.
 //! - `lookup_bibtex(key)` — finds the matching BibTeX entry under the workdir
 //!   and parses out `{raw, doi?, arxiv_id?, title?, authors?, year?, venue?}`.
 //! - `search_corpus(query, k?)` — best-effort semantic search over the
@@ -35,7 +36,7 @@ fn list_citation_sites_schema() -> Value {
     json!({
         "type": "object",
         "properties": {},
-        "description": "No arguments. Scans body.md for every [@key] (including grouped [@a; @b]) and returns one site per occurrence."
+        "description": "No arguments. Scans body.md for every [@key] or TeX citation command (including grouped [@a; @b] and \\cites{a,b}) and returns one site per occurrence."
     })
 }
 
@@ -45,7 +46,7 @@ impl Tool for ListCitationSitesTool {
         "list_citation_sites"
     }
     fn description(&self) -> &'static str {
-        "Return every `[@key]` citation occurrence in body.md as {key, section, sentence, char_offset}."
+        "Return every markdown or TeX citation occurrence in body.md as {key, section, sentence, char_offset}."
     }
     fn schema(&self) -> &Value {
         LIST_CITATION_SITES_SCHEMA.get_or_init(list_citation_sites_schema)
@@ -64,8 +65,19 @@ impl Tool for ListCitationSitesTool {
 /// Extract citation sites from markdown body text.
 pub fn extract_citation_sites(body: &str) -> Vec<Value> {
     let sections = section_index(body);
-    let bytes = body.as_bytes();
     let mut out: Vec<Value> = Vec::new();
+    extract_markdown_citation_sites(body, &sections, &mut out);
+    extract_tex_citation_sites(body, &sections, &mut out);
+    out.sort_by_key(|site| {
+        site.get("char_offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+    out
+}
+
+fn extract_markdown_citation_sites(body: &str, sections: &[(String, usize)], out: &mut Vec<Value>) {
+    let bytes = body.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] != b'[' {
@@ -91,19 +103,138 @@ pub fn extract_citation_sites(body: &str) -> Vec<Value> {
                 if key.is_empty() {
                     continue;
                 }
-                let section = section_for_offset(group_offset, &sections);
-                let sentence = surrounding_sentence(body, group_offset);
-                out.push(json!({
-                    "key": key,
-                    "section": section,
-                    "sentence": sentence,
-                    "char_offset": group_offset as u64,
-                }));
+                push_citation_site(body, sections, out, key, group_offset);
             }
         }
         i = i + 1 + close_rel + 1;
     }
-    out
+}
+
+fn extract_tex_citation_sites(body: &str, sections: &[(String, usize)], out: &mut Vec<Value>) {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let command_start = i + 1;
+        let mut command_end = command_start;
+        while command_end < bytes.len() && bytes[command_end].is_ascii_alphabetic() {
+            command_end += 1;
+        }
+        if command_end == command_start {
+            i += 1;
+            continue;
+        }
+        let command = &body[command_start..command_end];
+        if !is_tex_citation_command(command) {
+            i = command_end;
+            continue;
+        }
+
+        let command_offset = i;
+        let mut cursor = command_end;
+        if cursor < bytes.len() && bytes[cursor] == b'*' {
+            cursor += 1;
+        }
+        cursor = skip_ascii_whitespace(bytes, cursor);
+        while cursor < bytes.len() && bytes[cursor] == b'[' {
+            let Some(close) = find_balanced_ascii_group(body, cursor, b'[', b']') else {
+                break;
+            };
+            cursor = skip_ascii_whitespace(bytes, close + 1);
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b'{' {
+            i = cursor.max(command_end);
+            continue;
+        }
+        let Some(close) = find_balanced_ascii_group(body, cursor, b'{', b'}') else {
+            i = cursor + 1;
+            continue;
+        };
+        let keys = &body[cursor + 1..close];
+        for raw_key in keys.split([',', ';']) {
+            let key = parse_cite_key(raw_key.trim().trim_start_matches('@'));
+            if !key.is_empty() {
+                push_citation_site(body, sections, out, key, command_offset);
+            }
+        }
+        i = close + 1;
+    }
+}
+
+fn is_tex_citation_command(command: &str) -> bool {
+    matches!(
+        command,
+        "autocite"
+            | "cite"
+            | "citealp"
+            | "citealt"
+            | "citeauthor"
+            | "citep"
+            | "cites"
+            | "citet"
+            | "citeyear"
+            | "citeyearpar"
+            | "footcite"
+            | "fullcite"
+            | "parencite"
+            | "smartcite"
+            | "supercite"
+            | "textcite"
+    )
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn find_balanced_ascii_group(body: &str, open_idx: usize, open: u8, close: u8) -> Option<usize> {
+    let bytes = body.as_bytes();
+    if bytes.get(open_idx).copied() != Some(open) {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i = i.saturating_add(2);
+                continue;
+            }
+            ch if ch == open => depth += 1,
+            ch if ch == close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn push_citation_site(
+    body: &str,
+    sections: &[(String, usize)],
+    out: &mut Vec<Value>,
+    key: String,
+    offset: usize,
+) {
+    let section = section_for_offset(offset, sections);
+    let sentence = surrounding_sentence(body, offset);
+    out.push(json!({
+        "key": key,
+        "section": section,
+        "sentence": sentence,
+        "char_offset": offset as u64,
+    }));
 }
 
 fn parse_cite_key(s: &str) -> String {
@@ -640,6 +771,20 @@ mod tests {
         assert_eq!(sites.len(), 3);
         let keys: Vec<&str> = sites.iter().map(|s| s["key"].as_str().unwrap()).collect();
         assert_eq!(keys, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn list_citation_sites_extracts_tex_plural_cites() {
+        let body = "## Intro\n\nBV formalism \\cites{Batalin1977,Batalin1981} matters.\n";
+        let sites = extract_citation_sites(body);
+        assert_eq!(sites.len(), 2);
+        let keys: Vec<&str> = sites.iter().map(|s| s["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, vec!["Batalin1977", "Batalin1981"]);
+        assert_eq!(sites[0]["section"], "Intro");
+        assert_eq!(
+            sites[0]["sentence"],
+            "BV formalism \\cites{Batalin1977,Batalin1981} matters."
+        );
     }
 
     #[test]

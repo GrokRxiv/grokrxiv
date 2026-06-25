@@ -1410,10 +1410,20 @@ async fn insert_app_run_event(
     .bind(level)
     .bind(event_type)
     .bind(message)
-    .bind(serde_json::json!({"operator": "cli"}))
+    .bind(app_run_operator_event_payload(run_id))
     .execute(pool)
     .await?;
     Ok(())
+}
+
+fn app_run_operator_event_payload(run_id: Uuid) -> serde_json::Value {
+    agenthero_agent_runtime::agenthero_trace_payload(
+        run_id,
+        None,
+        serde_json::json!({
+            "operator": "cli",
+        }),
+    )
 }
 
 fn app_run_review_id(input: &serde_json::Value) -> Option<String> {
@@ -2273,7 +2283,15 @@ fn validate_declared_tools(manifest: &DagManifest) -> anyhow::Result<()> {
                     );
                 }
             }
-            ToolExecutorKind::Cli => {
+            ToolExecutorKind::Cli
+            | ToolExecutorKind::Shell
+            | ToolExecutorKind::Python
+            | ToolExecutorKind::RustBinary
+            | ToolExecutorKind::Http
+            | ToolExecutorKind::Lean
+            | ToolExecutorKind::Haskell
+            | ToolExecutorKind::Docker
+            | ToolExecutorKind::Wasm => {
                 if tool
                     .command
                     .as_ref()
@@ -2281,12 +2299,13 @@ fn validate_declared_tools(manifest: &DagManifest) -> anyhow::Result<()> {
                     .unwrap_or(true)
                 {
                     anyhow::bail!(
-                        "DAG `{}` CLI tool `{}` must declare command",
+                        "DAG `{}` command-backed tool `{}` must declare command",
                         manifest.id,
                         tool.id
                     );
                 }
             }
+            ToolExecutorKind::Llm | ToolExecutorKind::ApprovalGate => {}
         }
     }
     Ok(())
@@ -2337,6 +2356,7 @@ fn add_agent_to_dag(
         branch: None,
         map: None,
         approval: None,
+        retry: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -2425,7 +2445,17 @@ fn add_tool_to_dag(
     let executor = parse_tool_executor_arg(executor)?;
     let handler = match executor {
         ToolExecutorKind::Rust => Some(handler.unwrap_or_else(|| tool_id.to_string())),
-        ToolExecutorKind::Cli => handler,
+        ToolExecutorKind::Cli
+        | ToolExecutorKind::Shell
+        | ToolExecutorKind::Python
+        | ToolExecutorKind::RustBinary
+        | ToolExecutorKind::Llm
+        | ToolExecutorKind::Http
+        | ToolExecutorKind::Lean
+        | ToolExecutorKind::Haskell
+        | ToolExecutorKind::Docker
+        | ToolExecutorKind::Wasm
+        | ToolExecutorKind::ApprovalGate => handler,
     };
     let command = (!command.is_empty()).then_some(command);
     manifest.tools.push(DagTool {
@@ -2436,6 +2466,7 @@ fn add_tool_to_dag(
         timeout_secs,
         input_schema: None,
         output_schema: None,
+        policy: None,
     });
     manifest.nodes.push(DagNode {
         id: tool_id.to_string(),
@@ -2452,6 +2483,7 @@ fn add_tool_to_dag(
         branch: None,
         map: None,
         approval: None,
+        retry: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -13324,15 +13356,24 @@ async fn enqueue_formalize_app_run(
          values ($1, 'info', 'app_run.queued', 'app run queued', $2)",
     )
     .bind(job_id)
-    .bind(serde_json::json!({
-        "app": "grokrxiv",
-        "action": "formalize",
-        "retry": { "max_attempts": 2 },
-    }))
+    .bind(formalize_queued_event_payload(job_id))
     .execute(pool)
     .await
     .context("record formalize app run queued event")?;
     Ok(job_id)
+}
+
+fn formalize_queued_event_payload(run_id: Uuid) -> serde_json::Value {
+    agenthero_agent_runtime::agenthero_trace_payload(
+        run_id,
+        None,
+        serde_json::json!({
+            "app": "grokrxiv",
+            "action": "formalize",
+            "dag_type": "review-loop",
+            "retry": { "max_attempts": 2 },
+        }),
+    )
 }
 
 fn formalize_app_run_input(args: Vec<String>, json: bool) -> serde_json::Value {
@@ -13340,6 +13381,9 @@ fn formalize_app_run_input(args: Vec<String>, json: bool) -> serde_json::Value {
         "args": args,
         "input": {
             "values": {
+                "app": "grokrxiv",
+                "action": "formalize",
+                "dag_type": "review-loop",
                 "stream_stderr": true
             },
             "artifacts": {}
@@ -17219,8 +17263,50 @@ mod tests {
 
         assert_eq!(input["args"][0], review_id.to_string());
         assert_eq!(input["json"], true);
+        assert_eq!(input["input"]["values"]["app"], "grokrxiv");
+        assert_eq!(input["input"]["values"]["action"], "formalize");
+        assert_eq!(input["input"]["values"]["dag_type"], "review-loop");
         assert_eq!(input["input"]["values"]["stream_stderr"], true);
         assert_eq!(input["retry"]["max_attempts"], 2);
+    }
+
+    #[test]
+    fn app_run_operator_event_payload_includes_agenthero_trace_fields() {
+        let run_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+
+        let payload = app_run_operator_event_payload(run_id);
+
+        assert_eq!(payload["app_run_id"], run_id.to_string());
+        assert_eq!(payload["operator"], "cli");
+        for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+            assert!(
+                payload.get(*field).is_some(),
+                "operator event payload should include mandatory AgentHero trace field `{field}`"
+            );
+        }
+        assert_eq!(payload["node_id"], serde_json::Value::Null);
+        assert_eq!(payload["attempt"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn formalize_queued_event_payload_includes_agenthero_trace_fields() {
+        let run_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+
+        let payload = formalize_queued_event_payload(run_id);
+
+        assert_eq!(payload["app_run_id"], run_id.to_string());
+        assert_eq!(payload["app"], "grokrxiv");
+        assert_eq!(payload["action"], "formalize");
+        assert_eq!(payload["dag_type"], "review-loop");
+        assert_eq!(payload["retry"]["max_attempts"], 2);
+        for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+            assert!(
+                payload.get(*field).is_some(),
+                "formalize queued event payload should include mandatory AgentHero trace field `{field}`"
+            );
+        }
+        assert_eq!(payload["node_id"], serde_json::Value::Null);
+        assert_eq!(payload["attempt"], serde_json::Value::Null);
     }
 
     #[test]

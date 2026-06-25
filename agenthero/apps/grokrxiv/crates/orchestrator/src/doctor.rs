@@ -1178,6 +1178,12 @@ max_cost_usd: 0.01
     #[cfg(unix)]
     #[test]
     fn cli_runner_check_fails_only_configured_missing_cli_binaries() {
+        let _env = EnvVarGuard::clear(&[
+            "AGENTHERO_CLAUDE_BIN",
+            "AGENTHERO_CODEX_BIN",
+            "AGENTHERO_ANTIGRAVITY_BIN",
+            "AGENTHERO_AGY_BIN",
+        ]);
         let tmp = tempfile::tempdir().unwrap();
         let config = CliRunnerCheckConfig {
             path: std::ffi::OsString::new(),

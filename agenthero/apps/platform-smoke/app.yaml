@@ -1,0 +1,76 @@
+version: 1
+slug: platform-smoke
+label: Platform Smoke
+description: AgentHero platform smoke DAG app for generic runtime mechanics.
+adapter:
+  kind: process
+  command: agenthero-dag-app-platform-smoke
+  fallback_command: cargo
+  fallback_args: ["run", "--manifest-path", "agenthero/apps/platform-smoke/rust/Cargo.toml", "--quiet", "--"]
+  timeout_secs: 300
+  output_limit_bytes: 1048576
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
+actions:
+  - id: tool-policy-smoke
+    command: [tool-policy-smoke]
+    dag_type: tool-policy-smoke
+    description: Run generic tool nodes to prove AgentHero policy, provenance, logs, and artifacts.
+    retry:
+      max_attempts: 1
+  - id: budget-consumption-smoke
+    command: [budget-consumption-smoke]
+    dag_type: budget-consumption-smoke
+    description: Prove budget policies consume shared DAG budget before downstream scheduling.
+    retry:
+      max_attempts: 1
+  - id: verification-routing-smoke
+    command: [verification-routing-smoke]
+    dag_type: verification-routing-smoke
+    description: Run generic Lean and Haskell verification routes without domain semantics.
+    retry:
+      max_attempts: 1
+  - id: cancellation-smoke
+    command: [cancellation-smoke]
+    dag_type: cancellation-smoke
+    description: Run a slow generic tool for cancellation cleanup acceptance.
+    retry:
+      max_attempts: 1
+  - id: approval-pause-smoke
+    command: [approval-pause-smoke]
+    dag_type: approval-pause-smoke
+    description: Pause on a generic approval gate and resume after operator approval.
+    retry:
+      max_attempts: 1
+  - id: policy-denial-smoke
+    command: [policy-denial-smoke]
+    dag_type: policy-denial-smoke
+    description: Prove host command tools are denied when network/file policies require isolation.
+    retry:
+      max_attempts: 1
+  - id: isolation-boundary-smoke
+    command: [isolation-boundary-smoke]
+    dag_type: isolation-boundary-smoke
+    description: Prove Docker and WASM unsafe host-escape flags are denied before tool spawn.
+    retry:
+      max_attempts: 1

@@ -9,6 +9,28 @@ adapter:
   fallback_args: ["--dir", "agenthero/apps/formal-proofs", "exec", "tsx", "src/adapter.ts"]
   timeout_secs: 7200
   output_limit_bytes: 8388608
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
 actions:
   - id: open-problem-search
     command: [open-problem-search]
