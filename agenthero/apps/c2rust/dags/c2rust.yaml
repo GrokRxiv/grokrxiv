@@ -18,15 +18,32 @@ nodes:
   - id: ast_extract
     kind: agent
     role: ast_extract
+    outputs:
+      - migration/ast.json
   - id: idiom_translate
     kind: agent
     role: idiom_translate
+    inputs:
+      - migration/ast.json
+    outputs:
+      - migration/translated.rs
+      - migration/translation_report.json
   - id: compile_check
     kind: verify
     role: compile_check
+    inputs:
+      - migration/translated.rs
+      - migration/translation_report.json
+    outputs:
+      - verification/compile_check.json
   - id: lint_pass
     kind: verify
     role: lint_pass
+    inputs:
+      - verification/compile_check.json
+    outputs:
+      - verification/lint_report.json
+      - migration_report.md
 edges:
   - from: ast_extract
     to: idiom_translate

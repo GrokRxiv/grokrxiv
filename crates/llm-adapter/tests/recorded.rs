@@ -208,7 +208,7 @@ async fn gemini_tool_call_id_uses_function_name() {
             description: "list files".into(),
             input_schema: json!({"type": "object"}),
         }],
-        model: "gemini-2.5-flash".into(),
+        model: "Gemini 3.5 Flash (Medium)".into(),
         max_tokens: 256,
         temperature: 0.0,
     };
@@ -299,7 +299,7 @@ async fn gemini_two_turn_tool_loop_via_wiremock() {
             content: vec![ToolContent::Text { text: "go".into() }],
         }],
         tools: tools.clone(),
-        model: "gemini-2.5-flash".into(),
+        model: "Gemini 3.5 Flash (Medium)".into(),
         max_tokens: 128,
         temperature: 0.0,
     };
@@ -337,7 +337,7 @@ async fn gemini_two_turn_tool_loop_via_wiremock() {
             },
         ],
         tools,
-        model: "gemini-2.5-flash".into(),
+        model: "Gemini 3.5 Flash (Medium)".into(),
         max_tokens: 128,
         temperature: 0.0,
     };

@@ -160,6 +160,160 @@ edges:
 }
 
 #[test]
+fn loads_generic_tool_runner_kinds_and_policy_contracts() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: generic-runners
+version: 1
+accepts: []
+tools:
+  - id: shell_step
+    executor: shell
+    command: ["sh", "-c", "echo ok"]
+    timeout_secs: 10
+    policy:
+      budget_units: 5
+      approval_required: true
+      network:
+        allow: false
+      filesystem:
+        read: ["."]
+        write: [".agenthero"]
+  - id: python_step
+    executor: python
+    command: ["python", "-m", "tool"]
+  - id: rust_step
+    executor: rust_binary
+    command: ["target/debug/tool"]
+  - id: llm_step
+    executor: llm
+    command: ["llm-adapter", "--json"]
+  - id: http_step
+    executor: http
+    command: ["GET", "https://example.invalid"]
+  - id: lean_step
+    executor: lean
+    command: ["lean", "Proof.lean"]
+  - id: haskell_step
+    executor: haskell
+    command: ["cabal", "test"]
+  - id: docker_step
+    executor: docker
+    command: ["docker", "run", "--rm", "image"]
+  - id: wasm_step
+    executor: wasm
+    command: ["wasmtime", "tool.wasm"]
+  - id: approval_step
+    executor: approval_gate
+nodes:
+  - id: shell_step
+    kind: tool
+    tool: shell_step
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.tools[0].executor, ToolExecutorKind::Shell);
+    assert_eq!(manifest.tools[1].executor, ToolExecutorKind::Python);
+    assert_eq!(manifest.tools[2].executor, ToolExecutorKind::RustBinary);
+    assert_eq!(manifest.tools[3].executor, ToolExecutorKind::Llm);
+    assert_eq!(manifest.tools[4].executor, ToolExecutorKind::Http);
+    assert_eq!(manifest.tools[5].executor, ToolExecutorKind::Lean);
+    assert_eq!(manifest.tools[6].executor, ToolExecutorKind::Haskell);
+    assert_eq!(manifest.tools[7].executor, ToolExecutorKind::Docker);
+    assert_eq!(manifest.tools[8].executor, ToolExecutorKind::Wasm);
+    assert_eq!(manifest.tools[9].executor, ToolExecutorKind::ApprovalGate);
+
+    let policy = manifest.tools[0].policy.as_ref().expect("tool policy");
+    assert_eq!(policy.budget_units, Some(5));
+    assert!(policy.approval_required);
+    assert!(!policy.network.allow);
+    assert_eq!(policy.filesystem.read, vec!["."]);
+    assert_eq!(policy.filesystem.write, vec![".agenthero"]);
+}
+
+#[test]
+fn rejects_tool_schema_string_references_in_dag_manifests() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad_schema_ref
+version: 1
+accepts: []
+tools:
+  - id: string_schema_tool
+    executor: rust
+    input_schema: schemas/input.schema.json
+nodes:
+  - id: string_schema_tool
+    kind: tool
+    tool: string_schema_tool
+"#,
+    )
+    .expect_err("DAG tool schemas must be inline objects, not path strings");
+
+    assert!(err.to_string().contains("input_schema"));
+    assert!(err.to_string().contains("string_schema_tool"));
+}
+
+#[test]
+fn rejects_unsafe_node_output_artifact_keys() {
+    for output in [
+        "../outside.txt",
+        "/tmp/out.txt",
+        "review_loop//out.json",
+        "review_loop/../out.json",
+    ] {
+        let err = DagManifest::from_str(&format!(
+            r#"
+id: unsafe_output
+version: 1
+accepts: []
+nodes:
+  - id: write_output
+    kind: artifact
+    outputs: ["{output}"]
+"#
+        ))
+        .expect_err("unsafe output artifact keys must be rejected");
+
+        assert!(err.to_string().contains("unsafe artifact key"));
+        assert!(err.to_string().contains("write_output"));
+    }
+}
+
+#[test]
+fn rejects_unsafe_filesystem_policy_paths() {
+    for (field, value) in [
+        ("read", "../secret"),
+        ("write", "/tmp/output"),
+        ("write", "nested/../output"),
+    ] {
+        let err = DagManifest::from_str(&format!(
+            r#"
+id: unsafe_policy
+version: 1
+accepts: []
+tools:
+  - id: unsafe_tool
+    executor: rust
+    policy:
+      filesystem:
+        {field}: ["{value}"]
+nodes:
+  - id: unsafe_tool
+    kind: tool
+    tool: unsafe_tool
+"#
+        ))
+        .expect_err("unsafe filesystem policy paths must be rejected");
+
+        assert!(err.to_string().contains("filesystem policy"));
+        assert!(err.to_string().contains("unsafe_tool"));
+        assert!(err.to_string().contains(value));
+    }
+}
+
+#[test]
 fn rejects_cli_tool_without_command() {
     let err = DagManifest::from_str(
         r#"
@@ -175,10 +329,88 @@ nodes:
     tool: external_citation_audit
 "#,
     )
-    .expect_err("CLI tools must declare a command");
+    .expect_err("command-backed tools must declare a command");
 
-    assert!(err.to_string().contains("CLI tool"));
+    assert!(err.to_string().contains("command-backed tool"));
     assert!(err.to_string().contains("external_citation_audit"));
+}
+
+#[test]
+fn rejects_llm_tool_without_command() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: []
+tools:
+  - id: review_agent
+    executor: llm
+nodes:
+  - id: review_agent
+    kind: tool
+    tool: review_agent
+"#,
+    )
+    .expect_err("LLM tools must declare the command adapter they invoke");
+
+    assert!(err.to_string().contains("command-backed tool"));
+    assert!(err.to_string().contains("review_agent"));
+}
+
+#[test]
+fn rejects_http_tool_with_invalid_command_contract() {
+    for (command, expected) in [
+        (r#"["GET"]"#, "declared as [METHOD, URL, ...]"),
+        (
+            r#"["POST", "https://example.invalid/write"]"#,
+            "GET-only until unsafe methods have an explicit policy gate",
+        ),
+        (
+            r#"["GET", "file:///tmp/input.json"]"#,
+            "an http:// or https:// URL",
+        ),
+    ] {
+        let err = DagManifest::from_str(&format!(
+            r#"
+id: bad
+version: 1
+accepts: []
+tools:
+  - id: fetch_metadata
+    executor: http
+    command: {command}
+nodes:
+  - id: fetch_metadata
+    kind: tool
+    tool: fetch_metadata
+"#,
+        ))
+        .expect_err("HTTP tools must declare a bounded GET contract");
+
+        assert!(err.to_string().contains("http tool `fetch_metadata`"));
+        assert!(
+            err.to_string().contains(expected),
+            "expected `{expected}` in `{err}`"
+        );
+    }
+}
+
+#[test]
+fn rejects_zero_concurrency() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: []
+concurrency: 0
+nodes:
+  - id: step
+    kind: artifact
+"#,
+    )
+    .expect_err("zero concurrency must be rejected");
+
+    assert!(err.to_string().contains("concurrency"));
 }
 
 #[test]
@@ -263,6 +495,80 @@ nodes:
     let policy = node.loop_policy.as_ref().expect("loop policy loads");
     assert_eq!(policy.max_rounds, 3);
     assert_eq!(policy.continue_key, "review_loop/continue");
+}
+
+#[test]
+fn loads_node_retry_policy() {
+    let manifest = DagManifest::from_str(
+        r#"
+id: retryable
+version: 1
+accepts: []
+nodes:
+  - id: flaky_compile
+    kind: verify
+    required: true
+    retry:
+      max_attempts: 3
+      backoff_ms: 25
+"#,
+    )
+    .unwrap();
+
+    let retry = manifest.nodes[0]
+        .retry
+        .as_ref()
+        .expect("retry policy loads");
+    assert_eq!(retry.max_attempts, 3);
+    assert_eq!(retry.backoff_ms, 25);
+}
+
+#[test]
+fn rejects_retry_policy_with_zero_max_attempts() {
+    let err = DagManifest::from_str(
+        r#"
+id: bad
+version: 1
+accepts: []
+nodes:
+  - id: never_runs
+    kind: verify
+    retry:
+      max_attempts: 0
+"#,
+    )
+    .expect_err("retry policy must have a nonzero attempt bound");
+
+    assert!(err.to_string().contains("retry"));
+    assert!(err.to_string().contains("max_attempts"));
+}
+
+#[test]
+fn rejects_retry_policy_on_structured_control_flow_nodes() {
+    for kind in ["loop", "map"] {
+        let policy = if kind == "loop" {
+            "loop:\n      max_rounds: 1"
+        } else {
+            "map:\n      items_key: items\n      max_items: 1"
+        };
+        let err = DagManifest::from_str(&format!(
+            r#"
+id: bad
+version: 1
+accepts: []
+nodes:
+  - id: dynamic
+    kind: {kind}
+    {policy}
+    retry:
+      max_attempts: 2
+"#,
+        ))
+        .expect_err("structured control-flow retry must be explicit before it is accepted");
+
+        assert!(err.to_string().contains("retry"));
+        assert!(err.to_string().contains(kind));
+    }
 }
 
 #[test]

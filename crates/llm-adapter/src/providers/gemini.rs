@@ -6,13 +6,12 @@
 //!
 //! ### Prompt caching
 //!
-//! Gemini 2.5 models apply **implicit** caching for prompts of >= 32K tokens
-//! with no client-side configuration; the cache_hits count surfaces via
-//! `usageMetadata.cachedContentTokenCount`, which `parse_response` already
-//! reads into [`Usage::cache_hits`]. We deliberately do not wire up the
-//! heavier-weight explicit `CachedContent` API (separate resource lifecycle,
-//! TTLs, and a roundtrip per cache write) because our typical role prompts
-//! sit well under 32K and would gain no benefit.
+//! Gemini-family generateContent models can apply implicit prompt caching; the
+//! cache_hits count surfaces via `usageMetadata.cachedContentTokenCount`, which
+//! `parse_response` already reads into [`Usage::cache_hits`]. We deliberately
+//! do not wire up the heavier-weight explicit `CachedContent` API (separate
+//! resource lifecycle, TTLs, and a roundtrip per cache write) because our
+//! typical role prompts sit well under 32K and would gain no benefit.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,14 +89,10 @@ impl GeminiProvider {
             "generationConfig": {
                 "temperature": req.temperature,
                 "maxOutputTokens": req.max_tokens,
-                // Gemini 2.5 (both pro and flash) silently allocates up to
-                // ~6K tokens of "extended thinking" out of maxOutputTokens,
-                // which left zero tokens for the actual response body on
-                // long structured-output tasks (citation review with
-                // ~20 entries). Set thinkingBudget=0 to disable the hidden
-                // reasoning step so the full token budget goes to the visible
-                // response. We accept a small quality dip on novelty/citation
-                // in exchange for non-empty output bodies.
+                // Some Gemini-family models reserve internal reasoning tokens
+                // from maxOutputTokens, which can starve visible structured
+                // responses on long JSON tasks. Set thinkingBudget=0 so the
+                // configured token budget is available for the output body.
                 "thinkingConfig": { "thinkingBudget": 0 }
             }
         });
@@ -497,7 +492,7 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentPart::Text("Body".into())],
             }],
-            model: "gemini-2.5-pro".into(),
+            model: "gemini-3-flash-preview".into(),
             max_tokens: 256,
             temperature: 0.3,
             response_format: ResponseFormat::Text,

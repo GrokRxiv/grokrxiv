@@ -1,13 +1,10 @@
 id: equation_canonicalizer
 kind: extractor
 role: "Stage 5 — canonicalise every equation in the paper into a normalised TeX form, MathML rendering, and a short semantic tag."
-provider: gemini
-# gemini-2.5-pro burns ~6K of its max_tokens budget on hidden chain-of-thought,
-# which left zero tokens for actual output on tool-call turns and caused
-# "stopped without submit()" failures in the H2 smoke. Flash has no reasoning
-# overhead and emits tool calls reliably; equation canonicalisation is mostly
-# deterministic TeX munging that doesn't benefit from extended thinking.
-model: gemini-2.5-flash
+provider: claude
+# Defaults can be overridden with GROKRXIV_EQUATION_CANONICALIZER_PROVIDER /
+# GROKRXIV_EQUATION_CANONICALIZER_MODEL or the role-level CLI override flags.
+model: claude-haiku-4-5
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/equations.md

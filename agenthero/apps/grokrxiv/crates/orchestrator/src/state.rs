@@ -18,7 +18,9 @@ use crate::agents::{
 };
 use crate::arxiv_rate_limit::ArxivGate;
 use crate::config::Config;
-use crate::runtime_config::{direct_provider_api_allowed_from_env, model_override_for_role};
+use crate::runtime_config::{
+    direct_provider_api_allowed_from_env, model_override_for_role, provider_override_for_role,
+};
 
 /// Providers keyed by short name (`claude`, `openai`, `gemini`, `vllm`).
 pub type ProviderMap = HashMap<&'static str, Arc<dyn LLMProvider>>;
@@ -346,7 +348,7 @@ fn build_agent_registry(
             role: role.clone(),
             runner: cfg.runner.unwrap_or_default(),
             sandbox: SandboxPolicy::None,
-            provider: cfg.provider.clone(),
+            provider: provider_override_for_role(&role).unwrap_or_else(|| cfg.provider.clone()),
             model: model_override_for_role(&role).unwrap_or_else(|| cfg.model.clone()),
             schema,
             max_retries: cfg.max_retries.unwrap_or(2),
@@ -496,7 +498,7 @@ mod tests {
             kind: Some(AgentKind::Critic),
             role: Some("Test summary agent".to_string()),
             provider: "claude".to_string(),
-            model: "claude-haiku-4-5-20251001".to_string(),
+            model: "claude-haiku-4-5".to_string(),
             runner: Some(runner),
             execution_mode: DagExecutionMode::OneShot,
             prompt_template: Some("prompts/summary.md".to_string()),
@@ -540,6 +542,29 @@ mod tests {
             Arc::ptr_eq(&agent.spec().schema, &schema),
             "agent registry should share schema Arcs instead of cloning large Values"
         );
+    }
+
+    #[test]
+    fn build_agent_registry_applies_resolved_provider_override() {
+        let role = "citation";
+        let _guard = EnvVarGuard::set(
+            crate::runtime_config::role_provider_override_env_var(role),
+            "claude",
+        );
+        let mut role_yaml = RoleYamlMap::new();
+        role_yaml.insert(
+            role.to_string(),
+            Some(test_agent_config(AgentRunnerKind::Cli)),
+        );
+        let mut schemas = AgentSchemaMap::new();
+        schemas.insert(
+            role.to_string(),
+            Arc::new(serde_json::json!({ "type": "object" })),
+        );
+        let registry = build_agent_registry(&role_yaml, &Arc::new(schemas)).unwrap();
+        let agent = registry.get(role).expect("citation agent");
+
+        assert_eq!(agent.spec().provider, "claude");
     }
 
     #[test]

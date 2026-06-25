@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["rust"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/GrokRxiv/grokrxiv"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tokio = { version = "1.41", features = ["full"] }
+reqwest = { version = "=0.12.28", features = ["json", "stream", "rustls-tls", "multipart"], default-features = false }
+idna_adapter = "=1.0.0"
+indexmap = "=2.7.1"
+url = "=2.5.2"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+zeroize = "=1.8.2"
+
+agenthero-agent-runtime = { path = "../../../crates/agent-runtime" }
+agenthero-app-sdk = { path = "../../../crates/app-sdk" }
+agenthero-dag-executor = { path = "../../../crates/dag-executor" }
+agenthero-dag-runtime = { path = "../../../crates/dag-runtime" }

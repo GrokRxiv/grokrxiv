@@ -5,7 +5,14 @@
   <title>{{ paper.title }} — GrokRxiv Review</title>
   <meta name="generator" content="grokrxiv-render">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- KaTeX is rendered client-side; math is kept as \( ... \) and \[ ... \] delimiters. -->
+  <!-- KaTeX is rendered client-side; math is kept as TeX delimiters for portable artifacts. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script
+    defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false},{left:'\\[',right:'\\]',display:true}],throwOnError:false,strict:false});"
+  ></script>
   <style>
     :root { color-scheme: light dark; --fg: #111; --muted: #555; --bg: #fff;
             --accent: #1f6feb; --border: #d0d7de; --banner: #fff3cd; --banner-fg: #664d03; }

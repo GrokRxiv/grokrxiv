@@ -481,7 +481,7 @@ mod tests {
             r#"
 kind: extractor
 provider: gemini
-model: gemini-2.5-flash
+model: "Gemini 3.5 Flash (Medium)"
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/citation.md
@@ -521,7 +521,7 @@ escalation: agent
             r#"
 kind: extractor
 provider: gemini
-model: gemini-2.5-flash
+model: "Gemini 3.5 Flash (Medium)"
 runner: cli
 prompt_template: prompts/extraction/macros.md
 input_schema: schemas/paper_extract.schema.json
@@ -541,7 +541,7 @@ loop:
             r#"
 kind: critic
 provider: claude
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4-5
 runner: cli
 prompt_template: prompts/summary.md
 input_schema: schemas/paper_extract.schema.json
@@ -558,20 +558,35 @@ output_schema: schemas/does-not-exist.schema.json
     }
 
     #[test]
-    fn paper_review_citation_uses_flash_for_bounded_review_latency() {
+    fn paper_review_citation_uses_claude_sonnet_for_quality_evaluation() {
         let config: AgentConfig = serde_yaml::from_str(include_str!(
             "../../../../agents/paper-review/citation.yaml"
         ))
         .expect("citation agent config parses");
 
-        assert_eq!(config.model, "gemini-2.5-flash");
-        assert_eq!(config.timeout_secs, Some(360));
-        assert_eq!(config.prompt_context.body_budget_chars, Some(0));
+        assert_eq!(config.provider, "claude");
+        assert_eq!(config.model, "claude-sonnet-4-6");
+        assert_eq!(config.timeout_secs, Some(900));
+        assert_eq!(config.prompt_context.body_budget_chars, Some(30_000));
         assert_eq!(
             config.prompt_context.bibliography,
             BibliographyMode::Limited
         );
-        assert_eq!(config.prompt_context.max_bibliography_entries, Some(24));
+        assert_eq!(config.prompt_context.max_bibliography_entries, Some(32));
+        assert_eq!(
+            config.prompt_context.citation_context_budget_chars,
+            Some(30_000)
+        );
+    }
+
+    #[test]
+    fn paper_review_novelty_uses_claude_sonnet_for_reasoning_default() {
+        let config: AgentConfig =
+            serde_yaml::from_str(include_str!("../../../../agents/paper-review/novelty.yaml"))
+                .expect("novelty agent config parses");
+
+        assert_eq!(config.provider, "claude");
+        assert_eq!(config.model, "claude-sonnet-4-6");
     }
 
     #[test]
@@ -593,7 +608,7 @@ output_schema: schemas/does-not-exist.schema.json
             r#"
 kind: extractor
 provider: gemini
-model: gemini-2.5-flash
+model: "Gemini 3.5 Flash (Medium)"
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/citation.md
@@ -619,7 +634,7 @@ max_cost_usd: 0
             r#"
 kind: extractor
 provider: claude
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4-5
 runner: cli
 prompt_template: prompts/summary.md
 input_schema: schemas/paper_extract.schema.json

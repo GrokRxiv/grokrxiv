@@ -1,11 +1,10 @@
 id: macro_expander
 kind: extractor
 role: "Stage 4 — expand user-defined LaTeX macros (\\newcommand / \\def / \\renewcommand / \\DeclareMathOperator) so downstream tools see standard LaTeX."
-provider: gemini
-# Macro expansion is mechanical bookkeeping over short TeX snippets. Keep it on
-# the local Gemini-family CLI path by default; direct provider APIs remain
-# opt-in.
-model: gemini-2.5-flash
+provider: claude
+# Defaults can be overridden with GROKRXIV_MACRO_EXPANDER_PROVIDER /
+# GROKRXIV_MACRO_EXPANDER_MODEL or the role-level CLI override flags.
+model: claude-haiku-4-5
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/macros.md

@@ -1,0 +1,24 @@
+id: cancellation-smoke
+version: 1
+accepts: []
+concurrency: 1
+tools:
+  - id: delayed_marker
+    executor: shell
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"stage":"started","dag":"%s","node":"%s","tool":"%s"}\n' "$AGENTHERO_DAG_TYPE" "$AGENTHERO_NODE_ID" "$AGENTHERO_TOOL_ID" > started.json
+        sleep 12
+        printf '{"stage":"completed","dag":"%s","node":"%s","tool":"%s"}\n' "$AGENTHERO_DAG_TYPE" "$AGENTHERO_NODE_ID" "$AGENTHERO_TOOL_ID" > delayed_marker.json
+    timeout_secs: 30
+    policy:
+      budget_units: 1
+nodes:
+  - id: delayed_marker
+    kind: tool
+    tool: delayed_marker
+    outputs:
+      - delayed_marker.json
+    required: true

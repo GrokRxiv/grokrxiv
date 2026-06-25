@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bundle;
+mod display;
 pub mod html;
 pub mod latex;
 pub mod md;
@@ -20,6 +21,7 @@ use grokrxiv_schemas::VerifierResult;
 use serde::{Deserialize, Serialize};
 
 pub use bundle::build_zip;
+pub use display::display_text;
 pub use html::render_html;
 pub use latex::render_latex;
 pub use md::render_markdown;

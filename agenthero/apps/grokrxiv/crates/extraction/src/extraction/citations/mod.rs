@@ -7,8 +7,8 @@
 //! index can consume.
 //!
 //! Loop budget — `max_iters=80` (one+ tool call per citation site is the
-//! expected pattern), `max_cost_usd=0.05`. Model: `gemini-2.5-pro` (strong
-//! at structured classification + native tool use).
+//! expected pattern), `max_cost_usd=0.50`. Default model: Claude Sonnet;
+//! Gemini/agy remains an operator-selected backup route.
 
 use std::sync::Arc;
 
@@ -434,8 +434,8 @@ mod tests {
         };
         let spec = AgentSpec::api_default(
             "citation",
-            "gemini".to_string(),
-            "gemini-2.5-pro".to_string(),
+            "claude".to_string(),
+            "claude-haiku-4-5".to_string(),
         );
         let run = agent.run(runner, &spec, ctx).await.expect("loop ok");
         assert_eq!(run.output, payload);

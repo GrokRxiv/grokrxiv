@@ -684,7 +684,7 @@ mod tests {
         let ctx = make_ctx(&workdir);
         let resp = runner
             .complete_with_tools(
-                &spec("gemini", "gemini-2.5-pro"),
+                &spec("gemini", "gemini-3-flash-preview"),
                 &kickoff_messages(),
                 &[tool_spec()],
                 &ctx,

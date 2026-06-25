@@ -421,6 +421,13 @@ fn review_dag_manifest_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("env test lock poisoned")
+    }
+
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
@@ -430,6 +437,12 @@ mod tests {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
             Self { key, previous }
         }
     }
@@ -445,6 +458,7 @@ mod tests {
 
     #[test]
     fn review_dag_runtime_config_uses_manifest_gate_min_usable() {
+        let _env_lock = env_test_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("paper-review.yaml"),
@@ -574,6 +588,91 @@ edges: []
         assert!(gate.body_chars >= 1_000);
         assert_eq!(gate.section_count, 1);
     }
+
+    #[test]
+    fn review_verifier_timeout_uses_citation_default_and_role_override() {
+        let _env_lock = env_test_lock();
+        let _role_guard = EnvGuard::set("GROKRXIV_CITATION_VERIFIER_TIMEOUT_SECS", "7");
+        let _global_guard = EnvGuard::set("GROKRXIV_REVIEW_VERIFIER_TIMEOUT_SECS", "99");
+
+        assert_eq!(review_verifier_timeout_secs("citation"), 7);
+        assert_eq!(review_verifier_timeout_secs("summary"), 99);
+    }
+
+    #[test]
+    fn review_agent_supervisor_timeout_caps_long_retry_budgets() {
+        let _env_lock = env_test_lock();
+        let _guard = EnvGuard::set("GROKRXIV_REVIEW_AGENT_SUPERVISOR_TIMEOUT_SECS", "45");
+
+        assert_eq!(
+            review_agent_supervisor_timeout_secs("technical_correctness", 600, 2),
+            45
+        );
+        assert_eq!(review_agent_supervisor_timeout_secs("summary", 10, 1), 20);
+        assert_eq!(review_agent_supervisor_timeout_secs("citation", 360, 2), 45);
+    }
+
+    #[test]
+    fn review_agent_supervisor_default_cap_allows_citation_sonnet() {
+        assert_eq!(default_review_agent_supervisor_cap_secs("citation"), 1200);
+        assert_eq!(
+            default_review_agent_supervisor_cap_secs("technical_correctness"),
+            900
+        );
+        assert_eq!(default_review_agent_supervisor_cap_secs("novelty"), 420);
+        assert_eq!(
+            default_review_agent_supervisor_cap_secs("meta_reviewer"),
+            420
+        );
+        assert_eq!(default_review_agent_supervisor_cap_secs("summary"), 180);
+    }
+
+    #[test]
+    fn review_agent_supervisor_timeout_role_override_wins() {
+        let _env_lock = env_test_lock();
+        let _role_guard = EnvGuard::set("GROKRXIV_NOVELTY_SUPERVISOR_TIMEOUT_SECS", "77");
+        let _global_guard = EnvGuard::set("GROKRXIV_REVIEW_AGENT_SUPERVISOR_TIMEOUT_SECS", "45");
+
+        assert_eq!(review_agent_supervisor_timeout_secs("novelty", 360, 2), 77);
+    }
+
+    #[test]
+    fn review_verifier_timeout_notes_are_auditable_for_citation() {
+        let notes = review_verifier_timeout_notes("citation", 11);
+
+        assert_eq!(notes["citation_existence"]["status"], "warn");
+        assert_eq!(
+            notes["citation_existence"]["notes"]["coverage_status"],
+            "timeout"
+        );
+        assert_eq!(notes["verifier_timeout"]["notes"]["timeout_secs"], 11);
+    }
+
+    #[test]
+    fn review_citation_existence_is_deferred_by_default_and_env_gated() {
+        let _env_lock = env_test_lock();
+        let _guard = EnvGuard::unset(REVIEW_CITATION_EXISTENCE_ENV);
+
+        assert!(!review_citation_existence_enabled());
+
+        let _enabled = EnvGuard::set(REVIEW_CITATION_EXISTENCE_ENV, "true");
+        assert!(review_citation_existence_enabled());
+    }
+
+    #[test]
+    fn review_citation_existence_deferred_notes_are_auditable() {
+        let notes = review_citation_existence_deferred_notes();
+
+        assert_eq!(notes["citation_existence"]["status"], "warn");
+        assert_eq!(
+            notes["citation_existence"]["notes"]["coverage_status"],
+            "deferred"
+        );
+        assert_eq!(
+            notes["citation_existence"]["notes"]["enable_env"],
+            REVIEW_CITATION_EXISTENCE_ENV
+        );
+    }
 }
 
 #[cfg(feature = "grokrxiv-ingest")]
@@ -631,6 +730,13 @@ pub(super) async fn run_review_dag_inner_with_context(
             .get(&runner_kind)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("runner {runner_kind:?} not registered"))?;
+        tracing::info!(
+            role,
+            model = %model,
+            runner = ?runner_kind,
+            "review agent resolved"
+        );
+        eprintln!("agent_config role={role} model={model} runner={runner_kind:?}");
         Ok((agent, runner, model, runner_kind))
     };
 
@@ -920,7 +1026,8 @@ pub(super) async fn run_review_dag_inner_with_context(
         execution_failure,
     ) in &specialist_results
     {
-        let (mut v_status, mut v_notes) = verify_artifact(state, &extract_arc, role, output).await;
+        let (mut v_status, mut v_notes) =
+            verify_artifact_with_review_timeout(state, &extract_arc, role, output).await;
         if let Some(error) = execution_failure.as_deref() {
             (v_status, v_notes) = specialist_failure_verifier_result(role, error, v_notes);
         }
@@ -1197,7 +1304,7 @@ pub(super) async fn run_review_dag_inner_with_context(
     );
 
     let (meta_v_status, meta_v_notes) =
-        verify_artifact(state, &extract_arc, &meta_role, &meta_value).await;
+        verify_artifact_with_review_timeout(state, &extract_arc, &meta_role, &meta_value).await;
     crate::db::insert_review_agent(
         pool,
         crate::db::ReviewAgentInsert {
@@ -1586,13 +1693,185 @@ pub(super) async fn run_agent_with_supervisor_timeout(
 ) -> anyhow::Result<crate::agents::AgentRun> {
     let role = input.role.clone();
     let spec = agent.spec();
-    let timeout_secs = u64::from(spec.timeout_secs.max(1))
-        .saturating_mul(u64::from(spec.max_retries).saturating_add(1))
-        .max(1);
+    let timeout_secs =
+        review_agent_supervisor_timeout_secs(&role, spec.timeout_secs, u32::from(spec.max_retries));
     let timeout_duration = Duration::from_secs(timeout_secs);
     tokio::time::timeout(timeout_duration, agent.run(runner, input))
         .await
         .map_err(|_| {
             anyhow::anyhow!("agent {role:?} timed out after {timeout_secs}s at supervisor level")
         })?
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_agent_supervisor_timeout_secs(role: &str, timeout_secs: u32, max_retries: u32) -> u64 {
+    let configured = u64::from(timeout_secs.max(1))
+        .saturating_mul(u64::from(max_retries).saturating_add(1))
+        .max(1);
+    let role_key = format!(
+        "GROKRXIV_{}_SUPERVISOR_TIMEOUT_SECS",
+        crate::runtime_config::role_env_suffix(role)
+    );
+    if let Some(role_override) = timeout_env_u64(&role_key) {
+        return role_override;
+    }
+    let cap = timeout_env_u64("GROKRXIV_REVIEW_AGENT_SUPERVISOR_TIMEOUT_SECS")
+        .unwrap_or_else(|| default_review_agent_supervisor_cap_secs(role));
+    configured.min(cap.max(1))
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn default_review_agent_supervisor_cap_secs(role: &str) -> u64 {
+    match role {
+        "technical_correctness" => 900,
+        "novelty" | "meta_reviewer" => 420,
+        "citation" => 1200,
+        _ => 180,
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn verify_artifact_with_review_timeout(
+    state: &AppState,
+    extract: &grokrxiv_schemas::PaperExtract,
+    role: &str,
+    artifact: &serde_json::Value,
+) -> (
+    Option<grokrxiv_schemas::VerifierStatus>,
+    Option<serde_json::Value>,
+) {
+    if role == "citation" && !review_citation_existence_enabled() {
+        return verify_citation_artifact_without_live_existence(state, extract, role, artifact)
+            .await;
+    }
+
+    let timeout_secs = review_verifier_timeout_secs(role);
+    match tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        verify_artifact(state, extract, role, artifact),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                role,
+                timeout_secs,
+                "review verifier exceeded watchdog timeout"
+            );
+            (
+                Some(grokrxiv_schemas::VerifierStatus::Warn),
+                Some(review_verifier_timeout_notes(role, timeout_secs)),
+            )
+        }
+    }
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+const REVIEW_CITATION_EXISTENCE_ENV: &str = "GROKRXIV_REVIEW_CITATION_EXISTENCE";
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_citation_existence_enabled() -> bool {
+    std::env::var(REVIEW_CITATION_EXISTENCE_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+async fn verify_citation_artifact_without_live_existence(
+    _state: &AppState,
+    _extract: &grokrxiv_schemas::PaperExtract,
+    role: &str,
+    _artifact: &serde_json::Value,
+) -> (
+    Option<grokrxiv_schemas::VerifierStatus>,
+    Option<serde_json::Value>,
+) {
+    tracing::info!(
+        role,
+        "review citation existence verifier deferred from blocking review path"
+    );
+    (
+        Some(grokrxiv_schemas::VerifierStatus::Warn),
+        Some(review_citation_existence_deferred_notes()),
+    )
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_citation_existence_deferred_notes() -> serde_json::Value {
+    json!({
+        "citation_existence": {
+            "status": "warn",
+            "notes": {
+                "checked": 0,
+                "coverage_status": "deferred",
+                "reason": "Live citation existence verification is deferred from the blocking review/PR path; run the citation validation DAG for full resolver coverage.",
+                "enable_env": REVIEW_CITATION_EXISTENCE_ENV,
+                "entries": []
+            }
+        }
+    })
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_verifier_timeout_secs(role: &str) -> u64 {
+    let role_key = format!(
+        "GROKRXIV_{}_VERIFIER_TIMEOUT_SECS",
+        crate::runtime_config::role_env_suffix(role)
+    );
+    timeout_env_u64(&role_key)
+        .or_else(|| timeout_env_u64("GROKRXIV_REVIEW_VERIFIER_TIMEOUT_SECS"))
+        .unwrap_or_else(|| if role == "citation" { 45 } else { 60 })
+        .max(1)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn timeout_env_u64(key: &str) -> Option<u64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+#[cfg(feature = "grokrxiv-ingest")]
+fn review_verifier_timeout_notes(role: &str, timeout_secs: u64) -> serde_json::Value {
+    let reason = format!("review verifier exceeded {timeout_secs}s watchdog timeout");
+    if role == "citation" {
+        json!({
+            "citation_existence": {
+                "status": "warn",
+                "notes": {
+                    "checked": 0,
+                    "coverage_status": "timeout",
+                    "reason": reason,
+                    "entries": []
+                }
+            },
+            "verifier_timeout": {
+                "status": "warn",
+                "notes": {
+                    "role": role,
+                    "timeout_secs": timeout_secs,
+                    "reason": reason
+                }
+            }
+        })
+    } else {
+        json!({
+            "verifier_timeout": {
+                "status": "warn",
+                "notes": {
+                    "role": role,
+                    "timeout_secs": timeout_secs,
+                    "reason": reason
+                }
+            }
+        })
+    }
 }

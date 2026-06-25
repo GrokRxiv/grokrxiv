@@ -11,7 +11,7 @@ create table if not exists app_runs (
   action_id           text not null,
   state               text not null default 'queued'
                         check (state in (
-                          'queued','running','partial','done','failed',
+                          'queued','running','awaiting_approval','partial','done','failed',
                           'cancelled','system_failed'
                         )),
   input               jsonb not null default '{}'::jsonb,
@@ -41,7 +41,7 @@ create table if not exists dag_runs (
   manifest_hash       text,
   state               text not null default 'queued'
                         check (state in (
-                          'queued','running','partial','done','failed',
+                          'queued','running','awaiting_approval','partial','done','failed',
                           'cancelled','system_failed'
                         )),
   input               jsonb not null default '{}'::jsonb,
@@ -68,13 +68,20 @@ create table if not exists dag_run_nodes (
   child_dag_type      text,
   state               text not null default 'queued'
                         check (state in (
-                          'queued','running','ok','degraded','skipped',
+                          'queued','running','awaiting_approval','ok','degraded','skipped',
                           'failed','cancelled','system_failed'
                         )),
   required            boolean not null default true,
   attempt             int not null default 0,
   runner              text,
   model               text,
+  prompt_hash         text,
+  command             jsonb not null default '[]'::jsonb,
+  exit_status         int,
+  policy              jsonb not null default '{}'::jsonb,
+  input_refs          jsonb not null default '{}'::jsonb,
+  output_refs         jsonb not null default '{}'::jsonb,
+  diagnostic_refs     jsonb not null default '{}'::jsonb,
   input               jsonb not null default '{}'::jsonb,
   output              jsonb not null default '{}'::jsonb,
   error_code          text,

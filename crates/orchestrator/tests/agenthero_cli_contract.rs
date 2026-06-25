@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
 use clap::{CommandFactory, Parser};
@@ -103,7 +103,43 @@ fn app_run_grokrxiv_dry_run_parses_at_agenthero_layer() {
 }
 
 #[test]
-fn app_run_grokrxiv_review_loop_parses_as_product_path() {
+fn app_run_grokrxiv_review_parses_as_product_path() {
+    let cli = Cli::try_parse_from([
+        "agh",
+        "--json",
+        "--dry-run",
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "https://arxiv.org/abs/2606.00799",
+        "--no-external-actions",
+    ])
+    .expect("review --no-external-actions should parse as the canonical app review path");
+
+    assert!(cli.json);
+    assert!(cli.dry_run);
+    match cli.command {
+        Command::App { command } => match command {
+            AppCommand::Run { app, args } => {
+                assert_eq!(app, "grokrxiv");
+                assert_eq!(
+                    args,
+                    vec![
+                        "review",
+                        "https://arxiv.org/abs/2606.00799",
+                        "--no-external-actions"
+                    ]
+                );
+            }
+            other => panic!("expected App::Run command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_run_grokrxiv_legacy_loop_flag_still_parses_for_compatibility() {
     let cli = Cli::try_parse_from([
         "agh",
         "--json",
@@ -116,7 +152,7 @@ fn app_run_grokrxiv_review_loop_parses_as_product_path() {
         "--loop",
         "--no-external-actions",
     ])
-    .expect("review --loop --no-external-actions should parse as the canonical app review path");
+    .expect("legacy review --loop flag should still parse as an app argument");
 
     assert!(cli.json);
     assert!(cli.dry_run);
@@ -149,9 +185,8 @@ fn app_run_defaults_to_streaming_adapter_status_unless_suppressed() {
         "grokrxiv",
         "review",
         "https://arxiv.org/abs/2606.00799",
-        "--loop",
     ])
-    .expect("review --loop should parse");
+    .expect("review should parse");
     assert!(agenthero_orchestrator::cli::stream_app_stderr_for_cli(&cli));
 
     let quiet = Cli::try_parse_from([
@@ -162,16 +197,15 @@ fn app_run_defaults_to_streaming_adapter_status_unless_suppressed() {
         "grokrxiv",
         "review",
         "https://arxiv.org/abs/2606.00799",
-        "--loop",
     ])
-    .expect("review --loop --no-status should parse");
+    .expect("review --no-status should parse");
     assert!(!agenthero_orchestrator::cli::stream_app_stderr_for_cli(
         &quiet
     ));
 }
 
 #[test]
-fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
+fn grokrxiv_review_action_catalog_declares_observable_review_options_and_dag() {
     let app = std::fs::read_to_string(
         workspace_root()
             .join("agenthero")
@@ -193,19 +227,18 @@ fn grokrxiv_review_action_catalog_declares_loop_debug_options_and_dag() {
     assert_eq!(
         review.get("dag_type").and_then(|value| value.as_str()),
         Some("review-loop"),
-        "review --loop should be the product review path, with paper-review called inside the loop DAG"
+        "review should be the product review path, with paper-review called inside the loop DAG"
     );
     let options = review
         .get("options")
         .and_then(|value| value.as_sequence())
         .expect("review options");
-    let loop_option = options
-        .iter()
-        .find(|option| option.get("name").and_then(|name| name.as_str()) == Some("--loop"))
-        .expect("review action should advertise --loop");
     assert_eq!(
-        loop_option.get("kind").and_then(|value| value.as_str()),
-        Some("flag")
+        options
+            .iter()
+            .find(|option| option.get("name").and_then(|name| name.as_str()) == Some("--loop")),
+        None,
+        "deprecated no-op --loop should remain parser-compatible but should not be advertised"
     );
     let debug_option = options
         .iter()
@@ -256,6 +289,23 @@ fn app_show_json_surfaces_agentapp_contracts() {
         app["contracts"]["evals"],
         serde_json::json!(["evals/smoke.yaml"])
     );
+    assert_eq!(app["observability"]["events"], serde_json::json!(true));
+    assert_eq!(app["observability"]["logs"], serde_json::json!(true));
+    assert_eq!(app["observability"]["status"], serde_json::json!(true));
+    assert_eq!(
+        app["observability"]["event_stream"],
+        serde_json::json!(true)
+    );
+    assert!(app["observability"]["lifecycle_events"]
+        .as_array()
+        .expect("lifecycle event list")
+        .iter()
+        .any(|value| value == "app_action.completed"));
+    assert!(app["observability"]["trace_fields"]
+        .as_array()
+        .expect("trace field list")
+        .iter()
+        .any(|value| value == "manifest_hash"));
 }
 
 #[test]
@@ -511,6 +561,10 @@ fn app_run_action_help_renders_manifest_action_usage_without_executing() {
         "--type",
         "--include",
         "--exclude",
+        "--with-lean",
+        "--no-lean",
+        "[conflicts: --no-lean]",
+        "[conflicts: --with-lean]",
         "--no-external-actions",
     ] {
         assert!(
@@ -521,6 +575,35 @@ fn app_run_action_help_renders_manifest_action_usage_without_executing() {
     assert!(
         !stdout.contains("status=Ok") && !stdout.contains("could not resolve source"),
         "help must not execute the GrokRxiv adapter, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn app_run_rejects_manifest_option_conflicts_before_queueing() {
+    let output = agh(&[
+        "app",
+        "run",
+        "grokrxiv",
+        "review",
+        "2606.24837",
+        "--with-lean",
+        "--no-lean",
+        "--no-external-actions",
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "conflicting manifest options should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr.contains("cannot be combined"),
+        "expected conflict error, got stdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("AgentHero app run") && !stderr.contains("AgentHero app run"),
+        "conflict should be rejected before queueing, got stdout={stdout}\nstderr={stderr}"
     );
 }
 
@@ -649,6 +732,53 @@ fn app_cancel_commands_parse_for_operator_cleanup() {
 }
 
 #[test]
+fn app_compare_command_parses_for_determinism_audit() {
+    let left_run_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+    let right_run_id = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "compare",
+        &left_run_id.to_string(),
+        &right_run_id.to_string(),
+    ])
+    .expect("app compare should parse two app-run UUIDs");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Compare {
+                left_run_id: left,
+                right_run_id: right,
+            } => {
+                assert_eq!(left, left_run_id);
+                assert_eq!(right, right_run_id);
+            }
+            other => panic!("expected App::Compare command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_replay_command_parses_for_checkpoint_replay() {
+    let run_id = uuid::Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+    let parsed = Cli::try_parse_from(["agh", "app", "replay", &run_id.to_string()])
+        .expect("app replay should parse one source app-run UUID");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Replay {
+                source_run_id: parsed,
+            } => {
+                assert_eq!(parsed, run_id);
+            }
+            other => panic!("expected App::Replay command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
 fn app_work_command_parses_for_one_shot_run_claim() {
     let run_id = uuid::Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
     let parsed = Cli::try_parse_from([
@@ -678,6 +808,32 @@ fn app_work_command_parses_for_one_shot_run_claim() {
 }
 
 #[test]
+fn app_run_action_help_ignores_global_log_file_option_and_value() {
+    let output = agh(&[
+        "app",
+        "run",
+        "grokrxiv",
+        "--log-file",
+        ".agenthero/logs/help.jsonl",
+        "review",
+        "--help",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "app action help should ignore global --log-file and its value, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("agh app run grokrxiv review"));
+    assert!(stdout.contains("--with-lean"));
+    assert!(
+        !stdout.contains("--loop"),
+        "deprecated no-op --loop should not be advertised in action help"
+    );
+}
+
+#[test]
 fn app_logs_command_parses_for_operator_log_inspection() {
     let run_id = uuid::Uuid::parse_str("2d0a1d88-b9f9-4e8f-848e-605b86717330").unwrap();
     let parsed = Cli::try_parse_from([
@@ -703,6 +859,82 @@ fn app_logs_command_parses_for_operator_log_inspection() {
                 assert!(follow);
             }
             other => panic!("expected App::Logs command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn global_log_file_option_parses_for_structured_platform_audit_logs() {
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "--log-file",
+        ".agenthero/logs/agenthero.jsonl",
+        "app",
+        "list",
+    ])
+    .expect("global --log-file should parse for platform audit logging");
+
+    assert_eq!(
+        parsed.log_file,
+        Some(std::path::PathBuf::from(".agenthero/logs/agenthero.jsonl"))
+    );
+}
+
+#[test]
+fn app_events_command_parses_for_operator_event_streaming() {
+    let run_id = uuid::Uuid::parse_str("9db4ec15-ae27-4d6c-af58-4d5d10f0a9e4").unwrap();
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "events",
+        &run_id.to_string(),
+        "--tail",
+        "75",
+        "--follow",
+    ])
+    .expect("app events should parse");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::Events {
+                run_id: parsed,
+                tail,
+                follow,
+            } => {
+                assert_eq!(parsed, run_id);
+                assert_eq!(tail, 75);
+                assert!(follow);
+            }
+            other => panic!("expected App::Events command, got {other:?}"),
+        },
+        other => panic!("expected App command, got {other:?}"),
+    }
+}
+
+#[test]
+fn app_approve_run_command_parses_for_paused_dag_resume() {
+    let run_id = uuid::Uuid::parse_str("95064566-4c4d-4a38-9378-e00f88f504af").unwrap();
+    let parsed = Cli::try_parse_from([
+        "agh",
+        "app",
+        "approve-run",
+        &run_id.to_string(),
+        "--key",
+        "approval/human_release",
+    ])
+    .expect("app approve-run should parse");
+
+    match parsed.command {
+        Command::App { command } => match command {
+            AppCommand::ApproveRun {
+                run_id: parsed,
+                key,
+            } => {
+                assert_eq!(parsed, run_id);
+                assert_eq!(key, "approval/human_release");
+            }
+            other => panic!("expected App::ApproveRun command, got {other:?}"),
         },
         other => panic!("expected App command, got {other:?}"),
     }
@@ -752,6 +984,190 @@ async fn app_run_http_write_route_requires_service_token() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn app_run_events_http_route_accepts_cursor_query() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::get(
+                "/app-runs/11111111-1111-1111-1111-111111111111/events?after_id=10&limit=25",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn app_run_logs_http_route_is_file_backed_and_db_free() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::get(
+                "/app-runs/11111111-1111-1111-1111-111111111111/logs?tail=25&max_bytes=64",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).expect("logs route response JSON");
+
+    assert_eq!(value["run_id"], "11111111-1111-1111-1111-111111111111");
+    assert_eq!(value["exists"], false);
+    assert_eq!(value["tail"], "");
+    assert_eq!(value["tail_lines"], 25);
+    assert_eq!(value["max_bytes"], 64);
+    assert_eq!(
+        value["log_contract"]["format"],
+        "durable_text_log_with_agenthero_event_jsonl"
+    );
+    assert_eq!(value["log_contract"]["tail_parameter"], "tail");
+    assert_eq!(value["log_contract"]["max_bytes_parameter"], "max_bytes");
+    assert_eq!(value["log_contract"]["trace_fields"][0], "app_run_id");
+    assert!(
+        value["log_path"]
+            .as_str()
+            .expect("log path")
+            .ends_with("11111111-1111-1111-1111-111111111111.log"),
+        "log route should expose the durable app-run log path"
+    );
+}
+
+#[tokio::test]
+async fn metrics_route_exposes_platform_observability_without_database() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).expect("metrics are utf8");
+
+    assert!(text.contains("# HELP agenthero_database_configured"));
+    assert!(text.contains("agenthero_database_configured 0"));
+    assert!(text.contains("agenthero_database_query_ok 0"));
+    assert!(text.contains("agenthero_app_runs{state=\"queued\"} 0"));
+    assert!(text.contains("agenthero_app_runs{state=\"running\"} 0"));
+    assert!(text.contains("# HELP agenthero_app_runs_by_action"));
+    assert!(text.contains("# TYPE agenthero_app_runs_by_action gauge"));
+    assert!(text.contains("agenthero_dag_runs{state=\"queued\"} 0"));
+    assert!(text.contains("agenthero_dag_runs{state=\"running\"} 0"));
+    assert!(text.contains("agenthero_dag_runs{state=\"awaiting_approval\"} 0"));
+    assert!(text.contains("# HELP agenthero_dag_runs_by_app_dag"));
+    assert!(text.contains("# TYPE agenthero_dag_runs_by_app_dag gauge"));
+    assert!(text.contains("agenthero_worker_leases{state=\"leased\"} 0"));
+    assert!(text.contains("agenthero_dag_run_nodes{state=\"failed\"} 0"));
+    assert!(text.contains("# HELP agenthero_dag_run_nodes_by_node"));
+    assert!(text.contains("# TYPE agenthero_dag_run_nodes_by_node gauge"));
+    assert!(text.contains("agenthero_dag_run_node_latency_ms_count 0"));
+    assert!(text.contains("agenthero_dag_run_node_latency_ms_sum 0"));
+    assert!(text.contains("# HELP agenthero_dag_run_node_latency_ms_by_node_count"));
+    assert!(text.contains("# TYPE agenthero_dag_run_node_latency_ms_by_node_count gauge"));
+    assert!(text.contains("# HELP agenthero_dag_run_node_latency_ms_by_node_sum"));
+    assert!(text.contains("# TYPE agenthero_dag_run_node_latency_ms_by_node_sum gauge"));
+    assert!(text.contains("# HELP agenthero_dag_node_retries_by_node"));
+    assert!(text.contains("# TYPE agenthero_dag_node_retries_by_node gauge"));
+    assert!(text.contains("agenthero_dag_events{event_type=\"node.retry_scheduled\"} 0"));
+    assert!(text.contains("agenthero_dag_events{event_type=\"node.failed\"} 0"));
+    assert!(text.contains("agenthero_dag_events{event_type=\"app_run.lease_expired_requeued\"} 0"));
+    assert!(text.contains("# HELP agenthero_dag_events_by_app_dag"));
+    assert!(text.contains("# TYPE agenthero_dag_events_by_app_dag gauge"));
+    assert!(text.contains("# HELP agenthero_dag_events_by_app_action"));
+    assert!(text.contains("# TYPE agenthero_dag_events_by_app_action gauge"));
+    assert!(text.contains("# HELP agenthero_dag_artifact_bytes_by_app_dag"));
+    assert!(text.contains("# TYPE agenthero_dag_artifact_bytes_by_app_dag gauge"));
+}
+
+#[tokio::test]
+async fn app_runs_index_reports_observable_list_contract_without_database() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::get("/app-runs?limit=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).expect("response is json");
+
+    assert_eq!(value["error"], "database_unconfigured");
+    assert_eq!(value["list_contract"]["item"], "AppRunListItem");
+    assert_eq!(
+        value["list_contract"]["observability"]["event_count"],
+        "durable dag_events rows for this app run"
+    );
+    assert_eq!(
+        value["list_contract"]["observability"]["links"]["event_stream_path"],
+        "/app-runs/<run_id>/events/stream"
+    );
+}
+
+#[tokio::test]
+async fn app_run_events_http_route_advertises_trace_field_contract() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::get("/app-runs/11111111-1111-1111-1111-111111111111/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).expect("events route response JSON");
+
+    assert_eq!(value["event_contract"]["trace_fields"][0], "app_run_id");
+    assert!(
+        value["event_contract"]["trace_fields"]
+            .as_array()
+            .expect("trace fields")
+            .iter()
+            .any(|field| field == "duration_ms"),
+        "event stream contract should advertise duration_ms"
+    );
+}
+
+#[tokio::test]
+async fn app_run_events_stream_http_route_is_sse_monitor_surface_without_database() {
+    let response = agenthero_orchestrator::router()
+        .oneshot(
+            Request::get(
+                "/app-runs/11111111-1111-1111-1111-111111111111/events/stream?after_id=10&limit=25",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).expect("sse stream is utf8");
+
+    assert!(content_type.starts_with("text/event-stream"));
+    assert!(text.contains("event: agenthero.error"));
+    assert!(text.contains("data: "));
+    assert!(text.contains("\"event_contract\""));
+    assert!(text.contains("\"trace_fields\""));
+    assert!(text.contains("\"app_run_id\""));
 }
 
 #[tokio::test]
@@ -845,7 +1261,11 @@ fn app_action_catalog_exposes_options_from_yaml() {
 fn app_manifests_are_yaml_source_of_truth() {
     let root = workspace_root();
     let app_dir = root.join("agenthero").join("apps");
-    let expected = [("grokrxiv", "GrokRxiv"), ("c2rust", "C2Rust")];
+    let expected = [
+        ("grokrxiv", "GrokRxiv"),
+        ("c2rust", "C2Rust"),
+        ("platform-smoke", "Platform Smoke"),
+    ];
 
     for (slug, label) in expected {
         let path = app_dir.join(slug).join("app.yaml");
@@ -899,6 +1319,43 @@ fn every_grokrxiv_manifest_action_has_parseable_cli_shape() {
             },
             other => panic!("{} parsed to wrong command: {other:?}", action.id),
         }
+
+        agenthero_orchestrator::dag_apps::validate_app_action_args(
+            &action,
+            &sample_grokrxiv_args(&action.id, review_id),
+        )
+        .unwrap_or_else(|err| panic!("{} manifest args should validate: {err:#}", action.id));
+    }
+}
+
+#[test]
+fn every_grokrxiv_manifest_action_flag_validates_with_sample_value() {
+    let manifest = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("grokrxiv")
+        .expect("load grokrxiv app manifest");
+    let review_id = "03c0843f-80f8-46b4-8d7a-ad7292c449f8";
+
+    for action in manifest.actions {
+        for option in action
+            .options
+            .iter()
+            .filter(|option| option.kind != "positional")
+        {
+            let mut args = sample_grokrxiv_args(&action.id, review_id);
+            if !args.iter().any(|arg| arg == &option.name) {
+                args.push(option.name.clone());
+                if let Some(value_name) = option.value_name.as_deref() {
+                    args.push(sample_grokrxiv_option_value(value_name, review_id));
+                }
+            }
+
+            agenthero_orchestrator::dag_apps::validate_app_action_args(&action, &args)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{} option {} should validate with args {:?}: {err:#}",
+                        action.id, option.name, args
+                    )
+                });
+        }
     }
 }
 
@@ -920,16 +1377,28 @@ fn sample_grokrxiv_args(action: &str, review_id: &str) -> Vec<String> {
         | "show"
         | "open"
         | "approve"
-        | "request-changes"
-        | "close"
-        | "withdraw"
-        | "correct"
         | "html-review"
         | "feedback-loop-smoke"
         | "batch-status"
         | "batch-run" => vec![review_id.into()],
         "request-revisions" => vec![review_id.into(), "--notes".into(), "Needs revision.".into()],
+        "request-changes" => vec![review_id.into(), "--notes".into(), "Needs changes.".into()],
         "reject" => vec![review_id.into(), "--reason".into(), "Out of scope.".into()],
+        "close" => vec![
+            review_id.into(),
+            "--reason".into(),
+            "Closed by operator.".into(),
+        ],
+        "withdraw" => vec![
+            review_id.into(),
+            "--reason".into(),
+            "Withdrawn by operator.".into(),
+        ],
+        "correct" => vec![
+            review_id.into(),
+            "--rationale-md".into(),
+            "corrections/reason.md".into(),
+        ],
         "list" => vec!["reviews".into()],
         "batch-create" => vec![
             "--category".into(),
@@ -940,5 +1409,27 @@ fn sample_grokrxiv_args(action: &str, review_id: &str) -> Vec<String> {
             "1".into(),
         ],
         other => panic!("missing sample args for GrokRxiv action `{other}`"),
+    }
+}
+
+fn sample_grokrxiv_option_value(value_name: &str, review_id: &str) -> String {
+    match value_name {
+        "YYYY-MM-DD" => "2026-05-02".into(),
+        "YYYY-MM" => "2026-05".into(),
+        "N" => "1".into(),
+        "SECONDS" => "5".into(),
+        "STATUS" => "queued".into(),
+        "PATH" => "path/to/artifact".into(),
+        "UUID" => review_id.into(),
+        "TEXT" => "Operator note.".into(),
+        "TITLE" => "Sample title".into(),
+        "FIELD" => "math".into(),
+        "GLOB" => "**/*.tex".into(),
+        "CSV" => "math,cs".into(),
+        "REF" => "main".into(),
+        "ARXIV_SET" => "math".into(),
+        "arxiv|pdf|tex|git|mixed" => "arxiv".into(),
+        "html|md|tex|pdf|zip" => "md".into(),
+        other => panic!("missing sample value for GrokRxiv option value `{other}`"),
     }
 }

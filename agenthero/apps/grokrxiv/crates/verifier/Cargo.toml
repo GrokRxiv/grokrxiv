@@ -22,6 +22,7 @@ jsonschema = { workspace = true }
 regex = "1"
 lol_html = "1"
 tokio = { workspace = true }
+futures = { workspace = true }
 once_cell = "1"
 parking_lot = "0.12"
 grokrxiv-schemas = { path = "../schemas" }

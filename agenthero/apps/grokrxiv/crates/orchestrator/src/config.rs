@@ -134,7 +134,7 @@ impl Config {
                 .unwrap_or_else(|_| "GrokRxiv/0.1 (mailto:mlong168@gmail.com)".into()),
             preview_model: env::var("GROKRXIV_PREVIEW_MODEL")
                 .or_else(|_| env::var("PREVIEW_MODEL"))
-                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".into()),
+                .unwrap_or_else(|_| "claude-haiku-4-5".into()),
             scheduler: SchedulerConfig::from_env(),
         }
     }

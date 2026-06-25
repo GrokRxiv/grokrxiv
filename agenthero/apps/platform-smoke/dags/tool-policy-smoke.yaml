@@ -1,0 +1,33 @@
+id: tool-policy-smoke
+version: 1
+accepts: []
+concurrency: 1
+tools:
+  - id: write_policy_report
+    executor: cli
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"dag":"%s","node":"%s","tool":"%s","executor":"%s","budget":"%s"}\n' "$AGENTHERO_DAG_TYPE" "$AGENTHERO_NODE_ID" "$AGENTHERO_TOOL_ID" "$AGENTHERO_EXECUTOR_KIND" "${AGENTHERO_BUDGET_UNITS:-}" > result.json
+        printf 'platform-smoke write_policy_report stderr log\n' >&2
+    timeout_secs: 10
+    policy:
+      budget_units: 2
+      approval_required: true
+  - id: human_checkpoint
+    executor: approval_gate
+nodes:
+  - id: write_policy_report
+    kind: tool
+    tool: write_policy_report
+    outputs: [result.json]
+    required: true
+  - id: human_checkpoint
+    kind: tool
+    tool: human_checkpoint
+    inputs: [result.json]
+    required: true
+edges:
+  - from: write_policy_report
+    to: human_checkpoint

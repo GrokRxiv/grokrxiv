@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 use git2::{
@@ -211,12 +212,25 @@ impl GitArtifactStore {
                 callbacks.credentials(default_credentials);
                 push_opts.remote_callbacks(callbacks);
             }
-            remote
-                .push(&["refs/heads/main:refs/heads/main"], Some(&mut push_opts))
-                .with_context(|| {
-                    format!("push grokrxiv-data commit {sha} to configured remote {url}")
-                })?;
-            info!(%sha, %url, "pushed grokrxiv-data");
+            match remote.push(&["refs/heads/main:refs/heads/main"], Some(&mut push_opts)) {
+                Ok(()) => {
+                    info!(%sha, %url, "pushed grokrxiv-data");
+                }
+                Err(err) if should_retry_push_with_git_cli(&err, url) => {
+                    debug!(%sha, %url, error = %err, "libgit2 push unsupported; retrying with native git");
+                    push_with_git_cli(&self.repo_path, url, &sha).with_context(|| {
+                        format!(
+                            "push grokrxiv-data commit {sha} to configured remote {url} using native git fallback"
+                        )
+                    })?;
+                    info!(%sha, %url, "pushed grokrxiv-data with native git fallback");
+                }
+                Err(err) => {
+                    return Err(anyhow::Error::new(err)).with_context(|| {
+                        format!("push grokrxiv-data commit {sha} to configured remote {url}")
+                    });
+                }
+            }
         }
 
         Ok(sha)
@@ -302,6 +316,50 @@ fn default_credentials(
     Err(git2::Error::from_str(&format!(
         "no credentials available for {url}"
     )))
+}
+
+fn should_retry_push_with_git_cli(err: &git2::Error, url: &str) -> bool {
+    let message = err.message().to_ascii_lowercase();
+    message.contains("unsupported url protocol") && is_ssh_remote_url(url)
+}
+
+fn is_ssh_remote_url(url: &str) -> bool {
+    url.starts_with("ssh://") || (url.contains('@') && url.contains(':') && !url.contains("://"))
+}
+
+fn push_with_git_cli(repo_path: &Path, remote_url: &str, sha: &str) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("push")
+        .arg(remote_url)
+        .arg("refs/heads/main:refs/heads/main")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("spawning native git push for {}", repo_path.display()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut details = Vec::new();
+    if !stdout.trim().is_empty() {
+        details.push(format!("stdout: {}", stdout.trim()));
+    }
+    if !stderr.trim().is_empty() {
+        details.push(format!("stderr: {}", stderr.trim()));
+    }
+    if details.is_empty() {
+        details.push("native git returned no output".to_string());
+    }
+
+    Err(anyhow!(
+        "native git push failed for grokrxiv-data commit {sha} with status {}: {}",
+        output.status,
+        details.join("; ")
+    ))
 }
 
 #[cfg(test)]
@@ -469,5 +527,33 @@ mod tests {
 
         assert!(format!("{err:#}").contains("unsafe arxiv id"));
         Ok(())
+    }
+
+    #[test]
+    fn ssh_remote_protocol_errors_use_native_git_fallback() {
+        let err = git2::Error::from_str("unsupported URL protocol");
+
+        assert!(should_retry_push_with_git_cli(
+            &err,
+            "git@github.com:GrokRxiv/grokrxiv-data.git"
+        ));
+        assert!(should_retry_push_with_git_cli(
+            &err,
+            "ssh://git@github.com/GrokRxiv/grokrxiv-data.git"
+        ));
+        assert!(!should_retry_push_with_git_cli(
+            &err,
+            "file:///tmp/grokrxiv-data.git"
+        ));
+    }
+
+    #[test]
+    fn non_protocol_push_errors_do_not_use_native_git_fallback() {
+        let err = git2::Error::from_str("authentication required");
+
+        assert!(!should_retry_push_with_git_cli(
+            &err,
+            "git@github.com:GrokRxiv/grokrxiv-data.git"
+        ));
     }
 }

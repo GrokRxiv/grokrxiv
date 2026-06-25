@@ -9,6 +9,28 @@ adapter:
   fallback_args: ["run", "--manifest-path", "agenthero/apps/grokrxiv/rust/Cargo.toml", "--quiet", "--"]
   timeout_secs: 7200
   output_limit_bytes: 8388608
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
 deployments:
   - kind: vercel
     id: web
@@ -88,7 +110,7 @@ actions:
   - id: review
     command: [review]
     dag_type: review-loop
-    description: Run the research review DAG and optional semantic/proof/citation loop for a paper source.
+    description: Run the research review DAG with the semantic/proof/citation loop for a paper source.
     retry:
       max_attempts: 2
     options:
@@ -138,21 +160,35 @@ actions:
         value_name: GLOB
         multiple: true
         description: Exclude corpus paths matching this pattern.
-      - name: --loop
-        kind: flag
-        description: Deprecated no-op — the semantic/citation/fix/publish loop now always runs.
       - name: --with-lean
         kind: flag
-        description: Run experimental Lean formalization (advisory, never affects the verdict).
+        conflicts_with: [--no-lean]
+        description: Force Lean verification/formalization for this review when targets are available (advisory, never affects the verdict).
       - name: --no-lean
         kind: flag
-        description: Do not queue Lean formalization for this review, even when formalizable math is auto-detected.
+        conflicts_with: [--with-lean]
+        description: Disable Lean verification/formalization for this review, even when formalizable math is auto-detected.
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics, artifact paths, and failure snippets while the review runs.
       - name: --no-external-actions
         kind: flag
         description: Run review and loop checks without opening publication or revision PRs.
+      - name: --provider-for
+        kind: flag
+        value_name: ROLE=PROVIDER
+        multiple: true
+        description: Override the provider for one role, for example citation=gemini to use the agy backup route.
+      - name: --model-for
+        kind: flag
+        value_name: ROLE=MODEL
+        multiple: true
+        description: Override the model for one role, for example citation=Gemini 3.5 Flash (Medium).
+      - name: --runner-for
+        kind: flag
+        value_name: ROLE=RUNNER
+        multiple: true
+        description: Override the runner for one role, for example citation=cli or citation=api.
   - id: formalize
     command: [formalize]
     dag_type: review-loop
@@ -170,9 +206,33 @@ actions:
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics and artifact paths while formalizing.
+      - name: --auto-detect
+        kind: flag
+        description: Internal queued mode for automatic Lean formalization; skip typed-IR enrichment and use persisted review-loop proof obligations.
       - name: --no-external-actions
         kind: flag
         description: Run formalization and render artifacts without updating PR comments or commits.
+      - name: --typed-ir-only
+        kind: flag
+        description: Benchmark typed-IR theorem extraction and stop before semantic/Lean stages; implies --no-external-actions.
+      - name: --benchmark-typed-ir
+        kind: flag
+        description: Alias for --typed-ir-only.
+      - name: --provider-for
+        kind: flag
+        value_name: ROLE=PROVIDER
+        multiple: true
+        description: Override the provider for one role, including formalize_source_inventory_typed_transcriber=gemini as an agy backup route.
+      - name: --model-for
+        kind: flag
+        value_name: ROLE=MODEL
+        multiple: true
+        description: Override the model for one role, including formalize_source_inventory_typed_transcriber=Gemini 3.5 Flash (Medium).
+      - name: --runner-for
+        kind: flag
+        value_name: ROLE=RUNNER
+        multiple: true
+        description: Override the runner for one role, for example citation=cli or citation=api.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

@@ -1,5 +1,20 @@
 export const APP_PROTOCOL = "agenthero.app.v1";
+export const APP_ADAPTER_EVENT_PREFIX = "@@AGENTHERO_EVENT ";
 export const APP_ID = "formal-proofs";
+export const AGENTHERO_EVENT_TRACE_FIELDS = [
+  "app_run_id",
+  "dag_run_id",
+  "node_id",
+  "attempt",
+  "node_kind",
+  "tool_id",
+  "manifest_hash",
+  "artifact_id",
+  "lease_id",
+  "status",
+  "exit_status",
+  "duration_ms"
+] as const;
 
 export type Checker = "lean" | "haskell" | "sat" | "manual" | "unknown";
 export type ClaimType =
@@ -12,7 +27,7 @@ export type ClaimType =
 
 export interface DagIo {
   values?: Record<string, unknown>;
-  artifacts?: Record<string, unknown>;
+  artifacts?: Record<string, ArtifactRef>;
 }
 
 export interface AppAdapterRequest {
@@ -25,6 +40,7 @@ export interface AppAdapterRequest {
   json?: boolean;
   dry_run?: boolean;
   idempotency_key?: string;
+  checkpoint?: DagExecutionReport;
 }
 
 export interface AppAdapterResponse {
@@ -40,25 +56,53 @@ export interface AppAdapterResponse {
 
 export interface DagExecutionReport {
   dag_type: string;
+  manifest_version: number;
+  manifest_hash: string;
   status: "pending" | "running" | "awaiting_approval" | "ok" | "degraded" | "failed" | "skipped";
+  input: {
+    values: Record<string, unknown>;
+    artifacts: Record<string, ArtifactRef>;
+  };
   nodes: DagNodeReport[];
   outputs: {
     values: Record<string, unknown>;
     artifacts: Record<string, ArtifactRef>;
   };
+  events: DagExecutionEvent[];
 }
 
 export interface DagNodeReport {
   node_id: string;
   kind: string;
-  status: "ok" | "degraded" | "failed" | "skipped";
+  status: "pending" | "running" | "awaiting_approval" | "ok" | "degraded" | "failed" | "skipped";
+  attempt?: number;
+  role?: string | null;
+  tool?: string | null;
+  child_dag_type?: string | null;
+  required?: boolean;
   executor?: string | null;
+  model?: string | null;
+  prompt_hash?: string | null;
+  command?: string[] | null;
+  exit_status?: number | null;
   inputs?: string[];
   outputs?: string[];
+  input_refs?: Record<string, string>;
+  output_refs?: Record<string, string>;
+  diagnostic_refs?: Record<string, string>;
+  policy?: Record<string, unknown>;
   warning?: string | null;
   error?: string | null;
   latency_ms?: number;
   trace?: Record<string, unknown>;
+}
+
+export interface DagExecutionEvent {
+  level: "debug" | "info" | "warn" | "error";
+  event_type: string;
+  node_id?: string | null;
+  message?: string | null;
+  payload: Record<string, unknown>;
 }
 
 export interface ArtifactRef {

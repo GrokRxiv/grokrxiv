@@ -1,10 +1,11 @@
 id: novelty
 kind: critic
 role: "Assess novelty against related work; figure-aware (multimodal)."
-provider: gemini
-# Default can be overridden with GROKRXIV_NOVELTY_MODEL or
+provider: claude
+# Defaults can be overridden with GROKRXIV_NOVELTY_PROVIDER /
+# GROKRXIV_NOVELTY_MODEL or `--provider-for novelty=<provider>` /
 # `--model-for novelty=<model>`.
-model: gemini-2.5-pro
+model: claude-sonnet-4-6
 runner: cli
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json

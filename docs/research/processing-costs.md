@@ -31,8 +31,8 @@ The numbers below are from a real M1 smoke-test run (`review_id=600bb271-43d4-45
 
 | Role | Model | Tokens in / out | Latency (ms) | Cost |
 |---|---|---|---|---|
-| `citation` | gemini-2.5-flash | 609 / 53 | 3,043 | <$0.001 (free tier) |
-| `novelty` | gemini-2.5-flash | 608 / 597 | 19,557 | <$0.001 (free tier) |
+| `citation` | Gemini 3.5 Flash (Medium) | 609 / 53 | 3,043 | <$0.001 (free tier) |
+| `novelty` | Gemini 3.5 Flash (Medium) | 608 / 597 | 19,557 | <$0.001 (free tier) |
 | `summary` | claude-haiku-4-5 | 891 / 526 | 7,116 | $0.003 |
 | `reproducibility` | gpt-5.5 | 869 / 503 | 11,348 | $0.005 |
 | `technical_correctness` | **claude-opus-4-7** | 1,448 / 1,800 | 22,715 | **$0.157** |

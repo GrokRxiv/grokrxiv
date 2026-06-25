@@ -90,9 +90,9 @@
 
 | Role | Model | tokens_in | tokens_out | latency_ms |
 |---|---|---|---|---|
-| citation | gemini-2.5-flash | 579 | 53 | 2,378 |
-| novelty | gemini-2.5-flash | 578 | 633 | 15,659 |
-| summary | claude-haiku-4-5-20251001 | 864 | 582 | 6,153 |
+| citation | Gemini 3.5 Flash (Medium) | 579 | 53 | 2,378 |
+| novelty | Gemini 3.5 Flash (Medium) | 578 | 633 | 15,659 |
+| summary | claude-haiku-4-5 | 864 | 582 | 6,153 |
 | reproducibility | gpt-5.5 | 838 | 577 | 13,745 |
 | technical_correctness | claude-opus-4-7 | 1,422 | 1,970 | 25,379 |
 | meta_reviewer | claude-sonnet-4-6 | 3 | 1,216 | 23,853 |

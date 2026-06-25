@@ -8,18 +8,28 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agenthero_agent_runtime::{AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_PROTOCOL};
-use agenthero_dag_executor::{DagExecutionReport, DagIo};
+use agenthero_agent_runtime::{
+    AppAdapterRequest, AppAdapterResponse, APP_ADAPTER_EVENT_PREFIX, APP_ADAPTER_PROTOCOL,
+};
+use agenthero_dag_executor::{DagExecutionEvent, DagExecutionReport, DagIo};
 use agenthero_dag_runtime::DagManifest;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 const DEFAULT_ADAPTER_TIMEOUT_SECS: u64 = 60 * 60 * 2;
 const DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const ADAPTER_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const ADAPTER_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_ADAPTER_STDERR_LINE_CHARS: usize = 4096;
 /// `DagIo.values` key used to pass a durable app-run stderr log path to adapters.
 pub const APP_RUN_LOG_PATH_INPUT_KEY: &str = "app_run_log_path";
 const AGENTHERO_RUNTIME_ROOT_ENV: &str = "AGENTHERO_RUNTIME_ROOT";
+
+type AdapterEventSender = mpsc::Sender<DagExecutionEvent>;
+/// Channel used by queued app workers to persist raw adapter stderr lines.
+pub type AdapterLogLineSender = mpsc::Sender<String>;
 
 /// Metadata for one DAG type discovered from installed app manifests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,6 +57,8 @@ pub struct RegisteredAppDescriptor {
     pub deployments: Vec<AppDeployment>,
     /// App-owned contracts discovered under the app root.
     pub contracts: AppContractsDescriptor,
+    /// Audit and monitoring surfaces this app must emit through AgentHero.
+    pub observability: AppObservabilityContract,
 }
 
 /// App-owned AgentApp contract files discovered under `agenthero/apps/<app>/`.
@@ -94,12 +106,33 @@ pub struct AppManifest {
     pub description: String,
     /// Process or future runtime adapter for this app.
     pub adapter: AppAdapter,
+    /// Required app-level audit and monitoring contract.
+    pub observability: AppObservabilityContract,
     /// App actions exposed by this manifest.
     #[serde(default)]
     pub actions: Vec<AppManifestAction>,
     /// App-owned deployable surfaces, such as generated websites.
     #[serde(default)]
     pub deployments: Vec<AppDeployment>,
+}
+
+/// App-level observability contract required for every installed DAG app.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AppObservabilityContract {
+    /// App emits durable structured events into `dag_events`.
+    pub events: bool,
+    /// App emits durable stderr/text logs captured by app-run log files.
+    pub logs: bool,
+    /// App supports app-run status summaries through persisted runtime state.
+    pub status: bool,
+    /// App supports tail/follow event streams through AgentHero monitor APIs.
+    pub event_stream: bool,
+    /// Lifecycle events every adapter must emit or let the scheduler synthesize.
+    #[serde(default)]
+    pub lifecycle_events: Vec<String>,
+    /// Mandatory trace fields expected on emitted event payloads.
+    #[serde(default)]
+    pub trace_fields: Vec<String>,
 }
 
 /// Deployment metadata for an app-owned generated/runtime website.
@@ -204,6 +237,9 @@ pub struct AppActionOption {
     /// Whether the option can be repeated.
     #[serde(default)]
     pub multiple: bool,
+    /// Other option names that cannot be present at the same time.
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
     /// Operator-facing description.
     #[serde(default)]
     pub description: String,
@@ -248,6 +284,7 @@ pub fn registered_apps() -> anyhow::Result<Vec<RegisteredAppDescriptor>> {
             description: manifest.description,
             deployments: manifest.deployments,
             contracts,
+            observability: manifest.observability,
             actions: manifest
                 .actions
                 .into_iter()
@@ -328,11 +365,11 @@ pub fn resolve_app_action_args_in_manifest(
     manifest: &AppManifest,
     args: &[String],
 ) -> anyhow::Result<ResolvedAppAction> {
-    let action = manifest
+    let (action, consumed_args) = manifest
         .actions
         .iter()
-        .filter(|action| command_path_matches(&action.command, args))
-        .max_by_key(|action| action.command.len())
+        .filter_map(|action| action_arg_match_len(action, args).map(|len| (action, len)))
+        .max_by_key(|(_, len)| *len)
         .ok_or_else(|| {
             let requested = args.first().map(String::as_str).unwrap_or("<none>");
             anyhow::anyhow!("unknown app action `{} {requested}`", manifest.slug)
@@ -342,8 +379,18 @@ pub fn resolve_app_action_args_in_manifest(
         id: action.id.clone(),
         dag_type: action.dag_type.clone(),
         description: action.description.clone(),
-        args: args[action.command.len()..].to_vec(),
+        args: args[consumed_args..].to_vec(),
     })
+}
+
+fn action_arg_match_len(action: &AppManifestAction, args: &[String]) -> Option<usize> {
+    if command_path_matches(&action.command, args) {
+        return Some(action.command.len());
+    }
+    if args.first().is_some_and(|arg| arg == &action.id) {
+        return Some(1);
+    }
+    None
 }
 
 fn command_path_matches(command: &[String], args: &[String]) -> bool {
@@ -536,6 +583,7 @@ fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Res
         }
         AppAdapter::Process { .. } => {}
     }
+    validate_app_observability(manifest)?;
     let mut ids = BTreeSet::new();
     let mut commands = BTreeSet::new();
     for action in &manifest.actions {
@@ -601,6 +649,31 @@ fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Res
                 );
             }
         }
+        for option in &action.options {
+            for conflict in &option.conflicts_with {
+                if conflict.trim().is_empty() {
+                    anyhow::bail!(
+                        "action `{}` option `{}` conflicts_with entries must be non-empty",
+                        action.id,
+                        option.name
+                    );
+                }
+                if conflict == &option.name {
+                    anyhow::bail!(
+                        "action `{}` option `{}` cannot conflict with itself",
+                        action.id,
+                        option.name
+                    );
+                }
+                if !option_names.contains(conflict.as_str()) {
+                    anyhow::bail!(
+                        "action `{}` option `{}` conflicts with unknown option `{conflict}`",
+                        action.id,
+                        option.name
+                    );
+                }
+            }
+        }
     }
     for deployment in &manifest.deployments {
         match deployment {
@@ -624,6 +697,163 @@ fn validate_app_manifest(manifest: &AppManifest, app_root: &Path) -> anyhow::Res
                     anyhow::bail!("vercel deployment `{id}` env names must be non-empty");
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Validate action-specific argv against generic option contracts in app.yaml.
+pub fn validate_app_action_args(action: &AppManifestAction, args: &[String]) -> anyhow::Result<()> {
+    let parsed = parse_app_action_args(action, args);
+
+    let required_positionals = action
+        .options
+        .iter()
+        .filter(|option| option.kind == "positional" && option.required)
+        .count();
+    if parsed.positionals.len() < required_positionals {
+        let names = action
+            .options
+            .iter()
+            .filter(|option| option.kind == "positional" && option.required)
+            .map(|option| option.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "app action `{}` requires positional argument{} `{}`",
+            action.id,
+            if required_positionals == 1 { "" } else { "s" },
+            names
+        );
+    }
+
+    for option in &action.options {
+        if option.kind == "positional" {
+            continue;
+        }
+        if option.required && !parsed.present_flags.contains(&option.name) {
+            anyhow::bail!(
+                "app action `{}` requires option `{}`",
+                action.id,
+                option.name
+            );
+        }
+        if parsed.missing_value_flags.contains(&option.name) {
+            let placeholder = option.value_name.as_deref().unwrap_or("VALUE");
+            anyhow::bail!(
+                "app action `{}` option `{}` requires value `{placeholder}`",
+                action.id,
+                option.name
+            );
+        }
+        if !parsed.present_flags.contains(&option.name) {
+            continue;
+        }
+        for conflict in &option.conflicts_with {
+            if parsed.present_flags.contains(conflict) {
+                anyhow::bail!(
+                    "app action `{}` option `{}` cannot be combined with `{conflict}`",
+                    action.id,
+                    option.name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct ParsedAppActionArgs {
+    present_flags: BTreeSet<String>,
+    missing_value_flags: BTreeSet<String>,
+    positionals: Vec<String>,
+}
+
+fn parse_app_action_args(action: &AppManifestAction, args: &[String]) -> ParsedAppActionArgs {
+    let declared = action
+        .options
+        .iter()
+        .filter(|option| option.kind != "positional")
+        .map(|option| (option.name.as_str(), option))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut parsed = ParsedAppActionArgs::default();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        let Some(flag) = arg.strip_prefix("--") else {
+            parsed.positionals.push(arg.clone());
+            index += 1;
+            continue;
+        };
+        let (flag, inline_value) = flag
+            .split_once('=')
+            .map_or((flag, None), |(flag, value)| (flag, Some(value)));
+        let flag = format!("--{flag}");
+        if let Some(option) = declared.get(flag.as_str()) {
+            parsed.present_flags.insert(option.name.clone());
+            if option.value_name.is_some() {
+                let has_value = match inline_value {
+                    Some(value) => !value.is_empty(),
+                    None => args
+                        .get(index + 1)
+                        .is_some_and(|value| !value.starts_with("--")),
+                };
+                if has_value && inline_value.is_none() {
+                    index += 1;
+                } else if !has_value {
+                    parsed.missing_value_flags.insert(option.name.clone());
+                }
+            }
+        }
+        index += 1;
+    }
+    parsed
+}
+
+fn validate_app_observability(manifest: &AppManifest) -> anyhow::Result<()> {
+    let observability = &manifest.observability;
+    for (field, enabled) in [
+        ("events", observability.events),
+        ("logs", observability.logs),
+        ("status", observability.status),
+        ("event_stream", observability.event_stream),
+    ] {
+        if !enabled {
+            anyhow::bail!(
+                "app `{}` observability.{field} must be true so app runs are auditable",
+                manifest.slug
+            );
+        }
+    }
+
+    for event_type in [
+        "app_action.started",
+        "app_action.completed",
+        "app_action.failed",
+    ] {
+        if !observability
+            .lifecycle_events
+            .iter()
+            .any(|declared| declared == event_type)
+        {
+            anyhow::bail!(
+                "app `{}` observability.lifecycle_events must include `{event_type}`",
+                manifest.slug
+            );
+        }
+    }
+
+    for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+        if !observability
+            .trace_fields
+            .iter()
+            .any(|declared| declared == field)
+        {
+            anyhow::bail!(
+                "app `{}` observability.trace_fields must include `{field}`",
+                manifest.slug
+            );
         }
     }
     Ok(())
@@ -708,6 +938,59 @@ pub async fn run_app_action_with_idempotency_key(
     dry_run: bool,
     idempotency_key: String,
 ) -> anyhow::Result<AppAdapterResponse> {
+    run_app_action_with_idempotency_key_and_checkpoint(
+        app_id,
+        action_id,
+        args,
+        input,
+        json,
+        dry_run,
+        idempotency_key,
+        None,
+    )
+    .await
+}
+
+/// Run an action with durable retry identity and an optional replay checkpoint.
+pub async fn run_app_action_with_idempotency_key_and_checkpoint(
+    app_id: &str,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+    idempotency_key: String,
+    checkpoint: Option<DagExecutionReport>,
+) -> anyhow::Result<AppAdapterResponse> {
+    run_app_action_with_idempotency_key_checkpoint_and_events(
+        app_id,
+        action_id,
+        args,
+        input,
+        json,
+        dry_run,
+        idempotency_key,
+        checkpoint,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Run an action with durable retry identity, optional replay checkpoint, and
+/// optional live adapter event capture.
+pub async fn run_app_action_with_idempotency_key_checkpoint_and_events(
+    app_id: &str,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+    idempotency_key: String,
+    checkpoint: Option<DagExecutionReport>,
+    adapter_events: Option<AdapterEventSender>,
+    adapter_log_lines: Option<AdapterLogLineSender>,
+) -> anyhow::Result<AppAdapterResponse> {
     let manifest = load_app_manifest_by_slug(app_id)?;
     let stream_stderr = app_action_stream_stderr_requested(&input);
     run_app_action_with_manifest_and_key(
@@ -719,6 +1002,44 @@ pub async fn run_app_action_with_idempotency_key(
         dry_run,
         stream_stderr,
         Some(idempotency_key),
+        checkpoint,
+        adapter_events,
+        adapter_log_lines,
+        None,
+    )
+    .await
+}
+
+/// Run an action with durable retry identity, optional replay checkpoint,
+/// optional live adapter event capture, and cooperative cancellation.
+pub async fn run_app_action_with_idempotency_key_checkpoint_events_and_cancellation(
+    app_id: &str,
+    action_id: &str,
+    args: Vec<String>,
+    input: DagIo,
+    json: bool,
+    dry_run: bool,
+    idempotency_key: String,
+    checkpoint: Option<DagExecutionReport>,
+    adapter_events: Option<AdapterEventSender>,
+    adapter_log_lines: Option<AdapterLogLineSender>,
+    cancellation: Option<watch::Receiver<bool>>,
+) -> anyhow::Result<AppAdapterResponse> {
+    let manifest = load_app_manifest_by_slug(app_id)?;
+    let stream_stderr = app_action_stream_stderr_requested(&input);
+    run_app_action_with_manifest_and_key(
+        &manifest,
+        action_id,
+        args,
+        input,
+        json,
+        dry_run,
+        stream_stderr,
+        Some(idempotency_key),
+        checkpoint,
+        adapter_events,
+        adapter_log_lines,
+        cancellation,
     )
     .await
 }
@@ -742,6 +1063,10 @@ pub async fn run_app_action_with_manifest(
         dry_run,
         stream_stderr,
         None,
+        None,
+        None,
+        None,
+        None,
     )
     .await
 }
@@ -755,12 +1080,17 @@ async fn run_app_action_with_manifest_and_key(
     dry_run: bool,
     stream_stderr: bool,
     idempotency_key: Option<String>,
+    checkpoint: Option<DagExecutionReport>,
+    adapter_events: Option<AdapterEventSender>,
+    adapter_log_lines: Option<AdapterLogLineSender>,
+    cancellation: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<AppAdapterResponse> {
     let action = manifest
         .actions
         .iter()
         .find(|action| action.id == action_id)
         .ok_or_else(|| anyhow::anyhow!("unknown app action `{} {action_id}`", manifest.slug))?;
+    validate_app_action_args(action, &args)?;
     let request = AppAdapterRequest::new(
         manifest.slug.clone(),
         action.id.clone(),
@@ -774,7 +1104,19 @@ async fn run_app_action_with_manifest_and_key(
         Some(key) => request.with_idempotency_key(key),
         None => request,
     };
-    run_adapter_process(&manifest, &request, stream_stderr).await
+    let request = match checkpoint {
+        Some(checkpoint) => request.with_checkpoint(checkpoint),
+        None => request,
+    };
+    run_adapter_process(
+        &manifest,
+        &request,
+        stream_stderr,
+        adapter_events,
+        adapter_log_lines,
+        cancellation,
+    )
+    .await
 }
 
 /// Run a discovered DAG type through its owning app adapter.
@@ -792,7 +1134,7 @@ pub async fn run_registered_dag_app(
         true,
         false,
     );
-    let response = run_adapter_process(&manifest, &request, false).await?;
+    let response = run_adapter_process(&manifest, &request, false, None, None, None).await?;
     if !response.ok {
         anyhow::bail!(
             "{}",
@@ -829,6 +1171,9 @@ async fn run_adapter_process(
     manifest: &AppManifest,
     request: &AppAdapterRequest,
     stream_stderr: bool,
+    adapter_events: Option<AdapterEventSender>,
+    adapter_log_lines: Option<AdapterLogLineSender>,
+    cancellation: Option<watch::Receiver<bool>>,
 ) -> anyhow::Result<AppAdapterResponse> {
     let AppAdapter::Process {
         command,
@@ -901,9 +1246,20 @@ async fn run_adapter_process(
     let stdout_task = tokio::spawn(async move { read_limited(&mut stdout, output_limit).await });
     let stderr_log_path = app_action_log_path_requested(&request.input);
     let stderr_task = tokio::spawn(async move {
-        if stream_stderr || stderr_log_path.is_some() {
-            read_limited_and_tee_stderr(&mut stderr, output_limit, stream_stderr, stderr_log_path)
-                .await
+        if stream_stderr
+            || stderr_log_path.is_some()
+            || adapter_events.is_some()
+            || adapter_log_lines.is_some()
+        {
+            read_limited_and_tee_stderr(
+                &mut stderr,
+                output_limit,
+                stream_stderr,
+                stderr_log_path,
+                adapter_events,
+                adapter_log_lines,
+            )
+            .await
         } else {
             read_limited(&mut stderr, output_limit).await
         }
@@ -918,24 +1274,45 @@ async fn run_adapter_process(
     stdin.shutdown().await?;
     drop(stdin);
 
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(result) => result
-            .map_err(|err| anyhow::anyhow!("wait for app `{}` adapter: {err}", manifest.slug))?,
-        Err(_) => {
-            let _ = child.kill().await;
-            anyhow::bail!(
-                "app `{}` adapter timed out after {}s",
-                manifest.slug,
-                timeout.as_secs()
-            );
+    let wait_outcome = tokio::select! {
+        result = child.wait() => AdapterWaitOutcome::Exited(result),
+        _ = tokio::time::sleep(timeout) => AdapterWaitOutcome::TimedOut,
+        _ = wait_for_adapter_cancellation(cancellation) => AdapterWaitOutcome::Cancelled,
+    };
+    let (status, wait_error) = match wait_outcome {
+        AdapterWaitOutcome::Exited(result) => {
+            let status = result.map_err(|err| {
+                anyhow::anyhow!("wait for app `{}` adapter: {err}", manifest.slug)
+            })?;
+            (Some(status), None)
+        }
+        AdapterWaitOutcome::TimedOut => {
+            kill_adapter_child(&mut child, manifest, "timeout").await?;
+            (
+                None,
+                Some(anyhow::anyhow!(
+                    "app `{}` adapter timed out after {}s",
+                    manifest.slug,
+                    timeout.as_secs()
+                )),
+            )
+        }
+        AdapterWaitOutcome::Cancelled => {
+            kill_adapter_child(&mut child, manifest, "cancellation").await?;
+            (
+                None,
+                Some(anyhow::anyhow!(
+                    "app `{}` adapter cancelled by AgentHero",
+                    manifest.slug
+                )),
+            )
         }
     };
-    let stdout = stdout_task
-        .await
-        .map_err(|err| anyhow::anyhow!("join app `{}` stdout task: {err}", manifest.slug))??;
-    let stderr = stderr_task
-        .await
-        .map_err(|err| anyhow::anyhow!("join app `{}` stderr task: {err}", manifest.slug))??;
+    let cleanup_after_cancel = wait_error.is_some();
+    let stdout =
+        join_adapter_output_task(manifest, "stdout", stdout_task, cleanup_after_cancel).await?;
+    let stderr =
+        join_adapter_output_task(manifest, "stderr", stderr_task, cleanup_after_cancel).await?;
     if stdout.truncated {
         anyhow::bail!(
             "app `{}` adapter stdout exceeded {} bytes",
@@ -953,7 +1330,16 @@ async fn run_adapter_process(
     let stdout = stdout.bytes;
     let stderr = stderr.bytes;
 
+    if let Some(err) = wait_error {
+        return Err(err);
+    }
+    let status = status.expect("adapter status exists when no wait error");
     if !status.success() {
+        if let Ok(response) = parse_adapter_response(manifest, request, &stdout) {
+            if !response.ok {
+                return Ok(response);
+            }
+        }
         let stderr = String::from_utf8_lossy(&stderr);
         anyhow::bail!(
             "app `{}` adapter exited with {}: {}",
@@ -963,7 +1349,123 @@ async fn run_adapter_process(
         );
     }
 
-    let response: AppAdapterResponse = serde_json::from_slice(&stdout).map_err(|err| {
+    parse_adapter_response(manifest, request, &stdout)
+}
+
+enum AdapterWaitOutcome {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+async fn wait_for_adapter_cancellation(cancellation: Option<watch::Receiver<bool>>) {
+    let Some(mut cancellation) = cancellation else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *cancellation.borrow() {
+        return;
+    }
+    while cancellation.changed().await.is_ok() {
+        if *cancellation.borrow() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+async fn kill_adapter_child(
+    child: &mut tokio::process::Child,
+    manifest: &AppManifest,
+    reason: &str,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        kill_adapter_process_group(pid, manifest, reason)?;
+        match tokio::time::timeout(ADAPTER_KILL_WAIT_TIMEOUT, child.wait()).await {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    app = %manifest.slug,
+                    reason,
+                    error = %err,
+                    "wait for killed adapter process group failed; falling back to direct child kill"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    app = %manifest.slug,
+                    reason,
+                    "timed out waiting for killed adapter process group; falling back to direct child kill"
+                );
+            }
+        }
+    }
+
+    child.kill().await.map_err(|err| {
+        anyhow::anyhow!("kill app `{}` adapter after {reason}: {err}", manifest.slug)
+    })
+}
+
+#[cfg(unix)]
+fn kill_adapter_process_group(
+    pid: u32,
+    manifest: &AppManifest,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let pgid = nix::unistd::Pid::from_raw(pid as i32);
+    match nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(err) => Err(anyhow::anyhow!(
+            "kill app `{}` adapter process group after {reason}: {err}",
+            manifest.slug
+        )),
+    }
+}
+
+async fn join_adapter_output_task(
+    manifest: &AppManifest,
+    stream: &'static str,
+    task: tokio::task::JoinHandle<anyhow::Result<LimitedOutput>>,
+    cleanup_after_cancel: bool,
+) -> anyhow::Result<LimitedOutput> {
+    if !cleanup_after_cancel {
+        return adapter_output_join_result(manifest, stream, task.await);
+    }
+
+    let mut task = task;
+    tokio::select! {
+        result = &mut task => adapter_output_join_result(manifest, stream, result),
+        _ = tokio::time::sleep(ADAPTER_CANCEL_DRAIN_TIMEOUT) => {
+            task.abort();
+            let _ = task.await;
+            tracing::warn!(
+                app = %manifest.slug,
+                stream,
+                "aborted adapter output reader after cancellation drain timeout"
+            );
+            Ok(LimitedOutput {
+                bytes: Vec::new(),
+                truncated: false,
+            })
+        }
+    }
+}
+
+fn adapter_output_join_result(
+    manifest: &AppManifest,
+    stream: &'static str,
+    result: Result<anyhow::Result<LimitedOutput>, tokio::task::JoinError>,
+) -> anyhow::Result<LimitedOutput> {
+    result.map_err(|err| anyhow::anyhow!("join app `{}` {stream} task: {err}", manifest.slug))?
+}
+
+fn parse_adapter_response(
+    manifest: &AppManifest,
+    request: &AppAdapterRequest,
+    stdout: &[u8],
+) -> anyhow::Result<AppAdapterResponse> {
+    let response: AppAdapterResponse = serde_json::from_slice(stdout).map_err(|err| {
         let stdout = String::from_utf8_lossy(&stdout);
         anyhow::anyhow!(
             "parse app `{}` adapter response as JSON: {err}; stdout={}",
@@ -981,16 +1483,25 @@ async fn spawn_adapter(
     workdir: &Path,
 ) -> anyhow::Result<tokio::process::Child> {
     let command_path = resolve_process_command(command, "AGENTHERO_ADAPTER_BIN_DIR");
-    tokio::process::Command::new(command_path)
+    let mut command = tokio::process::Command::new(command_path);
+    command
         .args(args)
         .current_dir(workdir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(Into::into)
+        .kill_on_drop(true);
+    configure_adapter_process_group(&mut command);
+    command.spawn().map_err(Into::into)
 }
+
+#[cfg(unix)]
+fn configure_adapter_process_group(command: &mut tokio::process::Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_adapter_process_group(_command: &mut tokio::process::Command) {}
 
 async fn read_limited<R>(reader: &mut R, limit: usize) -> anyhow::Result<LimitedOutput>
 where
@@ -1026,6 +1537,8 @@ async fn read_limited_and_tee_stderr<R>(
     limit: usize,
     stream_stderr: bool,
     log_path: Option<PathBuf>,
+    adapter_events: Option<AdapterEventSender>,
+    adapter_log_lines: Option<AdapterLogLineSender>,
 ) -> anyhow::Result<LimitedOutput>
 where
     R: AsyncRead + Unpin,
@@ -1044,6 +1557,17 @@ where
     } else {
         None
     };
+    if adapter_events.is_some() || adapter_log_lines.is_some() {
+        return read_limited_and_filter_adapter_events(
+            reader,
+            limit,
+            stream_stderr,
+            log_file,
+            adapter_events.as_ref(),
+            adapter_log_lines.as_ref(),
+        )
+        .await;
+    }
     let mut err = tokio::io::stderr();
     let mut out = Vec::new();
     let mut truncated = false;
@@ -1051,6 +1575,9 @@ where
     loop {
         let read = reader.read(&mut buf).await?;
         if read == 0 {
+            if let Some(file) = &mut log_file {
+                file.flush().await?;
+            }
             return Ok(LimitedOutput {
                 bytes: out,
                 truncated,
@@ -1074,6 +1601,159 @@ where
             out.extend_from_slice(&buf[..read]);
         }
     }
+}
+
+async fn read_limited_and_filter_adapter_events<R>(
+    reader: &mut R,
+    limit: usize,
+    stream_stderr: bool,
+    mut log_file: Option<tokio::fs::File>,
+    adapter_events: Option<&AdapterEventSender>,
+    adapter_log_lines: Option<&AdapterLogLineSender>,
+) -> anyhow::Result<LimitedOutput>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut err = tokio::io::stderr();
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut buf = [0_u8; 8192];
+    let mut pending_line = String::new();
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            if !pending_line.is_empty() {
+                let line = std::mem::take(&mut pending_line);
+                handle_stderr_line(
+                    &line,
+                    adapter_events,
+                    &mut err,
+                    &mut log_file,
+                    stream_stderr,
+                    limit,
+                    &mut out,
+                    &mut truncated,
+                    adapter_log_lines,
+                )
+                .await?;
+            }
+            if let Some(file) = &mut log_file {
+                file.flush().await?;
+            }
+            return Ok(LimitedOutput {
+                bytes: out,
+                truncated,
+            });
+        }
+        pending_line.push_str(&String::from_utf8_lossy(&buf[..read]));
+        while let Some(newline) = pending_line.find('\n') {
+            let line = pending_line.drain(..=newline).collect::<String>();
+            handle_stderr_line(
+                &line,
+                adapter_events,
+                &mut err,
+                &mut log_file,
+                stream_stderr,
+                limit,
+                &mut out,
+                &mut truncated,
+                adapter_log_lines,
+            )
+            .await?;
+        }
+        while pending_line.chars().count() >= MAX_ADAPTER_STDERR_LINE_CHARS {
+            let split_at = byte_index_after_chars(&pending_line, MAX_ADAPTER_STDERR_LINE_CHARS)
+                .unwrap_or(pending_line.len());
+            let line = pending_line.drain(..split_at).collect::<String>();
+            handle_stderr_line(
+                &line,
+                adapter_events,
+                &mut err,
+                &mut log_file,
+                stream_stderr,
+                limit,
+                &mut out,
+                &mut truncated,
+                adapter_log_lines,
+            )
+            .await?;
+        }
+    }
+}
+
+async fn handle_stderr_line(
+    line: &str,
+    adapter_events: Option<&AdapterEventSender>,
+    err: &mut tokio::io::Stderr,
+    log_file: &mut Option<tokio::fs::File>,
+    stream_stderr: bool,
+    limit: usize,
+    out: &mut Vec<u8>,
+    truncated: &mut bool,
+    adapter_log_lines: Option<&AdapterLogLineSender>,
+) -> anyhow::Result<()> {
+    let mut trimmed = line.to_string();
+    trim_line_ending(&mut trimmed);
+    if emit_adapter_event_line(adapter_events, &trimmed).await {
+        return Ok(());
+    }
+    if !trimmed.is_empty() {
+        if let Some(sender) = adapter_log_lines {
+            let _ = sender.send(trimmed.clone()).await;
+        }
+    }
+    let bytes = line.as_bytes();
+    if stream_stderr {
+        err.write_all(bytes).await?;
+    }
+    if let Some(file) = log_file {
+        file.write_all(bytes).await?;
+    }
+    append_limited_output(out, truncated, limit, bytes);
+    Ok(())
+}
+
+fn append_limited_output(out: &mut Vec<u8>, truncated: &mut bool, limit: usize, bytes: &[u8]) {
+    let remaining = limit.saturating_sub(out.len());
+    if remaining == 0 {
+        *truncated = true;
+    } else if bytes.len() > remaining {
+        out.extend_from_slice(&bytes[..remaining]);
+        *truncated = true;
+    } else {
+        out.extend_from_slice(bytes);
+    }
+}
+
+async fn emit_adapter_event_line(adapter_events: Option<&AdapterEventSender>, line: &str) -> bool {
+    let Some(payload) = line.strip_prefix(APP_ADAPTER_EVENT_PREFIX) else {
+        return false;
+    };
+    let Some(adapter_events) = adapter_events else {
+        return false;
+    };
+    match serde_json::from_str::<DagExecutionEvent>(payload.trim()) {
+        Ok(event) => {
+            let _ = adapter_events.send(event).await;
+        }
+        Err(err) => {
+            tracing::warn!(err = %err, "ignored malformed AgentHero adapter event");
+        }
+    }
+    true
+}
+
+fn trim_line_ending(line: &mut String) {
+    while line.ends_with('\n') || line.ends_with('\r') {
+        line.pop();
+    }
+}
+
+fn byte_index_after_chars(value: &str, count: usize) -> Option<usize> {
+    if count == 0 {
+        return Some(0);
+    }
+    value.char_indices().nth(count).map(|(index, _)| index)
 }
 
 struct LimitedOutput {
@@ -1227,6 +1907,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn required_observability_contract() -> AppObservabilityContract {
+        AppObservabilityContract {
+            events: true,
+            logs: true,
+            status: true,
+            event_stream: true,
+            lifecycle_events: vec![
+                "app_action.started".to_string(),
+                "app_action.completed".to_string(),
+                "app_action.failed".to_string(),
+            ],
+            trace_fields: agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect(),
+        }
+    }
+
     #[test]
     fn queued_app_run_stream_flag_requests_outer_adapter_stderr_streaming() {
         let mut input = DagIo::default();
@@ -1266,14 +1964,256 @@ mod tests {
         let log_path = dir.join("run.log");
         let mut reader: &[u8] = b"line one\nline two\n";
 
-        let output = read_limited_and_tee_stderr(&mut reader, 1024, false, Some(log_path.clone()))
-            .await
-            .unwrap();
+        let output = read_limited_and_tee_stderr(
+            &mut reader,
+            1024,
+            false,
+            Some(log_path.clone()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output.bytes, b"line one\nline two\n");
         assert_eq!(
             std::fs::read_to_string(&log_path).unwrap(),
             "line one\nline two\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stderr_reader_emits_prefixed_adapter_events() {
+        let payload = serde_json::json!({
+            "level": "info",
+            "event_type": "node.started",
+            "node_id": "compile",
+            "message": "compile started",
+            "payload": {
+                "node_id": "compile",
+                "attempt": 1
+            }
+        });
+        let line = format!(
+            "plain stderr\n{}{}\n",
+            agenthero_agent_runtime::APP_ADAPTER_EVENT_PREFIX,
+            serde_json::to_string(&payload).unwrap()
+        );
+        let mut reader = tokio::io::BufReader::new(line.as_bytes());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+
+        let output =
+            read_limited_and_tee_stderr(&mut reader, 4096, false, None, Some(tx), Some(log_tx))
+                .await
+                .unwrap();
+
+        let event = rx.recv().await.expect("adapter event should be emitted");
+        assert_eq!(event.event_type, "node.started");
+        assert_eq!(event.node_id.as_deref(), Some("compile"));
+        assert_eq!(event.payload["attempt"], serde_json::json!(1));
+        assert_eq!(
+            log_rx
+                .recv()
+                .await
+                .expect("raw stderr line should be emitted"),
+            "plain stderr"
+        );
+        assert!(log_rx.try_recv().is_err());
+        let stderr = String::from_utf8(output.bytes).unwrap();
+        assert!(stderr.contains("plain stderr"));
+        assert!(!stderr.contains(agenthero_agent_runtime::APP_ADAPTER_EVENT_PREFIX));
+    }
+
+    #[tokio::test]
+    async fn stderr_reader_flushes_long_newline_free_lines() {
+        let input = vec![b'x'; 20_000];
+        let mut reader = tokio::io::BufReader::new(input.as_slice());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+
+        let output =
+            read_limited_and_tee_stderr(&mut reader, 4096, false, None, None, Some(log_tx))
+                .await
+                .unwrap();
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = log_rx.try_recv() {
+            chunks.push(chunk);
+        }
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 4096));
+        assert_eq!(output.bytes.len(), 4096);
+        assert!(output.truncated);
+    }
+
+    #[tokio::test]
+    async fn adapter_process_cancellation_kills_child_and_drains_observable_output() {
+        let manifest = AppManifest {
+            version: 1,
+            slug: "cancel-smoke".to_string(),
+            label: "Cancel Smoke".to_string(),
+            description: String::new(),
+            observability: required_observability_contract(),
+            adapter: AppAdapter::Process {
+                command: "/bin/sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    format!(
+                        "printf '{}{}\\n' >&2; sleep 10",
+                        agenthero_agent_runtime::APP_ADAPTER_EVENT_PREFIX,
+                        serde_json::json!({
+                            "level": "info",
+                            "event_type": "node.started",
+                            "node_id": "sleep",
+                            "message": "sleep started",
+                            "payload": {"attempt": 1}
+                        })
+                    ),
+                ],
+                fallback_command: None,
+                fallback_args: Vec::new(),
+                timeout_secs: Some(30),
+                output_limit_bytes: Some(4096),
+            },
+            actions: vec![AppManifestAction {
+                id: "run".to_string(),
+                command: vec!["run".to_string()],
+                dag_type: "cancel-smoke".to_string(),
+                description: String::new(),
+                options: Vec::new(),
+                retry: AppActionRetryPolicy::default(),
+            }],
+            deployments: Vec::new(),
+        };
+        let request = AppAdapterRequest::new(
+            "cancel-smoke",
+            "run",
+            "cancel-smoke",
+            Vec::new(),
+            DagIo::default(),
+            true,
+            false,
+        );
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+
+        let task = tokio::spawn(async move {
+            run_adapter_process(
+                &manifest,
+                &request,
+                false,
+                Some(event_tx),
+                None,
+                Some(cancel_rx),
+            )
+            .await
+        });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("adapter event should be drained before cancellation completes")
+            .expect("adapter event should be forwarded");
+        assert_eq!(event.event_type, "node.started");
+        cancel_tx
+            .send(true)
+            .expect("cancellation receiver is alive");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("adapter cancellation cleanup should return promptly")
+            .expect("adapter task should join");
+        let err = result.expect_err("cancelled adapter should return an error");
+        assert!(format!("{err:#}").contains("cancelled"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adapter_process_cancellation_kills_descendant_processes_before_late_side_effect() {
+        let run_id = uuid::Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("agenthero-adapter-cancel-test-{run_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("descendant-survived");
+        let script = format!(
+            "MARKER='{}'; printf '{}{}\\n' >&2; /bin/sh -c 'sleep 5; printf leaked > \"$1\"' child \"$MARKER\"",
+            marker.display(),
+            agenthero_agent_runtime::APP_ADAPTER_EVENT_PREFIX,
+            serde_json::json!({
+                "level": "info",
+                "event_type": "node.started",
+                "node_id": "descendant",
+                "message": "descendant started",
+                "payload": {"attempt": 1}
+            })
+        );
+        let manifest = AppManifest {
+            version: 1,
+            slug: "cancel-descendant-smoke".to_string(),
+            label: "Cancel Descendant Smoke".to_string(),
+            description: String::new(),
+            observability: required_observability_contract(),
+            adapter: AppAdapter::Process {
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                fallback_command: None,
+                fallback_args: Vec::new(),
+                timeout_secs: Some(30),
+                output_limit_bytes: Some(4096),
+            },
+            actions: vec![AppManifestAction {
+                id: "run".to_string(),
+                command: vec!["run".to_string()],
+                dag_type: "cancel-descendant-smoke".to_string(),
+                description: String::new(),
+                options: Vec::new(),
+                retry: AppActionRetryPolicy::default(),
+            }],
+            deployments: Vec::new(),
+        };
+        let request = AppAdapterRequest::new(
+            "cancel-descendant-smoke",
+            "run",
+            "cancel-descendant-smoke",
+            Vec::new(),
+            DagIo::default(),
+            true,
+            false,
+        );
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+
+        let task = tokio::spawn(async move {
+            run_adapter_process(
+                &manifest,
+                &request,
+                false,
+                Some(event_tx),
+                None,
+                Some(cancel_rx),
+            )
+            .await
+        });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("adapter event should be drained before cancellation completes")
+            .expect("adapter event should be forwarded");
+        assert_eq!(event.event_type, "node.started");
+        cancel_tx
+            .send(true)
+            .expect("cancellation receiver is alive");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("adapter cancellation cleanup should return promptly")
+            .expect("adapter task should join");
+        let err = result.expect_err("cancelled adapter should return an error");
+        assert!(format!("{err:#}").contains("cancelled"));
+
+        tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+        assert!(
+            !marker.exists(),
+            "adapter cancellation left a descendant process alive long enough to write {marker:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

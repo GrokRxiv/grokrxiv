@@ -1511,6 +1511,13 @@ fn sanitize_inline(s: &str) -> String {
     // surface literally to the web UI.
     let linebreaks = Regex::new(r"\\\\(?:\*?\s*\[[^\]]*\])?").unwrap();
     t = linebreaks.replace_all(&t, " ").to_string();
+    // Strip layout-only spacing commands such as `\vspace{-1cm}` that are
+    // common in title blocks but should never leak into review titles.
+    let layout_commands = Regex::new(
+        r"\\(?:vspace|hspace|kern|mkern|mskip|hskip|vskip|raisebox|phantom|hphantom|vphantom)\*?(?:\s*\[[^\]]*\])?(?:\s*\{[^{}\n]*\}){1,2}",
+    )
+    .unwrap();
+    t = layout_commands.replace_all(&t, " ").to_string();
     // Strip bare formatting commands (no braces): font sizes, weight, family,
     // alignment markers. Word-boundary on the right so `\largesomething` isn't
     // mangled.
@@ -2104,6 +2111,12 @@ We use the polynomial method of Croot, Lev, and Pach~\cite{CLP}.
         assert_eq!(
             cleaned,
             "Harness Engineering as Categorical Architecture Structural Guarantees Are Harness-Level Properties Preprint -- Feedback Welcome"
+        );
+
+        let layout = "\\vspace{-1cm}Structured Quotients in Real Homotopy Theory";
+        assert_eq!(
+            sanitize_inline(layout),
+            "Structured Quotients in Real Homotopy Theory"
         );
     }
 

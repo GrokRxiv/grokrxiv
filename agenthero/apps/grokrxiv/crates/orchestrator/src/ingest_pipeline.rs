@@ -420,6 +420,9 @@ pub async fn run_ingest_pipeline(
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
     // --- Stages 1+2: deterministic acquisition + format conversion ---
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: acquisition starting via arXiv source fetch"
+    ));
     let _permit = state.arxiv.acquire().await;
     let staged = {
         let s = grokrxiv_ingest::pipeline::ingest_staged(arxiv_id)
@@ -431,18 +434,62 @@ pub async fn run_ingest_pipeline(
     let submitted_date = staged.meta.submitted_date;
     let paper_id = db::upsert_paper(pool, &staged.extract, submitted_date).await?;
     info!(arxiv_id, %paper_id, "Stage 1+2 complete");
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: acquisition ok paper_id={paper_id}"
+    ));
 
     // --- Idempotent cache check ---
     if !opts.no_cache {
+        crate::cli_status::emit(format!("extract {arxiv_id}: cache check starting"));
         if let Some(existing) = db::read_paper_assets(pool, paper_id).await? {
             if matches!(existing.extraction_status, db::ExtractionStatus::Ready) {
                 if let Some(git_path) = existing.git_path.as_deref() {
-                    info!(arxiv_id, %paper_id, git_path, "extraction_status=ready; short-circuiting");
-                    return load_cached(paper_id, git_path, existing.storage_prefix.as_deref())
-                        .await;
+                    let repo_root = data_repo_path_from_env();
+                    let cache_stale = match cached_references_need_citation_context_rebuild(
+                        &repo_root, git_path,
+                    ) {
+                        Ok(true) => {
+                            info!(
+                                arxiv_id,
+                                %paper_id,
+                                git_path,
+                                "cached references are missing citation contexts; rerunning extraction"
+                            );
+                            crate::cli_status::emit(format!(
+                                "extract {arxiv_id}: cache stale citation contexts; running extraction"
+                            ));
+                            true
+                        }
+                        Ok(false) => false,
+                        Err(err) => {
+                            warn!(
+                                arxiv_id,
+                                %paper_id,
+                                git_path,
+                                error = %err,
+                                "could not audit cached citation contexts; using ready cache"
+                            );
+                            false
+                        }
+                    };
+                    if cache_stale {
+                        crate::cli_status::emit(format!(
+                            "extract {arxiv_id}: cache miss; running extraction"
+                        ));
+                    } else {
+                        info!(arxiv_id, %paper_id, git_path, "extraction_status=ready; short-circuiting");
+                        crate::cli_status::emit(format!(
+                            "extract {arxiv_id}: cache hit git_path={git_path}"
+                        ));
+                        return load_cached(paper_id, git_path, existing.storage_prefix.as_deref())
+                            .await;
+                    }
                 }
             }
         }
+        crate::cli_status::emit(format!(
+            "extract {arxiv_id}: cache miss; running extraction"
+        ));
     }
 
     // Mark running — concurrent ingests will see this via read_paper_assets.
@@ -477,6 +524,9 @@ async fn run_inner(
     recover_source_bibliography_if_needed(&mut extract, staged.source_tarball.as_deref());
     let mut bundle = build_initial_bundle(&staged, &extract);
     let mut stage_reports: Vec<StageReport> = Vec::new();
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: source-to-body conversion complete; building local artifacts"
+    ));
     stage_reports.push(
         StageReport::ok("acquisition", None, None, Vec::new()).with_provenance(
             NodeProvenance::ingest_source(
@@ -802,9 +852,21 @@ async fn run_inner(
     // the unchecked default.
     #[cfg(feature = "grokrxiv-verifier")]
     if let Some(references) = bundle.references.as_mut() {
+        let citation_count = references
+            .get("citations")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        crate::cli_status::emit(format!(
+            "extract {arxiv_id}: citation resolver starting citations={citation_count}"
+        ));
         populate_citation_validations(state, &extract, references).await;
+        crate::cli_status::emit(format!("extract {arxiv_id}: citation resolver complete"));
     }
     if let Some(references) = &bundle.references {
+        crate::cli_status::emit(format!(
+            "extract {arxiv_id}: citation validation report building"
+        ));
         bundle.citation_validation_report = Some(build_citation_validation_report(references));
     }
     apply_macros(&mut bundle, macros_res); // currently records to extraction_report
@@ -838,11 +900,20 @@ async fn run_inner(
         .map(|s| s.name.as_str())
         .collect();
 
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: artifact persistence starting stages={}",
+        stages_run.join(",")
+    ));
     let paper_artifacts = build_paper_artifacts(opts)?;
     let pointer = paper_artifacts
         .persist(paper_id.to_string(), bundle.clone(), &stages_run, None)
         .await
         .context("PaperArtifacts::persist (Stage 8)")?;
+    crate::cli_status::emit(format!(
+        "extract {arxiv_id}: artifact persistence ok git_path={} commit={}",
+        pointer.git_path,
+        pointer.git_commit_sha.as_deref().unwrap_or("-")
+    ));
     db::persist_paper_extraction(
         pool,
         paper_id,
@@ -1532,7 +1603,7 @@ fn extraction_budget_from_routing(
 
 pub(crate) fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
     let routing = load_extraction_routing(role);
-    let (provider, model) = match routing.as_ref() {
+    let (yaml_provider, yaml_model) = match routing.as_ref() {
         Some(r) => (r.provider.clone(), r.model.clone()),
         None => (
             "claude".to_string(),
@@ -1540,6 +1611,8 @@ pub(crate) fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) 
                 .unwrap_or_else(|_| "claude-haiku-4-5".to_string()),
         ),
     };
+    let provider = crate::runtime_config::provider_override_for_role(role).unwrap_or(yaml_provider);
+    let model = crate::runtime_config::model_override_for_role(role).unwrap_or(yaml_model);
     let mut spec = AgentSpec::api_default(role.to_string(), provider, model);
     spec.runner = runner_kind;
     if let Some(r) = routing {
@@ -1966,6 +2039,11 @@ async fn populate_citation_validations(
 ) {
     use grokrxiv_verifier::{CitationVerifier, Verifier, VerifierContext};
 
+    crate::cli_status::emit(format!(
+        "extract {}: citation resolver API validation starting bibliography_entries={}",
+        extract.arxiv_id,
+        extract.bibliography.len()
+    ));
     let ctx = VerifierContext::for_paper(extract, &state.http);
     let verifier = CitationVerifier::new();
     let verify = verifier.verify(&Value::Null, &ctx);
@@ -1976,6 +2054,10 @@ async fn populate_citation_validations(
                 arxiv_id = extract.arxiv_id.as_str(),
                 "citation verification exceeded budget; leaving validations unset"
             );
+            crate::cli_status::emit(format!(
+                "extract {}: citation resolver API validation exceeded budget",
+                extract.arxiv_id
+            ));
             return;
         }
     };
@@ -1986,6 +2068,11 @@ async fn populate_citation_validations(
         return;
     }
     apply_resolver_entries_to_references(references, entries);
+    crate::cli_status::emit(format!(
+        "extract {}: citation resolver API validation complete checked={}",
+        extract.arxiv_id,
+        entries.len()
+    ));
 }
 
 /// Pure join: stamp each `references.json` citation's `validation` from its
@@ -2083,7 +2170,7 @@ fn validation_from_resolver_entry(entry: &Value) -> Option<Value> {
     Some(validation)
 }
 
-fn build_citation_validation_report(references: &Value) -> Value {
+pub(crate) fn build_citation_validation_report(references: &Value) -> Value {
     let citations = references
         .get("citations")
         .and_then(Value::as_array)
@@ -2128,15 +2215,7 @@ fn build_citation_validation_report(references: &Value) -> Value {
             let raw_status = validation
                 .get("status")
                 .and_then(Value::as_str)
-                .unwrap_or_else(|| {
-                    if citation.get("doi").and_then(Value::as_str).is_some()
-                        || citation.get("arxiv_id").and_then(Value::as_str).is_some()
-                    {
-                        "verified"
-                    } else {
-                        "not_checked"
-                    }
-                });
+                .unwrap_or("not_checked");
             let status = match raw_status {
                 "resolved" | "verified" => "verified",
                 // `insufficient_metadata` = a citation whose bibliographic text we never
@@ -2263,7 +2342,13 @@ fn build_citation_validation_report(references: &Value) -> Value {
         matches!(
             result.get("status").and_then(Value::as_str),
             Some(
-                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+                "retracted"
+                    | "unresolved"
+                    | "unverified"
+                    | "malformed"
+                    | "conflict"
+                    | "not_found"
+                    | "not_checked"
             )
         )
     });
@@ -2271,13 +2356,18 @@ fn build_citation_validation_report(references: &Value) -> Value {
         if matches!(
             result.get("status").and_then(Value::as_str),
             Some(
-                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+                "retracted"
+                    | "unresolved"
+                    | "unverified"
+                    | "malformed"
+                    | "conflict"
+                    | "not_found"
+                    | "not_checked"
             )
         ) {
-            let action = if result.get("status").and_then(Value::as_str) == Some("not_checked") {
-                "validate_reference"
-            } else {
-                "repair_or_remove_reference"
+            let action = match result.get("status").and_then(Value::as_str) {
+                Some("not_checked" | "unverified") => "validate_reference",
+                _ => "repair_or_remove_reference",
             };
             remediation_items.push(json!({
                 "key": result.get("key").cloned().unwrap_or(Value::Null),
@@ -3422,10 +3512,7 @@ async fn load_cached(
     git_path: &str,
     storage_prefix: Option<&str>,
 ) -> Result<IngestResult> {
-    let repo_root: PathBuf = std::env::var("GROKRXIV_DATA_REPO_PATH")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"));
+    let repo_root = data_repo_path_from_env();
     let review_input = load_review_input_from_disk(&repo_root, git_path)?;
     let extract = load_paper_extract(&repo_root, &review_input)?;
     let pointer = PersistedPointer {
@@ -3443,6 +3530,63 @@ async fn load_cached(
         review_input,
         extract,
     })
+}
+
+fn data_repo_path_from_env() -> PathBuf {
+    std::env::var("GROKRXIV_DATA_REPO_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Users/mlong/Documents/Development/grokrxiv-data"))
+}
+
+fn cached_references_need_citation_context_rebuild(
+    repo_root: &Path,
+    git_path: &str,
+) -> Result<bool> {
+    let review_input = load_review_input_from_disk(&repo_root, git_path)?;
+    if review_input.body_markdown.starts_with("supabase://")
+        || review_input.references.starts_with("supabase://")
+    {
+        return Ok(false);
+    }
+    let body_path = repo_root.join(&review_input.body_markdown);
+    let references_path = repo_root.join(&review_input.references);
+    let body = std::fs::read_to_string(&body_path)
+        .with_context(|| format!("read cached body.md from {}", body_path.display()))?;
+    let references: Value =
+        serde_json::from_slice(&std::fs::read(&references_path).with_context(|| {
+            format!(
+                "read cached references.json from {}",
+                references_path.display()
+            )
+        })?)
+        .with_context(|| {
+            format!(
+                "parse cached references.json from {}",
+                references_path.display()
+            )
+        })?;
+    let citations = references
+        .get("citations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if citations.is_empty() {
+        return Ok(false);
+    }
+    let context_count = citations
+        .iter()
+        .map(|citation| {
+            citation
+                .get("contexts")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        })
+        .sum::<usize>();
+    Ok(context_count == 0
+        && !grokrxiv_extraction::extraction::citations::tools::extract_citation_sites(&body)
+            .is_empty())
 }
 
 fn load_review_input_from_disk(repo_root: &Path, git_path: &str) -> Result<ReviewInput> {
@@ -4056,6 +4200,49 @@ mod a4_tests {
             .any(|item| item["key"] == "missing2026"));
     }
 
+    #[test]
+    fn cached_tex_citations_without_contexts_need_rebuild() {
+        let repo = tempfile::tempdir().unwrap();
+        let paper_dir = repo.path().join("papers").join("2606.24837");
+        std::fs::create_dir_all(&paper_dir).unwrap();
+        std::fs::write(
+            paper_dir.join("review_input.json"),
+            serde_json::to_vec(&ReviewInput {
+                schema_version: "1".into(),
+                arxiv_id: "2606.24837".into(),
+                metadata: "papers/2606.24837/metadata.json".into(),
+                body_markdown: "papers/2606.24837/body.md".into(),
+                sections: "papers/2606.24837/sections.json".into(),
+                equations: "papers/2606.24837/equations.json".into(),
+                references: "papers/2606.24837/references.json".into(),
+                theorem_graph: "papers/2606.24837/theorem_graph.json".into(),
+                extraction_report: "papers/2606.24837/extraction_report.json".into(),
+                pdf_uri: None,
+                source_uri: None,
+                semantic_ast_uri: None,
+                vlm_raw_uri: None,
+                embeddings_uri: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("body.md"),
+            "## Intro\n\nBV formalism \\cites{Batalin1977,Batalin1981} matters.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            paper_dir.join("references.json"),
+            r#"{"citations":[{"key":"Batalin1977","raw":"Batalin1977: title=x","contexts":[]}]}"#,
+        )
+        .unwrap();
+
+        assert!(
+            cached_references_need_citation_context_rebuild(repo.path(), "papers/2606.24837")
+                .unwrap()
+        );
+    }
+
     #[cfg(feature = "grokrxiv-verifier")]
     fn citation_report_schema_validator() -> jsonschema::Validator {
         let schema: Value = serde_json::from_str(include_str!(
@@ -4332,6 +4519,31 @@ mod a4_tests {
             .expect("remediations")
             .iter()
             .any(|item| item["action"] == "validate_reference"));
+    }
+
+    #[test]
+    fn citation_validation_report_does_not_verify_identifier_without_validation() {
+        let references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "smith2026: A. Smith, A Paper, doi:10.1000/example.",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "venue": null,
+                "year": 2026,
+                "doi": "10.1000/example",
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "Intro", "snippet": "The paper cites Smith."}]
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+
+        assert_eq!(report["status"], "needs_remediation");
+        assert_eq!(report["resolver_results"][0]["status"], "not_checked");
     }
 
     #[test]

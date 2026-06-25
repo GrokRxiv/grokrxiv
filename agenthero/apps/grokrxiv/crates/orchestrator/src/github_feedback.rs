@@ -150,7 +150,7 @@ fn readable_meta_summary_markdown(summary: &str) -> String {
     if summary.contains("\n\n") {
         return summary
             .split("\n\n")
-            .map(|part| collapse_inline_whitespace(part).trim().to_string())
+            .map(|part| display_feedback_text(collapse_inline_whitespace(part).trim()))
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -164,7 +164,7 @@ fn readable_meta_summary_markdown(summary: &str) -> String {
         let end = idx + ch.len_utf8();
         let sentence = collapse_inline_whitespace(&summary[start..end]);
         if !sentence.trim().is_empty() {
-            sentences.push(sentence.trim().to_string());
+            sentences.push(display_feedback_text(sentence.trim()));
         }
         start = summary[end..]
             .find(|c: char| !c.is_whitespace())
@@ -174,14 +174,24 @@ fn readable_meta_summary_markdown(summary: &str) -> String {
     if start < summary.len() {
         let sentence = collapse_inline_whitespace(&summary[start..]);
         if !sentence.trim().is_empty() {
-            sentences.push(sentence.trim().to_string());
+            sentences.push(display_feedback_text(sentence.trim()));
         }
     }
     if sentences.len() <= 1 {
-        collapse_inline_whitespace(summary).trim().to_string()
+        display_feedback_text(collapse_inline_whitespace(summary).trim())
     } else {
         sentences.join("\n\n")
     }
+}
+
+#[cfg(feature = "grokrxiv-render")]
+fn display_feedback_text(text: &str) -> String {
+    grokrxiv_render::display_text(text)
+}
+
+#[cfg(not(feature = "grokrxiv-render"))]
+fn display_feedback_text(text: &str) -> String {
+    text.trim().to_string()
 }
 
 fn is_sentence_boundary(text: &str, punctuation_idx: usize) -> bool {
@@ -335,7 +345,7 @@ fn markdown_list(value: Option<&Value>) -> String {
         .iter()
         .filter_map(Value::as_str)
         .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("- {}", s.trim()))
+        .map(|s| format!("- {}", display_feedback_text(s.trim())))
         .collect();
     if lines.is_empty() {
         "- None recorded.".to_string()
@@ -448,5 +458,33 @@ mod tests {
         assert!(!failure
             .details_md
             .contains("worth preserving. The technical review identifies"));
+    }
+
+    #[test]
+    fn gate_failure_comment_normalizes_raw_math_without_wrapping_status_ids() {
+        let gate = crate::review_gate::PublicationGate {
+            verdict: crate::review_gate::GateVerdict::Fail,
+            reason: "Meta-review recommendation is `major_revision`, not `accept`.".to_string(),
+            recommendation: "major_revision".to_string(),
+        };
+        let meta = serde_json::json!({
+            "summary": "The review_role specialist marked review_status but flagged Q_4^(2)(R)_S.",
+            "weaknesses": [
+                "The relation A_3(R) ≅ C_3(R)_S is asserted without proof."
+            ],
+            "questions": [
+                "Where is M_n(P_n(T))=T+T^{2n} verified?"
+            ]
+        });
+        let failure = gate_failure_from_publication_gate(Uuid::nil(), &gate, Some(&meta));
+
+        assert!(failure.details_md.contains("review_role"));
+        assert!(failure.details_md.contains("review_status"));
+        assert!(!failure.details_md.contains("$review_role$"));
+        assert!(!failure.details_md.contains("$review_status$"));
+        assert!(failure.details_md.contains("$Q_4^(2)(R)_S$"));
+        assert!(failure.details_md.contains("$A_3(R)$"));
+        assert!(failure.details_md.contains("$C_3(R)_S$"));
+        assert!(failure.details_md.contains("$M_n(P_n(T))=T+T^{2n}$"));
     }
 }

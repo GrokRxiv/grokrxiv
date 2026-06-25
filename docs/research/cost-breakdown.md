@@ -8,8 +8,8 @@ Single real run on arXiv `2605.12484` after FP4 close-out.
 
 | Role | Model | Tokens in | Tokens out | Cost | % of total |
 |---|---|---|---|---|---|
-| `citation` | gemini-2.5-flash | 609 | 53 | <$0.001 | ~0% |
-| `novelty` | gemini-2.5-flash | 608 | 597 | <$0.001 | ~0% |
+| `citation` | Gemini 3.5 Flash (Medium) | 609 | 53 | <$0.001 | ~0% |
+| `novelty` | Gemini 3.5 Flash (Medium) | 608 | 597 | <$0.001 | ~0% |
 | `summary` | claude-haiku-4-5 | 891 | 526 | $0.003 | 1% |
 | `reproducibility` | gpt-5.5 | 869 | 503 | $0.005 | 1% |
 | `technical_correctness` | claude-opus-4-7 | 1,448 | 1,800 | $0.157 | 41% |
@@ -111,9 +111,9 @@ Real M1 smoke run on arXiv `2605.12484` after the four FP6 cost fixes landed (`r
 
 | Role | Model | Tokens in | Tokens out | Latency (ms) | Verifier |
 |---|---|---|---|---|---|
-| `citation` | gemini-2.5-flash | 634 | 399 | 11,483 | pass |
-| `novelty` | gemini-2.5-flash | 633 | 429 | 14,005 | pass |
-| `summary` | claude-haiku-4-5-20251001 | 915 | 550 | 6,504 | pass |
+| `citation` | Gemini 3.5 Flash (Medium) | 634 | 399 | 11,483 | pass |
+| `novelty` | Gemini 3.5 Flash (Medium) | 633 | 429 | 14,005 | pass |
+| `summary` | claude-haiku-4-5 | 915 | 550 | 6,504 | pass |
 | `reproducibility` | gpt-5.5 | 894 | 688 | 13,508 | pass |
 | `technical_correctness` | claude-opus-4-7 | 1,470 | 1,715 | 23,522 | pass |
 | `meta_reviewer` | claude-sonnet-4-6 | **3** | 1,198 | 23,152 | pass |

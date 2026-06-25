@@ -87,19 +87,31 @@ files are gitignored.
 | `AGENTHERO_APPS_ROOT`           | _none_                      | Override installed `agenthero/apps` root, mainly for packaged/container runtimes |
 | `AGENTHERO_AGENTS_DIR`          | _none_                      | Override app agent config directory, mainly for packaged/container runtimes |
 | `AGENTHERO_DAGS_DIR`            | _none_                      | Override app DAG manifest directory, mainly for packaged/container runtimes |
+| `GROKRXIV_<ROLE>_PROVIDER`      | YAML default                | Optional role provider override; same role as `--provider-for <role>=...`; useful for switching to Gemini/agy backup when desired |
 | `GROKRXIV_<ROLE>_MODEL`         | YAML default                | Optional role model override; same role as `--model-for <role>=...` |
 | `GROKRXIV_<ROLE>_TIMEOUT_SECS`  | YAML default                | Optional CLI subprocess timeout override for one role |
+| `AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER` | _unset_          | Optional local CLI quota fallback provider. Set to `gemini` only when you want Antigravity/agy as the backup route after the primary CLI reports quota |
+| `AGENTHERO_CLI_QUOTA_FALLBACK_MODEL` | `Gemini 3.5 Flash (Medium)` when fallback provider is `gemini` | Optional fallback model. Override to another current Antigravity model name when needed |
 | `GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES` | `32`             | Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS` | `240`          | Maximum TeX theorem-inventory blocks mirrored into the local source context file for fallback tool-loop diagnostics |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_CHARS` | `500000`        | Character budget for the local source context file; does not cap `theorem_inventory.json` |
-| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS` | `8`            | Maximum theorem-inventory items sent to one typed-transcription LLM batch |
+| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS` | `1`            | Maximum theorem-level inventory items sent to one typed-transcription LLM batch; keep this small because Sonnet typed-IR is advisory and per-item bounded |
 | `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS` | `30000`        | Character budget for one typed-transcription LLM batch |
 | `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory typed transcription calls |
+| `GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER` | `claude`                | Provider key for typed-IR transcription; set to `gemini` only to use agy as a backup route |
+| `GROKRXIV_FORMALIZE_TYPED_IR_MODEL` | `claude-sonnet-4-6`     | Model passed to the selected typed-IR provider |
+| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS` | `120`              | Per-batch timeout floor for typed-IR transcription; failed or stale model output is recorded as a failure, not converted to fake math IR |
+| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS` | `1800`        | Adaptive timeout ceiling for typed-IR Sonnet batches when recent successful benchmarks show longer latency |
+| `GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY` | `4`             | Maximum typed-IR transcription batches running concurrently |
+| `GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT` | `0`             | Include definition/remark/context inventory entries in typed-IR; default transcribes only theorem-level Lean targets |
+| `GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS` | `8`                 | Maximum selected theorem-level inventory items for the default typed-IR pass; set `0` for full selected inventory |
+| `GROKRXIV_FORMALIZE_TYPED_IR_ONLY` | `0`                         | Benchmark mode: run typed-IR artifact refresh through `agh app run grokrxiv formalize <review_id>` and then stop before semantic/Lean stages |
 | `GROKRXIV_FORMALIZE_QUEUE_AUTOSTART` | `1`                    | Start a one-shot `agh app work --run-id <job>` worker after queueing Lean formalization; set `0`/`false`/`no`/`off` to require manual workers |
 | `GROKRXIV_LEAN_TARGET_CONCURRENCY` | `3`                        | Maximum concurrent per-theorem Lean author/check/fix jobs |
 | `GROKRXIV_LEAN_MAX_TARGETS`      | `8`                         | MVP default Lean target cap; set `0` for full theorem-level mode, or another positive value for an explicit budget |
 | `AGENTHERO_AGH_BIN`              | `agh`                       | Binary used by GrokRxiv when autostarting a one-shot app-run worker |
 | `AGENTHERO_RUNTIME_ROOT`         | repo-root `.agenthero`       | AgentHero runtime state root; app-run logs are written under `$AGENTHERO_RUNTIME_ROOT/app_runs/` |
+| `AGENTHERO_LOG_FILE`             | _none_                      | Optional structured AgentHero process log destination; writes JSONL diagnostics for audit pipelines |
 | `AGENTHERO_SCHEDULER_WORKERS`    | `1`                         | Number of local app-run scheduler workers started by `agh serve` |
 | `AGENTHERO_MODERATOR`           | _none_                      | Moderator handle persisted on `moderation_queue` rows |
 | `GROKRXIV_PANDOC_BIN`          | `pandoc`                    | TeX-to-Markdown converter binary. Docker images install official Pandoc by default; local installs use PATH unless overridden |
@@ -129,9 +141,24 @@ files are gitignored.
 | `CODEX_HOME`                 | Where the local `codex` CLI looks for auth (`~/.codex` typical) |
 | `AGENTHERO_ANTIGRAVITY_BIN`  | Optional override for the local Antigravity CLI binary used by `provider: gemini` roles. Defaults to `agy` |
 | `AGENTHERO_AGY_BIN`          | Short alias for `AGENTHERO_ANTIGRAVITY_BIN` |
+| `AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER` | Disabled unless set. Use `gemini` to fall back to Antigravity/agy only after a structured CLI quota error |
+| `AGENTHERO_CLI_QUOTA_FALLBACK_MODEL` | Fallback model for the selected provider; defaults to `Gemini 3.5 Flash (Medium)` for agy/Gemini |
 | `AGENTHERO_CLI_TIMEOUT_SECS`  | Global per-call timeout in the CLI runner. Role-specific `GROKRXIV_<ROLE>_TIMEOUT_SECS` vars take precedence |
 | `GROKRXIV_CITATION_REVIEW_DETERMINISTIC` | Set `1` only to force the old deterministic no-LLM citation review fallback |
 | `AGENTHERO_EXTRACTION_TOOL_FALLBACK` | Legacy `api` escape hatch for old scripts; refused unless direct provider API is explicitly allowed |
+
+## Citation API resolver
+
+These control deterministic citation existence checks. They are separate from
+the Sonnet citation critic, which reviews citation relevance and missing prior
+work after resolver evidence exists.
+
+| Env | Default | Notes |
+|-----|---------|-------|
+| `GROKRXIV_CITATION_VERIFY_BUDGET_SECS` | `600` | Whole-paper citation API validation budget |
+| `GROKRXIV_CITATION_ENTRY_CONCURRENCY` | `16` | Concurrent citation entries checked while preserving per-host throttles |
+| `GROKRXIV_CITATION_REQUEST_TIMEOUT_SECS` | `15` | Per-request timeout for Crossref, arXiv, DOI, and generic JSON/text calls |
+| `GROKRXIV_CITATION_PROVIDER_TIMEOUT_SECS` | `10` | Per-request timeout for fallback bibliographic providers |
 
 When the resolved runtime is `--runner cli --extractor cli`, GrokRxiv removes
 provider API key env vars from child `claude` / `codex` / `agy` processes so

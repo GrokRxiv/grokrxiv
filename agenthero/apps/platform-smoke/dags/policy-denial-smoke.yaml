@@ -1,0 +1,23 @@
+id: policy-denial-smoke
+version: 1
+accepts: []
+concurrency: 1
+tools:
+  - id: network_denied_shell
+    executor: shell
+    command:
+      - sh
+      - -c
+      - |
+        printf '{"spawned":true}\n' > should_not_run.json
+    timeout_secs: 10
+    policy:
+      budget_units: 1
+      network:
+        allow: false
+nodes:
+  - id: network_denied_shell
+    kind: tool
+    tool: network_denied_shell
+    outputs: [should_not_run.json]
+    required: true

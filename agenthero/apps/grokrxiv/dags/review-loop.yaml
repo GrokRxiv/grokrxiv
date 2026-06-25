@@ -72,7 +72,29 @@ nodes:
   - id: paper_review
     kind: dag_call
     dag_type: paper-review
-    outputs: [review_id, review_agents, render_artifacts]
+    inputs:
+      - source
+      - review_id
+      - review_input
+      - artifact_root
+      - source_manifest.json
+      - review_input.json
+      - review_agents
+      - render_artifacts
+      - body.md
+      - equations.json
+      - theorem_graph.json
+      - semantic_ast.json
+      - references.json
+    outputs:
+      - review_id
+      - review_agents
+      - render_artifacts
+      - body.md
+      - equations.json
+      - theorem_graph.json
+      - semantic_ast.json
+      - references.json
     required: true
   - id: claim_extractor
     kind: tool

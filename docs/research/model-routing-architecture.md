@@ -296,7 +296,7 @@ The CLI should print or expose the route map so the operator can see exactly
 what will run before a long paper starts:
 
 ```text
-summary: runner=cli provider=claude model=claude-haiku-4-5-20251001
+summary: runner=cli provider=claude model=claude-haiku-4-5
 technical_correctness: runner=cli provider=claude model=claude-opus-4-7
 novelty: runner=cli provider=gemini model=gemini-3-flash-preview
 reproducibility: runner=cli provider=openai model=gpt-5.5

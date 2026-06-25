@@ -1,0 +1,28 @@
+id: verification-routing-smoke
+version: 1
+accepts: []
+concurrency: 2
+tools:
+  - id: lean_kernel
+    executor: lean
+    command: [lean, Proof.lean]
+    timeout_secs: 10
+    policy:
+      budget_units: 1
+  - id: haskell_checker
+    executor: haskell
+    command: [runhaskell, Check.hs]
+    timeout_secs: 10
+    policy:
+      budget_units: 1
+nodes:
+  - id: check_lean
+    kind: tool
+    tool: lean_kernel
+    outputs: [lean_verification.json]
+    required: true
+  - id: check_haskell
+    kind: tool
+    tool: haskell_checker
+    outputs: [haskell_verification.json]
+    required: true

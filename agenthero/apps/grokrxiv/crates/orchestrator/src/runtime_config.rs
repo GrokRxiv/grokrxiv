@@ -30,6 +30,9 @@ pub fn direct_provider_api_allowed_from_env() -> bool {
 /// Prefix for internal, already-resolved model overrides exported by the CLI
 /// before `AppState` builds the per-role agent registry.
 pub const MODEL_OVERRIDE_ENV_PREFIX: &str = "AGENTHERO_MODEL_OVERRIDE_";
+/// Prefix for internal, already-resolved provider overrides exported by the CLI
+/// before `AppState` builds the per-role agent registry.
+pub const PROVIDER_OVERRIDE_ENV_PREFIX: &str = "AGENTHERO_PROVIDER_OVERRIDE_";
 
 /// Which backend runs staged extraction agents during ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -95,6 +98,8 @@ pub struct RuntimeConfig {
     pub sandbox_for: HashMap<String, SandboxPolicy>,
     /// Per-role model override (lands as `AgentSpec.model`).
     pub model_for: HashMap<String, String>,
+    /// Per-role provider override (lands as `AgentSpec.provider`).
+    pub provider_for: HashMap<String, String>,
 }
 
 impl Default for RuntimeConfig {
@@ -112,6 +117,7 @@ impl Default for RuntimeConfig {
             runner_for: HashMap::new(),
             sandbox_for: HashMap::new(),
             model_for: HashMap::new(),
+            provider_for: HashMap::new(),
         }
     }
 }
@@ -152,6 +158,9 @@ pub struct TomlProfile {
     /// Per-role model overrides.
     #[serde(default)]
     pub model_for: HashMap<String, String>,
+    /// Per-role provider overrides.
+    #[serde(default)]
+    pub provider_for: HashMap<String, String>,
 }
 
 impl RuntimeConfig {
@@ -228,6 +237,8 @@ pub struct RuntimeConfigOverrides {
     pub runner_for: Vec<(String, AgentRunnerKind)>,
     /// `--model-for <role>=<model>` pairs.
     pub model_for: Vec<(String, String)>,
+    /// `--provider-for <role>=<provider>` pairs.
+    pub provider_for: Vec<(String, String)>,
 }
 
 fn default_toml_path() -> Option<PathBuf> {
@@ -284,6 +295,11 @@ fn apply_toml(out: &mut RuntimeConfig, p: &TomlProfile) {
             out.model_for.insert(role, model.clone());
         }
     }
+    for (role_s, provider) in &p.provider_for {
+        if let (Some(role), Some(provider)) = (parse_role(role_s), parse_provider(provider)) {
+            out.provider_for.insert(role, provider);
+        }
+    }
 }
 
 fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
@@ -334,7 +350,10 @@ fn apply_env(out: &mut RuntimeConfig) -> anyhow::Result<()> {
     }
     for role in configured_review_agent_roles() {
         if let Some(model) = model_from_env_var(&role_model_env_var(&role)) {
-            out.model_for.insert(role, model);
+            out.model_for.insert(role.clone(), model);
+        }
+        if let Some(provider) = provider_from_env_var(&role_provider_env_var(&role)) {
+            out.provider_for.insert(role, provider);
         }
     }
     Ok(())
@@ -370,6 +389,9 @@ fn apply_cli(out: &mut RuntimeConfig, cli: &RuntimeConfigOverrides) {
     }
     for (role, model) in &cli.model_for {
         out.model_for.insert(role.clone(), model.clone());
+    }
+    for (role, provider) in &cli.provider_for {
+        out.provider_for.insert(role.clone(), provider.clone());
     }
 }
 
@@ -418,12 +440,28 @@ fn parse_role(s: &str) -> Option<String> {
         .then_some(canonical)
 }
 
-/// Role ids for the default review DAG, loaded from the manifest rather than
-/// encoded in Rust. Missing manifests simply mean there is no env-model scan.
+fn parse_provider(s: &str) -> Option<String> {
+    let provider = s.trim().to_ascii_lowercase();
+    (!provider.is_empty()
+        && provider
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')))
+    .then_some(provider)
+}
+
+/// Role ids loaded from manifests rather than encoded in Rust. Missing
+/// manifests simply mean there is no env-model/provider scan for that DAG.
 pub fn configured_review_agent_roles() -> Vec<String> {
-    crate::agents::config::dag_agent_config_refs("paper-review")
-        .map(|refs| refs.into_iter().map(|r| r.role_id).collect())
-        .unwrap_or_default()
+    [
+        "paper-extract",
+        "paper-review",
+        "review-loop",
+        "citation-validation",
+    ]
+    .into_iter()
+    .filter_map(|dag_id| crate::agents::config::dag_agent_config_refs(dag_id).ok())
+    .flat_map(|refs| refs.into_iter().map(|r| r.role_id))
+    .collect()
 }
 
 /// Upper-snake role suffix used in public env vars.
@@ -439,9 +477,19 @@ pub fn role_model_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_MODEL", role_env_suffix(role))
 }
 
+/// Public per-agent provider env var, e.g. `GROKRXIV_CITATION_PROVIDER`.
+pub fn role_provider_env_var(role: &str) -> String {
+    format!("GROKRXIV_{}_PROVIDER", role_env_suffix(role))
+}
+
 /// Internal resolved model env var, e.g. `AGENTHERO_MODEL_OVERRIDE_CITATION`.
 pub fn role_model_override_env_var(role: &str) -> String {
     format!("{}{}", MODEL_OVERRIDE_ENV_PREFIX, role_env_suffix(role))
+}
+
+/// Internal resolved provider env var, e.g. `AGENTHERO_PROVIDER_OVERRIDE_CITATION`.
+pub fn role_provider_override_env_var(role: &str) -> String {
+    format!("{}{}", PROVIDER_OVERRIDE_ENV_PREFIX, role_env_suffix(role))
 }
 
 /// Read a model override for a role. The CLI exports the resolved value to the
@@ -452,11 +500,23 @@ pub fn model_override_for_role(role: &str) -> Option<String> {
         .or_else(|| model_from_env_var(&role_model_env_var(role)))
 }
 
+/// Read a provider override for a role. The CLI exports the resolved value to
+/// the internal override var; non-CLI boot paths can still consume the public
+/// env var directly.
+pub fn provider_override_for_role(role: &str) -> Option<String> {
+    provider_from_env_var(&role_provider_override_env_var(role))
+        .or_else(|| provider_from_env_var(&role_provider_env_var(role)))
+}
+
 fn model_from_env_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn provider_from_env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|v| parse_provider(&v))
 }
 
 /// Parse `<role>=<runner>` (used by `--runner-for`).
@@ -482,6 +542,17 @@ pub fn parse_role_model(s: &str) -> Result<(String, String), String> {
     Ok((role, model_s.to_string()))
 }
 
+/// Parse `<role>=<provider>` (used by `--provider-for`).
+pub fn parse_role_provider(s: &str) -> Result<(String, String), String> {
+    let (role_s, provider_s) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected <role>=<provider>, got `{s}`"))?;
+    let role = parse_role(role_s).ok_or_else(|| format!("unknown role `{role_s}` in `{s}`"))?;
+    let provider =
+        parse_provider(provider_s).ok_or_else(|| format!("empty or invalid provider in `{s}`"))?;
+    Ok((role, provider))
+}
+
 /// Render the resolved config either as TOML (human) or JSON (machine).
 /// Secrets (service token) are redacted unless `show_secrets` is true.
 pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
@@ -502,6 +573,11 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
         .iter()
         .map(|(role, model)| (format!("{role:?}"), model.clone()))
         .collect();
+    let provider_for: Vec<_> = cfg
+        .provider_for
+        .iter()
+        .map(|(role, provider)| (format!("{role:?}"), provider.clone()))
+        .collect();
 
     let v = serde_json::json!({
         "default_runner": format!("{:?}", cfg.default_runner),
@@ -516,6 +592,7 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
         "service_token": redact(&cfg.service_token),
         "runner_for": runner_for,
         "model_for": model_for,
+        "provider_for": provider_for,
     });
     if json {
         serde_json::to_string_pretty(&v).unwrap_or_default()
@@ -554,6 +631,12 @@ pub fn render(cfg: &RuntimeConfig, json: bool, show_secrets: bool) -> String {
                 s.push_str(&format!("  {role} = {model}\n"));
             }
         }
+        if !cfg.provider_for.is_empty() {
+            s.push_str("provider_for     =\n");
+            for (role, provider) in &provider_for {
+                s.push_str(&format!("  {role} = {provider}\n"));
+            }
+        }
         s
     }
 }
@@ -587,6 +670,8 @@ mod tests {
                 [
                     role_model_env_var(&role),
                     role_model_override_env_var(&role),
+                    role_provider_env_var(&role),
+                    role_provider_override_env_var(&role),
                 ]
             })
             .collect();
@@ -632,6 +717,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_role_provider_ok() {
+        let (role, provider) = parse_role_provider("citation=claude").unwrap();
+        assert_eq!(role, "citation");
+        assert_eq!(provider, "claude");
+    }
+
+    #[test]
+    fn parse_role_provider_rejects_empty_provider() {
+        assert!(parse_role_provider("citation=").is_err());
+    }
+
+    #[test]
     fn resolves_per_agent_model_env_overrides() {
         let _guard = ENV_LOCK.lock().unwrap();
         let cfg = with_clean_extractor_env(|| {
@@ -654,6 +751,51 @@ mod tests {
         assert_eq!(
             cfg.model_for.get("citation").map(String::as_str),
             Some("gemini-3-flash-preview")
+        );
+    }
+
+    #[test]
+    fn resolves_per_agent_provider_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = with_clean_extractor_env(|| {
+            with_clean_model_env(|| {
+                std::env::set_var("GROKRXIV_CITATION_PROVIDER", "claude");
+                RuntimeConfig::resolve(
+                    &RuntimeConfigOverrides::default(),
+                    "nonexistent",
+                    Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+                )
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            cfg.provider_for.get("citation").map(String::as_str),
+            Some("claude")
+        );
+    }
+
+    #[test]
+    fn cli_provider_for_beats_per_agent_provider_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = with_clean_extractor_env(|| {
+            with_clean_model_env(|| {
+                std::env::set_var("GROKRXIV_CITATION_PROVIDER", "gemini");
+                let mut over = RuntimeConfigOverrides::default();
+                over.provider_for
+                    .push(("citation".to_string(), "claude".to_string()));
+                RuntimeConfig::resolve(
+                    &over,
+                    "nonexistent",
+                    Some(Path::new("/tmp/grokrxiv-nonexistent-config-test.toml")),
+                )
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            cfg.provider_for.get("citation").map(String::as_str),
+            Some("claude")
         );
     }
 

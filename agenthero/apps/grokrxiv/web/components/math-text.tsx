@@ -1,5 +1,5 @@
 import DOMPurify from "isomorphic-dompurify";
-import { renderMathInString } from "@/lib/render-math";
+import { normalizeDisplayMathText, renderMathInString } from "@/lib/render-math";
 
 /**
  * Inline-math-aware text renderer for short strings (titles, captions,
@@ -24,7 +24,7 @@ export function MathText({
   as?: "span" | "h1" | "h2" | "h3" | "p";
   className?: string;
 }) {
-  const escaped = escapeHtml(children);
+  const escaped = escapeHtml(normalizeDisplayMathText(children));
   const rendered = renderMathInString(escaped);
   const safe = DOMPurify.sanitize(rendered, {
     USE_PROFILES: { html: true, mathMl: true, svg: true },

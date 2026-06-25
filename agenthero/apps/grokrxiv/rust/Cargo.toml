@@ -42,6 +42,7 @@ grokrxiv-app-runtime = { workspace = true }
 grokrxiv-extraction = { workspace = true }
 grokrxiv-ingest = { workspace = true }
 grokrxiv-llm-adapter = { workspace = true }
+grokrxiv-review-loop = { workspace = true }
 
 [dev-dependencies]
 wiremock = "=0.6.2"

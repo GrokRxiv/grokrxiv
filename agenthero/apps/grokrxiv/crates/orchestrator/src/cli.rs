@@ -25,9 +25,10 @@ use crate::agents::{
 use crate::cli_status;
 use crate::doctor as doctor_mod;
 use crate::runtime_config::{
-    parse_role_model, parse_role_runner, provider_api_allowed, render as render_runtime_config,
-    role_env_suffix, role_model_override_env_var, ExtractorKind, RuntimeConfig,
-    RuntimeConfigOverrides, ALLOW_PROVIDER_API_ENV,
+    parse_role_model, parse_role_provider, parse_role_runner, provider_api_allowed,
+    render as render_runtime_config, role_env_suffix, role_model_override_env_var,
+    role_provider_override_env_var, ExtractorKind, RuntimeConfig, RuntimeConfigOverrides,
+    ALLOW_PROVIDER_API_ENV,
 };
 use grokrxiv_extraction::extraction::{ExtractionAgent, ExtractionContext};
 
@@ -89,6 +90,10 @@ pub struct Cli {
     /// Repeatable.
     #[arg(long, global = true, value_parser = parse_role_model, value_name = "ROLE=MODEL")]
     pub model_for: Vec<(String, String)>,
+    /// Per-role provider override, e.g. `--provider-for citation=claude`.
+    /// Repeatable.
+    #[arg(long, global = true, value_parser = parse_role_provider, value_name = "ROLE=PROVIDER")]
+    pub provider_for: Vec<(String, String)>,
     /// Hard cap on total cost (USD) for one review.
     #[arg(long, global = true, hide = true)]
     pub max_cost_usd: Option<f64>,
@@ -575,6 +580,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         offline: cli.offline,
         runner_for: cli.runner_for.clone(),
         model_for: cli.model_for.clone(),
+        provider_for: cli.provider_for.clone(),
     };
     let runtime_cfg = match RuntimeConfig::resolve(&overrides, &cli.profile, cli.config.as_deref())
     {
@@ -598,6 +604,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         for role in crate::runtime_config::configured_review_agent_roles() {
             std::env::remove_var(role_model_override_env_var(&role));
+            std::env::remove_var(role_provider_override_env_var(&role));
         }
         for (role, kind) in &rt.runner_for {
             let role_slug = role_env_suffix(role);
@@ -608,6 +615,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         for (role, model) in &rt.model_for {
             std::env::set_var(role_model_override_env_var(role), model);
+        }
+        for (role, provider) in &rt.provider_for {
+            std::env::set_var(role_provider_override_env_var(role), provider);
         }
         std::env::set_var("AGENTHERO_EXTRACTOR", rt.extractor.as_str());
         std::env::set_var(
@@ -979,6 +989,8 @@ pub async fn run_grokrxiv_action(
                 request.review_id,
                 request.debug_output,
                 request.external_actions_enabled,
+                request.mode,
+                request.typed_ir_only,
             )
             .await
         }
@@ -1410,10 +1422,20 @@ async fn insert_app_run_event(
     .bind(level)
     .bind(event_type)
     .bind(message)
-    .bind(serde_json::json!({"operator": "cli"}))
+    .bind(app_run_operator_event_payload(run_id))
     .execute(pool)
     .await?;
     Ok(())
+}
+
+fn app_run_operator_event_payload(run_id: Uuid) -> serde_json::Value {
+    agenthero_agent_runtime::agenthero_trace_payload(
+        run_id,
+        None,
+        serde_json::json!({
+            "operator": "cli",
+        }),
+    )
 }
 
 fn app_run_review_id(input: &serde_json::Value) -> Option<String> {
@@ -1534,6 +1556,23 @@ struct FormalizeArgs {
     review_id: Uuid,
     debug_output: bool,
     external_actions_enabled: bool,
+    mode: FormalizeMode,
+    typed_ir_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormalizeMode {
+    AutoDetect,
+    Full,
+}
+
+impl FormalizeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoDetect => "auto_detect",
+            Self::Full => "full",
+        }
+    }
 }
 
 struct ReviewIdActionArgs {
@@ -1649,10 +1688,17 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
     let mut review_id: Option<Uuid> = None;
     let mut debug_output = false;
     let mut external_actions_enabled = true;
+    let mut mode = FormalizeMode::Full;
+    let mut typed_ir_only = false;
     for arg in args {
         match arg.as_str() {
             "--debug" => debug_output = true,
             "--no-external-actions" => external_actions_enabled = false,
+            "--auto-detect" | "--auto" => mode = FormalizeMode::AutoDetect,
+            "--typed-ir-only" | "--benchmark-typed-ir" => {
+                typed_ir_only = true;
+                external_actions_enabled = false;
+            }
             other => {
                 if review_id.is_none() {
                     review_id = Some(
@@ -1668,6 +1714,8 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
         review_id: review_id.ok_or_else(|| anyhow::anyhow!("formalize requires a review_id"))?,
         debug_output,
         external_actions_enabled,
+        mode,
+        typed_ir_only,
     })
 }
 
@@ -2273,7 +2321,15 @@ fn validate_declared_tools(manifest: &DagManifest) -> anyhow::Result<()> {
                     );
                 }
             }
-            ToolExecutorKind::Cli => {
+            ToolExecutorKind::Cli
+            | ToolExecutorKind::Shell
+            | ToolExecutorKind::Python
+            | ToolExecutorKind::RustBinary
+            | ToolExecutorKind::Http
+            | ToolExecutorKind::Lean
+            | ToolExecutorKind::Haskell
+            | ToolExecutorKind::Docker
+            | ToolExecutorKind::Wasm => {
                 if tool
                     .command
                     .as_ref()
@@ -2281,12 +2337,13 @@ fn validate_declared_tools(manifest: &DagManifest) -> anyhow::Result<()> {
                     .unwrap_or(true)
                 {
                     anyhow::bail!(
-                        "DAG `{}` CLI tool `{}` must declare command",
+                        "DAG `{}` command-backed tool `{}` must declare command",
                         manifest.id,
                         tool.id
                     );
                 }
             }
+            ToolExecutorKind::Llm | ToolExecutorKind::ApprovalGate => {}
         }
     }
     Ok(())
@@ -2337,6 +2394,7 @@ fn add_agent_to_dag(
         branch: None,
         map: None,
         approval: None,
+        retry: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -2425,7 +2483,17 @@ fn add_tool_to_dag(
     let executor = parse_tool_executor_arg(executor)?;
     let handler = match executor {
         ToolExecutorKind::Rust => Some(handler.unwrap_or_else(|| tool_id.to_string())),
-        ToolExecutorKind::Cli => handler,
+        ToolExecutorKind::Cli
+        | ToolExecutorKind::Shell
+        | ToolExecutorKind::Python
+        | ToolExecutorKind::RustBinary
+        | ToolExecutorKind::Llm
+        | ToolExecutorKind::Http
+        | ToolExecutorKind::Lean
+        | ToolExecutorKind::Haskell
+        | ToolExecutorKind::Docker
+        | ToolExecutorKind::Wasm
+        | ToolExecutorKind::ApprovalGate => handler,
     };
     let command = (!command.is_empty()).then_some(command);
     manifest.tools.push(DagTool {
@@ -2436,6 +2504,7 @@ fn add_tool_to_dag(
         timeout_secs,
         input_schema: None,
         output_schema: None,
+        policy: None,
     });
     manifest.nodes.push(DagNode {
         id: tool_id.to_string(),
@@ -2452,6 +2521,7 @@ fn add_tool_to_dag(
         branch: None,
         map: None,
         approval: None,
+        retry: None,
     });
     for source in after {
         manifest.edges.push(DagEdge {
@@ -3280,6 +3350,7 @@ struct ReviewLoopPaperMathSourceFiles {
     equations: serde_json::Value,
     theorem_graph: serde_json::Value,
     semantic_ast: serde_json::Value,
+    references: serde_json::Value,
 }
 
 #[cfg(feature = "grokrxiv-storage")]
@@ -3295,6 +3366,7 @@ fn load_review_loop_paper_math_source_files(
     let sections_doc = read_review_json(repo_root, &review_input.sections, "sections.json")?;
     let body_text = read_review_text(repo_root, &review_input.body_markdown, "body.md")?;
     let equations = read_review_json(repo_root, &review_input.equations, "equations.json")?;
+    let references = read_review_json(repo_root, &review_input.references, "references.json")?;
     let theorem_graph =
         read_review_json(repo_root, &review_input.theorem_graph, "theorem_graph.json")?;
 
@@ -3303,6 +3375,7 @@ fn load_review_loop_paper_math_source_files(
         "sections.json".to_string(),
         "body.md".to_string(),
         "equations.json".to_string(),
+        "references.json".to_string(),
         "theorem_graph.json".to_string(),
     ];
     let mut semantic_ast = serde_json::Value::Null;
@@ -3326,6 +3399,7 @@ fn load_review_loop_paper_math_source_files(
         equations,
         theorem_graph,
         semantic_ast,
+        references,
     })
 }
 
@@ -5234,6 +5308,11 @@ async fn load_review_loop_paper_math_sources(
         "reason": "not_loaded",
     });
     let mut semantic_ast = serde_json::Value::Null;
+    let mut references = serde_json::json!({
+        "artifact": "references.json",
+        "citations": [],
+        "reason": "not_loaded",
+    });
 
     if let Some(artifact) = crate::db::load_latest_review_input_artifact(pool, paper_id).await? {
         artifact_sources.push("review_inputs.artifact".to_string());
@@ -5269,6 +5348,7 @@ async fn load_review_loop_paper_math_sources(
                                     equations = files.equations;
                                     theorem_graph = files.theorem_graph;
                                     semantic_ast = files.semantic_ast;
+                                    references = files.references;
                                     loaded_tier1_sources = true;
                                 }
                                 Err(err) => warnings.push(format!(
@@ -5298,6 +5378,7 @@ async fn load_review_loop_paper_math_sources(
                             equations = files.equations;
                             theorem_graph = files.theorem_graph;
                             semantic_ast = files.semantic_ast;
+                            references = files.references;
                         }
                         Ok(None) => warnings.push(format!(
                             "data repo cache has no review_input.json for {}",
@@ -5325,6 +5406,7 @@ async fn load_review_loop_paper_math_sources(
         "equations": equations,
         "theorem_graph": theorem_graph,
         "semantic_ast": semantic_ast,
+        "references": references,
     }))
 }
 
@@ -5524,6 +5606,13 @@ impl FormalizationQueueReason {
         match self {
             Self::ForcedByFlag => "forced_by_flag",
             Self::AutoMathDetected => "auto_math_detected",
+        }
+    }
+
+    fn formalize_mode(self) -> FormalizeMode {
+        match self {
+            Self::ForcedByFlag => FormalizeMode::Full,
+            Self::AutoMathDetected => FormalizeMode::AutoDetect,
         }
     }
 }
@@ -7464,6 +7553,7 @@ async fn run_per_theorem_lean_loop(
     state: &super::AppState,
     paper_id: Uuid,
     review_id: Uuid,
+    mode: FormalizeMode,
     lean_task: &ReviewFixCodeTask,
     proof_obligations: &serde_json::Value,
     lean_targets: &serde_json::Value,
@@ -7503,11 +7593,9 @@ async fn run_per_theorem_lean_loop(
     let mut proved = 0usize;
     let total = theorem_obligations.len();
 
-    // Bound each Lean CLI call to its per-role YAML timeout (author/fixer 600s, reviewer
-    // 300s) even though the review-loop globally raises AGENTHERO_CLI_TIMEOUT_SECS to 1800 for
-    // slow non-Lean specialists. The per-role env wins over the global floor in
-    // `cli_timeout_for`, so a hung Lean call is killed in ~10 min, not 30 — and this is
-    // Lean-only, so citation/specialist timeouts are untouched.
+    // Bound each Lean CLI call to its per-role timeout (author/fixer 600s, reviewer 300s).
+    // Per-role env and YAML now win over the global `AGENTHERO_CLI_TIMEOUT_SECS` default, so
+    // a hung Lean call is killed in ~10 min, not stretched by an unrelated operator default.
     set_lean_role_timeout_env(lean_task.author_role, 600);
     set_lean_role_timeout_env(lean_task.fixer_role, 600);
     set_lean_role_timeout_env(lean_task.reviewer_role, 300);
@@ -7519,12 +7607,11 @@ async fn run_per_theorem_lean_loop(
     // target is wrapped in a watchdog (see `run_one_lean_target`) that kills + retries a wedge.
     use futures::stream::StreamExt as _;
     let concurrency = lean_target_concurrency_from_env();
-    let per_call_secs: u64 = 600;
-    let target_budget = std::time::Duration::from_secs(
-        (lean_task.max_attempts.max(1) as u64)
-            .saturating_mul(per_call_secs)
-            .saturating_add(300),
-    );
+    let per_call_secs = lean_role_cli_timeout_secs(state, lean_task.author_role, 600);
+    let target_budget = std::time::Duration::from_secs(lean_target_watchdog_budget_secs(
+        lean_task.max_attempts,
+        per_call_secs,
+    ));
 
     let mut results: Vec<LeanTargetResult> =
         futures::stream::iter(theorem_obligations.iter().copied().enumerate().map(
@@ -7533,6 +7620,7 @@ async fn run_per_theorem_lean_loop(
                     state,
                     paper_id,
                     review_id,
+                    mode,
                     lean_task,
                     index,
                     total,
@@ -7583,8 +7671,9 @@ async fn run_per_theorem_lean_loop(
         &serde_json::json!({
             "stage": "lean_per_theorem_watchdog",
             "concurrency": concurrency,
-            "per_call_timeout_secs": per_call_secs,
+            "author_timeout_secs": per_call_secs,
             "target_budget_secs": target_budget.as_secs(),
+            "target_count": total,
             "targets": hang_rows,
         }),
     )
@@ -7640,9 +7729,8 @@ async fn run_per_theorem_lean_loop(
 }
 
 /// Set a Lean role's per-call CLI timeout via its role env var (`GROKRXIV_<ROLE>_TIMEOUT_SECS`),
-/// which `cli_timeout_for` honors ABOVE the global `AGENTHERO_CLI_TIMEOUT_SECS` floor — so the
-/// review-loop's 1800s floor (for slow specialists) doesn't stretch a Lean author/review/fix
-/// call to 30 min. Only sets it if not already provided by the operator.
+/// which `cli_timeout_for` honors above YAML/global defaults. Only sets it if not already
+/// provided by the operator.
 fn set_lean_role_timeout_env(role: &str, secs: u64) {
     let var = format!(
         "GROKRXIV_{}_TIMEOUT_SECS",
@@ -7843,6 +7931,239 @@ fn lean_target_concurrency_from_env() -> usize {
         .unwrap_or(3)
 }
 
+fn lean_role_cli_timeout_secs(state: &super::AppState, role: &str, fallback_secs: u64) -> u64 {
+    state
+        .agents
+        .get(role)
+        .map(|agent| crate::agents::runners::cli::cli_timeout_for_spec(agent.spec()).as_secs())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(fallback_secs)
+}
+
+fn lean_target_watchdog_budget_secs(max_attempts: usize, author_timeout_secs: u64) -> u64 {
+    (max_attempts.max(1) as u64)
+        .saturating_mul(author_timeout_secs.max(1))
+        .saturating_add(300)
+}
+
+fn formalize_lean_target_artifact_path(lean_declaration: &str, index: usize) -> String {
+    format!(
+        "review_loop/lean/targets/{}/GrokRxiv/Proofs.lean",
+        lean_identifier_subdir(lean_declaration, index)
+    )
+}
+
+fn formalize_lean_target_node_id(index: usize, phase: &str) -> String {
+    format!("lean_target_{}_{}", index + 1, phase)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn formalize_lean_target_author_started_event(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    task: &ReviewFixCodeTask,
+    index: usize,
+    total: usize,
+    lean_declaration: &str,
+    obligation_id: &str,
+    artifact_path: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+    prompt_hash: Option<&str>,
+) -> agenthero_dag_executor::DagExecutionEvent {
+    formalize_node_event(
+        review_id,
+        mode,
+        "node.started",
+        &formalize_lean_target_node_id(index, "author"),
+        "llm",
+        task.author_role,
+        "running",
+        "Lean target authoring started",
+        serde_json::json!({
+            "target_index": index + 1,
+            "target_count": total,
+            "lean_declaration": lean_declaration,
+            "obligation_id": obligation_id,
+            "artifact_id": artifact_path,
+            "artifact_path": artifact_path,
+            "output_refs": [artifact_path],
+            "provider": provider,
+            "model": model,
+            "prompt_hash": prompt_hash,
+            "input_refs": [
+                "review_loop/proof_obligations.json",
+                "review_loop/lean_targets.json",
+                "review_loop/semantic_ir.json",
+                "review_loop/semantic_model.json"
+            ],
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn formalize_lean_target_author_completed_event(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    task: &ReviewFixCodeTask,
+    index: usize,
+    total: usize,
+    lean_declaration: &str,
+    obligation_id: &str,
+    artifact_path: &str,
+    duration_ms: u64,
+    run_status: &str,
+    outcome: &str,
+    retried: bool,
+) -> agenthero_dag_executor::DagExecutionEvent {
+    let failed = outcome == "watchdog_timeout";
+    formalize_node_event(
+        review_id,
+        mode,
+        if failed {
+            "node.failed"
+        } else {
+            "node.completed"
+        },
+        &formalize_lean_target_node_id(index, "author"),
+        "llm",
+        task.author_role,
+        run_status,
+        if failed {
+            "Lean target authoring failed"
+        } else {
+            "Lean target authoring completed"
+        },
+        serde_json::json!({
+            "target_index": index + 1,
+            "target_count": total,
+            "lean_declaration": lean_declaration,
+            "obligation_id": obligation_id,
+            "artifact_id": artifact_path,
+            "artifact_path": artifact_path,
+            "output_refs": [artifact_path],
+            "duration_ms": duration_ms,
+            "run_status": run_status,
+            "outcome": outcome,
+            "retried": retried,
+        }),
+    )
+}
+
+fn latest_lean_compile_attempt(run: &serde_json::Value) -> Option<&serde_json::Value> {
+    run.get("attempts")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|attempt| attempt.get("compile").is_some())
+}
+
+fn latest_lean_compile_report(run: &serde_json::Value) -> Option<&serde_json::Value> {
+    latest_lean_compile_attempt(run).and_then(|attempt| attempt.get("compile"))
+}
+
+fn latest_lean_agent_audit_value(run: &serde_json::Value, key: &str) -> serde_json::Value {
+    latest_lean_compile_attempt(run)
+        .and_then(|attempt| attempt.get("agent_output_audits"))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|audit| audit.get(key).is_some())
+        .and_then(|audit| audit.get(key).cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn formalize_lean_target_compile_result_event(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    task: &ReviewFixCodeTask,
+    index: usize,
+    total: usize,
+    lean_declaration: &str,
+    obligation_id: &str,
+    artifact_path: &str,
+    final_path: &str,
+    run: &serde_json::Value,
+    duration_ms: u64,
+    outcome: &str,
+    retried: bool,
+) -> agenthero_dag_executor::DagExecutionEvent {
+    let compile = latest_lean_compile_report(run);
+    let run_status = run
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("fail");
+    let compile_status = compile
+        .and_then(|value| value.get("status"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(run_status);
+    let compile_passed = compile_status == "pass";
+    let command = compile
+        .and_then(|value| value.get("command").cloned())
+        .unwrap_or_else(|| {
+            serde_json::json!(std::iter::once(task.compile_program.to_string())
+                .chain(task.compile_args.iter().cloned())
+                .collect::<Vec<_>>())
+        });
+    let exit_status = compile
+        .and_then(|value| value.get("exit_code").cloned())
+        .unwrap_or_else(|| {
+            if compile_passed {
+                serde_json::json!(0)
+            } else {
+                serde_json::Value::Null
+            }
+        });
+    let compile_duration_ms = compile
+        .and_then(|value| value.get("duration_ms").cloned())
+        .unwrap_or(serde_json::Value::Null);
+    let agent_output_artifact_dir = latest_lean_agent_audit_value(run, "artifact_dir");
+    let agent_model = latest_lean_agent_audit_value(run, "model");
+
+    formalize_node_event(
+        review_id,
+        mode,
+        if compile_passed {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        &formalize_lean_target_node_id(index, "compile"),
+        "lean",
+        "lake_env_lean",
+        compile_status,
+        if compile_passed {
+            "Lean target compile passed"
+        } else {
+            "Lean target compile failed"
+        },
+        serde_json::json!({
+            "target_index": index + 1,
+            "target_count": total,
+            "lean_declaration": lean_declaration,
+            "obligation_id": obligation_id,
+            "artifact_id": artifact_path,
+            "artifact_path": artifact_path,
+            "final_path": final_path,
+            "output_refs": [artifact_path],
+            "command": command,
+            "exit_status": exit_status,
+            "duration_ms": duration_ms,
+            "compile_duration_ms": compile_duration_ms,
+            "compile_timeout_secs": task.compile_timeout_secs,
+            "compile_status": compile_status,
+            "run_status": run_status,
+            "outcome": outcome,
+            "retried": retried,
+            "agent_output_artifact_dir": agent_output_artifact_dir,
+            "author_model": agent_model,
+        }),
+    )
+}
+
 /// Author -> `lake env lean` -> review/fix one theorem in its own isolated harness, bounded by a
 /// `target_budget` watchdog. If the whole pipeline wedges past the budget, the in-flight future
 /// is dropped (its CLI subprocess is killed by its own per-call timeout) and the target is
@@ -7852,6 +8173,7 @@ async fn run_one_lean_target(
     state: &super::AppState,
     paper_id: Uuid,
     review_id: Uuid,
+    mode: FormalizeMode,
     lean_task: &ReviewFixCodeTask,
     index: usize,
     total: usize,
@@ -7881,6 +8203,7 @@ async fn run_one_lean_target(
         .get("statement")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    let artifact_path = formalize_lean_target_artifact_path(&lean_declaration, index);
 
     let obligation_dir = lean_dir
         .join("targets")
@@ -7897,6 +8220,21 @@ async fn run_one_lean_target(
                 "error": format!("create obligation dir {}: {err}", obligation_src_dir.display()),
             }],
         });
+        emit_formalize_node_event(formalize_lean_target_compile_result_event(
+            review_id,
+            mode,
+            lean_task,
+            index,
+            total,
+            &lean_declaration,
+            &obligation_id,
+            &artifact_path,
+            &obligation_src_dir.join("Proofs.lean").display().to_string(),
+            &failed,
+            started.elapsed().as_millis() as u64,
+            "dir_error",
+            false,
+        ));
         return LeanTargetResult {
             index,
             lean_declaration: lean_declaration.clone(),
@@ -7944,6 +8282,31 @@ async fn run_one_lean_target(
         proof_obligations,
         lean_targets,
     );
+    let author_system_prompt = review_loop_code_system_prompt(lean_task, lean_task.author_role, 1);
+    let author_user_prompt = review_loop_code_user_prompt(lean_task, lean_task.author_role, 1);
+    let author_prompt_hash =
+        formalize_prompt_hash(&author_system_prompt, &author_user_prompt, &base_artifact);
+    let author_provider = state
+        .agents
+        .get(lean_task.author_role)
+        .map(|agent| agent.spec().provider.clone());
+    let author_model = state
+        .agents
+        .get(lean_task.author_role)
+        .map(|agent| agent.spec().model.clone());
+    emit_formalize_node_event(formalize_lean_target_author_started_event(
+        review_id,
+        mode,
+        lean_task,
+        index,
+        total,
+        &lean_declaration,
+        &obligation_id,
+        &artifact_path,
+        author_provider.as_deref(),
+        author_model.as_deref(),
+        Some(&author_prompt_hash),
+    ));
 
     let mut retried = false;
     let mut outcome = "completed";
@@ -8011,6 +8374,21 @@ async fn run_one_lean_target(
         .unwrap_or("fail")
         .to_string();
     let proved_here = run_status == "pass";
+    let duration_ms = started.elapsed().as_millis() as u64;
+    emit_formalize_node_event(formalize_lean_target_author_completed_event(
+        review_id,
+        mode,
+        lean_task,
+        index,
+        total,
+        &lean_declaration,
+        &obligation_id,
+        &artifact_path,
+        duration_ms,
+        &run_status,
+        outcome,
+        retried,
+    ));
 
     // The kernel-verified Lean is exactly the contents of the proved file; only record on pass.
     let verified_code = if proved_here {
@@ -8058,6 +8436,21 @@ async fn run_one_lean_target(
         "final_path": obligation_final_path.display().to_string(),
         "attempts": run.get("attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
     });
+    emit_formalize_node_event(formalize_lean_target_compile_result_event(
+        review_id,
+        mode,
+        lean_task,
+        index,
+        total,
+        &lean_declaration,
+        &obligation_id,
+        &artifact_path,
+        &obligation_final_path.display().to_string(),
+        &run,
+        duration_ms,
+        outcome,
+        retried,
+    ));
 
     LeanTargetResult {
         index,
@@ -8068,7 +8461,7 @@ async fn run_one_lean_target(
         combined_entry,
         attempts_with_decl,
         decl_record,
-        duration_ms: started.elapsed().as_millis() as u64,
+        duration_ms,
         outcome,
         retried,
     }
@@ -8982,9 +9375,9 @@ fn review_fix_loop_summary(results: &serde_json::Value) -> String {
     "review-fix-code loop failed".to_string()
 }
 
-/// Raise the CLI agent kill-timeout floor (env `AGENTHERO_CLI_TIMEOUT_SECS`) so a
-/// working formalization author/fixer LLM call is never killed mid-work. Only
-/// increases the value; never lowers an operator-set one.
+/// Raise the global CLI agent default timeout (env `AGENTHERO_CLI_TIMEOUT_SECS`) for roles
+/// without explicit YAML/per-role timeouts. Only increases the value; never lowers an
+/// operator-set one.
 fn ensure_min_cli_timeout_secs(floor: u64) {
     let current = std::env::var("AGENTHERO_CLI_TIMEOUT_SECS")
         .ok()
@@ -9002,8 +9395,34 @@ async fn refresh_formalization_math_artifacts(
     review_id: Uuid,
     artifact_dir: &Path,
     existing_paper_math_sources: serde_json::Value,
+    mode: FormalizeMode,
 ) -> serde_json::Value {
     let mut paper_math_sources = existing_paper_math_sources;
+    if mode == FormalizeMode::AutoDetect {
+        cli_status::emit(format!(
+            "formalize {review_id}: auto-detect mode; skipping typed-IR enrichment and using persisted review-loop math artifacts"
+        ));
+        emit_formalize_node_event(formalize_node_event(
+            review_id,
+            mode,
+            "node.skipped",
+            "formalize_typed_ir",
+            "llm",
+            "formalize_source_inventory_typed_transcriber",
+            "skipped",
+            "auto-detect mode skipped typed-IR enrichment",
+            serde_json::json!({
+                "skip_reason": "auto_detect_uses_persisted_review_loop_artifacts",
+                "artifact_id": "review_loop/paper_math_sources.json",
+            }),
+        ));
+        let _ = write_loop_json(
+            &artifact_dir.join("paper_math_sources.json"),
+            &paper_math_sources,
+        )
+        .await;
+        return paper_math_sources;
+    }
     match run_formalize_typed_theorem_extraction(
         state,
         pool,
@@ -9011,6 +9430,7 @@ async fn refresh_formalization_math_artifacts(
         review_id,
         artifact_dir,
         &paper_math_sources,
+        mode,
     )
     .await
     {
@@ -9055,7 +9475,13 @@ struct FormalizeExtractionPlan {
     allow_body_tool_loop: bool,
 }
 
-fn formalize_extraction_plan(body_md: &str) -> FormalizeExtractionPlan {
+fn formalize_extraction_plan(body_md: &str, mode: FormalizeMode) -> FormalizeExtractionPlan {
+    if mode == FormalizeMode::AutoDetect {
+        return FormalizeExtractionPlan {
+            try_source_inventory: false,
+            allow_body_tool_loop: false,
+        };
+    }
     FormalizeExtractionPlan {
         try_source_inventory: true,
         allow_body_tool_loop: !body_md.trim().is_empty() && body_has_theorem_signal(body_md),
@@ -9069,9 +9495,13 @@ async fn run_formalize_typed_theorem_extraction(
     review_id: Uuid,
     artifact_dir: &Path,
     paper_math_sources: &serde_json::Value,
+    mode: FormalizeMode,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let body_md = paper_math_sources_body_markdown(paper_math_sources);
-    let plan = formalize_extraction_plan(&body_md);
+    let plan = formalize_extraction_plan(&body_md, mode);
+    if !plan.try_source_inventory && !plan.allow_body_tool_loop {
+        return Ok(None);
+    }
     let runner = state
         .runners
         .get(&AgentRunnerKind::Cli)
@@ -9167,12 +9597,19 @@ async fn run_formalize_typed_theorem_extraction(
         .await
         {
             Ok(Some(theorem_graph)) => return Ok(Some(theorem_graph)),
-            Ok(None) => cli_status::emit(format!(
-                "formalize {review_id}: source-first typed-IR theorem extraction returned no nodes; falling back to tool loop"
-            )),
-            Err(err) => cli_status::emit(format!(
-                "formalize {review_id}: source-first typed-IR theorem extraction failed: {err:#}; falling back to tool loop"
-            )),
+            Ok(None) => {
+                cli_status::emit(format!(
+                    "formalize {review_id}: source-first typed-IR theorem extraction returned no nodes"
+                ));
+                return Ok(None);
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "source-first typed-IR theorem extraction failed for review {review_id}"
+                    )
+                });
+            }
         }
     }
     if !plan.allow_body_tool_loop {
@@ -9227,67 +9664,212 @@ async fn run_formalize_inventory_typed_transcription(
     seed: &crate::db::PaperReviewSeedRow,
     theorem_inventory: &serde_json::Value,
     config: &FormalizeSourceConfig,
-    workdir: &Path,
+    _workdir: &Path,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     let mut spec = spec.clone();
-    spec.role = "formalize_source_inventory_typed_transcriber".to_string();
-    spec.timeout_secs = spec.timeout_secs.max(config.source_extraction_timeout_secs);
+    apply_formalize_typed_ir_transcriber_config(&mut spec, config);
 
     let items = theorem_inventory
         .get("items")
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let inventory_item_count = items.len();
+    let items = formalize_inventory_transcription_items(&items, config);
     let batches = formalize_inventory_batches(&items, config);
+    let batch_count = batches.len();
+    let total_items = items.len();
+    let total_started = std::time::Instant::now();
+    use futures::stream::StreamExt as _;
+    let mut batch_results: Vec<FormalizeTypedIrBatchResult> =
+        futures::stream::iter(batches.into_iter().enumerate().map(|(batch_index, batch_items)| {
+            let runner = runner.clone();
+            let spec = spec.clone();
+            let arxiv_id = seed.arxiv_id.clone();
+            let title = seed.title.clone();
+            let concurrency = config.typed_ir_batch_concurrency;
+            async move {
+                let batch_number = batch_index + 1;
+                let node_kind = "llm";
+                let tool_id = "formalize_source_inventory_typed_transcriber";
+                let provider = spec.provider.clone();
+                let model = spec.model.clone();
+                cli_status::emit(format!(
+                    "formalize {review_id}: typed-IR transcription batch {batch_number}/{batch_count} items={}",
+                    batch_items.len()
+                ));
+                let artifact = serde_json::json!({
+                    "review_id": review_id,
+                    "paper_id": paper_id,
+                    "arxiv_id": &arxiv_id,
+                    "title": &title,
+                    "task": "Type-transcribe every supplied theorem_inventory item into theorem_graph nodes with typed_transcription/theorem_ir.",
+                    "theorem_inventory_artifact": "review_loop/theorem_inventory.json",
+                    "batch_index": batch_index,
+                    "batch_count": batch_count,
+                    "batch_items": &batch_items,
+                });
+                let system_prompt = formalize_inventory_typed_transcription_system_prompt();
+                let user_prompt = formalize_inventory_typed_transcription_user_prompt(
+                    &arxiv_id,
+                    &title,
+                    batch_index,
+                    batch_count,
+                    &batch_items,
+                );
+                let prompt_hash = formalize_prompt_hash(&system_prompt, &user_prompt, &artifact);
+                emit_formalize_node_event(formalize_node_event(
+                    review_id,
+                    FormalizeMode::Full,
+                    "node.started",
+                    &format!("formalize_typed_ir_batch_{batch_number}"),
+                    node_kind,
+                    tool_id,
+                    "running",
+                    "typed-IR transcription batch started",
+                    serde_json::json!({
+                        "provider": &provider,
+                        "model": &model,
+                        "prompt_hash": &prompt_hash,
+                        "batch_number": batch_number,
+                        "batch_count": batch_count,
+                        "items": batch_items.len(),
+                        "inventory_items": inventory_item_count,
+                        "max_items": config.typed_ir_max_items,
+                        "concurrency": concurrency,
+                        "timeout_secs": spec.timeout_secs,
+                        "artifact_id": "review_loop/theorem_inventory.json",
+                    }),
+                ));
+                let input = AgentInput {
+                    context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
+                    role: spec.role.clone(),
+                    content_hash_material: artifact.clone(),
+                    artifact,
+                    system_prompt,
+                    user_prompt,
+                    source_bundle_path: None,
+                };
+                let started = std::time::Instant::now();
+                let run = match runner.run(&spec, &input).await {
+                    Ok(run) => run,
+                    Err(err) => {
+                        let error = truncate(&format!("{err:#}"), 2_000);
+                        emit_formalize_node_event(formalize_node_event(
+                            review_id,
+                            FormalizeMode::Full,
+                            "node.failed",
+                            &format!("formalize_typed_ir_batch_{batch_number}"),
+                            node_kind,
+                            tool_id,
+                            "failed",
+                            "typed-IR transcription batch failed",
+                            serde_json::json!({
+                                "provider": &provider,
+                                "model": &model,
+                                "prompt_hash": &prompt_hash,
+                                "batch_number": batch_number,
+                                "batch_count": batch_count,
+                                "items": batch_items.len(),
+                                "inventory_items": inventory_item_count,
+                                "max_items": config.typed_ir_max_items,
+                                "concurrency": concurrency,
+                                "duration_ms": started.elapsed().as_millis() as u64,
+                                "timeout_secs": spec.timeout_secs,
+                                "error": error,
+                            }),
+                        ));
+                        return Err(err).context("typed-ir runner failed");
+                    }
+                };
+                let batch_nodes = run
+                    .output
+                    .get("theorem_graph")
+                    .or_else(|| run.output.get("nodes"))
+                    .and_then(|value| value.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if !formalize_typed_ir_nodes_cover_batch(&batch_nodes, &batch_items) {
+                    let reason = if batch_nodes.is_empty() {
+                        "empty_or_stale_llm_output"
+                    } else {
+                        "incomplete_or_mismatched_llm_output"
+                    };
+                    emit_formalize_node_event(formalize_node_event(
+                        review_id,
+                        FormalizeMode::Full,
+                        "node.failed",
+                        &format!("formalize_typed_ir_batch_{batch_number}"),
+                        node_kind,
+                        tool_id,
+                        "failed",
+                        "typed-IR transcription batch returned stale or incomplete output",
+                        serde_json::json!({
+                            "provider": &provider,
+                            "model": &model,
+                            "prompt_hash": &prompt_hash,
+                            "batch_number": batch_number,
+                            "batch_count": batch_count,
+                            "items": batch_items.len(),
+                            "inventory_items": inventory_item_count,
+                            "max_items": config.typed_ir_max_items,
+                            "nodes": batch_nodes.len(),
+                            "concurrency": concurrency,
+                            "duration_ms": started.elapsed().as_millis() as u64,
+                            "latency_ms": run.latency_ms,
+                            "timeout_secs": spec.timeout_secs,
+                            "reason": reason,
+                        }),
+                    ));
+                    anyhow::bail!("typed-ir runner returned {reason}");
+                }
+                let duration_ms = started.elapsed().as_millis() as u64;
+                emit_formalize_node_event(formalize_node_event(
+                    review_id,
+                    FormalizeMode::Full,
+                    "node.completed",
+                    &format!("formalize_typed_ir_batch_{batch_number}"),
+                    node_kind,
+                    tool_id,
+                    "ok",
+                    "typed-IR transcription batch completed",
+                    serde_json::json!({
+                        "provider": &provider,
+                        "model": &model,
+                        "prompt_hash": &prompt_hash,
+                        "batch_number": batch_number,
+                        "batch_count": batch_count,
+                        "items": batch_items.len(),
+                        "inventory_items": inventory_item_count,
+                        "max_items": config.typed_ir_max_items,
+                        "nodes": batch_nodes.len(),
+                        "concurrency": concurrency,
+                        "duration_ms": duration_ms,
+                        "latency_ms": run.latency_ms,
+                        "timeout_secs": spec.timeout_secs,
+                    }),
+                ));
+                cli_status::emit(format!(
+                    "formalize {review_id}: typed-IR transcription batch {batch_number}/{batch_count} ok nodes={} latency_ms={}",
+                    batch_nodes.len(),
+                    run.latency_ms
+                ));
+                Ok(FormalizeTypedIrBatchResult {
+                    batch_index,
+                    nodes: batch_nodes,
+                })
+            }
+        }))
+        .buffer_unordered(config.typed_ir_batch_concurrency)
+        .collect::<Vec<anyhow::Result<FormalizeTypedIrBatchResult>>>()
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    batch_results.sort_by_key(|result| result.batch_index);
+
     let mut nodes = Vec::new();
-    for (batch_index, batch_items) in batches.iter().enumerate() {
-        let batch_number = batch_index + 1;
-        cli_status::emit(format!(
-            "formalize {review_id}: typed-IR transcription batch {batch_number}/{} items={}",
-            batches.len(),
-            batch_items.len()
-        ));
-        let artifact = serde_json::json!({
-            "review_id": review_id,
-            "paper_id": paper_id,
-            "arxiv_id": &seed.arxiv_id,
-            "title": &seed.title,
-            "task": "Type-transcribe every supplied theorem_inventory item into theorem_graph nodes with typed_transcription/theorem_ir.",
-            "theorem_inventory_artifact": "review_loop/theorem_inventory.json",
-            "batch_index": batch_index,
-            "batch_count": batches.len(),
-            "batch_items": batch_items,
-        });
-        let input = AgentInput {
-            context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
-            role: spec.role.clone(),
-            content_hash_material: artifact.clone(),
-            artifact,
-            system_prompt: formalize_inventory_typed_transcription_system_prompt(),
-            user_prompt: formalize_inventory_typed_transcription_user_prompt(
-                &seed.arxiv_id,
-                &seed.title,
-                batch_index,
-                batches.len(),
-                batch_items,
-            ),
-            source_bundle_path: Some(workdir.display().to_string()),
-        };
-        let run = runner.run(&spec, &input).await?;
-        let mut batch_nodes = run
-            .output
-            .get("theorem_graph")
-            .or_else(|| run.output.get("nodes"))
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default();
-        cli_status::emit(format!(
-            "formalize {review_id}: typed-IR transcription batch {batch_number}/{} ok nodes={} latency_ms={}",
-            batches.len(),
-            batch_nodes.len(),
-            run.latency_ms
-        ));
-        nodes.append(&mut batch_nodes);
+    for result in &mut batch_results {
+        nodes.append(&mut result.nodes);
     }
     if nodes.is_empty() {
         return Ok(None);
@@ -9300,6 +9882,29 @@ async fn run_formalize_inventory_typed_transcription(
         "formalize {review_id}: source-first typed-IR theorem extraction ok inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={}",
         nodes.len()
     ));
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        FormalizeMode::Full,
+        "node.completed",
+        "formalize_typed_ir",
+        "llm",
+        "formalize_source_inventory_typed_transcriber",
+        "ok",
+        "typed-IR transcription completed",
+        serde_json::json!({
+            "provider": &spec.provider,
+            "model": &spec.model,
+            "batch_count": batch_count,
+            "items": total_items,
+            "inventory_items": inventory_item_count,
+            "max_items": config.typed_ir_max_items,
+            "nodes": nodes.len(),
+            "concurrency": config.typed_ir_batch_concurrency,
+            "duration_ms": total_started.elapsed().as_millis() as u64,
+            "timeout_secs": spec.timeout_secs,
+            "artifact_id": "review_loop/theorem_inventory.json",
+        }),
+    ));
     Ok(Some(serde_json::json!({
         "artifact": "theorem_graph.json",
         "arxiv_id": &seed.arxiv_id,
@@ -9310,6 +9915,31 @@ async fn run_formalize_inventory_typed_transcription(
         "nodes": nodes,
         "source": "formalize_source_inventory_typed_transcriber",
     })))
+}
+
+#[derive(Debug)]
+struct FormalizeTypedIrBatchResult {
+    batch_index: usize,
+    nodes: Vec<serde_json::Value>,
+}
+
+fn formalize_typed_ir_nodes_cover_batch(
+    nodes: &[serde_json::Value],
+    batch_items: &[serde_json::Value],
+) -> bool {
+    if nodes.len() != batch_items.len() || nodes.is_empty() {
+        return false;
+    }
+    let node_ids = nodes
+        .iter()
+        .filter_map(|node| node.get("id").and_then(|value| value.as_str()))
+        .collect::<BTreeSet<_>>();
+    batch_items.iter().all(|item| {
+        item.get("id")
+            .and_then(|value| value.as_str())
+            .map(|id| node_ids.contains(id))
+            .unwrap_or(false)
+    })
 }
 
 fn formalize_inventory_typed_transcription_system_prompt() -> String {
@@ -9374,7 +10004,21 @@ struct FormalizeSourceConfig {
     transcription_batch_items: usize,
     transcription_batch_chars: usize,
     source_extraction_timeout_secs: u32,
+    typed_ir_provider: String,
+    typed_ir_model: String,
+    typed_ir_timeout_secs: u32,
+    typed_ir_batch_concurrency: usize,
+    typed_ir_include_context: bool,
+    typed_ir_max_items: usize,
+    typed_ir_only: bool,
 }
+
+const FORMALIZE_TYPED_IR_DEFAULT_PROVIDER: &str = "claude";
+const FORMALIZE_TYPED_IR_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+const FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS: u32 = 120;
+const FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS: usize = 1;
+const FORMALIZE_TYPED_IR_DEFAULT_BATCH_CONCURRENCY: usize = 4;
+const FORMALIZE_TYPED_IR_ROLE: &str = "formalize_source_inventory_typed_transcriber";
 
 impl FormalizeSourceConfig {
     fn from_env() -> Self {
@@ -9389,7 +10033,7 @@ impl FormalizeSourceConfig {
             ),
             transcription_batch_items: formalize_env_usize(
                 "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
-                8,
+                FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS,
             )
             .max(1),
             transcription_batch_chars: formalize_env_usize(
@@ -9401,6 +10045,40 @@ impl FormalizeSourceConfig {
                 "GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS",
                 1_800,
             ),
+            typed_ir_provider: crate::runtime_config::provider_override_for_role(
+                FORMALIZE_TYPED_IR_ROLE,
+            )
+            .unwrap_or_else(|| {
+                formalize_env_string(
+                    "GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER",
+                    FORMALIZE_TYPED_IR_DEFAULT_PROVIDER,
+                )
+            }),
+            typed_ir_model: crate::runtime_config::model_override_for_role(FORMALIZE_TYPED_IR_ROLE)
+                .unwrap_or_else(|| {
+                    formalize_env_string(
+                        "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
+                        FORMALIZE_TYPED_IR_DEFAULT_MODEL,
+                    )
+                }),
+            typed_ir_timeout_secs: formalize_env_u32(
+                "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS",
+                FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            ),
+            typed_ir_batch_concurrency: formalize_env_usize(
+                "GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY",
+                FORMALIZE_TYPED_IR_DEFAULT_BATCH_CONCURRENCY,
+            )
+            .clamp(1, 16),
+            typed_ir_include_context: formalize_env_bool(
+                "GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT",
+                false,
+            ),
+            typed_ir_max_items: formalize_env_usize_allow_zero(
+                "GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS",
+                8,
+            ),
+            typed_ir_only: formalize_env_bool("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", false),
         }
     }
 }
@@ -9413,12 +10091,117 @@ fn formalize_env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn formalize_env_usize_allow_zero(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
 fn formalize_env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn formalize_env_string(name: &str, default: &str) -> String {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn formalize_env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .and_then(|value| match value.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
+}
+
+fn apply_formalize_typed_ir_transcriber_config(
+    spec: &mut crate::agents::AgentSpec,
+    config: &FormalizeSourceConfig,
+) {
+    spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+    spec.provider = config.typed_ir_provider.clone();
+    spec.model = config.typed_ir_model.clone();
+    spec.timeout_secs = config.typed_ir_timeout_secs;
+}
+
+fn formalize_prompt_hash(
+    system_prompt: &str,
+    user_prompt: &str,
+    artifact: &serde_json::Value,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(system_prompt.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(user_prompt.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(serde_json::to_vec(artifact).unwrap_or_default());
+    hex::encode(hasher.finalize())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn formalize_node_event(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    event_type: &str,
+    node_id: &str,
+    node_kind: &str,
+    tool_id: &str,
+    status: &str,
+    message: &str,
+    extra: serde_json::Value,
+) -> agenthero_dag_executor::DagExecutionEvent {
+    let mut payload = BTreeMap::from([
+        ("app".to_string(), serde_json::json!("grokrxiv")),
+        ("action".to_string(), serde_json::json!("formalize")),
+        ("dag_type".to_string(), serde_json::json!("review-loop")),
+        (
+            "review_id".to_string(),
+            serde_json::json!(review_id.to_string()),
+        ),
+        (
+            "formalize_mode".to_string(),
+            serde_json::json!(mode.as_str()),
+        ),
+        ("node_id".to_string(), serde_json::json!(node_id)),
+        ("node_kind".to_string(), serde_json::json!(node_kind)),
+        ("tool_id".to_string(), serde_json::json!(tool_id)),
+        ("attempt".to_string(), serde_json::json!(1)),
+        ("status".to_string(), serde_json::json!(status)),
+        ("exit_status".to_string(), serde_json::Value::Null),
+    ]);
+    if let Some(extra) = extra.as_object() {
+        for (key, value) in extra {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+    agenthero_dag_executor::DagExecutionEvent {
+        level: if event_type.ends_with(".failed") {
+            "error".to_string()
+        } else {
+            "info".to_string()
+        },
+        event_type: event_type.to_string(),
+        node_id: Some(node_id.to_string()),
+        message: Some(message.to_string()),
+        payload,
+    }
+}
+
+fn emit_formalize_node_event(event: agenthero_dag_executor::DagExecutionEvent) {
+    let _ = agenthero_agent_runtime::write_adapter_event(std::io::stderr(), &event);
 }
 
 #[derive(Debug, Clone)]
@@ -9640,6 +10423,10 @@ fn build_formalize_theorem_inventory(
             "unknown_theorem_like_environments": unknown_envs,
             "transcription_batch_items": config.transcription_batch_items,
             "transcription_batch_chars": config.transcription_batch_chars,
+            "typed_ir_batch_concurrency": config.typed_ir_batch_concurrency,
+            "typed_ir_include_context": config.typed_ir_include_context,
+            "typed_ir_max_items": config.typed_ir_max_items,
+            "typed_ir_only": config.typed_ir_only,
         }
     })
 }
@@ -9750,6 +10537,41 @@ fn formalize_inventory_batches(
         batches.push(current);
     }
     batches
+}
+
+fn formalize_inventory_transcription_items(
+    items: &[serde_json::Value],
+    config: &FormalizeSourceConfig,
+) -> Vec<serde_json::Value> {
+    let mut selected = if config.typed_ir_include_context {
+        items.to_vec()
+    } else {
+        let targets = formalize_inventory_theorem_level_items(items);
+        if targets.is_empty() {
+            items.to_vec()
+        } else {
+            targets
+        }
+    };
+    if config.typed_ir_max_items > 0 && selected.len() > config.typed_ir_max_items {
+        selected.truncate(config.typed_ir_max_items);
+    }
+    selected
+}
+
+fn formalize_inventory_theorem_level_items(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .filter(|item| {
+            item.get("role").and_then(|value| value.as_str()) == Some("lean_target")
+                || item
+                    .get("kind")
+                    .and_then(|value| value.as_str())
+                    .map(formalize_kind_is_theorem_level)
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>()
 }
 
 fn formalize_latex_theorem_aliases(text: &str) -> BTreeMap<String, String> {
@@ -10264,12 +11086,20 @@ async fn formalize_review(
     review_id: Uuid,
     debug_output: bool,
     external_actions_enabled: bool,
+    mode: FormalizeMode,
+    typed_ir_only: bool,
 ) -> anyhow::Result<()> {
     use grokrxiv_schemas::VerifierStatus;
+    if typed_ir_only {
+        std::env::set_var("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", "1");
+    }
     if debug_output {
         cli_status::set_enabled(true);
     }
-    cli_status::emit(format!("formalize {review_id}: loading runtime config"));
+    cli_status::emit(format!(
+        "formalize {review_id}: loading runtime config (mode={})",
+        mode.as_str()
+    ));
     ensure_min_cli_timeout_secs(1800);
     let config = super::Config::from_env();
     cli_status::emit(format!("formalize {review_id}: initializing app state"));
@@ -10313,8 +11143,28 @@ async fn formalize_review(
         review_id,
         &artifact_dir,
         existing_paper_math_sources,
+        mode,
     )
     .await;
+    if FormalizeSourceConfig::from_env().typed_ir_only {
+        cli_status::emit(format!(
+            "formalize {review_id}: typed-IR benchmark mode complete; skipping semantic/Lean stages"
+        ));
+        emit_formalize_node_event(formalize_node_event(
+            review_id,
+            mode,
+            "node.completed",
+            "formalize_typed_ir_benchmark",
+            "llm",
+            "formalize_source_inventory_typed_transcriber",
+            "ok",
+            "typed-IR benchmark mode completed after refreshing math artifacts",
+            serde_json::json!({
+                "artifact_id": "review_loop/paper_math_sources.json",
+            }),
+        ));
+        return Ok(());
+    }
     let claims_value = match read_json("claims.json") {
         serde_json::Value::Null => serde_json::json!({"review_id": review_id, "claims": []}),
         value => value,
@@ -10419,6 +11269,7 @@ async fn formalize_review(
             &state,
             paper_id,
             review_id,
+            mode,
             &lean_task,
             &proof_obligations,
             &lean_targets,
@@ -10881,6 +11732,7 @@ async fn run_review_loop_for_review(
     );
 
     let paper_math_sources = load_review_loop_paper_math_sources(pool, paper_id).await?;
+    write_review_loop_paper_review_outputs(&artifact_dir, &paper_math_sources).await?;
     write_loop_json(
         &artifact_dir.join("paper_math_sources.json"),
         &paper_math_sources,
@@ -11261,33 +12113,29 @@ async fn run_review_loop_for_review(
         }
     }
 
-    let citation_summary = citation_verifier_summary(pool, review_id).await;
-    let citation_report = serde_json::json!({
-        "stage": "citation_validation",
-        "dag_type": "citation-validation",
-        "source": "paper-review citation verifier evidence plus declared review-loop DAG call",
-        "status": citation_summary
-            .as_ref()
-            .and_then(|s| s.verifier_status.as_deref())
-            .unwrap_or("fail"),
-        "checked": citation_summary.as_ref().map(|s| s.checked).unwrap_or(0),
-        "unresolved": citation_summary.as_ref().map(|s| s.unresolved).unwrap_or(0),
-        "unverified": citation_summary.as_ref().map(|s| s.unverified).unwrap_or(0),
-        "transient_unknown": citation_summary.as_ref().map(|s| s.unknown).unwrap_or(0),
-        "malformed": citation_summary.as_ref().map(|s| s.malformed).unwrap_or(0),
-        "unresolved_fraction": citation_summary
-            .as_ref()
-            .map(|s| s.unresolved_fraction)
-            .unwrap_or(1.0),
-        "evidence": citation_summary
-            .as_ref()
-            .map(|s| serde_json::to_value(&s.evidence).unwrap_or_else(|_| serde_json::json!([])))
-            .unwrap_or_else(|| serde_json::json!([])),
-        "artifact_hint": citation_summary
-            .as_ref()
-            .map(|s| s.artifact_hint.clone())
-            .unwrap_or_else(|| "paper-review citation verifier evidence missing".to_string()),
-    });
+    let references_for_citation_report = tokio::fs::read(artifact_dir.join("references.json"))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let citation_report = references_for_citation_report
+        .as_ref()
+        .map(review_loop_citation_report_from_references)
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "status": "failed",
+                "summary": "references.json was unavailable; deterministic citation validation could not run",
+                "parsed_references": [],
+                "resolver_results": [],
+                "similarity_results": [],
+                "metadata_conflicts": [],
+                "graph_warnings": [{
+                    "code": "missing_references_artifact",
+                    "message": "review_loop/references.json was unavailable for deterministic citation validation.",
+                    "keys": [],
+                }],
+                "remediation_items": [],
+            })
+        });
     write_loop_json(
         &artifact_dir.join("citation_validation_report.json"),
         &citation_report,
@@ -11296,7 +12144,7 @@ async fn run_review_loop_for_review(
     let citation_adjudication = serde_json::json!({
         "stage": "citation_validation_adjudication",
         "status": "skipped",
-        "skip_reason": "Review-loop citation adjudication DAG output is not wired yet; using paper-review citation verifier evidence.",
+        "skip_reason": "Review-loop citation adjudication DAG output is not wired yet; using deterministic references.json citation-validation evidence.",
         "source_artifact": "review_loop/citation_validation_report.json",
     });
     write_loop_json(
@@ -11310,25 +12158,39 @@ async fn run_review_loop_for_review(
         &stages,
         "citation_validation",
         citation_report.clone(),
-        if citation_report["status"] == "pass" || citation_report["status"] == "warn" {
-            VerifierStatus::Pass
-        } else {
-            VerifierStatus::Fail
+        match citation_report
+            .get("status")
+            .and_then(|value| value.as_str())
+        {
+            Some("verified") => VerifierStatus::Pass,
+            Some("needs_remediation") => VerifierStatus::Warn,
+            _ => VerifierStatus::Fail,
         },
         serde_json::json!({"artifact_path": "review_loop/citation_validation_report.json"}),
     )
     .await?;
-    let citation_pass = citation_report["status"] == "pass" || citation_report["status"] == "warn";
+    let citation_pass = matches!(
+        citation_report
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some("verified" | "needs_remediation")
+    );
     emit_review_loop_node_debug(
         "citation_validation",
         citation_pass,
         "review_loop/citation_validation_report.json",
         debug_output,
         &format!(
-            "status={} unresolved={} unknown={}",
+            "status={} references={} remediation_items={}",
             citation_report["status"].as_str().unwrap_or("unknown"),
-            citation_report["unresolved"].as_u64().unwrap_or(0),
-            citation_report["transient_unknown"].as_u64().unwrap_or(0)
+            citation_report["parsed_references"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0),
+            citation_report["remediation_items"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0)
         ),
     );
 
@@ -11471,7 +12333,7 @@ async fn run_review_loop_for_review(
     // upstream: a target is only ever labeled `proved` when the Lean kernel accepts the
     // proof with no sorry/admit/axiom. (lean_accepted, semantic_adequacy_pass,
     // theorem_candidate_count, proof_targets_skip remain reported, just non-blocking.)
-    if citation_report["status"] == "fail" {
+    if citation_report["status"] == "failed" {
         blocking_issues
             .push("Citation-validation evidence failed deterministic policy.".to_string());
     }
@@ -11497,7 +12359,7 @@ async fn run_review_loop_for_review(
         "score_thresholds": {
             "lean_theorem_formalization": "proved",
             "semantic_adequacy": "all_theorem_claims_match_proved_lean_declarations",
-            "citation_validation": "pass_or_warn",
+            "citation_validation": "verified_or_needs_remediation",
             "pr_artifacts": "fixed_markdown_required_exports_optional",
             "artifact_bundle": "all_declared_outputs_present_or_explicitly_skipped",
             "recommendation_policy": "publisher_ready_accept_or_corpus_expected_honest_or_unpinned_non_publishing"
@@ -12313,6 +13175,114 @@ async fn write_loop_json(path: &Path, value: &serde_json::Value) -> anyhow::Resu
     Ok(())
 }
 
+async fn write_review_loop_paper_review_outputs(
+    artifact_dir: &Path,
+    paper_math_sources: &serde_json::Value,
+) -> anyhow::Result<()> {
+    tokio::fs::create_dir_all(artifact_dir).await?;
+    tokio::fs::write(
+        artifact_dir.join("body.md"),
+        review_loop_body_markdown_for_bundle(paper_math_sources),
+    )
+    .await?;
+    write_loop_json(
+        &artifact_dir.join("equations.json"),
+        &review_loop_source_json_or_skip(
+            paper_math_sources,
+            "equations",
+            "equations.json",
+            "equations not loaded into review-loop paper math sources",
+        ),
+    )
+    .await?;
+    write_loop_json(
+        &artifact_dir.join("theorem_graph.json"),
+        &review_loop_source_json_or_skip(
+            paper_math_sources,
+            "theorem_graph",
+            "theorem_graph.json",
+            "theorem graph not loaded into review-loop paper math sources",
+        ),
+    )
+    .await?;
+    write_loop_json(
+        &artifact_dir.join("semantic_ast.json"),
+        &review_loop_source_json_or_skip(
+            paper_math_sources,
+            "semantic_ast",
+            "semantic_ast.json",
+            "semantic AST not materialized for this extraction",
+        ),
+    )
+    .await?;
+    write_loop_json(
+        &artifact_dir.join("references.json"),
+        &review_loop_source_json_or_skip(
+            paper_math_sources,
+            "references",
+            "references.json",
+            "references not loaded into review-loop paper math sources",
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+fn review_loop_body_markdown_for_bundle(paper_math_sources: &serde_json::Value) -> String {
+    let body = paper_math_sources
+        .get("body")
+        .unwrap_or(&serde_json::Value::Null);
+    if let Some(text) = body.get("text").and_then(|value| value.as_str()) {
+        return text.to_string();
+    }
+
+    let mut parts = Vec::new();
+    if let Some(sections) = body.get("sections").and_then(|value| value.as_array()) {
+        for section in sections {
+            if let Some(heading) = section.get("heading").and_then(|value| value.as_str()) {
+                if !heading.trim().is_empty() {
+                    parts.push(format!("## {}", heading.trim()));
+                }
+            }
+            if let Some(text) = section
+                .get("body_markdown")
+                .or_else(|| section.get("text"))
+                .or_else(|| section.get("content"))
+                .and_then(|value| value.as_str())
+            {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        "<paper body unavailable; see review_loop/paper_math_sources.json>".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn review_loop_source_json_or_skip(
+    paper_math_sources: &serde_json::Value,
+    key: &str,
+    artifact: &str,
+    skip_reason: &str,
+) -> serde_json::Value {
+    paper_math_sources
+        .get(key)
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "artifact": artifact,
+                "status": "skipped",
+                "skip_reason": skip_reason,
+            })
+        })
+}
+
 fn review_loop_artifact_output_paths(manifest_output: &str) -> Option<(String, String)> {
     let bundle_rel = manifest_output
         .strip_prefix("review_loop/")
@@ -12786,13 +13756,21 @@ impl CitationEvidenceItem {
                 .or_else(|| bib_field(raw, "author")),
             year: entry
                 .get("year")
-                .and_then(|v| v.as_str())
+                .and_then(|v| v.as_str().map(str::to_string))
+                .or_else(|| {
+                    entry
+                        .get("year")
+                        .and_then(|v| v.as_i64())
+                        .map(|value| value.to_string())
+                })
+                .as_deref()
                 .map(clean_citation_text)
                 .filter(|s| !s.is_empty())
                 .or_else(|| bib_field(raw, "year").or_else(|| bib_field(raw, "date"))),
             doi: entry
                 .get("doi")
                 .and_then(|v| v.as_str())
+                .or_else(|| entry.get("resolved_doi").and_then(|v| v.as_str()))
                 .map(clean_citation_text)
                 .filter(|s| !s.is_empty())
                 .or_else(|| bib_field(raw, "doi")),
@@ -12804,6 +13782,7 @@ impl CitationEvidenceItem {
             url: entry
                 .get("url")
                 .and_then(|v| v.as_str())
+                .or_else(|| entry.get("resolved_url").and_then(|v| v.as_str()))
                 .map(clean_citation_text)
                 .filter(|s| !s.is_empty())
                 .or_else(|| bib_field(raw, "url")),
@@ -12863,6 +13842,13 @@ impl CitationEvidenceItem {
     fn effective_status(&self) -> &str {
         if self.status == "unresolved" && self.is_bibliographic_coverage_gap() {
             "unverified"
+        } else if matches!(
+            self.status.as_str(),
+            "not_checked" | "not_found" | "conflict"
+        ) {
+            "unverified"
+        } else if self.status == "verified" {
+            "resolved"
         } else {
             self.status.as_str()
         }
@@ -13028,10 +14014,195 @@ fn clean_citation_text(value: &str) -> String {
         .join(" ")
 }
 
+#[cfg(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage"))]
+fn review_loop_citation_report_from_references(
+    references: &serde_json::Value,
+) -> serde_json::Value {
+    crate::ingest_pipeline::build_citation_validation_report(references)
+}
+
+#[cfg(not(all(feature = "grokrxiv-ingest", feature = "grokrxiv-storage")))]
+fn review_loop_citation_report_from_references(
+    _references: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "failed",
+        "summary": "citation validation requires grokrxiv-ingest and grokrxiv-storage features",
+        "parsed_references": [],
+        "resolver_results": [],
+        "similarity_results": [],
+        "metadata_conflicts": [],
+        "graph_warnings": [],
+        "remediation_items": [],
+    })
+}
+
+fn citation_summary_from_validation_report(
+    _review_id: Uuid,
+    report: &serde_json::Value,
+    artifact_hint: String,
+) -> CitationVerifierSummary {
+    let parsed_by_key: BTreeMap<String, &serde_json::Value> = report
+        .get("parsed_references")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|reference| {
+            reference
+                .get("key")
+                .and_then(|value| value.as_str())
+                .filter(|key| !key.trim().is_empty())
+                .map(|key| (key.to_string(), reference))
+        })
+        .collect();
+    let resolver_results = report
+        .get("resolver_results")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let checked = resolver_results.len() as u64;
+    let entry_items: Vec<CitationEvidenceItem> = resolver_results
+        .iter()
+        .filter_map(|result| {
+            let key = result
+                .get("key")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let reference = parsed_by_key.get(key).copied();
+            let evidence = result
+                .get("evidence")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.iter().find_map(|item| item.as_str()))
+                .map(str::to_string);
+            let authors = reference
+                .and_then(|reference| reference.get("authors"))
+                .and_then(|value| value.as_array())
+                .map(|authors| {
+                    authors
+                        .iter()
+                        .filter_map(|author| author.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                })
+                .filter(|authors| !authors.trim().is_empty());
+            let entry = serde_json::json!({
+                "citation_key": key,
+                "raw": reference
+                    .and_then(|reference| reference.get("raw"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default(),
+                "title": reference
+                    .and_then(|reference| reference.get("title").cloned())
+                    .unwrap_or(serde_json::Value::Null),
+                "author": authors,
+                "year": reference
+                    .and_then(|reference| reference.get("year").cloned())
+                    .unwrap_or(serde_json::Value::Null),
+                "doi": reference
+                    .and_then(|reference| reference.get("doi").cloned())
+                    .unwrap_or(serde_json::Value::Null),
+                "arxiv_id": reference
+                    .and_then(|reference| reference.get("arxiv_id").cloned())
+                    .unwrap_or(serde_json::Value::Null),
+                "status": result
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unverified"),
+                "source": result
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("citation_validation"),
+                "reason": evidence,
+                "resolved_doi": result
+                    .get("resolved_doi")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "resolved_url": result
+                    .get("resolved_url")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            });
+            CitationEvidenceItem::from_verifier_entry(&entry)
+        })
+        .collect();
+    let unresolved = entry_items
+        .iter()
+        .filter(|entry| entry.effective_status() == "unresolved")
+        .count() as u64;
+    let retracted = entry_items
+        .iter()
+        .filter(|entry| entry.effective_status() == "retracted")
+        .count() as u64;
+    let unverified = entry_items
+        .iter()
+        .filter(|entry| entry.effective_status() == "unverified")
+        .count() as u64;
+    let unknown = entry_items
+        .iter()
+        .filter(|entry| entry.effective_status() == "transient_unknown")
+        .count() as u64;
+    let malformed = entry_items
+        .iter()
+        .filter(|entry| entry.effective_status() == "malformed")
+        .count() as u64;
+    let definitive_total = checked.saturating_sub(unknown).saturating_sub(unverified);
+    let bad = unresolved + malformed + retracted;
+    let unresolved_fraction = if definitive_total == 0 {
+        0.0
+    } else {
+        bad as f64 / definitive_total as f64
+    };
+    let evidence = entry_items
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                entry.effective_status(),
+                "unresolved" | "retracted" | "unverified" | "malformed"
+            )
+        })
+        .take(8)
+        .collect();
+    let report_status = report
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("failed");
+    let verifier_status = match (checked, report_status) {
+        (0, _) => "fail",
+        (_, "verified") => "pass",
+        (_, "needs_remediation") => "warn",
+        _ => "fail",
+    };
+
+    CitationVerifierSummary {
+        verifier_status: Some(verifier_status.to_string()),
+        checked,
+        coverage_status: Some(if checked == 0 {
+            "not_checked".to_string()
+        } else {
+            "checked".to_string()
+        }),
+        reason: (checked == 0).then(|| {
+            "No resolver results were available in citation_validation_report.json.".to_string()
+        }),
+        unresolved,
+        retracted,
+        unverified,
+        unknown,
+        malformed,
+        unresolved_fraction,
+        evidence,
+        artifact_hint,
+    }
+}
+
 async fn citation_verifier_summary(
     pool: &sqlx::PgPool,
     review_id: Uuid,
 ) -> Option<CitationVerifierSummary> {
+    if let Some(summary) = citation_summary_from_review_loop_artifacts(review_id).await {
+        return Some(summary);
+    }
+
     let role = paper_review_citation_verifier_role()?;
     let row: Option<(Option<String>, Option<serde_json::Value>)> = sqlx::query_as(
         "select verifier_status, verifier_notes \
@@ -13178,6 +14349,48 @@ async fn citation_verifier_summary(
     })
 }
 
+async fn citation_summary_from_review_loop_artifacts(
+    review_id: Uuid,
+) -> Option<CitationVerifierSummary> {
+    let review_loop_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
+    let report_path = review_loop_dir.join("citation_validation_report.json");
+    if let Some(report) = tokio::fs::read(&report_path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|report| {
+            report
+                .get("resolver_results")
+                .and_then(|v| v.as_array())
+                .is_some()
+        })
+    {
+        return Some(citation_summary_from_validation_report(
+            review_id,
+            &report,
+            format!(
+                "{}/review_loop/citation_validation_report.json",
+                crate::artifacts::review_artifact_ref(review_id)
+            ),
+        ));
+    }
+
+    let references_path = review_loop_dir.join("references.json");
+    let references = tokio::fs::read(&references_path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())?;
+    let report = review_loop_citation_report_from_references(&references);
+    Some(citation_summary_from_validation_report(
+        review_id,
+        &report,
+        format!(
+            "{}/review_loop/references.json",
+            crate::artifacts::review_artifact_ref(review_id)
+        ),
+    ))
+}
+
 async fn open_review_pr_for_gate(
     state: &super::AppState,
     review_id: Uuid,
@@ -13300,15 +14513,10 @@ async fn enqueue_formalize_app_run(
     json: bool,
     debug_output: bool,
     external_actions_enabled: bool,
+    mode: FormalizeMode,
 ) -> anyhow::Result<Uuid> {
-    let mut args = vec![review_id.to_string()];
-    if debug_output {
-        args.push("--debug".to_string());
-    }
-    if !external_actions_enabled {
-        args.push("--no-external-actions".to_string());
-    }
-    let input = formalize_app_run_input(args, json);
+    let args = formalize_app_run_args(review_id, debug_output, external_actions_enabled, mode);
+    let input = formalize_app_run_input(args, json, mode);
     let job_id = sqlx::query_scalar::<_, Uuid>(
         "insert into app_runs (app_id, action_id, state, input) \
          values ($1, $2, 'queued', $3) returning id",
@@ -13324,22 +14532,59 @@ async fn enqueue_formalize_app_run(
          values ($1, 'info', 'app_run.queued', 'app run queued', $2)",
     )
     .bind(job_id)
-    .bind(serde_json::json!({
-        "app": "grokrxiv",
-        "action": "formalize",
-        "retry": { "max_attempts": 2 },
-    }))
+    .bind(formalize_queued_event_payload(job_id, mode))
     .execute(pool)
     .await
     .context("record formalize app run queued event")?;
     Ok(job_id)
 }
 
-fn formalize_app_run_input(args: Vec<String>, json: bool) -> serde_json::Value {
+fn formalize_app_run_args(
+    review_id: Uuid,
+    debug_output: bool,
+    external_actions_enabled: bool,
+    mode: FormalizeMode,
+) -> Vec<String> {
+    let mut args = vec![review_id.to_string()];
+    if mode == FormalizeMode::AutoDetect {
+        args.push("--auto-detect".to_string());
+    }
+    if debug_output {
+        args.push("--debug".to_string());
+    }
+    if !external_actions_enabled {
+        args.push("--no-external-actions".to_string());
+    }
+    args
+}
+
+fn formalize_queued_event_payload(run_id: Uuid, mode: FormalizeMode) -> serde_json::Value {
+    agenthero_agent_runtime::agenthero_trace_payload(
+        run_id,
+        None,
+        serde_json::json!({
+            "app": "grokrxiv",
+            "action": "formalize",
+            "dag_type": "review-loop",
+            "formalize_mode": mode.as_str(),
+            "retry": { "max_attempts": 2 },
+        }),
+    )
+}
+
+fn formalize_app_run_input(
+    args: Vec<String>,
+    json: bool,
+    mode: FormalizeMode,
+) -> serde_json::Value {
     serde_json::json!({
         "args": args,
         "input": {
             "values": {
+                "app": "grokrxiv",
+                "action": "formalize",
+                "dag_type": "review-loop",
+                "formalize_mode": mode.as_str(),
                 "stream_stderr": true
             },
             "artifacts": {}
@@ -13366,6 +14611,7 @@ async fn maybe_enqueue_formalization_app_run(
                 json,
                 debug_output,
                 external_actions_enabled,
+                reason.formalize_mode(),
             )
             .await
             {
@@ -16052,8 +17298,10 @@ fn open_review(review_id: Uuid) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::source_display::source_display_ref;
+    use async_trait::async_trait;
     use chrono::TimeZone as _;
     use clap::{CommandFactory, Parser};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard};
 
     static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -16309,6 +17557,22 @@ mod tests {
                 _lock: lock,
             }
         }
+
+        fn set(keys: &[(&'static str, &str)]) -> Self {
+            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let previous = keys
+                .iter()
+                .map(|(key, value)| {
+                    let previous = std::env::var(key).ok();
+                    std::env::set_var(key, value);
+                    (*key, previous)
+                })
+                .collect();
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
     }
 
     impl Drop for EnvVarsGuard {
@@ -16319,6 +17583,120 @@ mod tests {
                     None => std::env::remove_var(key),
                 }
             }
+        }
+    }
+
+    struct TypedIrConcurrentRunner {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        source_bundle_paths: Mutex<Vec<Option<String>>>,
+        sleep_ms: u64,
+    }
+
+    impl TypedIrConcurrentRunner {
+        fn new(sleep_ms: u64) -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                source_bundle_paths: Mutex::new(Vec::new()),
+                sleep_ms,
+            }
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+
+        fn source_bundle_paths(&self) -> Vec<Option<String>> {
+            self.source_bundle_paths
+                .lock()
+                .expect("source bundle paths")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl crate::agents::AgentRunner for TypedIrConcurrentRunner {
+        fn name(&self) -> &'static str {
+            "typed-ir-concurrent-runner"
+        }
+
+        async fn run(
+            &self,
+            spec: &crate::agents::AgentSpec,
+            input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            self.source_bundle_paths
+                .lock()
+                .expect("source bundle paths")
+                .push(input.source_bundle_path.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(self.sleep_ms)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+
+            let nodes = input
+                .artifact
+                .get("batch_items")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| {
+                    let id = item
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    serde_json::json!({
+                        "id": id,
+                        "type": "theorem",
+                        "statement": format!("typed {id}"),
+                        "depends_on": [],
+                        "source_tex": item.get("source_tex").cloned().unwrap_or_default(),
+                        "typed_transcription": {"status": "transcribed"},
+                        "theorem_ir": {
+                            "math_type": {"kind": "custom", "name": "synthetic"},
+                            "proposition": {
+                                "kind": "uninterpreted_predicate",
+                                "name": "Synthetic",
+                                "args": []
+                            }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            Ok(crate::agents::AgentRun {
+                role: spec.role.clone(),
+                runner: spec.runner,
+                model: spec.model.clone(),
+                output: serde_json::json!({ "nodes": nodes }),
+                raw_output: None,
+                verifier_status: None,
+                verifier_notes: None,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms: self.sleep_ms as i32,
+                cache_hit: false,
+                sandbox_ref: None,
+            })
+        }
+    }
+
+    struct TypedIrFailingRunner;
+
+    #[async_trait]
+    impl crate::agents::AgentRunner for TypedIrFailingRunner {
+        fn name(&self) -> &'static str {
+            "typed-ir-failing-runner"
+        }
+
+        async fn run(
+            &self,
+            _spec: &crate::agents::AgentSpec,
+            _input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            anyhow::bail!("simulated empty agy stdout")
         }
     }
 
@@ -17150,16 +18528,333 @@ mod tests {
     }
 
     #[test]
+    fn lean_target_watchdog_budget_scales_with_author_timeout() {
+        assert_eq!(lean_target_watchdog_budget_secs(2, 1_020), 2_340);
+        assert_eq!(lean_target_watchdog_budget_secs(0, 600), 900);
+    }
+
+    #[test]
     fn formalize_source_config_defaults_to_mvp_transcription_batches() {
         let _env = EnvVarsGuard::clear(&[
             "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
             "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
+            "GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY",
+            "GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER",
+            "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
+            "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS",
+            "GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT",
+            "GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS",
+            "GROKRXIV_FORMALIZE_TYPED_IR_ONLY",
         ]);
 
         let config = FormalizeSourceConfig::from_env();
 
-        assert_eq!(config.transcription_batch_items, 8);
+        assert_eq!(
+            config.transcription_batch_items,
+            FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS
+        );
         assert_eq!(config.transcription_batch_chars, 30_000);
+        assert_eq!(config.typed_ir_batch_concurrency, 4);
+        assert!(!config.typed_ir_include_context);
+        assert_eq!(config.typed_ir_max_items, 8);
+        assert_eq!(config.typed_ir_provider, "claude");
+        assert_eq!(config.typed_ir_model, FORMALIZE_TYPED_IR_DEFAULT_MODEL);
+        assert_eq!(config.typed_ir_timeout_secs, 120);
+        assert!(!config.typed_ir_only);
+    }
+
+    #[test]
+    fn formalize_source_config_allows_typed_ir_provider_model_override() {
+        let _env = EnvVarsGuard::set(&[
+            ("GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER", "gemini"),
+            (
+                "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
+                "Gemini 3.5 Flash (Medium)",
+            ),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS", "120"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY", "6"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT", "1"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS", "0"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", "1"),
+        ]);
+
+        let config = FormalizeSourceConfig::from_env();
+
+        assert_eq!(config.typed_ir_provider, "gemini");
+        assert_eq!(config.typed_ir_model, "Gemini 3.5 Flash (Medium)");
+        assert_eq!(config.typed_ir_timeout_secs, 120);
+        assert_eq!(config.typed_ir_batch_concurrency, 6);
+        assert!(config.typed_ir_include_context);
+        assert_eq!(config.typed_ir_max_items, 0);
+        assert!(config.typed_ir_only);
+    }
+
+    #[test]
+    fn formalize_source_config_accepts_role_level_typed_ir_overrides() {
+        let _env = EnvVarsGuard::set(&[
+            ("GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER", "claude"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_MODEL", "claude-sonnet-4-6"),
+            (
+                "AGENTHERO_PROVIDER_OVERRIDE_FORMALIZE_SOURCE_INVENTORY_TYPED_TRANSCRIBER",
+                "gemini",
+            ),
+            (
+                "AGENTHERO_MODEL_OVERRIDE_FORMALIZE_SOURCE_INVENTORY_TYPED_TRANSCRIBER",
+                "Gemini 3.5 Flash (Medium)",
+            ),
+        ]);
+
+        let config = FormalizeSourceConfig::from_env();
+
+        assert_eq!(config.typed_ir_provider, "gemini");
+        assert_eq!(config.typed_ir_model, "Gemini 3.5 Flash (Medium)");
+    }
+
+    #[test]
+    fn formalize_typed_ir_transcriber_uses_fast_model_and_timeout() {
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 4,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let mut spec =
+            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
+        apply_formalize_typed_ir_transcriber_config(&mut spec, &config);
+
+        assert_eq!(spec.role, "formalize_source_inventory_typed_transcriber");
+        assert_eq!(spec.provider, "claude");
+        assert_eq!(spec.model, FORMALIZE_TYPED_IR_DEFAULT_MODEL);
+        assert_eq!(spec.timeout_secs, FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS);
+    }
+
+    #[tokio::test]
+    async fn formalize_typed_ir_batches_run_concurrently_without_source_bundle() {
+        let runner = Arc::new(TypedIrConcurrentRunner::new(25));
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 1,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 2,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let mut spec =
+            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
+        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
+        let seed = crate::db::PaperReviewSeedRow {
+            arxiv_id: "2606.23906".to_string(),
+            title: "Typed IR Benchmark Fixture".to_string(),
+            abstract_: None,
+            field: None,
+            submitted_date: None,
+        };
+        let theorem_inventory = serde_json::json!({
+            "inventory_count": 4,
+            "theorem_level_count": 4,
+            "items": [
+                {"id": "thm:1", "kind": "theorem", "source_tex": "\\begin{theorem}A\\end{theorem}"},
+                {"id": "thm:2", "kind": "theorem", "source_tex": "\\begin{theorem}B\\end{theorem}"},
+                {"id": "thm:3", "kind": "theorem", "source_tex": "\\begin{theorem}C\\end{theorem}"},
+                {"id": "thm:4", "kind": "theorem", "source_tex": "\\begin{theorem}D\\end{theorem}"}
+            ]
+        });
+        let workdir = tempfile::tempdir().expect("temp workdir");
+
+        let theorem_graph = run_formalize_inventory_typed_transcription(
+            runner.clone(),
+            &spec,
+            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            &seed,
+            &theorem_inventory,
+            &config,
+            workdir.path(),
+        )
+        .await
+        .expect("typed-IR transcription succeeds")
+        .expect("typed-IR returns a theorem graph");
+
+        assert_eq!(runner.max_active(), 2);
+        assert_eq!(
+            runner.source_bundle_paths(),
+            vec![None, None, None, None],
+            "typed-IR batch prompts already include source_tex; passing the whole source bundle makes the fast path slow and stale"
+        );
+        assert_eq!(theorem_graph["typed_count"], 4);
+    }
+
+    #[tokio::test]
+    async fn formalize_typed_ir_runner_error_fails_instead_of_fabricating_math_ir() {
+        let runner = Arc::new(TypedIrFailingRunner);
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 8,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 4,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let mut spec =
+            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
+        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
+        let seed = crate::db::PaperReviewSeedRow {
+            arxiv_id: "2606.23906".to_string(),
+            title: "Typed IR Benchmark Fixture".to_string(),
+            abstract_: None,
+            field: None,
+            submitted_date: None,
+        };
+        let theorem_inventory = serde_json::json!({
+            "inventory_count": 2,
+            "theorem_level_count": 2,
+            "items": [
+                {
+                    "id": "thm:main",
+                    "kind": "theorem",
+                    "role": "lean_target",
+                    "file": "paper.tex",
+                    "char_start": 12,
+                    "refs": ["lem:helper"],
+                    "source_tex": "\\begin{theorem}\\label{thm:main} Main result.\\end{theorem}"
+                },
+                {
+                    "id": "lem:helper",
+                    "kind": "lemma",
+                    "role": "lean_target",
+                    "file": "paper.tex",
+                    "char_start": 88,
+                    "source_tex": "\\begin{lemma} Helper result.\\end{lemma}"
+                }
+            ]
+        });
+        let workdir = tempfile::tempdir().expect("temp workdir");
+
+        let err = run_formalize_inventory_typed_transcription(
+            runner,
+            &spec,
+            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            &seed,
+            &theorem_inventory,
+            &config,
+            workdir.path(),
+        )
+        .await
+        .expect_err("runner failure must not synthesize typed theorem IR");
+
+        assert!(
+            err.to_string().contains("typed-ir runner failed"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn formalize_typed_ir_transcription_items_default_to_lean_targets() {
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 16,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 4,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let items = vec![
+            serde_json::json!({"id": "def:1", "kind": "definition", "role": "context"}),
+            serde_json::json!({"id": "thm:1", "kind": "theorem", "role": "lean_target"}),
+            serde_json::json!({"id": "rmk:1", "kind": "remark", "role": "context"}),
+            serde_json::json!({"id": "lem:1", "kind": "lemma", "role": "lean_target"}),
+        ];
+
+        let selected = formalize_inventory_transcription_items(&items, &config);
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0]["id"], "thm:1");
+        assert_eq!(selected[1]["id"], "lem:1");
+    }
+
+    #[test]
+    fn formalize_typed_ir_transcription_items_can_include_context() {
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 16,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 4,
+            typed_ir_include_context: true,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let items = vec![
+            serde_json::json!({"id": "def:1", "kind": "definition", "role": "context"}),
+            serde_json::json!({"id": "thm:1", "kind": "theorem", "role": "lean_target"}),
+        ];
+
+        let selected = formalize_inventory_transcription_items(&items, &config);
+
+        assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
+    fn formalize_typed_ir_transcription_items_honor_default_cap() {
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 32,
+            transcription_batch_chars: 60_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 4,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 3,
+            typed_ir_only: false,
+        };
+        let items = (0..8)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("thm:{index}"),
+                    "kind": "theorem",
+                    "role": "lean_target",
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let selected = formalize_inventory_transcription_items(&items, &config);
+
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[2]["id"], "thm:2");
     }
 
     #[test]
@@ -17215,20 +18910,282 @@ mod tests {
     #[test]
     fn formalize_app_run_input_streams_worker_status() {
         let review_id = Uuid::parse_str("fb7eaf59-ec86-4240-93b5-1ef32f57b3a4").unwrap();
-        let input = formalize_app_run_input(vec![review_id.to_string()], true);
+        let input = formalize_app_run_input(vec![review_id.to_string()], true, FormalizeMode::Full);
 
         assert_eq!(input["args"][0], review_id.to_string());
         assert_eq!(input["json"], true);
+        assert_eq!(input["input"]["values"]["app"], "grokrxiv");
+        assert_eq!(input["input"]["values"]["action"], "formalize");
+        assert_eq!(input["input"]["values"]["dag_type"], "review-loop");
+        assert_eq!(input["input"]["values"]["formalize_mode"], "full");
         assert_eq!(input["input"]["values"]["stream_stderr"], true);
         assert_eq!(input["retry"]["max_attempts"], 2);
     }
 
     #[test]
+    fn auto_detect_formalize_queue_passes_auto_detect_mode() {
+        let review_id = Uuid::parse_str("fb7eaf59-ec86-4240-93b5-1ef32f57b3a4").unwrap();
+
+        assert_eq!(
+            formalize_app_run_args(review_id, false, true, FormalizeMode::AutoDetect),
+            vec![review_id.to_string(), "--auto-detect".to_string()]
+        );
+        assert_eq!(
+            formalize_app_run_args(review_id, false, true, FormalizeMode::Full),
+            vec![review_id.to_string()]
+        );
+        assert_eq!(
+            FormalizationQueueReason::AutoMathDetected.formalize_mode(),
+            FormalizeMode::AutoDetect
+        );
+        assert_eq!(
+            FormalizationQueueReason::ForcedByFlag.formalize_mode(),
+            FormalizeMode::Full
+        );
+    }
+
+    #[test]
+    fn app_run_operator_event_payload_includes_agenthero_trace_fields() {
+        let run_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+
+        let payload = app_run_operator_event_payload(run_id);
+
+        assert_eq!(payload["app_run_id"], run_id.to_string());
+        assert_eq!(payload["operator"], "cli");
+        for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+            assert!(
+                payload.get(*field).is_some(),
+                "operator event payload should include mandatory AgentHero trace field `{field}`"
+            );
+        }
+        assert_eq!(payload["node_id"], serde_json::Value::Null);
+        assert_eq!(payload["attempt"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn formalize_queued_event_payload_includes_agenthero_trace_fields() {
+        let run_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
+
+        let payload = formalize_queued_event_payload(run_id, FormalizeMode::AutoDetect);
+
+        assert_eq!(payload["app_run_id"], run_id.to_string());
+        assert_eq!(payload["app"], "grokrxiv");
+        assert_eq!(payload["action"], "formalize");
+        assert_eq!(payload["dag_type"], "review-loop");
+        assert_eq!(payload["formalize_mode"], "auto_detect");
+        assert_eq!(payload["retry"]["max_attempts"], 2);
+        for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+            assert!(
+                payload.get(*field).is_some(),
+                "formalize queued event payload should include mandatory AgentHero trace field `{field}`"
+            );
+        }
+        assert_eq!(payload["node_id"], serde_json::Value::Null);
+        assert_eq!(payload["attempt"], serde_json::Value::Null);
+    }
+
+    #[test]
     fn formalize_source_inventory_is_not_blocked_by_review_loop_body_signal() {
-        let plan = formalize_extraction_plan("This artifact only contains proof prose.");
+        let plan = formalize_extraction_plan(
+            "This artifact only contains proof prose.",
+            FormalizeMode::Full,
+        );
 
         assert!(plan.try_source_inventory);
         assert!(!plan.allow_body_tool_loop);
+    }
+
+    #[test]
+    fn auto_detect_formalize_skips_typed_ir_enrichment() {
+        let body = "We prove the following. \\begin{theorem}For all n, n + 0 = n.\\end{theorem}";
+
+        let auto = formalize_extraction_plan(body, FormalizeMode::AutoDetect);
+        let full = formalize_extraction_plan(body, FormalizeMode::Full);
+
+        assert!(!auto.try_source_inventory);
+        assert!(!auto.allow_body_tool_loop);
+        assert!(full.try_source_inventory);
+        assert!(full.allow_body_tool_loop);
+    }
+
+    #[test]
+    fn parse_formalize_args_accepts_auto_detect_mode() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--auto-detect".to_string(),
+        ])
+        .expect("formalize --auto-detect args parse");
+
+        assert_eq!(
+            parsed.review_id,
+            Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
+        );
+        assert_eq!(parsed.mode, FormalizeMode::AutoDetect);
+    }
+
+    #[test]
+    fn formalize_node_event_records_audit_contract() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let event = formalize_node_event(
+            review_id,
+            FormalizeMode::Full,
+            "node.completed",
+            "formalize_typed_ir_batch_1",
+            "llm",
+            "formalize_source_inventory_typed_transcriber",
+            "ok",
+            "typed-IR batch completed",
+            serde_json::json!({
+                "model": FORMALIZE_TYPED_IR_DEFAULT_MODEL,
+                "batch_number": 1,
+                "batch_count": 2,
+                "duration_ms": 42,
+            }),
+        );
+
+        assert_eq!(event.event_type, "node.completed");
+        assert_eq!(event.node_id.as_deref(), Some("formalize_typed_ir_batch_1"));
+        assert_eq!(event.payload["app"], "grokrxiv");
+        assert_eq!(event.payload["action"], "formalize");
+        assert_eq!(event.payload["dag_type"], "review-loop");
+        assert_eq!(event.payload["review_id"], review_id.to_string());
+        assert_eq!(event.payload["formalize_mode"], "full");
+        assert_eq!(event.payload["node_id"], "formalize_typed_ir_batch_1");
+        assert_eq!(event.payload["node_kind"], "llm");
+        assert_eq!(
+            event.payload["tool_id"],
+            "formalize_source_inventory_typed_transcriber"
+        );
+        assert_eq!(event.payload["model"], FORMALIZE_TYPED_IR_DEFAULT_MODEL);
+        assert_eq!(event.payload["duration_ms"], 42);
+    }
+
+    #[test]
+    fn formalize_lean_target_events_record_author_and_compile_contract() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let task = ReviewFixCodeTask {
+            target_id: "lean",
+            language: "lean",
+            filename: "GrokRxiv/Proofs.lean",
+            author_role: "lean_proof_author",
+            reviewer_role: "lean_code_reviewer",
+            fixer_role: "lean_code_fixer",
+            compile_program: "lake",
+            compile_args: vec![
+                "env".to_string(),
+                "lean".to_string(),
+                "GrokRxiv/Proofs.lean".to_string(),
+            ],
+            compile_timeout_secs: 1800,
+            forbidden_terms: vec!["sorry", "admit", "axiom"],
+            max_attempts: 2,
+        };
+        let artifact_path = "review_loop/lean/targets/02_add_zero/GrokRxiv/Proofs.lean";
+
+        let author = formalize_lean_target_author_started_event(
+            review_id,
+            FormalizeMode::AutoDetect,
+            &task,
+            2,
+            8,
+            "add_zero",
+            "formalize_add_zero",
+            artifact_path,
+            Some("claude"),
+            Some("claude-sonnet-4-6"),
+            Some("prompt-hash-1"),
+        );
+
+        assert_eq!(author.event_type, "node.started");
+        assert_eq!(author.node_id.as_deref(), Some("lean_target_3_author"));
+        assert_eq!(author.payload["formalize_mode"], "auto_detect");
+        assert_eq!(author.payload["node_kind"], "llm");
+        assert_eq!(author.payload["tool_id"], "lean_proof_author");
+        assert_eq!(author.payload["target_index"], 3);
+        assert_eq!(author.payload["target_count"], 8);
+        assert_eq!(author.payload["lean_declaration"], "add_zero");
+        assert_eq!(author.payload["obligation_id"], "formalize_add_zero");
+        assert_eq!(author.payload["artifact_path"], artifact_path);
+        assert_eq!(author.payload["provider"], "claude");
+        assert_eq!(author.payload["model"], "claude-sonnet-4-6");
+        assert_eq!(author.payload["prompt_hash"], "prompt-hash-1");
+
+        let author_completed = formalize_lean_target_author_completed_event(
+            review_id,
+            FormalizeMode::AutoDetect,
+            &task,
+            2,
+            8,
+            "add_zero",
+            "formalize_add_zero",
+            artifact_path,
+            750,
+            "fail",
+            "completed",
+            true,
+        );
+
+        assert_eq!(author_completed.event_type, "node.completed");
+        assert_eq!(
+            author_completed.node_id.as_deref(),
+            Some("lean_target_3_author")
+        );
+        assert_eq!(author_completed.payload["status"], "fail");
+        assert_eq!(author_completed.payload["duration_ms"], 750);
+        assert_eq!(author_completed.payload["outcome"], "completed");
+        assert_eq!(author_completed.payload["retried"], true);
+
+        let run = serde_json::json!({
+            "status": "fail",
+            "attempts": [{
+                "attempt": 2,
+                "compile": {
+                    "command": ["lake", "env", "lean", "GrokRxiv/Proofs.lean"],
+                    "status": "fail",
+                    "exit_code": 1,
+                    "duration_ms": 37,
+                    "stderr": "type mismatch"
+                },
+                "agent_output_audits": [{
+                    "role": "lean_code_fixer",
+                    "phase": "generate",
+                    "model": "claude-sonnet-4-6",
+                    "artifact_dir": "review_loop/agent_outputs/lean_review_fix_code/round_2/lean_code_fixer"
+                }]
+            }],
+        });
+        let compile = formalize_lean_target_compile_result_event(
+            review_id,
+            FormalizeMode::AutoDetect,
+            &task,
+            2,
+            8,
+            "add_zero",
+            "formalize_add_zero",
+            artifact_path,
+            "/tmp/review_loop/lean/targets/02_add_zero/GrokRxiv/Proofs.lean",
+            &run,
+            200,
+            "completed",
+            true,
+        );
+
+        assert_eq!(compile.event_type, "node.failed");
+        assert_eq!(compile.node_id.as_deref(), Some("lean_target_3_compile"));
+        assert_eq!(compile.level, "error");
+        assert_eq!(compile.payload["node_kind"], "lean");
+        assert_eq!(compile.payload["tool_id"], "lake_env_lean");
+        assert_eq!(compile.payload["status"], "fail");
+        assert_eq!(compile.payload["exit_status"], 1);
+        assert_eq!(compile.payload["command"][0], "lake");
+        assert_eq!(compile.payload["duration_ms"], 200);
+        assert_eq!(compile.payload["compile_duration_ms"], 37);
+        assert_eq!(compile.payload["artifact_path"], artifact_path);
+        assert_eq!(
+            compile.payload["agent_output_artifact_dir"],
+            "review_loop/agent_outputs/lean_review_fix_code/round_2/lean_code_fixer"
+        );
+        assert_eq!(compile.payload["retried"], true);
     }
 
     #[test]
@@ -17512,6 +19469,23 @@ The pure braid group is polyfree.
             Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
         );
         assert!(parsed.debug_output);
+        assert!(!parsed.external_actions_enabled);
+    }
+
+    #[test]
+    fn parse_formalize_args_accepts_typed_ir_benchmark_mode() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--benchmark-typed-ir".to_string(),
+        ])
+        .expect("formalize typed-IR benchmark args parse");
+
+        assert_eq!(
+            parsed.review_id,
+            Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
+        );
+        assert_eq!(parsed.mode, FormalizeMode::Full);
+        assert!(parsed.typed_ir_only);
         assert!(!parsed.external_actions_enabled);
     }
 
@@ -17818,6 +19792,58 @@ The pure braid group is polyfree.
             report["artifacts"][0]["skip_reason"].as_str(),
             Some("citation adjudication is represented by citation_validation_report.json")
         );
+    }
+
+    #[tokio::test]
+    async fn review_loop_materializes_paper_review_outputs_for_bundle_completeness() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("grokrxiv-review-loop-paper-review-")
+            .tempdir()
+            .expect("tempdir");
+        let paper_math_sources = serde_json::json!({
+            "body": {
+                "artifact": "body.md",
+                "text": "# Paper\n\nA theorem-rich body."
+            },
+            "equations": {
+                "equations": [{"id": "eq1", "canonical_tex": "x=x"}]
+            },
+            "theorem_graph": {
+                "nodes": [{"id": "thm-main", "statement": "x=x"}]
+            },
+            "semantic_ast": {
+                "semantic_ast": []
+            },
+            "references": {
+                "citations": []
+            }
+        });
+
+        write_review_loop_paper_review_outputs(tempdir.path(), &paper_math_sources)
+            .await
+            .expect("materialize paper-review outputs");
+
+        let stages = vec![ReviewLoopStage {
+            id: "paper_review".to_string(),
+            kind: "dag_call".to_string(),
+            dag_type: Some("paper-review".to_string()),
+            inputs: vec![],
+            outputs: vec![
+                "body.md".to_string(),
+                "equations.json".to_string(),
+                "theorem_graph.json".to_string(),
+                "semantic_ast.json".to_string(),
+                "references.json".to_string(),
+            ],
+            required: true,
+        }];
+        let report =
+            review_loop_bundle_completeness_report(&stages, tempdir.path(), &Default::default())
+                .await
+                .expect("bundle report");
+
+        assert_eq!(report["status"].as_str(), Some("pass"));
+        assert_eq!(report["present_count"].as_u64(), Some(5));
     }
 
     #[test]
@@ -19683,6 +21709,149 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
         let markdown = summary.to_markdown();
         assert!(markdown.contains("not externally checked"));
         assert!(!markdown.contains("fail_fraction=0.000"));
+    }
+
+    #[test]
+    fn citation_summary_from_validation_report_uses_resolver_counts() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let report = serde_json::json!({
+            "status": "needs_remediation",
+            "summary": "3 references parsed; 0 graph warnings",
+            "parsed_references": [
+                {
+                    "key": "AMP",
+                    "raw": "AMP: Hopf algebras, Steinberg modules, and unstable cohomology, arXiv:2404.13776.",
+                    "title": "Hopf algebras, Steinberg modules, and unstable cohomology",
+                    "authors": [],
+                    "venue": null,
+                    "year": null,
+                    "doi": null,
+                    "arxiv_id": "2404.13776",
+                    "cited": true
+                },
+                {
+                    "key": "AguiarMahajan",
+                    "raw": "AguiarMahajan: Monoidal functors, species and Hopf algebras.",
+                    "title": "Monoidal functors, species and Hopf algebras",
+                    "authors": [],
+                    "venue": null,
+                    "year": null,
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true
+                },
+                {
+                    "key": "MissingLookup",
+                    "raw": "MissingLookup: Bibliographic text with no resolver hit.",
+                    "title": "Bibliographic text with no resolver hit",
+                    "authors": [],
+                    "venue": null,
+                    "year": null,
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true
+                }
+            ],
+            "resolver_results": [
+                {
+                    "key": "AMP",
+                    "source": "arxiv",
+                    "status": "verified",
+                    "resolved_doi": null,
+                    "resolved_url": "https://arxiv.org/abs/2404.13776",
+                    "evidence": []
+                },
+                {
+                    "key": "AguiarMahajan",
+                    "source": "citation_waterfall",
+                    "status": "unverified",
+                    "resolved_doi": null,
+                    "resolved_url": null,
+                    "evidence": ["no title match in provider response"]
+                },
+                {
+                    "key": "MissingLookup",
+                    "source": "crossref",
+                    "status": "not_checked",
+                    "resolved_doi": null,
+                    "resolved_url": null,
+                    "evidence": ["resolver was not invoked"]
+                }
+            ],
+            "similarity_results": [],
+            "metadata_conflicts": [],
+            "graph_warnings": [],
+            "remediation_items": []
+        });
+
+        let summary = citation_summary_from_validation_report(
+            review_id,
+            &report,
+            "review_loop/citation_validation_report.json".to_string(),
+        );
+
+        assert_eq!(summary.checked, 3);
+        assert_eq!(summary.verifier_status.as_deref(), Some("warn"));
+        assert_eq!(summary.unverified, 2);
+        assert_eq!(summary.evidence.len(), 2);
+        let markdown = summary.to_markdown();
+        assert!(markdown.contains("checked=3"), "{markdown}");
+        assert!(markdown.contains("AguiarMahajan"), "{markdown}");
+        assert!(markdown.contains("MissingLookup"), "{markdown}");
+        assert!(!markdown.contains("not externally checked"), "{markdown}");
+    }
+
+    #[test]
+    fn review_loop_citation_report_from_references_preserves_resolver_evidence() {
+        let references = serde_json::json!({
+            "arxiv_id": "2606.23863",
+            "citations": [
+                {
+                    "key": "AMP",
+                    "raw": "AMP: Hopf algebras, Steinberg modules, and unstable cohomology, arXiv:2404.13776.",
+                    "title": "Hopf algebras, Steinberg modules, and unstable cohomology",
+                    "authors": [],
+                    "venue": null,
+                    "year": null,
+                    "doi": null,
+                    "arxiv_id": "2404.13776",
+                    "cited": true,
+                    "contexts": [{"section": "Intro", "sentence": "used in [@AMP]"}],
+                    "validation": {
+                        "status": "resolved",
+                        "source": "arxiv",
+                        "resolved_url": "https://arxiv.org/abs/2404.13776"
+                    }
+                },
+                {
+                    "key": "AguiarMahajan",
+                    "raw": "AguiarMahajan: Monoidal functors, species and Hopf algebras.",
+                    "title": "Monoidal functors, species and Hopf algebras",
+                    "authors": [],
+                    "venue": null,
+                    "year": null,
+                    "doi": null,
+                    "arxiv_id": null,
+                    "cited": true,
+                    "contexts": [{"section": "Intro", "sentence": "compare [@AguiarMahajan]"}],
+                    "validation": {
+                        "status": "unverified",
+                        "source": "citation_waterfall",
+                        "evidence": ["no title match in provider response"]
+                    }
+                }
+            ],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = review_loop_citation_report_from_references(&references);
+
+        assert_eq!(report["status"], "needs_remediation");
+        assert_eq!(report["parsed_references"].as_array().unwrap().len(), 2);
+        assert_eq!(report["resolver_results"].as_array().unwrap().len(), 2);
+        assert_eq!(report["resolver_results"][0]["status"], "verified");
+        assert_eq!(report["resolver_results"][1]["status"], "unverified");
     }
 
     #[test]
