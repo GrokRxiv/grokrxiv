@@ -3,7 +3,6 @@
 use crate::cli::{run, Cli, Command};
 use clap::{error::ErrorKind, Parser};
 use std::process::ExitCode;
-use tracing_subscriber::EnvFilter;
 
 /// Load environment, parse CLI arguments, initialize tracing, and run a command.
 pub async fn run_process() -> ExitCode {
@@ -29,7 +28,18 @@ pub async fn run_process() -> ExitCode {
         }
         Err(err) => err.exit(),
     };
-    init_tracing(&cli);
+    let telemetry_settings = crate::telemetry::TelemetrySettings::from_process(
+        cli.debug_logs,
+        matches!(&cli.command, Command::Serve),
+        cli.log_file.clone(),
+    );
+    let _telemetry_guard = match crate::telemetry::init(&telemetry_settings) {
+        Ok(guard) => guard,
+        Err(err) => {
+            eprintln!("error: initialize telemetry: {err:#}");
+            return ExitCode::from(1);
+        }
+    };
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -37,23 +47,5 @@ pub async fn run_process() -> ExitCode {
             eprintln!("error: {err:#}");
             ExitCode::from(1)
         }
-    }
-}
-
-fn init_tracing(cli: &Cli) {
-    if cli.debug_logs || matches!(&cli.command, Command::Serve) {
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info,agenthero_orchestrator=debug"));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .json()
-            .with_current_span(false)
-            .with_writer(std::io::stderr)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("off"))
-            .with_writer(std::io::stderr)
-            .init();
     }
 }

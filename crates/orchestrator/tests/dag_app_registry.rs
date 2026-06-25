@@ -4,6 +4,43 @@ use std::sync::Mutex;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+fn assert_registered_app_observability_contract(
+    app: &agenthero_orchestrator::dag_apps::RegisteredAppDescriptor,
+) {
+    assert!(app.observability.events, "{} must emit events", app.id);
+    assert!(app.observability.logs, "{} must emit logs", app.id);
+    assert!(app.observability.status, "{} must expose status", app.id);
+    assert!(
+        app.observability.event_stream,
+        "{} must expose event stream monitoring",
+        app.id
+    );
+    for event_type in [
+        "app_action.started",
+        "app_action.completed",
+        "app_action.failed",
+    ] {
+        assert!(
+            app.observability
+                .lifecycle_events
+                .iter()
+                .any(|declared| declared == event_type),
+            "{} must declare lifecycle event `{event_type}`",
+            app.id
+        );
+    }
+    for field in agenthero_agent_runtime::AGENTHERO_EVENT_TRACE_FIELDS {
+        assert!(
+            app.observability
+                .trace_fields
+                .iter()
+                .any(|declared| declared == field),
+            "{} must declare trace field `{field}`",
+            app.id
+        );
+    }
+}
+
 #[test]
 fn app_registry_groups_dag_types_behind_product_apps() {
     let _guard = EnvGuard::clear_apps_root();
@@ -13,13 +50,15 @@ fn app_registry_groups_dag_types_behind_product_apps() {
         vec![
             "c2rust".to_string(),
             "formal-proofs".to_string(),
-            "grokrxiv".to_string()
+            "grokrxiv".to_string(),
+            "platform-smoke".to_string()
         ]
     );
 
     let grokrxiv = agenthero_orchestrator::dag_apps::registered_app("grokrxiv")
         .expect("GrokRxiv app descriptor loads")
         .expect("GrokRxiv app descriptor");
+    assert_registered_app_observability_contract(&grokrxiv);
     assert_eq!(grokrxiv.deployments.len(), 1);
     let deployment = &grokrxiv.deployments[0];
     let (project, root, env) = match deployment {
@@ -78,6 +117,7 @@ fn app_registry_groups_dag_types_behind_product_apps() {
     let c2rust = agenthero_orchestrator::dag_apps::registered_app("c2rust")
         .expect("c2rust app descriptor loads")
         .expect("c2rust app descriptor");
+    assert_registered_app_observability_contract(&c2rust);
     assert_eq!(
         c2rust
             .actions
@@ -90,6 +130,7 @@ fn app_registry_groups_dag_types_behind_product_apps() {
     let formal_proofs = agenthero_orchestrator::dag_apps::registered_app("formal-proofs")
         .expect("formal-proofs app descriptor loads")
         .expect("formal-proofs app descriptor");
+    assert_registered_app_observability_contract(&formal_proofs);
     let action_ids = formal_proofs
         .actions
         .iter()
@@ -115,6 +156,27 @@ fn app_registry_groups_dag_types_behind_product_apps() {
             "theorem-triage"
         ]
     );
+
+    let platform_smoke = agenthero_orchestrator::dag_apps::registered_app("platform-smoke")
+        .expect("platform smoke app descriptor loads")
+        .expect("platform smoke app descriptor");
+    assert_registered_app_observability_contract(&platform_smoke);
+    assert_eq!(
+        platform_smoke
+            .actions
+            .iter()
+            .map(|action| (action.id.as_str(), action.dag_type.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("tool-policy-smoke", "tool-policy-smoke"),
+            ("budget-consumption-smoke", "budget-consumption-smoke"),
+            ("verification-routing-smoke", "verification-routing-smoke"),
+            ("cancellation-smoke", "cancellation-smoke"),
+            ("approval-pause-smoke", "approval-pause-smoke"),
+            ("policy-denial-smoke", "policy-denial-smoke"),
+            ("isolation-boundary-smoke", "isolation-boundary-smoke"),
+        ]
+    );
 }
 
 #[test]
@@ -126,17 +188,24 @@ fn registry_contains_grokrxiv_chain_and_c2rust_apps() {
     assert_eq!(
         ids,
         vec![
+            "approval-pause-smoke".to_string(),
+            "budget-consumption-smoke".to_string(),
             "c2rust".to_string(),
+            "cancellation-smoke".to_string(),
             "certificate-verify".to_string(),
             "citation-validation".to_string(),
+            "isolation-boundary-smoke".to_string(),
             "open-problem-search".to_string(),
             "paper-extract".to_string(),
             "paper-ingest".to_string(),
             "paper-publish".to_string(),
             "paper-review".to_string(),
             "paper-revise".to_string(),
+            "policy-denial-smoke".to_string(),
             "review-loop".to_string(),
             "theorem-triage".to_string(),
+            "tool-policy-smoke".to_string(),
+            "verification-routing-smoke".to_string(),
         ]
     );
 }
@@ -167,6 +236,28 @@ label: Demo
 adapter:
   kind: process
   command: demo-adapter
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
 actions:
   - id: run
     command: [run]
@@ -197,6 +288,28 @@ label: Demo
 adapter:
   kind: process
   command: demo-adapter
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
 actions:
   - id: run
     command: [run]
@@ -211,6 +324,297 @@ actions:
     assert!(
         err.to_string().contains("missing DAG manifest"),
         "expected missing manifest error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_action_args_reject_manifest_declared_option_conflicts() {
+    let _guard = EnvGuard::clear_apps_root();
+    let manifest = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("grokrxiv")
+        .expect("GrokRxiv manifest loads");
+    let review = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == "review")
+        .expect("review action");
+
+    agenthero_orchestrator::dag_apps::validate_app_action_args(
+        review,
+        &[
+            "2606.24837".to_string(),
+            "--with-lean".to_string(),
+            "--no-lean".to_string(),
+        ],
+    )
+    .expect_err("conflicting Lean flags must fail manifest validation");
+
+    agenthero_orchestrator::dag_apps::validate_app_action_args(
+        review,
+        &[
+            "2606.24837".to_string(),
+            "--with-lean".to_string(),
+            "--no-external-actions".to_string(),
+        ],
+    )
+    .expect("non-conflicting review flags should validate");
+}
+
+#[test]
+fn app_action_args_reject_missing_required_positionals_and_flags() {
+    let _guard = EnvGuard::clear_apps_root();
+    let manifest = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("grokrxiv")
+        .expect("GrokRxiv manifest loads");
+    let review = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == "review")
+        .expect("review action");
+    let batch_create = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == "batch-create")
+        .expect("batch-create action");
+
+    let missing_source = agenthero_orchestrator::dag_apps::validate_app_action_args(
+        review,
+        &["--no-external-actions".to_string()],
+    )
+    .expect_err("review source is required");
+    assert!(
+        missing_source
+            .to_string()
+            .contains("requires positional argument `source`"),
+        "expected missing source error, got {missing_source:#}"
+    );
+
+    let missing_category = agenthero_orchestrator::dag_apps::validate_app_action_args(
+        batch_create,
+        &[
+            "--month".to_string(),
+            "2026-05".to_string(),
+            "--daily-limit".to_string(),
+            "1".to_string(),
+        ],
+    )
+    .expect_err("batch-create category is required");
+    assert!(
+        missing_category
+            .to_string()
+            .contains("requires option `--category`"),
+        "expected missing category error, got {missing_category:#}"
+    );
+}
+
+#[test]
+fn app_action_args_reject_missing_declared_flag_values() {
+    let _guard = EnvGuard::clear_apps_root();
+    let manifest = agenthero_orchestrator::dag_apps::load_app_manifest_by_slug("grokrxiv")
+        .expect("GrokRxiv manifest loads");
+    let review = manifest
+        .actions
+        .iter()
+        .find(|action| action.id == "review")
+        .expect("review action");
+
+    let missing_type = agenthero_orchestrator::dag_apps::validate_app_action_args(
+        review,
+        &[
+            "2606.24837".to_string(),
+            "--type".to_string(),
+            "--no-external-actions".to_string(),
+        ],
+    )
+    .expect_err("review --type requires a value");
+    assert!(
+        missing_type
+            .to_string()
+            .contains("option `--type` requires value `arxiv|pdf|tex|git|mixed`"),
+        "expected missing --type value error, got {missing_type:#}"
+    );
+
+    agenthero_orchestrator::dag_apps::validate_app_action_args(
+        review,
+        &[
+            "2606.24837".to_string(),
+            "--type=arxiv".to_string(),
+            "--no-lean".to_string(),
+            "--no-external-actions".to_string(),
+        ],
+    )
+    .expect("inline flag values should validate");
+}
+
+#[test]
+fn app_manifest_option_conflicts_must_reference_known_options() {
+    let root = TempRoot::new("bad-option-conflict");
+    let app = root.path().join("demo");
+    std::fs::create_dir_all(app.join("dags")).unwrap();
+    std::fs::write(
+        app.join("app.yaml"),
+        r#"version: 1
+slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
+actions:
+  - id: run
+    command: [run]
+    dag_type: demo
+    options:
+      - name: source
+        kind: positional
+      - name: --force
+        kind: flag
+        conflicts_with: [--missing]
+"#,
+    )
+    .unwrap();
+    std::fs::write(app.join("dags/demo.yaml"), "id: demo\nversion: 1\n").unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("unknown option conflicts must fail app discovery");
+    assert!(
+        err.to_string().contains("conflicts with unknown option"),
+        "expected option conflict error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_manifest_requires_observability_contract() {
+    let root = TempRoot::new("missing-observability");
+    let app = root.path().join("demo");
+    std::fs::create_dir_all(app.join("dags")).unwrap();
+    std::fs::write(
+        app.join("app.yaml"),
+        r#"version: 1
+slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+actions:
+  - id: run
+    command: [run]
+    dag_type: demo
+"#,
+    )
+    .unwrap();
+    std::fs::write(app.join("dags/demo.yaml"), "id: demo\nversion: 1\n").unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("app manifests must declare observability");
+    assert!(
+        err.to_string().contains("observability"),
+        "expected missing observability error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_manifest_observability_requires_enabled_log_surface() {
+    let root = TempRoot::new("bad-observability");
+    let app = root.path().join("demo");
+    std::fs::create_dir_all(app.join("dags")).unwrap();
+    std::fs::write(
+        app.join("app.yaml"),
+        r#"version: 1
+slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+observability:
+  events: true
+  logs: false
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+actions:
+  - id: run
+    command: [run]
+    dag_type: demo
+"#,
+    )
+    .unwrap();
+    std::fs::write(app.join("dags/demo.yaml"), "id: demo\nversion: 1\n").unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("disabled observability logs must fail app discovery");
+    assert!(
+        err.to_string().contains("observability.logs must be true"),
+        "expected observability logs error, got {err:#}"
+    );
+}
+
+#[test]
+fn app_manifest_observability_requires_trace_fields() {
+    let root = TempRoot::new("bad-observability-trace");
+    let app = root.path().join("demo");
+    std::fs::create_dir_all(app.join("dags")).unwrap();
+    std::fs::write(
+        app.join("app.yaml"),
+        r#"version: 1
+slug: demo
+label: Demo
+adapter:
+  kind: process
+  command: demo-adapter
+observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+actions:
+  - id: run
+    command: [run]
+    dag_type: demo
+"#,
+    )
+    .unwrap();
+    std::fs::write(app.join("dags/demo.yaml"), "id: demo\nversion: 1\n").unwrap();
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let err = agenthero_orchestrator::dag_apps::registered_app_ids()
+        .expect_err("missing trace fields must fail app discovery");
+    assert!(
+        err.to_string().contains("observability.trace_fields"),
+        "expected observability trace field error, got {err:#}"
     );
 }
 
@@ -402,6 +806,47 @@ async fn adapter_malformed_json_nonzero_exit_and_timeout_are_rejected() {
             "{app}: expected `{expected}`, got {err:#}"
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adapter_structured_failure_survives_nonzero_exit() {
+    let root = TempRoot::new("adapter-structured-failure");
+    let script = write_adapter_script(
+        root.path(),
+        "structured_failure.sh",
+        r#"#!/bin/sh
+cat >/dev/null
+printf '%s' '{"protocol":"agenthero.app.v1","app":"structured","action":"run","dag_type":"structured-dag","ok":false,"error":"domain failure from adapter"}'
+echo adapter stderr context >&2
+exit 42
+"#,
+    );
+    write_app_manifest(
+        root.path(),
+        "structured",
+        "structured-dag",
+        "run",
+        script.to_str().unwrap(),
+        &[],
+    );
+
+    let _guard = EnvGuard::set_apps_root(root.path());
+    let response = agenthero_orchestrator::dag_apps::run_app_action(
+        "structured",
+        "run",
+        Vec::new(),
+        agenthero_dag_executor::DagIo::default(),
+        true,
+        false,
+    )
+    .await
+    .expect("structured app failure should be returned to the scheduler");
+
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.as_deref(),
+        Some("domain failure from adapter")
+    );
 }
 
 #[test]
@@ -700,6 +1145,7 @@ fn grokrxiv_env_templates_use_agenthero_operator_contract() {
         "AGENTHERO_ALLOW_PROVIDER_API",
         "AGENTHERO_SERVICE_TOKEN",
         "AGENTHERO_SCHEDULER_WORKERS",
+        "AGENTHERO_LOG_FILE",
         "AGENTHERO_CLAUDE_BIN",
         "AGENTHERO_CODEX_BIN",
         "AGENTHERO_ANTIGRAVITY_BIN",
@@ -908,7 +1354,29 @@ label: {slug}
 adapter:
   kind: process
   command: "{command}"
-{extra}actions:
+{extra}observability:
+  events: true
+  logs: true
+  status: true
+  event_stream: true
+  lifecycle_events:
+    - app_action.started
+    - app_action.completed
+    - app_action.failed
+  trace_fields:
+    - app_run_id
+    - dag_run_id
+    - node_id
+    - attempt
+    - node_kind
+    - tool_id
+    - manifest_hash
+    - artifact_id
+    - lease_id
+    - status
+    - exit_status
+    - duration_ms
+actions:
   - id: {action}
     command: [{action}]
     dag_type: {dag_type}

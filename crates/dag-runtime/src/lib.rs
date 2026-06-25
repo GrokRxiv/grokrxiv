@@ -229,6 +229,13 @@ pub struct DagApproval {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagRetry {
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub backoff_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagNode {
     pub id: String,
     pub kind: DagNodeKind,
@@ -256,6 +263,54 @@ pub struct DagNode {
     pub map: Option<DagMap>,
     #[serde(default)]
     pub approval: Option<DagApproval>,
+    #[serde(default)]
+    pub retry: Option<DagRetry>,
+}
+
+/// Return whether a manifest artifact key is safe to materialize below a
+/// runner-owned artifact directory.
+pub fn is_safe_artifact_key(value: &str) -> bool {
+    if value.is_empty()
+        || value.trim() != value
+        || value.contains('\\')
+        || value.contains(':')
+        || value.split('/').any(|part| {
+            part.is_empty() || part == "." || part == ".." || part.chars().any(char::is_control)
+        })
+    {
+        return false;
+    }
+    let path = Path::new(value);
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn is_safe_filesystem_policy_path(value: &str) -> bool {
+    value == "." || is_safe_artifact_key(value)
+}
+
+fn validate_http_tool_command(tool: &str, command: &[String]) -> Result<(), DagError> {
+    if command.len() < 2 {
+        return Err(DagError::InvalidHttpToolCommand {
+            tool: tool.to_string(),
+            reason: "declared as [METHOD, URL, ...]",
+        });
+    }
+    if !command[0].eq_ignore_ascii_case("GET") {
+        return Err(DagError::InvalidHttpToolCommand {
+            tool: tool.to_string(),
+            reason: "GET-only until unsafe methods have an explicit policy gate",
+        });
+    }
+    if !(command[1].starts_with("http://") || command[1].starts_with("https://")) {
+        return Err(DagError::InvalidHttpToolCommand {
+            tool: tool.to_string(),
+            reason: "an http:// or https:// URL",
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +327,8 @@ pub struct DagTool {
     pub input_schema: Option<serde_yaml::Value>,
     #[serde(default)]
     pub output_schema: Option<serde_yaml::Value>,
+    #[serde(default)]
+    pub policy: Option<DagToolPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +336,86 @@ pub struct DagTool {
 pub enum ToolExecutorKind {
     Rust,
     Cli,
+    Shell,
+    Python,
+    RustBinary,
+    Llm,
+    Http,
+    Lean,
+    Haskell,
+    Docker,
+    Wasm,
+    ApprovalGate,
+}
+
+impl ToolExecutorKind {
+    fn requires_command(self) -> bool {
+        matches!(
+            self,
+            Self::Cli
+                | Self::Shell
+                | Self::Python
+                | Self::RustBinary
+                | Self::Llm
+                | Self::Http
+                | Self::Lean
+                | Self::Haskell
+                | Self::Docker
+                | Self::Wasm
+        )
+    }
+}
+
+impl fmt::Display for ToolExecutorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Rust => "rust",
+            Self::Cli => "cli",
+            Self::Shell => "shell",
+            Self::Python => "python",
+            Self::RustBinary => "rust_binary",
+            Self::Llm => "llm",
+            Self::Http => "http",
+            Self::Lean => "lean",
+            Self::Haskell => "haskell",
+            Self::Docker => "docker",
+            Self::Wasm => "wasm",
+            Self::ApprovalGate => "approval_gate",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagToolPolicy {
+    #[serde(default)]
+    pub budget_units: Option<u64>,
+    #[serde(default)]
+    pub approval_required: bool,
+    #[serde(default)]
+    pub network: DagNetworkPolicy,
+    #[serde(default)]
+    pub filesystem: DagFilesystemPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagNetworkPolicy {
+    #[serde(default)]
+    pub allow: bool,
+}
+
+impl Default for DagNetworkPolicy {
+    fn default() -> Self {
+        Self { allow: true }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagFilesystemPolicy {
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +471,10 @@ impl DagManifest {
     }
 
     pub fn validate(&self) -> Result<(), DagError> {
+        if self.concurrency == Some(0) {
+            return Err(DagError::InvalidConcurrency);
+        }
+
         let mut role_ids = HashSet::new();
         for role in &self.roles {
             if !role_ids.insert(role.id.clone()) {
@@ -353,7 +494,23 @@ impl DagManifest {
             if !tool_def_ids.insert(tool.id.clone()) {
                 return Err(DagError::DuplicateTool(tool.id.clone()));
             }
-            if tool.executor == ToolExecutorKind::Cli {
+            if let Some(schema) = &tool.input_schema {
+                if !schema.is_mapping() {
+                    return Err(DagError::InvalidToolSchema {
+                        tool: tool.id.clone(),
+                        field: "input_schema",
+                    });
+                }
+            }
+            if let Some(schema) = &tool.output_schema {
+                if !schema.is_mapping() {
+                    return Err(DagError::InvalidToolSchema {
+                        tool: tool.id.clone(),
+                        field: "output_schema",
+                    });
+                }
+            }
+            if tool.executor.requires_command() {
                 let has_command = tool
                     .command
                     .as_ref()
@@ -362,7 +519,30 @@ impl DagManifest {
                     })
                     .unwrap_or(false);
                 if !has_command {
-                    return Err(DagError::CliToolMissingCommand(tool.id.clone()));
+                    return Err(DagError::CommandToolMissingCommand(tool.id.clone()));
+                }
+            }
+            if tool.executor == ToolExecutorKind::Http {
+                validate_http_tool_command(&tool.id, tool.command.as_deref().unwrap_or(&[]))?;
+            }
+            if let Some(policy) = &tool.policy {
+                for entry in &policy.filesystem.read {
+                    if !is_safe_filesystem_policy_path(entry) {
+                        return Err(DagError::InvalidToolPolicyPath {
+                            tool: tool.id.clone(),
+                            field: "filesystem.read",
+                            value: entry.clone(),
+                        });
+                    }
+                }
+                for entry in &policy.filesystem.write {
+                    if !is_safe_filesystem_policy_path(entry) {
+                        return Err(DagError::InvalidToolPolicyPath {
+                            tool: tool.id.clone(),
+                            field: "filesystem.write",
+                            value: entry.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -389,6 +569,15 @@ impl DagManifest {
                     return Err(DagError::MissingTool {
                         node: node.id.clone(),
                         tool: tool.to_string(),
+                    });
+                }
+            }
+            for output in &node.outputs {
+                if !is_safe_artifact_key(output) {
+                    return Err(DagError::InvalidArtifactKey {
+                        node: node.id.clone(),
+                        field: "outputs",
+                        value: output.clone(),
                     });
                 }
             }
@@ -446,6 +635,17 @@ impl DagManifest {
                 };
                 if approval.approved_key.trim().is_empty() {
                     return Err(DagError::ApprovalNodeInvalidPolicy(node.id.clone()));
+                }
+            }
+            if let Some(retry) = &node.retry {
+                if retry.max_attempts == 0 {
+                    return Err(DagError::RetryNodeInvalidPolicy(node.id.clone()));
+                }
+                if matches!(node.kind, DagNodeKind::Loop | DagNodeKind::Map) {
+                    return Err(DagError::RetryNodeUnsupportedKind {
+                        node: node.id.clone(),
+                        kind: node.kind.to_string(),
+                    });
                 }
             }
         }
@@ -549,11 +749,37 @@ pub struct DagNodeReport {
     pub kind: String,
     pub status: DagNodeStatus,
     #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub child_dag_type: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
     pub executor: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub prompt_hash: Option<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub exit_status: Option<i32>,
     #[serde(default)]
     pub inputs: Vec<String>,
     #[serde(default)]
     pub outputs: Vec<String>,
+    #[serde(default)]
+    pub input_refs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub output_refs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub diagnostic_refs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub policy: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub warning: Option<String>,
     #[serde(default)]
@@ -588,6 +814,14 @@ pub enum DagError {
     DuplicateNode(String),
     #[error("duplicate tool id `{0}`")]
     DuplicateTool(String),
+    #[error("tool `{tool}` field `{field}` must be an inline schema object")]
+    InvalidToolSchema { tool: String, field: &'static str },
+    #[error("tool `{tool}` field `{field}` contains unsafe filesystem policy path `{value}`")]
+    InvalidToolPolicyPath {
+        tool: String,
+        field: &'static str,
+        value: String,
+    },
     #[error("node `{node}` references missing role `{role}`")]
     MissingRole { node: String, role: String },
     #[error("missing node `{0}`")]
@@ -596,8 +830,16 @@ pub enum DagError {
     MissingTool { node: String, tool: String },
     #[error("tool node `{0}` must reference a registered tool")]
     ToolNodeMissingTool(String),
-    #[error("CLI tool `{0}` must declare a non-empty command")]
-    CliToolMissingCommand(String),
+    #[error("node `{node}` field `{field}` contains unsafe artifact key `{value}`")]
+    InvalidArtifactKey {
+        node: String,
+        field: &'static str,
+        value: String,
+    },
+    #[error("command-backed tool `{0}` must declare a non-empty command")]
+    CommandToolMissingCommand(String),
+    #[error("http tool `{tool}` command must use {reason}")]
+    InvalidHttpToolCommand { tool: String, reason: &'static str },
     #[error("gate node `{0}` must define a gate policy")]
     GateNodeMissingPolicy(String),
     #[error("gate node `{0}` has invalid min_usable; value must be >= 1")]
@@ -618,6 +860,12 @@ pub enum DagError {
     ApprovalNodeMissingPolicy(String),
     #[error("approval node `{0}` has an invalid approval policy")]
     ApprovalNodeInvalidPolicy(String),
+    #[error("node `{0}` has an invalid retry policy; max_attempts must be >= 1")]
+    RetryNodeInvalidPolicy(String),
+    #[error("node `{node}` kind `{kind}` does not support generic retry policy")]
+    RetryNodeUnsupportedKind { node: String, kind: String },
+    #[error("DAG concurrency must be >= 1 when declared")]
+    InvalidConcurrency,
     #[error("agent kind `{kind}` for role `{role}` is not accepted by DAG `{dag}`")]
     KindNotAccepted {
         dag: String,
