@@ -11,7 +11,8 @@
 //! - `extract_page_region(page, bbox)` — crop a figure/table region
 //! - `submit(payload)`     — finalise with the strict-schema JSON payload
 //!
-//! Model: `gemini-2.5-pro` (native multimodal). Fallback: `claude-opus-4-7`.
+//! Model: `Gemini 3.5 Flash (Medium)` via agy for native multimodal. Fallback:
+//! Claude Opus when explicitly configured.
 //!
 //! The agent itself doesn't know how to talk to the LLM — that's the
 //! [`AgentRunner`]'s job. The tool-call loop in
@@ -344,7 +345,7 @@ mod tests {
         AgentSpec::api_default(
             "summary",
             "gemini".to_string(),
-            "gemini-2.5-pro".to_string(),
+            "Gemini 3.5 Flash (Medium)".to_string(),
         )
     }
 

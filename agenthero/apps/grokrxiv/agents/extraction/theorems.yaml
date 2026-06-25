@@ -2,8 +2,8 @@ id: theorem_graph_extractor
 kind: extractor
 role: "Build a dependency graph over theorem-like blocks (theorem/lemma/proposition/corollary/definition/proof). Resolves \\ref{} edges."
 provider: claude
-# Claude Opus for faithful typed-IR theorem capture -> downstream Lean. gemini-2.5-flash is
-# too weak here and produces poor Lean. The earlier failures were NOT the model: the
+# Claude Opus for faithful full theorem extraction -> downstream Lean. Fast Flash models are
+# reserved for the smaller formalize typed-IR transcription pass. The earlier failures were NOT the model: the
 # tool_loop was killed by a 360s timeout and a phantom per-token cost ceiling, both of which
 # are meaningless on the $0 subscription CLI path and are now lifted for CLI runs (see
 # run_agent_safe). Codex/openai is not a valid tool_loop backend (build_tool_command bails),

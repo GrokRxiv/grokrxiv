@@ -212,6 +212,21 @@ pub struct AppRunReplayQueued {
     pub manifest_hash: String,
 }
 
+/// Metadata returned when planning a replay without queueing a new app run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppRunReplayPlan {
+    /// Source app-run id used as the checkpoint source.
+    pub source_run_id: Uuid,
+    /// App id copied from the source run.
+    pub app_id: String,
+    /// Action id copied from the source run.
+    pub action_id: String,
+    /// Checkpoint DAG type.
+    pub dag_type: String,
+    /// Checkpoint manifest hash.
+    pub manifest_hash: String,
+}
+
 /// App-run event row.
 #[derive(Debug, Clone)]
 pub struct AppRunEvent {
@@ -836,12 +851,7 @@ pub async fn insert_replay_queued(
         max_attempts: retry_policy.max_attempts,
     };
     let replay_input = replay_input_from_completed_run(&source, retry)?;
-    let checkpoint = replay_input
-        .checkpoint
-        .as_ref()
-        .expect("replay input helper requires checkpoint");
-    let dag_type = checkpoint.dag_type.to_string();
-    let manifest_hash = checkpoint.manifest_hash.clone();
+    let plan = replay_plan_from_input(&source, &replay_input);
     let input = serde_json::to_value(&replay_input)?;
     let id = sqlx::query_scalar::<_, Uuid>(
         "insert into app_runs (app_id, action_id, state, input) \
@@ -861,20 +871,55 @@ pub async fn insert_replay_queued(
         json!({
             "source_run_id": source_run_id,
             "replay": true,
-            "checkpoint_dag_type": dag_type,
-            "checkpoint_manifest_hash": manifest_hash,
+            "checkpoint_dag_type": plan.dag_type,
+            "checkpoint_manifest_hash": plan.manifest_hash,
             "retry": { "max_attempts": retry.max_attempts },
         }),
     )
     .await?;
     Ok(Some(AppRunReplayQueued {
         id,
-        source_run_id,
-        app_id: source.app_id,
-        action_id: source.action_id,
-        dag_type,
-        manifest_hash,
+        source_run_id: plan.source_run_id,
+        app_id: plan.app_id,
+        action_id: plan.action_id,
+        dag_type: plan.dag_type,
+        manifest_hash: plan.manifest_hash,
     }))
+}
+
+/// Plan a checkpoint replay without mutating app-run state.
+pub async fn plan_replay_queued(
+    pool: &PgPool,
+    source_run_id: Uuid,
+) -> anyhow::Result<Option<AppRunReplayPlan>> {
+    let Some(source) = get_run(pool, source_run_id).await? else {
+        return Ok(None);
+    };
+    let retry_policy = crate::dag_apps::app_action_retry_policy(&source.app_id, &source.action_id)?;
+    let replay_input = replay_input_from_completed_run(
+        &source,
+        StoredAppRunRetry {
+            max_attempts: retry_policy.max_attempts,
+        },
+    )?;
+    Ok(Some(replay_plan_from_input(&source, &replay_input)))
+}
+
+fn replay_plan_from_input(
+    source: &AppRunRecord,
+    replay_input: &StoredAppRunInput,
+) -> AppRunReplayPlan {
+    let checkpoint = replay_input
+        .checkpoint
+        .as_ref()
+        .expect("replay input helper requires checkpoint");
+    AppRunReplayPlan {
+        source_run_id: source.id,
+        app_id: source.app_id.clone(),
+        action_id: source.action_id.clone(),
+        dag_type: checkpoint.dag_type.to_string(),
+        manifest_hash: checkpoint.manifest_hash.clone(),
+    }
 }
 
 fn replay_input_from_completed_run(
@@ -1234,6 +1279,46 @@ pub async fn complete_success_with_runtime(
     }
     if let Some(report) = report {
         persist_dag_report(&mut tx, run_id, report).await?;
+    } else if let Some(runtime) = runtime {
+        let dag_state = successful_app_terminal_dag_state(state);
+        sqlx::query(
+            "update dag_runs \
+             set state = $3, \
+                 finished_at = case when $3 = 'awaiting_approval' then null else coalesce(finished_at, now()) end, \
+                 updated_at = now(), output = coalesce(output, '{}'::jsonb) \
+             where app_run_id = $1 and id = $2 and state in ('queued', 'running', 'awaiting_approval')",
+        )
+        .bind(run_id)
+        .bind(runtime.dag_run_id)
+        .bind(dag_state)
+        .execute(&mut *tx)
+        .await?;
+        let (dag_event_type, dag_message) = if dag_state == "awaiting_approval" {
+            ("dag.awaiting_approval", "dag awaiting approval")
+        } else {
+            ("dag.completed", "dag completed")
+        };
+        insert_dag_event_tx(
+            &mut tx,
+            run_id,
+            runtime.dag_run_id,
+            "info",
+            dag_event_type,
+            Some(dag_message),
+            durable_dag_event_payload(
+                run_id,
+                runtime.dag_run_id,
+                runtime_event_payload(
+                    Some(runtime),
+                    None,
+                    json!({
+                        "state": dag_state,
+                        "status": dag_state,
+                    }),
+                ),
+            ),
+        )
+        .await?;
     }
     let (event_type, message) = if state == "awaiting_approval" {
         ("app_run.awaiting_approval", "app run awaiting approval")
@@ -2585,6 +2670,182 @@ fn payload_i32(payload: &serde_json::Value, key: &str) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
+#[derive(Debug)]
+struct AdapterNodeEventRecord {
+    node_id: String,
+    node_kind: String,
+    state: String,
+    attempt: i32,
+    runner: Option<String>,
+    model: Option<String>,
+    prompt_hash: Option<String>,
+    command: serde_json::Value,
+    exit_status: Option<i32>,
+    role: Option<String>,
+    tool: Option<String>,
+    input_refs: serde_json::Value,
+    output_refs: serde_json::Value,
+    diagnostic_refs: serde_json::Value,
+    input: serde_json::Value,
+    output: serde_json::Value,
+    error_message: Option<String>,
+    latency_ms: Option<i32>,
+}
+
+fn adapter_node_event_record(
+    event_type: &str,
+    message: Option<&str>,
+    payload: &serde_json::Value,
+) -> Option<AdapterNodeEventRecord> {
+    if !LIVE_NODE_EVENT_TYPES.contains(&event_type) {
+        return None;
+    }
+    let node_id = payload_string(payload, "node_id")?;
+    let node_kind = payload_string(payload, "node_kind")
+        .or_else(|| payload_string(payload, "kind"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let tool = payload_string(payload, "tool_id").or_else(|| payload_string(payload, "tool"));
+    let role = payload_string(payload, "role")
+        .or_else(|| (node_kind == "llm").then(|| tool.clone()).flatten());
+    let input_refs = payload
+        .get("input_refs")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let output_refs = payload
+        .get("output_refs")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let diagnostic_refs = payload
+        .get("diagnostic_refs")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let error_message = payload_string(payload, "error").or_else(|| {
+        adapter_node_event_state(event_type, payload)
+            .starts_with("failed")
+            .then(|| message.map(ToOwned::to_owned))
+            .flatten()
+    });
+    Some(AdapterNodeEventRecord {
+        node_id,
+        node_kind,
+        state: adapter_node_event_state(event_type, payload),
+        attempt: payload_i32(payload, "attempt").unwrap_or(1),
+        runner: payload_string(payload, "runner").or_else(|| payload_string(payload, "provider")),
+        model: payload_string(payload, "model"),
+        prompt_hash: payload_string(payload, "prompt_hash"),
+        command: payload.get("command").cloned().unwrap_or_else(|| json!([])),
+        exit_status: payload_i32(payload, "exit_status"),
+        role,
+        tool,
+        input_refs: input_refs.clone(),
+        output_refs: output_refs.clone(),
+        diagnostic_refs,
+        input: json!({ "input_refs": input_refs }),
+        output: payload.clone(),
+        error_message,
+        latency_ms: payload_i32(payload, "duration_ms")
+            .or_else(|| payload_i32(payload, "latency_ms")),
+    })
+}
+
+fn adapter_node_event_state(event_type: &str, payload: &serde_json::Value) -> String {
+    match event_type {
+        "node.queued" | "node.retry_scheduled" => "queued".to_string(),
+        "node.started" => "running".to_string(),
+        "node.awaiting_approval" => "awaiting_approval".to_string(),
+        "node.skipped" => "skipped".to_string(),
+        "node.cancelled" => "cancelled".to_string(),
+        "node.failed" => "failed".to_string(),
+        "node.completed" => match payload_string(payload, "status")
+            .unwrap_or_else(|| "ok".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "ok" | "pass" | "passed" | "success" | "completed" | "done" => "ok".to_string(),
+            "partial" | "degraded" | "fallback_ok" => "degraded".to_string(),
+            "skipped" => "skipped".to_string(),
+            "cancelled" => "cancelled".to_string(),
+            "fail" | "failed" | "error" | "system_failed" => "failed".to_string(),
+            _ => "ok".to_string(),
+        },
+        _ => "queued".to_string(),
+    }
+}
+
+fn adapter_node_event_is_terminal_state(state: &str) -> bool {
+    matches!(
+        state,
+        "ok" | "degraded" | "skipped" | "failed" | "cancelled" | "system_failed"
+    )
+}
+
+async fn upsert_dag_run_node_from_event(
+    pool: &PgPool,
+    dag_run_id: Uuid,
+    event_type: &str,
+    message: Option<&str>,
+    payload: &serde_json::Value,
+) -> anyhow::Result<Option<Uuid>> {
+    let Some(record) = adapter_node_event_record(event_type, message, payload) else {
+        return Ok(None);
+    };
+    let terminal = adapter_node_event_is_terminal_state(&record.state);
+    let node_run_id = sqlx::query_scalar::<_, Uuid>(
+        "insert into dag_run_nodes \
+         (dag_run_id, node_id, node_kind, state, attempt, runner, model, prompt_hash, command, \
+          exit_status, input_refs, output_refs, diagnostic_refs, role, tool, required, input, \
+          output, error_message, latency_ms, started_at, finished_at) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, \
+                 $16, $17, $18, $19, \
+                 case when $4 in ('running','awaiting_approval','ok','degraded','skipped','failed','cancelled','system_failed') then now() else null end, \
+                 case when $20 then now() else null end) \
+         on conflict (dag_run_id, node_id, attempt) do update set \
+           node_kind = excluded.node_kind, \
+           state = excluded.state, \
+           runner = coalesce(excluded.runner, dag_run_nodes.runner), \
+           model = coalesce(excluded.model, dag_run_nodes.model), \
+           prompt_hash = coalesce(excluded.prompt_hash, dag_run_nodes.prompt_hash), \
+           command = case when excluded.command <> '[]'::jsonb then excluded.command else dag_run_nodes.command end, \
+           exit_status = coalesce(excluded.exit_status, dag_run_nodes.exit_status), \
+           input_refs = case when excluded.input_refs <> '{}'::jsonb then excluded.input_refs else dag_run_nodes.input_refs end, \
+           output_refs = case when excluded.output_refs <> '{}'::jsonb then excluded.output_refs else dag_run_nodes.output_refs end, \
+           diagnostic_refs = case when excluded.diagnostic_refs <> '{}'::jsonb then excluded.diagnostic_refs else dag_run_nodes.diagnostic_refs end, \
+           role = coalesce(excluded.role, dag_run_nodes.role), \
+           tool = coalesce(excluded.tool, dag_run_nodes.tool), \
+           input = case when excluded.input <> '{\"input_refs\":{}}'::jsonb then excluded.input else dag_run_nodes.input end, \
+           output = excluded.output, \
+           error_message = coalesce(excluded.error_message, dag_run_nodes.error_message), \
+           latency_ms = coalesce(excluded.latency_ms, dag_run_nodes.latency_ms), \
+           started_at = coalesce(dag_run_nodes.started_at, excluded.started_at), \
+           finished_at = coalesce(excluded.finished_at, dag_run_nodes.finished_at), \
+           updated_at = now() \
+         returning id",
+    )
+    .bind(dag_run_id)
+    .bind(&record.node_id)
+    .bind(&record.node_kind)
+    .bind(&record.state)
+    .bind(record.attempt)
+    .bind(record.runner.as_deref())
+    .bind(record.model.as_deref())
+    .bind(record.prompt_hash.as_deref())
+    .bind(&record.command)
+    .bind(record.exit_status)
+    .bind(&record.input_refs)
+    .bind(&record.output_refs)
+    .bind(&record.diagnostic_refs)
+    .bind(record.role.as_deref())
+    .bind(record.tool.as_deref())
+    .bind(&record.input)
+    .bind(&record.output)
+    .bind(record.error_message.as_deref())
+    .bind(record.latency_ms)
+    .bind(terminal)
+    .fetch_one(pool)
+    .await?;
+    Ok(Some(node_run_id))
+}
+
 /// Insert an app-run event.
 pub async fn insert_event(
     pool: &PgPool,
@@ -2618,16 +2879,20 @@ pub async fn insert_dag_event(
     message: Option<&str>,
     payload: serde_json::Value,
 ) -> anyhow::Result<()> {
+    let payload = durable_dag_event_payload(run_id, dag_run_id, payload);
+    let node_run_id =
+        upsert_dag_run_node_from_event(pool, dag_run_id, event_type, message, &payload).await?;
     sqlx::query(
-        "insert into dag_events (app_run_id, dag_run_id, level, event_type, message, payload) \
-         values ($1, $2, $3, $4, $5, $6)",
+        "insert into dag_events (app_run_id, dag_run_id, node_run_id, level, event_type, message, payload) \
+         values ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(run_id)
     .bind(dag_run_id)
+    .bind(node_run_id)
     .bind(level)
     .bind(event_type)
     .bind(message)
-    .bind(durable_dag_event_payload(run_id, dag_run_id, payload))
+    .bind(payload)
     .execute(pool)
     .await?;
     Ok(())
@@ -2752,6 +3017,29 @@ async fn persist_dag_report(
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                      $17, $18, $19, $20, $21, $22, now(), \
                      case when $4 = 'awaiting_approval' then null else now() end) \
+             on conflict (dag_run_id, node_id, attempt) do update set \
+               node_kind = excluded.node_kind, \
+               state = excluded.state, \
+               runner = coalesce(excluded.runner, dag_run_nodes.runner), \
+               model = coalesce(excluded.model, dag_run_nodes.model), \
+               prompt_hash = coalesce(excluded.prompt_hash, dag_run_nodes.prompt_hash), \
+               command = case when excluded.command <> '[]'::jsonb then excluded.command else dag_run_nodes.command end, \
+               exit_status = coalesce(excluded.exit_status, dag_run_nodes.exit_status), \
+               policy = case when excluded.policy <> '{}'::jsonb then excluded.policy else dag_run_nodes.policy end, \
+               input_refs = case when excluded.input_refs <> '{}'::jsonb then excluded.input_refs else dag_run_nodes.input_refs end, \
+               output_refs = case when excluded.output_refs <> '{}'::jsonb then excluded.output_refs else dag_run_nodes.output_refs end, \
+               diagnostic_refs = case when excluded.diagnostic_refs <> '{}'::jsonb then excluded.diagnostic_refs else dag_run_nodes.diagnostic_refs end, \
+               role = coalesce(excluded.role, dag_run_nodes.role), \
+               tool = coalesce(excluded.tool, dag_run_nodes.tool), \
+               child_dag_type = coalesce(excluded.child_dag_type, dag_run_nodes.child_dag_type), \
+               required = excluded.required, \
+               input = excluded.input, \
+               output = excluded.output, \
+               error_message = coalesce(excluded.error_message, dag_run_nodes.error_message), \
+               latency_ms = coalesce(excluded.latency_ms, dag_run_nodes.latency_ms), \
+               started_at = coalesce(dag_run_nodes.started_at, excluded.started_at), \
+               finished_at = coalesce(excluded.finished_at, dag_run_nodes.finished_at), \
+               updated_at = now() \
              returning id",
         )
         .bind(dag_run_id)
@@ -3349,6 +3637,13 @@ fn failed_app_terminal_dag_state(app_state: &str) -> &'static str {
     }
 }
 
+fn successful_app_terminal_dag_state(app_state: &str) -> &'static str {
+    match app_state {
+        "awaiting_approval" => "awaiting_approval",
+        _ => "done",
+    }
+}
+
 fn node_state(status: DagNodeStatus) -> &'static str {
     match status {
         DagNodeStatus::Pending => "queued",
@@ -3387,6 +3682,16 @@ mod tests {
             "system_failed"
         );
         assert_eq!(failed_app_terminal_dag_state("unexpected"), "failed");
+    }
+
+    #[test]
+    fn successful_app_state_maps_to_terminal_dag_state() {
+        assert_eq!(successful_app_terminal_dag_state("done"), "done");
+        assert_eq!(successful_app_terminal_dag_state("partial"), "done");
+        assert_eq!(
+            successful_app_terminal_dag_state("awaiting_approval"),
+            "awaiting_approval"
+        );
     }
 
     #[test]
@@ -3948,6 +4253,67 @@ mod tests {
     }
 
     #[test]
+    fn adapter_node_event_record_materializes_lean_compile_node() {
+        let payload = durable_dag_event_payload(
+            uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+            json!({
+                "node_id": "lean_target_3_compile",
+                "node_kind": "lean",
+                "tool_id": "lake_env_lean",
+                "attempt": 1,
+                "status": "fail",
+                "command": ["lake", "env", "lean", "Project/Proofs.lean"],
+                "exit_status": 1,
+                "duration_ms": 200,
+                "artifact_id": "review_loop/lean/targets/02_add_zero/Project/Proofs.lean",
+                "output_refs": ["review_loop/lean/targets/02_add_zero/Project/Proofs.lean"],
+                "error": "type mismatch"
+            }),
+        );
+
+        let record =
+            adapter_node_event_record("node.failed", Some("Lean target compile failed"), &payload)
+                .expect("node record");
+
+        assert_eq!(record.node_id, "lean_target_3_compile");
+        assert_eq!(record.node_kind, "lean");
+        assert_eq!(record.state, "failed");
+        assert_eq!(record.tool.as_deref(), Some("lake_env_lean"));
+        assert_eq!(record.command[0], "lake");
+        assert_eq!(record.exit_status, Some(1));
+        assert_eq!(record.latency_ms, Some(200));
+        assert_eq!(
+            record.output_refs[0],
+            "review_loop/lean/targets/02_add_zero/Project/Proofs.lean"
+        );
+        assert_eq!(record.error_message.as_deref(), Some("type mismatch"));
+    }
+
+    #[test]
+    fn adapter_node_event_record_maps_completed_statuses_to_durable_states() {
+        for (status, expected_state) in [
+            ("ok", "ok"),
+            ("pass", "ok"),
+            ("partial", "degraded"),
+            ("fallback_ok", "degraded"),
+            ("skipped", "skipped"),
+            ("fail", "failed"),
+        ] {
+            let payload = json!({
+                "node_id": "formalize_typed_ir",
+                "node_kind": "llm",
+                "tool_id": "formalize_source_inventory_typed_transcriber",
+                "attempt": 1,
+                "status": status,
+            });
+            let record =
+                adapter_node_event_record("node.completed", None, &payload).expect("node record");
+            assert_eq!(record.state, expected_state, "status={status}");
+        }
+    }
+
+    #[test]
     fn app_run_list_item_serializes_shallow_observability_without_wrapping_run() {
         let created_at = Utc::now();
         let run_id = uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
@@ -4182,6 +4548,62 @@ mod tests {
                 .map(|checkpoint| checkpoint.manifest_hash.as_str()),
             Some("fnv1a64:test")
         );
+    }
+
+    #[test]
+    fn replay_plan_from_input_reports_checkpoint_without_queue_identity() {
+        let source = AppRunRecord {
+            id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            app_id: "platform-smoke".to_string(),
+            action_id: "verification-routing-smoke".to_string(),
+            state: "done".to_string(),
+            input: serde_json::to_value(StoredAppRunInput {
+                args: vec!["verification-routing-smoke".to_string()],
+                input: DagIo::default(),
+                dry_run: false,
+                json: true,
+                checkpoint: None,
+                retry: StoredAppRunRetry { max_attempts: 1 },
+            })
+            .unwrap(),
+            output: json!({
+                "protocol": "agenthero.app.v1",
+                "app": "platform-smoke",
+                "action": "verification-routing-smoke",
+                "dag_type": "verification-routing-smoke",
+                "ok": true,
+                "report": {
+                    "dag_type": "verification-routing-smoke",
+                    "manifest_version": 1,
+                    "manifest_hash": "fnv1a64:test",
+                    "status": "ok",
+                    "input": {"values": {}, "artifacts": {}},
+                    "nodes": [],
+                    "outputs": {"values": {}, "artifacts": {}},
+                    "events": []
+                },
+                "output": null,
+                "error": null
+            }),
+            error_code: None,
+            error_message: None,
+            error_retryable: None,
+            attempt: 1,
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            finished_at: Some(Utc::now()),
+        };
+        let replay_input =
+            replay_input_from_completed_run(&source, StoredAppRunRetry { max_attempts: 3 })
+                .expect("replay input");
+
+        let plan = replay_plan_from_input(&source, &replay_input);
+
+        assert_eq!(plan.source_run_id, source.id);
+        assert_eq!(plan.app_id, "platform-smoke");
+        assert_eq!(plan.action_id, "verification-routing-smoke");
+        assert_eq!(plan.dag_type, "verification-routing-smoke");
+        assert_eq!(plan.manifest_hash, "fnv1a64:test");
     }
 
     #[test]

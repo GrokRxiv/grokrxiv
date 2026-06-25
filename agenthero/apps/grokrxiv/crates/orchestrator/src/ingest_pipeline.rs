@@ -1603,7 +1603,7 @@ fn extraction_budget_from_routing(
 
 pub(crate) fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) -> AgentSpec {
     let routing = load_extraction_routing(role);
-    let (provider, model) = match routing.as_ref() {
+    let (yaml_provider, yaml_model) = match routing.as_ref() {
         Some(r) => (r.provider.clone(), r.model.clone()),
         None => (
             "claude".to_string(),
@@ -1611,6 +1611,8 @@ pub(crate) fn default_extraction_spec(role: &str, runner_kind: AgentRunnerKind) 
                 .unwrap_or_else(|_| "claude-haiku-4-5".to_string()),
         ),
     };
+    let provider = crate::runtime_config::provider_override_for_role(role).unwrap_or(yaml_provider);
+    let model = crate::runtime_config::model_override_for_role(role).unwrap_or(yaml_model);
     let mut spec = AgentSpec::api_default(role.to_string(), provider, model);
     spec.runner = runner_kind;
     if let Some(r) = routing {
@@ -2037,6 +2039,11 @@ async fn populate_citation_validations(
 ) {
     use grokrxiv_verifier::{CitationVerifier, Verifier, VerifierContext};
 
+    crate::cli_status::emit(format!(
+        "extract {}: citation resolver API validation starting bibliography_entries={}",
+        extract.arxiv_id,
+        extract.bibliography.len()
+    ));
     let ctx = VerifierContext::for_paper(extract, &state.http);
     let verifier = CitationVerifier::new();
     let verify = verifier.verify(&Value::Null, &ctx);
@@ -2047,6 +2054,10 @@ async fn populate_citation_validations(
                 arxiv_id = extract.arxiv_id.as_str(),
                 "citation verification exceeded budget; leaving validations unset"
             );
+            crate::cli_status::emit(format!(
+                "extract {}: citation resolver API validation exceeded budget",
+                extract.arxiv_id
+            ));
             return;
         }
     };
@@ -2057,6 +2068,11 @@ async fn populate_citation_validations(
         return;
     }
     apply_resolver_entries_to_references(references, entries);
+    crate::cli_status::emit(format!(
+        "extract {}: citation resolver API validation complete checked={}",
+        extract.arxiv_id,
+        entries.len()
+    ));
 }
 
 /// Pure join: stamp each `references.json` citation's `validation` from its
@@ -2154,7 +2170,7 @@ fn validation_from_resolver_entry(entry: &Value) -> Option<Value> {
     Some(validation)
 }
 
-fn build_citation_validation_report(references: &Value) -> Value {
+pub(crate) fn build_citation_validation_report(references: &Value) -> Value {
     let citations = references
         .get("citations")
         .and_then(Value::as_array)
@@ -2199,15 +2215,7 @@ fn build_citation_validation_report(references: &Value) -> Value {
             let raw_status = validation
                 .get("status")
                 .and_then(Value::as_str)
-                .unwrap_or_else(|| {
-                    if citation.get("doi").and_then(Value::as_str).is_some()
-                        || citation.get("arxiv_id").and_then(Value::as_str).is_some()
-                    {
-                        "verified"
-                    } else {
-                        "not_checked"
-                    }
-                });
+                .unwrap_or("not_checked");
             let status = match raw_status {
                 "resolved" | "verified" => "verified",
                 // `insufficient_metadata` = a citation whose bibliographic text we never
@@ -2334,7 +2342,13 @@ fn build_citation_validation_report(references: &Value) -> Value {
         matches!(
             result.get("status").and_then(Value::as_str),
             Some(
-                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+                "retracted"
+                    | "unresolved"
+                    | "unverified"
+                    | "malformed"
+                    | "conflict"
+                    | "not_found"
+                    | "not_checked"
             )
         )
     });
@@ -2342,13 +2356,18 @@ fn build_citation_validation_report(references: &Value) -> Value {
         if matches!(
             result.get("status").and_then(Value::as_str),
             Some(
-                "retracted" | "unresolved" | "malformed" | "conflict" | "not_found" | "not_checked"
+                "retracted"
+                    | "unresolved"
+                    | "unverified"
+                    | "malformed"
+                    | "conflict"
+                    | "not_found"
+                    | "not_checked"
             )
         ) {
-            let action = if result.get("status").and_then(Value::as_str) == Some("not_checked") {
-                "validate_reference"
-            } else {
-                "repair_or_remove_reference"
+            let action = match result.get("status").and_then(Value::as_str) {
+                Some("not_checked" | "unverified") => "validate_reference",
+                _ => "repair_or_remove_reference",
             };
             remediation_items.push(json!({
                 "key": result.get("key").cloned().unwrap_or(Value::Null),
@@ -4500,6 +4519,31 @@ mod a4_tests {
             .expect("remediations")
             .iter()
             .any(|item| item["action"] == "validate_reference"));
+    }
+
+    #[test]
+    fn citation_validation_report_does_not_verify_identifier_without_validation() {
+        let references = json!({
+            "citations": [{
+                "key": "smith2026",
+                "raw": "smith2026: A. Smith, A Paper, doi:10.1000/example.",
+                "title": "A Paper",
+                "authors": ["A. Smith"],
+                "venue": null,
+                "year": 2026,
+                "doi": "10.1000/example",
+                "arxiv_id": null,
+                "cited": true,
+                "contexts": [{"section": "Intro", "snippet": "The paper cites Smith."}]
+            }],
+            "unmatched_citation_keys": [],
+            "uncited_bibliography_keys": []
+        });
+
+        let report = build_citation_validation_report(&references);
+
+        assert_eq!(report["status"], "needs_remediation");
+        assert_eq!(report["resolver_results"][0]["status"], "not_checked");
     }
 
     #[test]

@@ -1,10 +1,11 @@
 id: citation
 kind: critic
-role: "Verify each bibliography entry exists and is relevantly cited."
-provider: gemini
-# Default can be overridden with GROKRXIV_CITATION_MODEL or
+role: "Assess the rendered citation contexts and bibliography sample for relevance and missing prior work."
+provider: claude
+# Defaults can be overridden with GROKRXIV_CITATION_PROVIDER /
+# GROKRXIV_CITATION_MODEL or `--provider-for citation=<provider>` /
 # `--model-for citation=<model>`.
-model: gemini-2.5-flash
+model: claude-sonnet-4-6
 runner: cli
 prompt_template: prompts/citation.md
 input_schema: schemas/paper_extract.schema.json
@@ -13,12 +14,12 @@ verifiers:
   - json_schema
   - citation_existence
 prompt_context:
-  body_budget_chars: 0
+  body_budget_chars: 30000
   bibliography: limited
-  max_bibliography_entries: 24
-  citation_context_budget_chars: 12000
+  max_bibliography_entries: 32
+  citation_context_budget_chars: 30000
 postprocessors:
   - merge_citation_verifier
 max_retries: 2
-timeout_secs: 360
+timeout_secs: 900
 escalation: agent

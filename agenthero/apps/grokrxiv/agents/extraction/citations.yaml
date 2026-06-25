@@ -1,11 +1,10 @@
 id: citation_contextualizer
 kind: extractor
 role: "Stage 7: enrich every citation with resolved bibliographic metadata (CrossRef + arXiv, never invented) and classify each use site semantically."
-provider: gemini
-# Same gemini-2.5-pro reasoning-token starvation as in citation.yaml: pro
-# emitted no tool calls (stopped without submit) under our 4K tool-loop budget.
-# Flash works reliably for the lookup-heavy citation enrichment loop.
-model: gemini-2.5-flash
+provider: claude
+# Defaults can be overridden with GROKRXIV_CITATION_CONTEXTUALIZER_PROVIDER /
+# GROKRXIV_CITATION_CONTEXTUALIZER_MODEL or the role-level CLI override flags.
+model: claude-sonnet-4-6
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/citations.md

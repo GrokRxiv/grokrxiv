@@ -146,10 +146,10 @@ pub enum AppCommand {
         #[arg(long, default_value_t = 50)]
         limit: u32,
     },
-    /// Show one app run record.
+    /// Show one app run record. With no run id, lists recent runs.
     Status {
         /// App run UUID.
-        run_id: Uuid,
+        run_id: Option<Uuid>,
     },
     /// Compare two app runs for deterministic replay/audit drift.
     Compare {
@@ -470,7 +470,7 @@ async fn app_command(
             left_run_id,
             right_run_id,
         } => app_compare(left_run_id, right_run_id, json).await,
-        AppCommand::Replay { source_run_id } => app_replay(source_run_id, json).await,
+        AppCommand::Replay { source_run_id } => app_replay(source_run_id, json, dry_run).await,
         AppCommand::Logs {
             run_id,
             tail,
@@ -1200,8 +1200,36 @@ async fn app_enqueue(
     Ok(())
 }
 
-async fn app_replay(source_run_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn app_replay(source_run_id: Uuid, json: bool, dry_run: bool) -> anyhow::Result<()> {
     let pool = connect_db().await?;
+    if dry_run {
+        let replay = crate::app_runs::plan_replay_queued(&pool, source_run_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("source app run not found: {source_run_id}"))?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "source_run_id": replay.source_run_id,
+                    "app_id": replay.app_id,
+                    "action_id": replay.action_id,
+                    "dag_type": replay.dag_type,
+                    "manifest_hash": replay.manifest_hash,
+                    "state": "not_queued",
+                    "replay": true,
+                    "dry_run": true,
+                }))?
+            );
+        } else {
+            println!("would queue replay app run");
+            println!("source       {}", replay.source_run_id);
+            println!("app_action   {}:{}", replay.app_id, replay.action_id);
+            println!("dag_type     {}", replay.dag_type);
+            println!("manifest     {}", replay.manifest_hash);
+            println!("dry_run      true");
+        }
+        return Ok(());
+    }
     let replay = crate::app_runs::insert_replay_queued(&pool, source_run_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("source app run not found: {source_run_id}"))?;
@@ -1368,7 +1396,16 @@ async fn app_runs(
     Ok(())
 }
 
-async fn app_status(run_id: Uuid, json: bool) -> anyhow::Result<()> {
+async fn app_status(run_id: Option<Uuid>, json: bool) -> anyhow::Result<()> {
+    let Some(run_id) = run_id else {
+        app_runs(None, None, None, 20, json).await?;
+        if !json {
+            println!();
+            println!("Pass a run id for full audit status: agh app status <RUN_ID>");
+            println!("Filter recent runs with: agh app runs --app <app> --state running");
+        }
+        return Ok(());
+    };
     let pool = connect_db().await?;
     let row = sqlx::query(
         "select id::text, app_id, action_id, state, input, output, error_code, error_message, \
@@ -2460,6 +2497,17 @@ async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::R
         .context("release cancelled app run leases")?;
         insert_app_run_event(&pool, run_id, "info", "app_run.cancelled", reason).await?;
     }
+    let observability = if row.is_some() {
+        let event_count = count_app_run_events(&pool, run_id)
+            .await
+            .unwrap_or_default();
+        Some(app_run_list_observability(
+            &run_id.to_string(),
+            i64::try_from(event_count).unwrap_or(i64::MAX),
+        ))
+    } else {
+        None
+    };
 
     if json {
         println!(
@@ -2468,6 +2516,7 @@ async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::R
                 "id": run_id,
                 "cancelled": row.is_some(),
                 "reason": reason,
+                "observability": observability.as_ref().map(app_run_list_observability_json),
             }))?
         );
     } else if let Some(row) = row {
@@ -2481,7 +2530,7 @@ async fn app_cancel(run_id: Uuid, reason: Option<&str>, json: bool) -> anyhow::R
             created_at: row.get(5),
             started_at: row.get(6),
             finished_at: row.get(7),
-            observability: AppRunListObservability::default(),
+            observability: observability.unwrap_or_default(),
         };
         println!("Cancelled app run:");
         print!("{}", format_app_run_table(&[listed], chrono::Utc::now()));
@@ -2521,7 +2570,7 @@ async fn app_cancel_queued(
     .fetch_all(&pool)
     .await
     .context("load queued app runs to cancel")?;
-    let listed = rows
+    let mut listed = rows
         .iter()
         .map(|row| {
             let input = row.get::<serde_json::Value, _>(4);
@@ -2576,8 +2625,18 @@ async fn app_cancel_queued(
         .execute(&pool)
         .await
         .context("cancel queued app runs")?;
-        for id in ids {
-            insert_app_run_event(&pool, id, "info", "app_run.cancelled", reason).await?;
+        for id in &ids {
+            insert_app_run_event(&pool, *id, "info", "app_run.cancelled", reason).await?;
+        }
+        for row in &mut listed {
+            let Some(run_id) = Uuid::parse_str(&row.id).ok() else {
+                continue;
+            };
+            let event_count = count_app_run_events(&pool, run_id)
+                .await
+                .unwrap_or_default();
+            row.observability =
+                app_run_list_observability(&row.id, i64::try_from(event_count).unwrap_or(i64::MAX));
         }
     }
 
@@ -3720,6 +3779,19 @@ mod tests {
         assert_eq!(input.values["dag_type"], json!("demo-dag"));
         assert_eq!(input.values["stream_stderr"], json!(true));
         assert_eq!(input.values["debug_logs"], json!(true));
+    }
+
+    #[test]
+    fn app_status_accepts_missing_run_id_for_recent_runs_discovery() {
+        let cli = Cli::try_parse_from(["agh", "app", "status"])
+            .expect("status without run id should route to recent runs discovery");
+
+        match cli.command {
+            Command::App {
+                command: AppCommand::Status { run_id },
+            } => assert!(run_id.is_none()),
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

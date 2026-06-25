@@ -1046,7 +1046,7 @@ mod tests {
                     r#"
 kind: extractor
 provider: gemini
-model: gemini-2.5-flash
+model: "Gemini 3.5 Flash (Medium)"
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/{role}.md

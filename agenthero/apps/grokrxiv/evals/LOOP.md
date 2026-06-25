@@ -181,8 +181,8 @@ Write a dossier per defect: `evals/results/<sweep-ts>/<entry-id>/dossier.md`
    - Retraction screen via Crossref retraction metadata / Retraction Watch
      (tested by `majorana-quantized`).
    - LLM adjudication only for the residue: **Gemini with search grounding**
-     (gemini provider exists in llm-adapter; citation review already on
-     gemini-2.5-pro) — require URL evidence in the output; on disagreement,
+     (gemini provider exists in llm-adapter as an explicit backup path;
+     citation review defaults to Claude Haiku) — require URL evidence in the output; on disagreement,
      second-provider quorum (claude) before `needs_review`.
    - Robustness: chunked fan-out with per-chunk timeouts and budgets; always
      emit per-reference statuses (`verified_via: crossref|ads|zbmath|gemini_grounded`,

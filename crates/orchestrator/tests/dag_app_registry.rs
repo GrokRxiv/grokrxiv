@@ -992,6 +992,15 @@ fn app_manifest_resolves_action_command_paths() {
     assert_eq!(citations.dag_type, "citation-validation");
     assert!(citations.args.is_empty());
 
+    let citations_by_id = agenthero_orchestrator::dag_apps::resolve_app_action_args(
+        "grokrxiv",
+        &["validate-citations".into()],
+    )
+    .expect("catalog action id resolves");
+    assert_eq!(citations_by_id.id, "validate-citations");
+    assert_eq!(citations_by_id.dag_type, "citation-validation");
+    assert!(citations_by_id.args.is_empty());
+
     let err = agenthero_orchestrator::dag_apps::resolve_app_action_args(
         "grokrxiv",
         &["validate".into(), "metadata".into()],

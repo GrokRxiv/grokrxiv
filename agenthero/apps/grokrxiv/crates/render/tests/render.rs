@@ -1,9 +1,11 @@
 //! Integration tests for the render crate.
 
-use grokrxiv_render::{build_zip, render_html, render_latex, render_markdown, AgentRecord};
+use grokrxiv_render::{
+    build_zip, display_text, render_html, render_latex, render_markdown, AgentRecord,
+};
 use grokrxiv_schemas::{
-    Author, Citation, MetaReview, PaperExtract, Recommendation, Section, VerifierResult,
-    VerifierStatus,
+    Author, Citation, MetaReview, PaperExtract, Recommendation, RevisionTarget, RevisionTargetKind,
+    RevisionTargetStatus, Section, VerifierResult, VerifierStatus,
 };
 use serde_json::json;
 
@@ -93,6 +95,9 @@ fn html_omits_disclaimer_and_shows_title() {
     assert!(html.contains("Corrections"));
     assert!(html.contains("summary"));
     assert!(html.contains("technical_correctness"));
+    assert!(html.contains("katex@0.16.11/dist/katex.min.css"));
+    assert!(html.contains("auto-render.min.js"));
+    assert!(html.contains("renderMathInElement(document.body"));
     // Snapshot the body (deterministic).
     insta::assert_snapshot!(html);
 }
@@ -106,6 +111,68 @@ fn markdown_omits_disclaimer_and_shows_corrections() {
         "render_markdown must NOT inline the legal disclaimer"
     );
     assert!(md.contains("## Corrections"));
+}
+
+#[test]
+fn markdown_normalizes_layout_commands_and_raw_math_for_prs() {
+    let (mut meta, mut paper, agents) = fixture();
+    paper.title = "\\vspace{-1cm}Generic Algebraic Title".into();
+    meta.summary = "Counts over A_2 use M_n(P_n(T))=T+T^{2n}; status review_status.".into();
+    meta.revision_targets = vec![RevisionTarget {
+        id: "target-1".into(),
+        weakness_index: 0,
+        source_role: Some("reviewer".into()),
+        target_kind: RevisionTargetKind::PaperTex,
+        source_path: Some("paper/main.tex".into()),
+        locator: Some("Result 2, Section 3".into()),
+        evidence: Some("The proof cites \\alpha^{G}_{h}(X) and the count A_2-points.".into()),
+        required_update: "Add scripts/checks/verify.py for A_2 and X_n=x_n mod J_n.".into(),
+        verification_check: "Confirm Result 2 and M_n(P_n(T))=T+T^{2n}.".into(),
+        status: RevisionTargetStatus::Open,
+    }];
+
+    let md = render_markdown(&meta, &paper, &agents);
+
+    assert!(md.starts_with("# Generic Algebraic Title"));
+    assert!(!md.contains("\\vspace"));
+    assert!(md.contains("$A_2$"));
+    assert!(md.contains("$M_n(P_n(T))=T+T^{2n}$"), "{md}");
+    assert!(md.contains("$\\alpha^{G}_{h}(X)$"));
+    assert!(md.contains("review_status"));
+    assert!(!md.contains("$review_status$"));
+    assert!(md.contains("scripts/checks/verify.py"));
+    assert!(!md.contains("scripts/$checks$/verify.py"));
+
+    let html = render_html(&meta, &paper, &agents).expect("render html");
+    assert!(html.contains("$A_2$"));
+    assert!(html.contains("$M_n(P_n(T))=T+T^{2n}$"), "{html}");
+    assert!(html.contains("$\\alpha^{G}_{h}(X)$"));
+    assert!(html.contains("review_status"));
+    assert!(!html.contains("$review_status$"));
+    assert!(html.contains("renderMathInElement(document.body"));
+}
+
+#[test]
+fn display_text_normalizes_dense_tex_fragments_without_rewriting_paths() {
+    let text = "The proof identifies v_1 and v_2 with t_1^{C_4}+\\gamma t_1^{C_4}; \
+        the n=1 case follows from D=\\bar{v}_h. It counts F_4-points after modding \
+        out by (2,v_1,\\ldots,v_{h-1}) and checks B_m(A_m(T))=T+T^{2^{m}}. \
+        Required change: ship experiments/F4_points/verify.sage; status review_status.";
+
+    let rendered = display_text(text);
+
+    assert!(rendered.contains("$v_1$"), "{rendered}");
+    assert!(rendered.contains("$v_2$"), "{rendered}");
+    assert!(rendered.contains("$t_1^{C_4}$"), "{rendered}");
+    assert!(rendered.contains("$\\gamma$"), "{rendered}");
+    assert!(rendered.contains("$D=\\bar{v}_h$"), "{rendered}");
+    assert!(rendered.contains("$F_4$-points"), "{rendered}");
+    assert!(rendered.contains("$\\ldots,v_{h-1}$"), "{rendered}");
+    assert!(rendered.contains("$B_m(A_m(T))=T+T^{2^{m}}$"), "{rendered}");
+    assert!(rendered.contains("experiments/F4_points/verify.sage"));
+    assert!(!rendered.contains("experiments/$F4_points$/verify.sage"));
+    assert!(rendered.contains("review_status"));
+    assert!(!rendered.contains("$review_status$"));
 }
 
 #[test]

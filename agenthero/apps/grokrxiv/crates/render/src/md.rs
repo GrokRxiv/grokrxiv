@@ -11,6 +11,8 @@ use crate::AgentRecord;
 /// Render the public Markdown review.
 pub fn render_markdown(meta: &MetaReview, paper: &PaperExtract, agents: &[AgentRecord]) -> String {
     let mut out = String::with_capacity(4096);
+    let paper = crate::display::display_paper(paper);
+    let meta = crate::display::display_meta(meta);
 
     // Prominent leading disclaimer as a blockquote.
     // Disclaimer suppressed — see crates/render/src/lib.rs::PUBLIC_DISCLAIMER.

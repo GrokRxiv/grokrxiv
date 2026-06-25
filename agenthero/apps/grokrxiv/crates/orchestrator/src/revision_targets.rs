@@ -833,16 +833,22 @@ fn targets_match(a: &Value, b: &Value) -> bool {
 }
 
 fn format_target_markdown(target: &Value) -> Option<String> {
-    let required_update = str_field(target, "required_update")?;
+    let required_update = display_markdown_text(&str_field(target, "required_update")?);
     if required_update.trim().is_empty() {
         return None;
     }
     let status = str_field(target, "status").unwrap_or_else(|| "open".to_string());
     let kind = str_field(target, "target_kind").unwrap_or_else(|| "unknown".to_string());
-    let locator = str_field(target, "locator").filter(|s| !s.trim().is_empty());
+    let locator = str_field(target, "locator")
+        .map(|s| display_markdown_text(&s))
+        .filter(|s| !s.trim().is_empty());
     let source_path = str_field(target, "source_path").filter(|s| !s.trim().is_empty());
-    let evidence = str_field(target, "evidence").filter(|s| s.trim() != required_update.trim());
-    let verification_check = str_field(target, "verification_check").unwrap_or_default();
+    let evidence = str_field(target, "evidence")
+        .map(|s| display_markdown_text(&s))
+        .filter(|s| s.trim() != required_update.trim());
+    let verification_check = str_field(target, "verification_check")
+        .map(|s| display_markdown_text(&s))
+        .unwrap_or_default();
     let heading = target_heading(&kind, locator.as_deref(), &required_update);
     let mut lines = vec![format!(
         "- {} **{}**{}",
@@ -862,6 +868,16 @@ fn format_target_markdown(target: &Value) -> Option<String> {
         lines.push(format!("  - Verification: {verification_check}"));
     }
     Some(lines.join("\n"))
+}
+
+#[cfg(feature = "grokrxiv-render")]
+fn display_markdown_text(text: &str) -> String {
+    grokrxiv_render::display_text(text)
+}
+
+#[cfg(not(feature = "grokrxiv-render"))]
+fn display_markdown_text(text: &str) -> String {
+    text.trim().to_string()
 }
 
 fn status_checkbox(status: &str) -> &'static str {
@@ -1134,6 +1150,33 @@ mod tests {
         assert!(markdown.contains("  - Evidence: Bloomberg membership data"));
         assert!(markdown.contains("  - Required change: Add a frozen data snapshot"));
         assert!(!markdown.contains("[open] data at data:"));
+    }
+
+    #[test]
+    fn markdown_normalizes_layout_commands_and_raw_math_for_prs() {
+        let meta = json!({
+            "revision_targets": [{
+                "id": "weakness-1",
+                "weakness_index": 0,
+                "source_role": "reviewer",
+                "target_kind": "paper_tex",
+                "source_path": "paper/main.tex",
+                "locator": "\\vspace{-1cm}Result 2, Section 3",
+                "evidence": "The proof cites \\alpha^{G}_{h}(X) and counts A_2-points.",
+                "required_update": "Add scripts/checks/verify.py for M_n(P_n(T))=T+T^{2n} and X_n=x_n mod J_n.",
+                "verification_check": "Re-review should confirm Result 2 and A_2 counts.",
+                "status": "open"
+            }]
+        });
+        let markdown = revision_targets_markdown(Some(&meta));
+
+        assert!(!markdown.contains("\\vspace"), "{markdown}");
+        assert!(markdown.contains("`paper/main.tex`"));
+        assert!(markdown.contains("$\\alpha^{G}_{h}(X)$"), "{markdown}");
+        assert!(markdown.contains("$A_2$-points"), "{markdown}");
+        assert!(markdown.contains("$M_n(P_n(T))=T+T^{2n}$"), "{markdown}");
+        assert!(markdown.contains("scripts/checks/verify.py"));
+        assert!(!markdown.contains("scripts/$checks$/verify.py"));
     }
 
     #[test]

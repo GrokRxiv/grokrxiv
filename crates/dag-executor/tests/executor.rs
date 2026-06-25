@@ -71,6 +71,9 @@ struct ApprovalAndFailureHandler;
 struct ProvenanceRecordingHandler;
 
 #[derive(Clone, Default)]
+struct TraceCollisionHandler;
+
+#[derive(Clone, Default)]
 struct RetryThenSucceedHandler {
     attempts: Arc<AtomicUsize>,
 }
@@ -466,6 +469,7 @@ impl NodeHandler for ApprovalPausingHandler {
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: Default::default(),
         })
     }
 }
@@ -487,6 +491,7 @@ impl NodeHandler for ApprovalAndFailureHandler {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: Default::default(),
             }),
             "fails_required" => anyhow::bail!("required sibling failed"),
             other => Ok(NodeExecutionResult::ok().with_value(other, json!(true))),
@@ -505,6 +510,22 @@ impl NodeHandler for ProvenanceRecordingHandler {
             .with_prompt_hash("fnv1a64:prompttest")
             .with_command(vec!["llm-adapter".to_string(), ctx.node.id.clone()])
             .with_exit_status(Some(0));
+        if ctx.inputs.values.contains_key(LOOP_ROUND_INPUT) {
+            result = result.with_value("loop_continue", json!(false));
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl NodeHandler for TraceCollisionHandler {
+    async fn execute_node(
+        &self,
+        ctx: NodeExecutionContext<'_>,
+    ) -> anyhow::Result<NodeExecutionResult> {
+        let mut result = NodeExecutionResult::ok()
+            .with_trace_value("loop_round", json!("handler-loop-round"))
+            .with_trace_value("handler_only", json!(true));
         if ctx.inputs.values.contains_key(LOOP_ROUND_INPUT) {
             result = result.with_value("loop_continue", json!(false));
         }
@@ -5173,6 +5194,41 @@ nodes:
     assert_eq!(aggregate.model.as_deref(), Some("gpt-loop-test"));
     assert_eq!(aggregate.prompt_hash.as_deref(), Some("fnv1a64:prompttest"));
     assert_eq!(aggregate.exit_status, Some(0));
+}
+
+#[tokio::test]
+async fn loop_node_trace_merge_preserves_executor_keys_when_handler_collides() {
+    let manifest = manifest(
+        r#"
+id: loop_trace_collision
+version: 1
+accepts: []
+nodes:
+  - id: repair
+    kind: loop
+    loop:
+      max_rounds: 1
+    required: true
+"#,
+    );
+
+    let report = DagExecutor::new(TraceCollisionHandler)
+        .execute(&manifest, DagIo::default())
+        .await
+        .expect("dag report is returned");
+
+    assert_eq!(report.status, DagNodeStatus::Ok);
+    let round = report
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "repair#round-1")
+        .expect("loop round report");
+    assert_eq!(round.trace["loop_round"], json!(1));
+    assert_eq!(round.trace["handler_only"], json!(true));
+    assert_eq!(
+        round.trace["app_trace"]["loop_round"],
+        json!("handler-loop-round")
+    );
 }
 
 #[tokio::test]

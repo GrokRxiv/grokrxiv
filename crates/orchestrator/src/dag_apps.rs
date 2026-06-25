@@ -365,11 +365,11 @@ pub fn resolve_app_action_args_in_manifest(
     manifest: &AppManifest,
     args: &[String],
 ) -> anyhow::Result<ResolvedAppAction> {
-    let action = manifest
+    let (action, consumed_args) = manifest
         .actions
         .iter()
-        .filter(|action| command_path_matches(&action.command, args))
-        .max_by_key(|action| action.command.len())
+        .filter_map(|action| action_arg_match_len(action, args).map(|len| (action, len)))
+        .max_by_key(|(_, len)| *len)
         .ok_or_else(|| {
             let requested = args.first().map(String::as_str).unwrap_or("<none>");
             anyhow::anyhow!("unknown app action `{} {requested}`", manifest.slug)
@@ -379,8 +379,18 @@ pub fn resolve_app_action_args_in_manifest(
         id: action.id.clone(),
         dag_type: action.dag_type.clone(),
         description: action.description.clone(),
-        args: args[action.command.len()..].to_vec(),
+        args: args[consumed_args..].to_vec(),
     })
+}
+
+fn action_arg_match_len(action: &AppManifestAction, args: &[String]) -> Option<usize> {
+    if command_path_matches(&action.command, args) {
+        return Some(action.command.len());
+    }
+    if args.first().is_some_and(|arg| arg == &action.id) {
+        return Some(1);
+    }
+    None
 }
 
 fn command_path_matches(command: &[String], args: &[String]) -> bool {

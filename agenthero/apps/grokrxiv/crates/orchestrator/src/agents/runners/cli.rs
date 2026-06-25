@@ -9,10 +9,11 @@
 //! container".
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -44,6 +45,19 @@ pub enum CliError {
         /// classification. Truncated to 200 chars.
         message: String,
     },
+    /// The CLI subprocess exceeded the role timeout and was killed by the
+    /// supervisor. This is structured so the caller can record benchmark and
+    /// audit evidence without scraping error text.
+    TimedOut {
+        /// Provider tag from `AgentSpec.provider`.
+        provider: String,
+        /// DAG role/node label being executed.
+        role: String,
+        /// Timeout enforced by the supervisor.
+        timeout_secs: u64,
+        /// Whether process reaping confirmed that the subprocess exited.
+        subprocess_status: String,
+    },
 }
 
 impl std::fmt::Display for CliError {
@@ -53,6 +67,16 @@ impl std::fmt::Display for CliError {
                 f,
                 "{provider} CLI quota exhausted. Set --runner api or wait for reset. \
                  message={message}"
+            ),
+            CliError::TimedOut {
+                role,
+                timeout_secs,
+                subprocess_status,
+                ..
+            } => write!(
+                f,
+                "CliRunner timed out after {timeout_secs}s for role {role} \
+                 (subprocess {subprocess_status})"
             ),
         }
     }
@@ -90,6 +114,15 @@ fn detect_quota_signal(stderr: &str) -> Option<String> {
 /// Default subprocess timeout (seconds) when `AGENTHERO_CLI_TIMEOUT_SECS` is
 /// unset.
 const DEFAULT_CLI_TIMEOUT_SECS: u64 = 360;
+const AGENT_BENCHMARK_PATH_ENV: &str = "GROKRXIV_AGENT_BENCHMARK_PATH";
+const CITATION_TIMEOUT_MAX_ENV: &str = "GROKRXIV_CITATION_TIMEOUT_MAX_SECS";
+const DEFAULT_CITATION_TIMEOUT_MAX_SECS: u64 = 1_800;
+const FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV: &str = "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS";
+const DEFAULT_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS: u64 = 1_800;
+const LEAN_AUTHOR_TIMEOUT_MAX_ENV: &str = "GROKRXIV_LEAN_PROOF_AUTHOR_TIMEOUT_MAX_SECS";
+const DEFAULT_LEAN_AUTHOR_TIMEOUT_MAX_SECS: u64 = 1_800;
+const ADAPTIVE_TIMEOUT_MIN_SAMPLES: usize = 3;
+const ADAPTIVE_TIMEOUT_SAMPLE_LIMIT: usize = 20;
 
 /// Provider API credentials that must not leak into local CLI children.
 ///
@@ -240,14 +273,23 @@ impl CliRunner {
 
         let review_workdir = prepare_review_workdir(spec, input)?;
         let prompt = render_review_prompt_with_files(input);
+        emit_cli_input_contract(spec, &review_workdir);
 
         // 3. First attempt.
         let mut built = build_command(self, spec, &prompt)?;
         built.cwd = Some(review_workdir.path().to_path_buf());
+        emit_cli_command_contract(spec, &built, auth_backend, timeout_dur);
         let raw_stdout =
             match exec_and_capture(&built, timeout_dur, &spec.role, &spec.provider).await {
                 Ok(s) => s,
                 Err(e) => {
+                    record_cli_latency_error_sample(
+                        spec,
+                        started.elapsed(),
+                        timeout_dur,
+                        &review_workdir,
+                        &e,
+                    );
                     cleanup_schema_path(&built.schema_path);
                     return Err(e);
                 }
@@ -273,11 +315,19 @@ impl CliRunner {
                 );
                 let mut built2 = build_command(self, spec, &corrective)?;
                 built2.cwd = Some(review_workdir.path().to_path_buf());
+                emit_cli_command_contract(spec, &built2, auth_backend, timeout_dur);
                 let raw2 = match exec_and_capture(&built2, timeout_dur, &spec.role, &spec.provider)
                     .await
                 {
                     Ok(s) => s,
                     Err(e) => {
+                        record_cli_latency_error_sample(
+                            spec,
+                            started.elapsed(),
+                            timeout_dur,
+                            &review_workdir,
+                            &e,
+                        );
                         cleanup_schema_path(&built2.schema_path);
                         return Err(e);
                     }
@@ -300,6 +350,14 @@ impl CliRunner {
         };
 
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+        record_cli_latency_sample(
+            spec,
+            latency_ms,
+            timeout_dur,
+            &review_workdir,
+            CliLatencySampleStatus::Success,
+            None,
+        );
 
         Ok(AgentRun {
             role: spec.role.clone(),
@@ -546,8 +604,10 @@ fn prepare_review_workdir(
     std::fs::write(
         path.join("README.md"),
         "GrokRxiv prepared this directory for one review role.\n\
-         Use review_input.json as the paper/review artifact, prompt.md as the task, \
-         system.md as the role instruction, and schema.json as the required output schema.\n\
+         Use system.md as the role instruction and prompt.md as the task. \
+         review_input.json is the canonical audit artifact and backup source; \
+         do not read it wholesale unless prompt.md explicitly needs a field not already rendered there. \
+         Use schema.json as the required output schema.\n\
          Do not search parent directories or the GrokRxiv repository.\n",
     )
     .map_err(|e| anyhow::anyhow!("write README.md: {e}"))?;
@@ -568,8 +628,8 @@ fn render_review_prompt_with_files(input: &AgentInput) -> String {
 	        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
 	         Read and follow these files only:\n\
 	         - system.md: role instruction\n\
-	         - prompt.md: role-specific task\n\
-	         - review_input.json: canonical JSON artifact to review\n\
+	         - prompt.md: role-specific task with the bounded paper context already rendered\n\
+	         - review_input.json: canonical audit artifact and backup source; do not read it wholesale unless prompt.md explicitly requires a missing field\n\
 	         - schema.json: required output schema\n\n\
 	         Return exactly one JSON object that validates against schema.json. \
 	         The first byte of stdout must be `{{` and the last byte must be `}}`. \
@@ -963,30 +1023,31 @@ fn build_api_fallback_providers(
 }
 
 /// Resolve the subprocess timeout. Priority order:
-///   1. `GROKRXIV_<ROLE>_TIMEOUT_SECS` env var.
-///   2. `AGENTHERO_CLI_TIMEOUT_SECS` env var (global operator override).
-///   3. `spec.timeout_secs` from `agents/<role>.yaml`.
+///   1. `GROKRXIV_<ROLE>_TIMEOUT_SECS` env var as an explicit floor.
+///   2. `spec.timeout_secs` from `agents/<role>.yaml`.
+///   3. `AGENTHERO_CLI_TIMEOUT_SECS` as a global default for roles with no YAML timeout.
 ///   4. `DEFAULT_CLI_TIMEOUT_SECS`.
-/// The global env var stays available, but slow roles can now be tuned without
-/// loosening every CLI call.
+/// The global env var stays available for unconfigured roles, but it must not
+/// inflate short typed-IR/citation roles or mask explicit app policy.
 fn cli_timeout_for(spec: &AgentSpec) -> Duration {
-    // 1. Operator per-role override (`GROKRXIV_<ROLE>_TIMEOUT_SECS`) wins outright.
+    // 1. Operator per-role override (`GROKRXIV_<ROLE>_TIMEOUT_SECS`) wins as the configured
+    //    floor. Adaptive roles can still lift it from recent successful samples.
     if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
-        return Duration::from_secs(secs);
+        let chosen = adaptive_cli_timeout_for(spec, secs).unwrap_or(secs);
+        return Duration::from_secs(chosen);
     }
-    // 2. Otherwise honor the MOST GENEROUS of the global cap and the role's explicit YAML
-    //    timeout. A generic global default (e.g. 360s tuned for fast review specialists) must
-    //    never silently cap a deliberately-slow role such as theorem extraction (YAML 2400s) and
-    //    force it into the lossy deterministic fallback; a global floor still applies to roles
-    //    that declare no YAML timeout. This never shortens a role below prior behavior — it only
-    //    lets an explicitly long-running role use its configured budget.
-    let global = timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS");
-    let yaml = (spec.timeout_secs > 0).then(|| u64::from(spec.timeout_secs));
-    if let Some(secs) = global.into_iter().chain(yaml).max() {
-        return Duration::from_secs(secs);
-    }
-    // 3. Nothing configured → built-in default.
-    Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
+    // 2. Explicit app/YAML policy wins over global defaults.
+    let configured = if spec.timeout_secs > 0 {
+        u64::from(spec.timeout_secs)
+    } else {
+        timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS").unwrap_or(DEFAULT_CLI_TIMEOUT_SECS)
+    };
+    let chosen = adaptive_cli_timeout_for(spec, configured).unwrap_or(configured);
+    Duration::from_secs(chosen)
+}
+
+pub(crate) fn cli_timeout_for_spec(spec: &AgentSpec) -> Duration {
+    cli_timeout_for(spec)
 }
 
 fn timeout_env_secs(key: &str) -> Option<u64> {
@@ -996,12 +1057,165 @@ fn timeout_env_secs(key: &str) -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
+fn adaptive_cli_timeout_for(spec: &AgentSpec, configured_secs: u64) -> Option<u64> {
+    let (max_env, default_max_secs) = adaptive_timeout_max_contract(spec)?;
+    let samples = read_success_latency_samples(spec);
+    let sample_count = samples.len();
+    if sample_count < ADAPTIVE_TIMEOUT_MIN_SAMPLES {
+        emit_adaptive_timeout_contract(
+            spec,
+            configured_secs,
+            sample_count,
+            None,
+            configured_secs,
+            "insufficient_samples",
+        );
+        return None;
+    }
+    let sum_ms: u128 = samples.iter().map(|value| u128::from(*value)).sum();
+    let mean_ms = (sum_ms / sample_count as u128).min(u128::from(u64::MAX)) as u64;
+    let mean_secs = mean_ms.saturating_add(999) / 1_000;
+    let proposed_secs = mean_secs.saturating_mul(2).saturating_add(60);
+    let max_secs = timeout_env_secs(max_env).unwrap_or(default_max_secs);
+    let chosen = configured_secs
+        .max(proposed_secs)
+        .min(max_secs.max(configured_secs));
+    emit_adaptive_timeout_contract(
+        spec,
+        configured_secs,
+        sample_count,
+        Some(mean_ms),
+        chosen,
+        if chosen > configured_secs {
+            "benchmark"
+        } else {
+            "config_floor"
+        },
+    );
+    Some(chosen)
+}
+
+fn adaptive_timeout_max_contract(spec: &AgentSpec) -> Option<(&'static str, u64)> {
+    if spec.role == "citation" && spec.provider == "claude" && spec.model.contains("sonnet") {
+        return Some((CITATION_TIMEOUT_MAX_ENV, DEFAULT_CITATION_TIMEOUT_MAX_SECS));
+    }
+    if spec.role == "formalize_source_inventory_typed_transcriber"
+        && spec.provider == "claude"
+        && spec.model.contains("sonnet")
+    {
+        return Some((
+            FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV,
+            DEFAULT_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS,
+        ));
+    }
+    if spec.role == "lean_proof_author" && spec.provider == "claude" && spec.model.contains("opus")
+    {
+        return Some((
+            LEAN_AUTHOR_TIMEOUT_MAX_ENV,
+            DEFAULT_LEAN_AUTHOR_TIMEOUT_MAX_SECS,
+        ));
+    }
+    None
+}
+
+fn emit_adaptive_timeout_contract(
+    spec: &AgentSpec,
+    configured_secs: u64,
+    samples: usize,
+    mean_ms: Option<u64>,
+    chosen_secs: u64,
+    source: &str,
+) {
+    tracing::info!(
+        role = %spec.role,
+        provider = %spec.provider,
+        model = %spec.model,
+        configured_secs,
+        samples,
+        mean_ms,
+        chosen_secs,
+        source,
+        "CLI adaptive timeout contract"
+    );
+    eprintln!(
+        "agent_timeout_benchmark role={} provider={} model={} configured_secs={} samples={} mean_ms={} chosen_secs={} source={}",
+        spec.role,
+        spec.provider,
+        spec.model,
+        configured_secs,
+        samples,
+        mean_ms.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+        chosen_secs,
+        source
+    );
+}
+
+fn read_success_latency_samples(spec: &AgentSpec) -> Vec<u64> {
+    let path = agent_benchmark_path();
+    let _guard = agent_benchmark_io_lock();
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    body.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| {
+            value.get("status").and_then(|v| v.as_str()) == Some("success")
+                && value.get("role").and_then(|v| v.as_str()) == Some(spec.role.as_str())
+                && value.get("provider").and_then(|v| v.as_str()) == Some(spec.provider.as_str())
+                && value.get("model").and_then(|v| v.as_str()) == Some(spec.model.as_str())
+        })
+        .filter_map(|value| value.get("latency_ms").and_then(|v| v.as_u64()))
+        .filter(|latency_ms| *latency_ms > 0)
+        .take(ADAPTIVE_TIMEOUT_SAMPLE_LIMIT)
+        .collect()
+}
+
+fn agent_benchmark_path() -> PathBuf {
+    std::env::var(AGENT_BENCHMARK_PATH_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(".agenthero")
+                .join("benchmarks")
+                .join("grokrxiv")
+                .join("agent_latencies.jsonl")
+        })
+}
+
+fn agent_benchmark_io_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("agent benchmark lock poisoned")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliLatencySampleStatus {
+    Success,
+    Timeout,
+    Error,
+}
+
+impl CliLatencySampleStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            CliLatencySampleStatus::Success => "success",
+            CliLatencySampleStatus::Timeout => "timeout",
+            CliLatencySampleStatus::Error => "error",
+        }
+    }
+}
+
 fn cli_quota_fallback_spec(spec: &AgentSpec, err: &anyhow::Error) -> Option<AgentSpec> {
     let quota_error = err
         .chain()
         .find_map(|cause| cause.downcast_ref::<CliError>())?;
     match quota_error {
         CliError::QuotaExhausted { .. } => {}
+        CliError::TimedOut { .. } => return None,
     }
     let provider = std::env::var("AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER")
         .ok()
@@ -1024,7 +1238,7 @@ fn cli_quota_fallback_spec(spec: &AgentSpec, err: &anyhow::Error) -> Option<Agen
 fn default_cli_quota_fallback_model(provider: &str) -> &'static str {
     match provider {
         "claude" => "claude-sonnet-4-6",
-        "gemini" => "gemini-3-flash-preview",
+        "gemini" => "Gemini 3.5 Flash (Medium)",
         _ => "gpt-5.5",
     }
 }
@@ -1045,14 +1259,15 @@ fn build_command(
     let backend = cli_provider_backend(&spec.provider, &program)?;
     let role_slug = role_slug(&spec.role);
 
-    // A7: for claude and Antigravity, the JSON-only output contract is enforced
-    // via the `/grokrxiv-review` skill which both CLIs resolve from a
-    // `/skill-name` prefix on the prompt body (neither CLI has a `--skill`
-    // flag). codex uses `--output-schema`.
+    // A7: paper-review roles can use the `/grokrxiv-review` skill. Other app
+    // roles, including formalize typed-IR, must use their own strict prompt so
+    // they do not inherit stale review-role scratch output.
+    let uses_review_skill = grokrxiv_review_skill_role(&role_slug);
     let provider_prompt = if matches!(
         backend,
         CliProviderBackend::Claude | CliProviderBackend::Antigravity
-    ) {
+    ) && uses_review_skill
+    {
         format!("/{CLAUDE_SKILL_NAME}\n\n{prompt}")
     } else {
         prompt.to_string()
@@ -1071,13 +1286,20 @@ fn build_command(
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
             // (help text: "Skills still resolve via /skill-name").
-            let args = vec![
-                "-p".to_string(),
+            let query = if uses_review_skill {
                 format!(
                     "/{CLAUDE_SKILL_NAME}\n\n\
                      Read the complete GrokRxiv review prompt supplied on stdin. \
                      Follow it exactly and return only the requested schema-valid JSON object."
-                ),
+                )
+            } else {
+                "Read the complete GrokRxiv prompt supplied on stdin. \
+                 Follow it exactly and return only the requested schema-valid JSON object."
+                    .to_string()
+            };
+            let args = vec![
+                "-p".to_string(),
+                query,
                 "--model".to_string(),
                 spec.model.clone(),
                 "--output-format".to_string(),
@@ -1127,6 +1349,239 @@ fn build_command(
         schema_path,
         cwd: None,
     })
+}
+
+fn emit_cli_input_contract(spec: &AgentSpec, review_workdir: &PreparedReviewWorkdir) {
+    let path = review_workdir.path();
+    let prompt_chars = std::fs::read_to_string(path.join("prompt.md"))
+        .map(|body| body.chars().count())
+        .unwrap_or(0);
+    let review_input_bytes = std::fs::metadata(path.join("review_input.json"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let schema_bytes = std::fs::metadata(path.join("schema.json"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    tracing::info!(
+        role = %spec.role,
+        provider = %spec.provider,
+        model = %spec.model,
+        workdir = %path.display(),
+        prompt_chars,
+        review_input_bytes,
+        schema_bytes,
+        "CLI agent input contract"
+    );
+    eprintln!(
+        "agent_input role={} provider={} model={} prompt_chars={} review_input_bytes={} schema_bytes={} workdir={}",
+        spec.role,
+        spec.provider,
+        spec.model,
+        prompt_chars,
+        review_input_bytes,
+        schema_bytes,
+        path.display()
+    );
+}
+
+fn record_cli_latency_sample(
+    spec: &AgentSpec,
+    latency_ms: i32,
+    timeout_dur: Duration,
+    review_workdir: &PreparedReviewWorkdir,
+    status: CliLatencySampleStatus,
+    error: Option<&str>,
+) {
+    if latency_ms <= 0 {
+        return;
+    }
+    let path = agent_benchmark_path();
+    let parent = path.parent().map(Path::to_path_buf);
+    let prompt_chars = std::fs::read_to_string(review_workdir.path().join("prompt.md"))
+        .map(|body| body.chars().count())
+        .unwrap_or(0);
+    let schema_bytes = std::fs::metadata(review_workdir.path().join("schema.json"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let review_input_bytes = std::fs::metadata(review_workdir.path().join("review_input.json"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let mut sample = serde_json::json!({
+        "schema_version": 1,
+        "ts_ms": ts_ms,
+        "role": spec.role,
+        "provider": spec.provider,
+        "model": spec.model,
+        "runner": "cli",
+        "status": status.as_str(),
+        "latency_ms": latency_ms,
+        "timeout_secs": timeout_dur.as_secs(),
+        "prompt_chars": prompt_chars,
+        "schema_bytes": schema_bytes,
+        "review_input_bytes": review_input_bytes,
+    });
+    if let Some(error) = error {
+        if let Some(obj) = sample.as_object_mut() {
+            obj.insert(
+                "error".to_string(),
+                serde_json::Value::String(error.chars().take(500).collect()),
+            );
+        }
+    }
+    let _guard = agent_benchmark_io_lock();
+    let result = (|| -> anyhow::Result<()> {
+        if let Some(parent) = parent {
+            std::fs::create_dir_all(&parent)
+                .map_err(|e| anyhow::anyhow!("create benchmark dir {}: {e}", parent.display()))?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("open benchmark {}: {e}", path.display()))?;
+        writeln!(file, "{}", sample)
+            .map_err(|e| anyhow::anyhow!("write benchmark {}: {e}", path.display()))?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            tracing::info!(
+                role = %spec.role,
+                provider = %spec.provider,
+                model = %spec.model,
+                status = status.as_str(),
+                latency_ms,
+                timeout_secs = timeout_dur.as_secs(),
+                prompt_chars,
+                benchmark_path = %path.display(),
+                "CLI agent latency benchmark recorded"
+            );
+            eprintln!(
+                "agent_benchmark role={} provider={} model={} status={} latency_ms={} timeout_secs={} prompt_chars={} path={}",
+                spec.role,
+                spec.provider,
+                spec.model,
+                status.as_str(),
+                latency_ms,
+                timeout_dur.as_secs(),
+                prompt_chars,
+                path.display()
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                role = %spec.role,
+                provider = %spec.provider,
+                model = %spec.model,
+                err = %err,
+                "failed to record CLI latency benchmark"
+            );
+        }
+    }
+}
+
+fn record_cli_latency_error_sample(
+    spec: &AgentSpec,
+    elapsed: Duration,
+    timeout_dur: Duration,
+    review_workdir: &PreparedReviewWorkdir,
+    err: &anyhow::Error,
+) {
+    let latency_ms = elapsed.as_millis().min(i32::MAX as u128) as i32;
+    let status = match err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<CliError>())
+    {
+        Some(CliError::TimedOut { .. }) => CliLatencySampleStatus::Timeout,
+        _ => CliLatencySampleStatus::Error,
+    };
+    record_cli_latency_sample(
+        spec,
+        latency_ms,
+        timeout_dur,
+        review_workdir,
+        status,
+        Some(&err.to_string()),
+    );
+}
+
+fn emit_cli_command_contract(
+    spec: &AgentSpec,
+    built: &BuiltCommand,
+    backend: CliProviderBackend,
+    timeout_dur: Duration,
+) {
+    let command = safe_cli_command_display(built);
+    tracing::info!(
+        role = %spec.role,
+        provider = %spec.provider,
+        model = %spec.model,
+        backend = ?backend,
+        timeout_secs = timeout_dur.as_secs(),
+        program = %built.program,
+        pipe_stdin = built.pipe_stdin,
+        stdin_chars = built.stdin_payload.chars().count(),
+        command = %command,
+        "CLI agent command contract"
+    );
+    crate::cli_status::emit(format!(
+        "agent role={} provider={} model={} backend={backend:?} timeout_secs={} command={command}",
+        spec.role,
+        spec.provider,
+        spec.model,
+        timeout_dur.as_secs()
+    ));
+    eprintln!(
+        "agent_command role={} provider={} model={} backend={backend:?} timeout_secs={} command={command}",
+        spec.role,
+        spec.provider,
+        spec.model,
+        timeout_dur.as_secs()
+    );
+}
+
+fn safe_cli_command_display(built: &BuiltCommand) -> String {
+    let mut parts = vec![built.program.clone()];
+    let mut args = built.args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-p" => {
+                parts.push(arg.clone());
+                let chars = args.next().map(|value| value.chars().count()).unwrap_or(0);
+                parts.push(format!("<prompt-query:{chars} chars>"));
+            }
+            "--json-schema" => {
+                parts.push(arg.clone());
+                let bytes = args.next().map(|value| value.len()).unwrap_or(0);
+                parts.push(format!("<inline-json-schema:{bytes} bytes>"));
+            }
+            "--output-schema" => {
+                parts.push(arg.clone());
+                let path = args.next().cloned().unwrap_or_default();
+                parts.push(path);
+            }
+            "--model" => {
+                parts.push(arg.clone());
+                let model = args.next().cloned().unwrap_or_default();
+                parts.push(model);
+            }
+            _ if arg.chars().count() > 120 => {
+                parts.push(format!("<arg:{} chars>", arg.chars().count()));
+            }
+            _ => parts.push(arg.clone()),
+        }
+    }
+    if built.pipe_stdin {
+        parts.push(format!(
+            "<stdin:{} chars>",
+            built.stdin_payload.chars().count()
+        ));
+    }
+    parts.join(" ")
 }
 
 /// Spawn the built command, pipe the prompt to stdin (claude), enforce the
@@ -1219,12 +1674,16 @@ async fn exec_and_capture(
                     "CliRunner subprocess did not exit after SIGKILL; possible orphaned process tree"
                 );
             }
-            anyhow::bail!(
-                "CliRunner timed out after {}s for role {} (subprocess {})",
-                timeout_dur.as_secs(),
-                role,
-                if reaped { "killed" } else { "kill_unconfirmed" }
-            );
+            return Err(anyhow::Error::new(CliError::TimedOut {
+                provider: provider.to_string(),
+                role: role.to_string(),
+                timeout_secs: timeout_dur.as_secs(),
+                subprocess_status: if reaped {
+                    "killed".to_string()
+                } else {
+                    "kill_unconfirmed".to_string()
+                },
+            }));
         }
     };
     let stdout = stdout_task
@@ -1504,13 +1963,14 @@ fn parse_and_validate(
                     Err(err) => candidate_errors.push(err.to_string()),
                 }
             }
+            let raw_excerpt = diagnostic_excerpt(extracted, 1_200);
             if candidate_errors.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "not valid JSON: {first_err}; raw={extracted:?}"
+                    "not valid JSON: {first_err}; raw_excerpt={raw_excerpt:?}"
                 ));
             }
             return Err(anyhow::anyhow!(
-                "not valid JSON: {first_err}; candidate errors={}; raw={extracted:?}",
+                "not valid JSON: {first_err}; candidate errors={}; raw_excerpt={raw_excerpt:?}",
                 candidate_errors.join(" | ")
             ));
         }
@@ -1585,12 +2045,34 @@ fn validate_parsed(
     Ok(parsed)
 }
 
+fn diagnostic_excerpt(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut excerpt = trimmed.chars().take(max_chars).collect::<String>();
+    excerpt.push_str("...");
+    excerpt
+}
+
 /// Normalize a manifest role id to a filesystem-safe schema filename stem.
 fn role_slug(role: &str) -> String {
     role.trim()
         .replace('.', "_")
         .replace('-', "_")
         .to_ascii_lowercase()
+}
+
+fn grokrxiv_review_skill_role(role_slug: &str) -> bool {
+    matches!(
+        role_slug,
+        "summary"
+            | "technical_correctness"
+            | "novelty"
+            | "reproducibility"
+            | "citation"
+            | "meta_reviewer"
+    )
 }
 
 /// Persist the role's JSON schema to `$TMPDIR/grokrxiv-schemas/<role>.schema.json`
@@ -2006,8 +2488,9 @@ mod tests {
             spec.timeout_secs = 0;
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
-        // 3. global vs YAML: the MORE GENEROUS wins — a generic global default must never cap a
-        //    deliberately-long role, and a global floor still lifts a short YAML.
+        // 3. Explicit YAML beats the global default in both directions. A generic
+        //    `AGENTHERO_CLI_TIMEOUT_SECS` must not silently inflate short typed-IR/citation
+        //    roles or cap deliberately-long roles.
         {
             // long YAML beats a small global (the theorem-extraction bug).
             let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "360")]);
@@ -2016,11 +2499,11 @@ mod tests {
             assert_eq!(cli_timeout_for(&spec), Duration::from_secs(2400));
         }
         {
-            // large global floor lifts a short YAML.
+            // short YAML still beats a large global default (the typed-IR/citation leak).
             let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "999")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 42;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(999));
+            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
         }
         // 4. no env var → spec wins over default.
         {
@@ -2045,6 +2528,225 @@ mod tests {
                 Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
             );
         }
+    }
+
+    #[test]
+    fn citation_sonnet_timeout_uses_recent_benchmark_average() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        for latency_ms in [700_000u64, 720_000, 740_000] {
+            let sample = serde_json::json!({
+                "schema_version": 1,
+                "role": "citation",
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+                "runner": "cli",
+                "status": "success",
+                "latency_ms": latency_ms
+            });
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| writeln!(file, "{}", sample))
+                .expect("write benchmark");
+        }
+        let _guard = EnvVarGuard::set_owned(&[
+            (
+                AGENT_BENCHMARK_PATH_ENV,
+                path.to_string_lossy().into_owned(),
+            ),
+            ("GROKRXIV_CITATION_TIMEOUT_SECS", "".to_string()),
+            ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
+            (CITATION_TIMEOUT_MAX_ENV, "1800".to_string()),
+        ]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "citation".to_string();
+        spec.timeout_secs = 900;
+
+        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(1_500));
+    }
+
+    #[test]
+    fn citation_sonnet_timeout_benchmark_does_not_shrink_configured_floor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        let sample = serde_json::json!({
+            "schema_version": 1,
+            "role": "citation",
+            "provider": "claude",
+            "model": "claude-sonnet-4-6",
+            "runner": "cli",
+            "status": "success",
+            "latency_ms": 100_000
+        });
+        std::fs::write(&path, format!("{sample}\n")).expect("write benchmark");
+        let _guard = EnvVarGuard::set_owned(&[
+            (
+                AGENT_BENCHMARK_PATH_ENV,
+                path.to_string_lossy().into_owned(),
+            ),
+            ("GROKRXIV_CITATION_TIMEOUT_SECS", "".to_string()),
+            ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
+            (CITATION_TIMEOUT_MAX_ENV, "1800".to_string()),
+        ]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "citation".to_string();
+        spec.timeout_secs = 900;
+
+        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn formalize_typed_ir_sonnet_timeout_uses_recent_benchmark_average() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        for latency_ms in [210_000u64, 240_000, 270_000] {
+            let sample = serde_json::json!({
+                "schema_version": 1,
+                "role": "formalize_source_inventory_typed_transcriber",
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+                "runner": "cli",
+                "status": "success",
+                "latency_ms": latency_ms
+            });
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| writeln!(file, "{}", sample))
+                .expect("write benchmark");
+        }
+        let _guard = EnvVarGuard::set_owned(&[
+            (
+                AGENT_BENCHMARK_PATH_ENV,
+                path.to_string_lossy().into_owned(),
+            ),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS", "".to_string()),
+            ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
+            (FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV, "1800".to_string()),
+        ]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        spec.timeout_secs = 300;
+
+        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(540));
+    }
+
+    #[test]
+    fn formalize_typed_ir_timeout_ignores_single_slow_sample() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        let sample = serde_json::json!({
+            "schema_version": 1,
+            "role": "formalize_source_inventory_typed_transcriber",
+            "provider": "claude",
+            "model": "claude-sonnet-4-6",
+            "runner": "cli",
+            "status": "success",
+            "latency_ms": 672_933
+        });
+        std::fs::write(&path, format!("{sample}\n")).expect("write benchmark");
+        let _guard = EnvVarGuard::set_owned(&[
+            (
+                AGENT_BENCHMARK_PATH_ENV,
+                path.to_string_lossy().into_owned(),
+            ),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS", "".to_string()),
+            ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
+            (FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV, "1800".to_string()),
+        ]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        spec.timeout_secs = 300;
+
+        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn timeout_benchmark_samples_are_audited_but_not_used_for_adaptive_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        let workdir = dir.path().join("review-workdir");
+        std::fs::create_dir_all(&workdir).expect("create workdir");
+        std::fs::write(workdir.join("prompt.md"), "typed IR prompt").expect("write prompt");
+        std::fs::write(workdir.join("schema.json"), "{}").expect("write schema");
+        std::fs::write(workdir.join("review_input.json"), "{\"paper\":true}")
+            .expect("write review input");
+        let prepared = PreparedReviewWorkdir {
+            path: workdir,
+            _tempdir: None,
+        };
+        let _guard = EnvVarGuard::set_owned(&[(
+            AGENT_BENCHMARK_PATH_ENV,
+            path.to_string_lossy().into_owned(),
+        )]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        record_cli_latency_sample(
+            &spec,
+            300_064,
+            Duration::from_secs(300),
+            &prepared,
+            CliLatencySampleStatus::Timeout,
+            Some("CliRunner timed out after 300s for role formalize_source_inventory_typed_transcriber (subprocess killed)"),
+        );
+
+        let body = std::fs::read_to_string(&path).expect("read benchmark");
+        let sample: serde_json::Value = serde_json::from_str(body.trim()).expect("json sample");
+        assert_eq!(sample["status"], "timeout");
+        assert_eq!(sample["latency_ms"], 300_064);
+        assert_eq!(sample["timeout_secs"], 300);
+        assert_eq!(sample["prompt_chars"], "typed IR prompt".chars().count());
+        assert!(sample["error"]
+            .as_str()
+            .expect("error text")
+            .contains("timed out after 300s"));
+        assert!(
+            read_success_latency_samples(&spec).is_empty(),
+            "timeout samples are audit evidence, not adaptive timeout inputs"
+        );
+    }
+
+    #[test]
+    fn lean_opus_author_timeout_uses_recent_benchmark_average_above_role_floor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent_latencies.jsonl");
+        for latency_ms in [450_000u64, 480_000, 510_000] {
+            let sample = serde_json::json!({
+                "schema_version": 1,
+                "role": "lean_proof_author",
+                "provider": "claude",
+                "model": "claude-opus-4-8",
+                "runner": "cli",
+                "status": "success",
+                "latency_ms": latency_ms
+            });
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| writeln!(file, "{}", sample))
+                .expect("write benchmark");
+        }
+        let _guard = EnvVarGuard::set_owned(&[
+            (
+                AGENT_BENCHMARK_PATH_ENV,
+                path.to_string_lossy().into_owned(),
+            ),
+            ("GROKRXIV_LEAN_PROOF_AUTHOR_TIMEOUT_SECS", "600".to_string()),
+            (
+                "GROKRXIV_LEAN_PROOF_AUTHOR_TIMEOUT_MAX_SECS",
+                "1800".to_string(),
+            ),
+            ("AGENTHERO_CLI_TIMEOUT_SECS", "1800".to_string()),
+        ]);
+        let mut spec = stub_spec("claude", "claude-opus-4-8");
+        spec.role = "lean_proof_author".to_string();
+        spec.timeout_secs = 600;
+
+        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(1_020));
     }
 
     #[test]
@@ -2194,6 +2896,41 @@ mod tests {
     }
 
     #[test]
+    fn citation_claude_command_uses_sonnet_review_skill_and_piped_prompt() {
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "citation".to_string();
+        let built = build_command(&r, &spec, "citation prompt").unwrap();
+
+        let prompt_idx = built
+            .args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in claude args");
+        let prompt_value = built
+            .args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in claude args");
+        assert!(
+            prompt_value.starts_with("/grokrxiv-review"),
+            "citation is a review role and should invoke the review skill"
+        );
+        assert!(
+            built
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-6"),
+            "citation command must use Sonnet by default: {:?}",
+            built.args
+        );
+        assert_eq!(built.stdin_payload, "citation prompt");
+
+        let display = safe_cli_command_display(&built);
+        assert!(display.contains("claude-sonnet-4-6"));
+        assert!(!display.contains("citation prompt"));
+    }
+
+    #[test]
     fn test_command_construction_codex() {
         let _env = EnvVarGuard::clear(&["AGENTHERO_CODEX_BIN"]);
         let r = CliRunner::new();
@@ -2248,7 +2985,7 @@ mod tests {
     fn test_command_construction_gemini() {
         let r = CliRunner::new();
         let _env = EnvVarGuard::clear(&["AGENTHERO_ANTIGRAVITY_BIN", "AGENTHERO_AGY_BIN"]);
-        let spec = stub_spec("gemini", "gemini-2.5-pro");
+        let spec = stub_spec("gemini", "gemini-3-flash-preview");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
         assert!(
@@ -2272,8 +3009,8 @@ mod tests {
         );
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"),
-            "gemini args should include --model gemini-2.5-pro: {args:?}"
+                .any(|w| w[0] == "--model" && w[1] == "gemini-3-flash-preview"),
+            "gemini args should include --model gemini-3-flash-preview: {args:?}"
         );
         assert!(
             !args.windows(2).any(|w| w[0] == "-o" && w[1] == "json"),
@@ -2290,10 +3027,65 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_formalize_typed_ir_avoids_review_skill() {
+        let r = CliRunner::new();
+        let _env = EnvVarGuard::clear(&["AGENTHERO_ANTIGRAVITY_BIN", "AGENTHERO_AGY_BIN"]);
+        let mut spec = stub_spec("gemini", "Gemini 3.5 Flash (Medium)");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        let built = build_command(&r, &spec, "the prompt body").unwrap();
+
+        let prompt_idx = built
+            .args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in gemini args");
+        let prompt_value = built
+            .args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in gemini args");
+        assert_eq!(
+            prompt_value, "the prompt body",
+            "formalize typed-IR must not route through the review-only skill"
+        );
+        assert_eq!(built.stdin_payload, "the prompt body");
+    }
+
+    #[test]
+    fn claude_formalize_typed_ir_avoids_review_skill() {
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        let built = build_command(&r, &spec, "typed ir prompt").unwrap();
+
+        let prompt_idx = built
+            .args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in claude args");
+        let prompt_value = built
+            .args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in claude args");
+        assert!(
+            !prompt_value.starts_with("/grokrxiv-review"),
+            "formalize typed-IR must not route through the review-only skill"
+        );
+        assert!(
+            built
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-6"),
+            "typed-IR command must use configured Sonnet model: {:?}",
+            built.args
+        );
+        assert_eq!(built.stdin_payload, "typed ir prompt");
+    }
+
+    #[test]
     fn test_command_construction_antigravity_override() {
         let _env = EnvVarGuard::set(&[("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy")]);
         let r = CliRunner::new();
-        let spec = stub_spec("gemini", "gemini-2.5-pro");
+        let spec = stub_spec("gemini", "gemini-3-flash-preview");
         let built = build_command(&r, &spec, "the prompt body").unwrap();
 
         assert_eq!(built.program, "/opt/bin/agy");
@@ -2301,7 +3093,7 @@ mod tests {
         assert!(built
             .args
             .windows(2)
-            .any(|w| w[0] == "--model" && w[1] == "gemini-2.5-pro"));
+            .any(|w| w[0] == "--model" && w[1] == "gemini-3-flash-preview"));
         assert!(built
             .args
             .windows(2)
@@ -2370,7 +3162,7 @@ mod tests {
             "session_id": "abc-123",
             "response": "{\"summary\":\"ok\"}",
             "stats": {
-                "models": {"gemini-2.5-flash": {"tokens": {"total": 99}}}
+                "models": {"Gemini 3.5 Flash (Medium)": {"tokens": {"total": 99}}}
             }
         })
         .to_string();
@@ -2441,6 +3233,28 @@ mod tests {
         assert!(
             err.to_string().contains("schema validation failed"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_and_validate_truncates_raw_output_in_errors() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["foo"],
+            "properties": { "foo": { "type": "string" } }
+        });
+        let raw = format!("not json {}", "x".repeat(4_000));
+
+        let err = parse_and_validate(&raw, &schema).unwrap_err().to_string();
+
+        assert!(
+            err.contains("raw_excerpt"),
+            "expected a bounded raw excerpt in parse errors: {err}"
+        );
+        assert!(
+            err.len() < 1_800,
+            "parse error should stay bounded for observability logs, got {} chars",
+            err.len()
         );
     }
 
@@ -2588,7 +3402,7 @@ mod tests {
             "response": inner,
             "stats": {
                 "models": {
-                    "gemini-2.5-flash": {
+                    "Gemini 3.5 Flash (Medium)": {
                         "tokens": {"prompt_tokens": 5, "completion_tokens": 3}
                     }
                 }
@@ -2694,6 +3508,24 @@ mod tests {
         assert!(cli_quota_fallback_spec(&spec, &err).is_none());
     }
 
+    #[test]
+    fn cli_quota_fallback_defaults_gemini_to_current_agy_model() {
+        let _env = EnvVarGuard::set(&[
+            ("AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER", "gemini"),
+            ("AGENTHERO_CLI_QUOTA_FALLBACK_MODEL", ""),
+        ]);
+        let spec = stub_spec("claude", "claude-sonnet-4-6");
+        let err = anyhow::Error::new(CliError::QuotaExhausted {
+            provider: "claude".to_string(),
+            message: "session limit reached".to_string(),
+        });
+
+        let fallback = cli_quota_fallback_spec(&spec, &err)
+            .expect("explicit gemini fallback should be configured");
+        assert_eq!(fallback.provider, "gemini");
+        assert_eq!(fallback.model, "Gemini 3.5 Flash (Medium)");
+    }
+
     /// FP-RPT3b B5: end-to-end quota detection via a fake subprocess. Writes
     /// a tiny shell script that emits a known quota signature on stderr and
     /// exits 1, then asserts `exec_and_capture` returns an `anyhow::Error`
@@ -2739,6 +3571,7 @@ mod tests {
                     "stderr snippet missing rate-limit signal: {message}"
                 );
             }
+            other => panic!("unexpected CliError: {other:?}"),
         }
     }
 
@@ -2785,6 +3618,7 @@ exit 1
                     "stdout snippet missing session-limit signal: {message}"
                 );
             }
+            other => panic!("unexpected CliError: {other:?}"),
         }
     }
 
@@ -2844,6 +3678,67 @@ exit 1
             .expect("quota-exhausted gemini should fall back to codex CLI");
         assert_eq!(run.model, "gpt-fallback");
         assert_eq!(run.output, serde_json::json!({"ok": true}));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_uses_explicit_agy_fallback_when_claude_quota_is_exhausted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude = dir.path().join("fake-claude.sh");
+        let agy = dir.path().join("fake-agy.sh");
+        std::fs::write(
+            &claude,
+            "#!/bin/sh\necho 'Error: session limit reached; rate limit exceeded' >&2\nexit 1\n",
+        )
+        .expect("write fake claude");
+        std::fs::write(
+            &agy,
+            "#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"provider\":\"agy\"}'\n",
+        )
+        .expect("write fake agy");
+        for path in [&claude, &agy] {
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+
+        let _env = EnvVarGuard::set_owned(&[
+            ("AGENTHERO_CLAUDE_BIN", claude.to_string_lossy().to_string()),
+            (
+                "AGENTHERO_ANTIGRAVITY_BIN",
+                agy.to_string_lossy().to_string(),
+            ),
+            (
+                "AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER",
+                "gemini".to_string(),
+            ),
+            (
+                "AGENTHERO_CLI_QUOTA_FALLBACK_MODEL",
+                "Gemini 3.5 Flash (Medium)".to_string(),
+            ),
+        ]);
+        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        spec.role = "formalize_source_inventory_typed_transcriber".to_string();
+        let input = AgentInput {
+            context: Default::default(),
+            role: "formalize_source_inventory_typed_transcriber".to_string(),
+            content_hash_material: serde_json::json!({"paper": "x"}),
+            artifact: serde_json::json!({"title": "Paper", "sections": []}),
+            system_prompt: "system".to_string(),
+            user_prompt: "return json".to_string(),
+            source_bundle_path: None,
+        };
+
+        let run = CliRunner::new()
+            .run(&spec, &input)
+            .await
+            .expect("quota-exhausted claude should fall back to agy when explicitly configured");
+        assert_eq!(run.model, "Gemini 3.5 Flash (Medium)");
+        assert_eq!(
+            run.output,
+            serde_json::json!({"ok": true, "provider": "agy"})
+        );
     }
 
     /// FP-RPT3b B5: non-quota subprocess failures must NOT be classified as
@@ -2964,6 +3859,23 @@ exit 0
             .await
             .expect_err("subprocess should time out");
         assert!(err.to_string().contains("timed out"), "{err:#}");
+        let timeout_error = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<CliError>())
+            .expect("timeout should be structured");
+        match timeout_error {
+            CliError::TimedOut {
+                provider,
+                role,
+                timeout_secs,
+                ..
+            } => {
+                assert_eq!(provider, "gemini");
+                assert_eq!(role, "custom_validator");
+                assert_eq!(*timeout_secs, 3);
+            }
+            other => panic!("unexpected CliError: {other:?}"),
+        }
 
         let pid = read_pid_file(&pid_file).await.expect("pid file");
         let child_pid = read_pid_file(&child_pid_file)

@@ -109,6 +109,8 @@ pub struct NodeExecutionResult {
     pub model: Option<String>,
     /// Stable hash of the prompt used by an LLM-backed node, when applicable.
     pub prompt_hash: Option<String>,
+    /// App-owned structured audit details for the node attempt.
+    pub trace: BTreeMap<String, serde_json::Value>,
 }
 
 impl NodeExecutionResult {
@@ -124,6 +126,7 @@ impl NodeExecutionResult {
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         }
     }
 
@@ -139,6 +142,7 @@ impl NodeExecutionResult {
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         }
     }
 
@@ -185,6 +189,12 @@ impl NodeExecutionResult {
     /// Record the stable prompt hash used by an LLM-backed node.
     pub fn with_prompt_hash(mut self, prompt_hash: impl Into<String>) -> Self {
         self.prompt_hash = Some(prompt_hash.into());
+        self
+    }
+
+    /// Record one structured audit value on the node report and events.
+    pub fn with_trace_value(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.trace.insert(key.into(), value);
         self
     }
 
@@ -324,6 +334,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             })
         }
     }
@@ -364,6 +375,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -389,6 +401,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -414,6 +427,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -443,6 +457,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -476,6 +491,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -499,6 +515,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             });
         }
 
@@ -529,6 +546,7 @@ impl GenericToolRunner {
                     exit_status: None,
                     model: None,
                     prompt_hash: None,
+                    trace: BTreeMap::new(),
                 };
                 result = result.with_diagnostic_artifact(
                     format!("logs/{}/status.json", ctx.node.id),
@@ -603,6 +621,7 @@ impl GenericToolRunner {
             exit_status: Some(i32::from(status_code)),
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         };
         for name in &ctx.node.outputs {
             let path = resolve_output_path(&workdir, name)?;
@@ -655,6 +674,7 @@ impl GenericToolRunner {
                 prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                     .then(|| llm_prompt_hash(ctx.inputs))
                     .flatten(),
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -684,6 +704,7 @@ impl GenericToolRunner {
                 prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                     .then(|| llm_prompt_hash(ctx.inputs))
                     .flatten(),
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -713,6 +734,7 @@ impl GenericToolRunner {
                 prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                     .then(|| llm_prompt_hash(ctx.inputs))
                     .flatten(),
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -742,6 +764,7 @@ impl GenericToolRunner {
                 prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                     .then(|| llm_prompt_hash(ctx.inputs))
                     .flatten(),
+                trace: BTreeMap::new(),
             };
             result = result.with_diagnostic_artifact(
                 format!("logs/{}/status.json", ctx.node.id),
@@ -765,6 +788,7 @@ impl GenericToolRunner {
                 exit_status: None,
                 model: None,
                 prompt_hash: None,
+                trace: BTreeMap::new(),
             });
         }
 
@@ -811,6 +835,7 @@ impl GenericToolRunner {
                 prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                     .then(|| llm_prompt_hash(ctx.inputs))
                     .flatten(),
+                trace: BTreeMap::new(),
             };
             for name in ["stdout.log", "stderr.log", "status.json"] {
                 result = result.with_diagnostic_artifact(
@@ -884,6 +909,7 @@ impl GenericToolRunner {
             prompt_hash: (tool.executor == ToolExecutorKind::Llm)
                 .then(|| llm_prompt_hash(ctx.inputs))
                 .flatten(),
+            trace: BTreeMap::new(),
         };
 
         for (name, artifact) in materialized_outputs {
@@ -1184,6 +1210,7 @@ struct NormalizedNodeResult {
     exit_status: Option<i32>,
     model: Option<String>,
     prompt_hash: Option<String>,
+    trace: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -1200,6 +1227,7 @@ struct NodeExecutionProvenance {
     model: Option<String>,
     prompt_hash: Option<String>,
     diagnostic_refs: BTreeMap<String, String>,
+    trace: BTreeMap<String, serde_json::Value>,
 }
 
 impl<H> DagExecutor<H>
@@ -1413,10 +1441,13 @@ where
                             normalized.warning,
                             normalized.error,
                             Some(attempt.latency_ms),
-                            BTreeMap::from([(
-                                "scheduler".to_string(),
-                                serde_json::json!("tokio_concurrent_layer"),
-                            )]),
+                            merge_trace(
+                                BTreeMap::from([(
+                                    "scheduler".to_string(),
+                                    serde_json::json!("tokio_concurrent_layer"),
+                                )]),
+                                normalized.trace,
+                            ),
                             output_refs,
                             diagnostic_refs,
                             normalized.command,
@@ -1599,7 +1630,7 @@ where
                         warning,
                         error,
                         Some(latency_ms),
-                        BTreeMap::new(),
+                        provenance.trace,
                         output_refs,
                         provenance.diagnostic_refs,
                         provenance.command,
@@ -1667,7 +1698,7 @@ where
                         warning,
                         error,
                         Some(latency_ms),
-                        BTreeMap::new(),
+                        provenance.trace,
                         output_refs,
                         provenance.diagnostic_refs,
                         provenance.command,
@@ -1742,7 +1773,7 @@ where
                             normalized.warning,
                             normalized.error,
                             Some(attempt.latency_ms),
-                            BTreeMap::new(),
+                            normalized.trace,
                             output_refs,
                             diagnostic_refs,
                             normalized.command,
@@ -1794,7 +1825,7 @@ where
                     normalized.warning,
                     normalized.error,
                     Some(latency_ms),
-                    approval_trace(node, &snapshot),
+                    merge_trace(approval_trace(node, &snapshot), normalized.trace),
                     output_refs,
                     diagnostic_refs,
                     normalized.command,
@@ -2072,6 +2103,7 @@ where
                         model: normalized.model.clone(),
                         prompt_hash: normalized.prompt_hash.clone(),
                         diagnostic_refs: round_diagnostic_refs.clone(),
+                        trace: normalized.trace.clone(),
                     };
 
                     if matches!(status, DagNodeStatus::Ok | DagNodeStatus::Degraded) {
@@ -2091,6 +2123,7 @@ where
                         latency_ms,
                         output_refs,
                         round_diagnostic_refs,
+                        normalized.trace,
                         normalized.command,
                         normalized.exit_status,
                         normalized.model,
@@ -2169,6 +2202,7 @@ where
                         latency_ms,
                         BTreeMap::new(),
                         BTreeMap::new(),
+                        BTreeMap::new(),
                         None,
                         None,
                         None,
@@ -2193,6 +2227,7 @@ where
                         Some(warning.clone()),
                         None,
                         latency_ms,
+                        BTreeMap::new(),
                         BTreeMap::new(),
                         BTreeMap::new(),
                         None,
@@ -2339,6 +2374,7 @@ where
                         model: normalized.model.clone(),
                         prompt_hash: normalized.prompt_hash.clone(),
                         diagnostic_refs: item_diagnostic_refs.clone(),
+                        trace: normalized.trace.clone(),
                     };
 
                     if matches!(status, DagNodeStatus::Ok | DagNodeStatus::Degraded) {
@@ -2357,6 +2393,7 @@ where
                         latency_ms,
                         output_refs,
                         item_diagnostic_refs,
+                        normalized.trace,
                         normalized.command,
                         normalized.exit_status,
                         normalized.model,
@@ -2397,6 +2434,7 @@ where
                         latency_ms,
                         BTreeMap::new(),
                         BTreeMap::new(),
+                        BTreeMap::new(),
                         None,
                         None,
                         None,
@@ -2421,6 +2459,7 @@ where
                         Some(warning.clone()),
                         None,
                         latency_ms,
+                        BTreeMap::new(),
                         BTreeMap::new(),
                         BTreeMap::new(),
                         None,
@@ -2465,6 +2504,7 @@ fn loop_round_report(
     latency_ms: u64,
     output_refs: BTreeMap<String, String>,
     diagnostic_refs: BTreeMap<String, String>,
+    trace: BTreeMap<String, serde_json::Value>,
     command: Option<Vec<String>>,
     exit_status: Option<i32>,
     model: Option<String>,
@@ -2493,7 +2533,10 @@ fn loop_round_report(
         warning,
         error,
         latency_ms: Some(latency_ms),
-        trace: BTreeMap::from([("loop_round".to_string(), serde_json::json!(round))]),
+        trace: merge_trace(
+            BTreeMap::from([("loop_round".to_string(), serde_json::json!(round))]),
+            trace,
+        ),
     }
 }
 
@@ -2507,6 +2550,7 @@ fn map_item_report(
     latency_ms: u64,
     output_refs: BTreeMap<String, String>,
     diagnostic_refs: BTreeMap<String, String>,
+    trace: BTreeMap<String, serde_json::Value>,
     command: Option<Vec<String>>,
     exit_status: Option<i32>,
     model: Option<String>,
@@ -2535,7 +2579,10 @@ fn map_item_report(
         warning,
         error,
         latency_ms: Some(latency_ms),
-        trace: BTreeMap::from([("map_index".to_string(), serde_json::json!(index))]),
+        trace: merge_trace(
+            BTreeMap::from([("map_index".to_string(), serde_json::json!(index))]),
+            trace,
+        ),
     }
 }
 
@@ -2582,6 +2629,34 @@ fn node_report(
         latency_ms,
         trace,
     }
+}
+
+fn merge_trace(
+    mut base: BTreeMap<String, serde_json::Value>,
+    extra: BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut app_trace = serde_json::Map::new();
+    for (key, value) in extra {
+        if base.contains_key(&key) {
+            app_trace.insert(key, value);
+        } else {
+            base.insert(key, value);
+        }
+    }
+    if !app_trace.is_empty() {
+        match base
+            .entry("app_trace".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        {
+            serde_json::Value::Object(existing) => {
+                existing.extend(app_trace);
+            }
+            existing => {
+                *existing = serde_json::Value::Object(app_trace);
+            }
+        }
+    }
+    base
 }
 
 fn prepare_replay_checkpoint(
@@ -3027,6 +3102,7 @@ fn tool_isolation_preflight_result(
         exit_status: None,
         model: None,
         prompt_hash: None,
+        trace: BTreeMap::new(),
     })
 }
 
@@ -3059,6 +3135,7 @@ fn tool_approval_preflight_result(
         exit_status: None,
         model: None,
         prompt_hash: None,
+        trace: BTreeMap::new(),
     })
 }
 
@@ -5004,6 +5081,7 @@ fn normalize_node_result(
                 exit_status: result.exit_status,
                 model: result.model,
                 prompt_hash: result.prompt_hash,
+                trace: result.trace,
             }
         }
         Err(err) if node.required => NormalizedNodeResult {
@@ -5016,6 +5094,7 @@ fn normalize_node_result(
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         },
         Err(err) => NormalizedNodeResult {
             status: DagNodeStatus::Degraded,
@@ -5027,6 +5106,7 @@ fn normalize_node_result(
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         },
     }
 }
@@ -5216,6 +5296,7 @@ fn evaluate_approval(node: &DagNode, inputs: &DagIo) -> anyhow::Result<NodeExecu
             exit_status: None,
             model: None,
             prompt_hash: None,
+            trace: BTreeMap::new(),
         })
     }
 }

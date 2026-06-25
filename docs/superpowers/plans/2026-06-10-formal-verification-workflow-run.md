@@ -1519,9 +1519,10 @@ edges:
 id: claim_extractor
 kind: extractor
 role: "Extract every definition, lemma, theorem, proposition, corollary, and conjecture as a structured claim with dependencies."
-provider: gemini
-# Override with GROKRXIV_CLAIM_EXTRACTOR_MODEL or `--model-for claim_extractor=<model>`.
-model: gemini-2.5-pro
+provider: claude
+# Override with GROKRXIV_CLAIM_EXTRACTOR_PROVIDER /
+# GROKRXIV_CLAIM_EXTRACTOR_MODEL or the role-level CLI override flags.
+model: claude-sonnet-4-6
 runner: cli
 prompt_template: prompts/paper-verify/claim_extractor.md
 input_schema: schemas/paper_extract.schema.json

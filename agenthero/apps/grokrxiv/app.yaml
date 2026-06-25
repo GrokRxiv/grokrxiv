@@ -174,6 +174,21 @@ actions:
       - name: --no-external-actions
         kind: flag
         description: Run review and loop checks without opening publication or revision PRs.
+      - name: --provider-for
+        kind: flag
+        value_name: ROLE=PROVIDER
+        multiple: true
+        description: Override the provider for one role, for example citation=gemini to use the agy backup route.
+      - name: --model-for
+        kind: flag
+        value_name: ROLE=MODEL
+        multiple: true
+        description: Override the model for one role, for example citation=Gemini 3.5 Flash (Medium).
+      - name: --runner-for
+        kind: flag
+        value_name: ROLE=RUNNER
+        multiple: true
+        description: Override the runner for one role, for example citation=cli or citation=api.
   - id: formalize
     command: [formalize]
     dag_type: review-loop
@@ -191,9 +206,33 @@ actions:
       - name: --debug
         kind: flag
         description: Emit expanded per-stage diagnostics and artifact paths while formalizing.
+      - name: --auto-detect
+        kind: flag
+        description: Internal queued mode for automatic Lean formalization; skip typed-IR enrichment and use persisted review-loop proof obligations.
       - name: --no-external-actions
         kind: flag
         description: Run formalization and render artifacts without updating PR comments or commits.
+      - name: --typed-ir-only
+        kind: flag
+        description: Benchmark typed-IR theorem extraction and stop before semantic/Lean stages; implies --no-external-actions.
+      - name: --benchmark-typed-ir
+        kind: flag
+        description: Alias for --typed-ir-only.
+      - name: --provider-for
+        kind: flag
+        value_name: ROLE=PROVIDER
+        multiple: true
+        description: Override the provider for one role, including formalize_source_inventory_typed_transcriber=gemini as an agy backup route.
+      - name: --model-for
+        kind: flag
+        value_name: ROLE=MODEL
+        multiple: true
+        description: Override the model for one role, including formalize_source_inventory_typed_transcriber=Gemini 3.5 Flash (Medium).
+      - name: --runner-for
+        kind: flag
+        value_name: ROLE=RUNNER
+        multiple: true
+        description: Override the runner for one role, for example citation=cli or citation=api.
   - id: review-extracted
     command: [review-extracted]
     dag_type: paper-review

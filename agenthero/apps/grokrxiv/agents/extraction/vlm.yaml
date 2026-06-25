@@ -2,7 +2,7 @@ id: vlm_extractor
 kind: extractor
 role: "Stage 3: extract paper structure from a PDF when no TeX source is available."
 provider: gemini
-model: gemini-2.5-pro
+model: "Gemini 3.5 Flash (Medium)"
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/vlm.md

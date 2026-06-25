@@ -113,18 +113,40 @@ async fn run(request: &AppAdapterRequest) -> anyhow::Result<AppAdapterResponse> 
 }
 
 fn manifest_dag_requested(request: &AppAdapterRequest) -> bool {
-    request.action == "validate-citations"
+    request
+        .input
+        .values
+        .get("agenthero_manifest_dag")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || request.action == "validate-citations"
         || review_action_manifest_dag_requested(request)
-        || request
-            .input
-            .values
-            .get("agenthero_manifest_dag")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
 }
 
 fn review_action_manifest_dag_requested(request: &AppAdapterRequest) -> bool {
-    request.action == "review" && request.dag_type == "review-loop"
+    request.action == "review"
+        && request.dag_type == "review-loop"
+        && (request.dry_run
+            || review_request_has_no_external_actions(request)
+            || review_request_has_manifest_source(request))
+}
+
+fn review_request_has_no_external_actions(request: &AppAdapterRequest) -> bool {
+    request
+        .args
+        .iter()
+        .any(|arg| arg == "--no-external-actions")
+}
+
+fn review_request_has_manifest_source(request: &AppAdapterRequest) -> bool {
+    if request.input.artifacts.contains_key("review_input.json") {
+        return true;
+    }
+    let Ok(options) = review_request_options(request, &request.input) else {
+        return false;
+    };
+    review_input_path_from_source_value(&options.source).is_some()
+        || source_has_direct_review_artifacts(&options.source)
 }
 
 async fn run_manifest_dag(request: &AppAdapterRequest) -> anyhow::Result<DagExecutionReport> {
@@ -1330,6 +1352,7 @@ async fn review_loop_lean_node(
     }
     tokio::fs::write(&proof_path, &lean_code).await?;
 
+    let lean_requested = lean_execution_requested(ctx, &lean_targets);
     let lean_run = if grokrxiv_review_loop::proof_obligations_skip_lean(&proof_obligations) {
         LeanRunOutcome::skipped(
             proof_obligations
@@ -1337,7 +1360,7 @@ async fn review_loop_lean_node(
                 .and_then(Value::as_str)
                 .unwrap_or("no_math_found"),
         )
-    } else if lean_execution_requested(ctx, &lean_targets) {
+    } else if lean_requested {
         run_lean_verifier(ctx, &base, &proof_path, &lean_code, &lean_targets).await?
     } else {
         LeanRunOutcome::skipped("lean_execution_not_enabled_in_gated_manifest_dag")
@@ -1373,7 +1396,11 @@ async fn review_loop_lean_node(
     ];
 
     let mut result = write_review_loop_outputs_at_base(&base, outputs).await?;
-    if let Some(command) = lean_run.command {
+    result = result.with_trace_value(
+        "lean_policy_effective",
+        lean_policy_effective_trace(ctx, &lean_targets, lean_requested, &lean_run),
+    );
+    if let Some(command) = lean_run.command.clone() {
         result = result.with_command(command);
     }
     result = result.with_exit_status(lean_run.exit_status);
@@ -1387,6 +1414,45 @@ async fn review_loop_lean_node(
         }
     }
     Ok(result)
+}
+
+fn lean_policy_effective_trace(
+    ctx: &NodeExecutionContext<'_>,
+    lean_targets: &Value,
+    lean_requested: bool,
+    lean_run: &LeanRunOutcome,
+) -> Value {
+    let lean_policy = ctx.inputs.values.get("lean_policy").unwrap_or(&Value::Null);
+    json!({
+        "requested": lean_policy
+            .get("requested")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "disabled": lean_policy
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "auto_detect": lean_policy
+            .get("auto_detect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "initial_run_lean": lean_policy
+            .get("run_lean")
+            .and_then(Value::as_bool)
+            .or_else(|| ctx.inputs.values.get("run_lean").and_then(Value::as_bool))
+            .unwrap_or(false),
+        "target_count": lean_targets
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0),
+        "run_lean": lean_requested && !lean_run.skipped,
+        "skipped": lean_run.skipped,
+        "skip_reason": lean_run.skip_reason.clone(),
+        "command": lean_run.command.clone(),
+        "exit_status": lean_run.exit_status,
+        "status": lean_run.status,
+    })
 }
 
 #[derive(Debug)]
@@ -2467,6 +2533,9 @@ fn build_runtime_args(command: &mut tokio::process::Command, request: &AppAdapte
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    for (name, value) in runtime_env_overrides(request) {
+        command.env(name, value);
+    }
     if request.json {
         command.arg("--json");
     }
@@ -2479,7 +2548,84 @@ fn build_runtime_args(command: &mut tokio::process::Command, request: &AppAdapte
     if runtime_status_requested(request) || review_debug_requested(request) {
         command.arg("--status");
     }
-    command.arg(&request.action).args(&request.args);
+    command
+        .arg(&request.action)
+        .args(runtime_request_args(request));
+}
+
+fn runtime_request_args(request: &AppAdapterRequest) -> Vec<String> {
+    let mut args = runtime_action_args_without_model_overrides(&request.args);
+    if request.action == "review" && !args.iter().any(|arg| arg == "--loop") {
+        args.push("--loop".to_string());
+    }
+    args
+}
+
+fn runtime_env_overrides(request: &AppAdapterRequest) -> Vec<(String, String)> {
+    request
+        .args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| runtime_override_from_arg(index, arg, &request.args))
+        .collect()
+}
+
+fn runtime_action_args_without_model_overrides(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if runtime_override_kind(arg).is_some() {
+            index += if arg.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        out.push(arg.clone());
+        index += 1;
+    }
+    out
+}
+
+fn runtime_override_from_arg(index: usize, arg: &str, args: &[String]) -> Option<(String, String)> {
+    let (kind, value) = runtime_override_kind(arg)?;
+    let raw = value
+        .map(str::to_string)
+        .or_else(|| args.get(index + 1).cloned())?;
+    let (role, value) = raw.split_once('=')?;
+    let role_suffix = grokrxiv_app_runtime::runtime_config::role_env_suffix(role);
+    let env_name = match kind {
+        RuntimeOverrideKind::Provider => format!(
+            "{}{}",
+            grokrxiv_app_runtime::runtime_config::PROVIDER_OVERRIDE_ENV_PREFIX,
+            role_suffix
+        ),
+        RuntimeOverrideKind::Model => format!(
+            "{}{}",
+            grokrxiv_app_runtime::runtime_config::MODEL_OVERRIDE_ENV_PREFIX,
+            role_suffix
+        ),
+        RuntimeOverrideKind::Runner => format!("AGENTHERO_RUNNER_OVERRIDE_{role_suffix}"),
+    };
+    Some((env_name, value.to_string()))
+}
+
+fn runtime_override_kind(arg: &str) -> Option<(RuntimeOverrideKind, Option<&str>)> {
+    let (flag, value) = arg
+        .split_once('=')
+        .map_or((arg, None), |(flag, value)| (flag, Some(value)));
+    let kind = match flag {
+        "--provider-for" => RuntimeOverrideKind::Provider,
+        "--model-for" => RuntimeOverrideKind::Model,
+        "--runner-for" => RuntimeOverrideKind::Runner,
+        _ => return None,
+    };
+    Some((kind, value))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeOverrideKind {
+    Provider,
+    Model,
+    Runner,
 }
 
 async fn run_runtime_process(
@@ -2812,8 +2958,8 @@ mod tests {
         assert!(format!("{err:#}").contains("cannot combine --with-lean and --no-lean"));
     }
 
-    #[tokio::test]
-    async fn non_dry_run_manifest_review_rejects_unsupported_source_options() {
+    #[test]
+    fn non_dry_run_external_review_routes_to_full_runtime_for_non_arxiv_sources() {
         let request = AppAdapterRequest::new(
             "grokrxiv",
             "review",
@@ -2828,10 +2974,62 @@ mod tests {
             false,
         );
 
-        let err = run(&request)
-            .await
-            .expect_err("unsupported source options should fail explicitly");
-        assert!(format!("{err:#}").contains("--type pdf requires the legacy GrokRxiv runtime"));
+        assert!(
+            !manifest_dag_requested(&request),
+            "non-dry-run public review sources are handled by the full GrokRxiv runtime, not the manifest bootstrap"
+        );
+        assert_eq!(
+            runtime_request_args(&request),
+            vec![
+                "paper.pdf".to_string(),
+                "--type".to_string(),
+                "pdf".to_string(),
+                "--loop".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_model_provider_overrides_are_env_not_action_args() {
+        let request = AppAdapterRequest::new(
+            "grokrxiv",
+            "review",
+            "review-loop",
+            vec![
+                "2606.23965".to_string(),
+                "--provider-for".to_string(),
+                "citation=gemini".to_string(),
+                "--model-for".to_string(),
+                "citation=Gemini 3.5 Flash (Medium)".to_string(),
+                "--runner-for".to_string(),
+                "citation=cli".to_string(),
+            ],
+            DagIo::default(),
+            true,
+            false,
+        );
+
+        assert_eq!(
+            runtime_request_args(&request),
+            vec!["2606.23965".to_string(), "--loop".to_string()]
+        );
+        assert_eq!(
+            runtime_env_overrides(&request),
+            vec![
+                (
+                    "AGENTHERO_PROVIDER_OVERRIDE_CITATION".to_string(),
+                    "gemini".to_string()
+                ),
+                (
+                    "AGENTHERO_MODEL_OVERRIDE_CITATION".to_string(),
+                    "Gemini 3.5 Flash (Medium)".to_string()
+                ),
+                (
+                    "AGENTHERO_RUNNER_OVERRIDE_CITATION".to_string(),
+                    "cli".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -3072,13 +3270,89 @@ nodes:
         assert!(response.output.is_none());
     }
 
-    #[tokio::test]
-    async fn review_request_uses_manifest_runtime_by_default() {
+    #[test]
+    fn external_review_request_uses_full_runtime_for_pr_and_website_side_effects() {
         let request = AppAdapterRequest::new(
             "grokrxiv",
             "review",
             "review-loop",
-            vec!["2606.00799".to_string(), "--loop".to_string()],
+            vec![
+                "2606.23906".to_string(),
+                "--type".to_string(),
+                "arxiv".to_string(),
+            ],
+            DagIo::default(),
+            true,
+            false,
+        );
+
+        assert!(
+            !manifest_dag_requested(&request),
+            "external review must use the full GrokRxiv runtime so GitHub PR and local website state are materialized"
+        );
+    }
+
+    #[test]
+    fn no_external_review_request_stays_on_manifest_dag_for_safe_audit_runs() {
+        let request = AppAdapterRequest::new(
+            "grokrxiv",
+            "review",
+            "review-loop",
+            vec![
+                "2606.23965".to_string(),
+                "--type".to_string(),
+                "arxiv".to_string(),
+                "--no-lean".to_string(),
+                "--no-external-actions".to_string(),
+            ],
+            DagIo::default(),
+            true,
+            false,
+        );
+
+        assert!(manifest_dag_requested(&request));
+    }
+
+    #[test]
+    fn external_review_runtime_args_enable_full_review_loop() {
+        let request = AppAdapterRequest::new(
+            "grokrxiv",
+            "review",
+            "review-loop",
+            vec![
+                "2606.23906".to_string(),
+                "--type".to_string(),
+                "arxiv".to_string(),
+            ],
+            DagIo::default(),
+            true,
+            false,
+        );
+
+        let args = runtime_request_args(&request);
+
+        assert_eq!(
+            args,
+            vec![
+                "2606.23906".to_string(),
+                "--type".to_string(),
+                "arxiv".to_string(),
+                "--loop".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_external_review_request_uses_manifest_runtime_by_default() {
+        let request = AppAdapterRequest::new(
+            "grokrxiv",
+            "review",
+            "review-loop",
+            vec![
+                "2606.00799".to_string(),
+                "--loop".to_string(),
+                "--no-external-actions".to_string(),
+            ],
             DagIo::default(),
             true,
             true,
@@ -3264,7 +3538,7 @@ nodes:
     }
 
     #[tokio::test]
-    async fn lean_review_fix_code_invokes_configured_lean_verifier_when_enabled() {
+    async fn lean_review_fix_code_auto_detects_and_records_effective_policy_trace() {
         let workspace = std::env::temp_dir().join(format!(
             "agenthero-grokrxiv-lean-verifier-{}",
             std::time::SystemTime::now()
@@ -3375,9 +3649,15 @@ nodes:
         )
         .expect("lean manifest parses");
         let mut input = DagIo::default();
-        input
-            .values
-            .insert("run_lean".to_string(), serde_json::json!(true));
+        input.values.insert(
+            "lean_policy".to_string(),
+            serde_json::json!({
+                "requested": false,
+                "disabled": false,
+                "auto_detect": true,
+                "run_lean": false
+            }),
+        );
         input.values.insert(
             "lean_command".to_string(),
             serde_json::json!([fake_lean.to_string_lossy()]),
@@ -3412,6 +3692,14 @@ nodes:
             .expect("aggregate lean loop report");
         assert_eq!(node.exit_status, Some(0));
         assert!(node.command.as_ref().expect("lean command recorded")[0].contains("fake-lean"));
+        assert_eq!(node.trace["lean_policy_effective"]["auto_detect"], true);
+        assert_eq!(
+            node.trace["lean_policy_effective"]["initial_run_lean"],
+            false
+        );
+        assert_eq!(node.trace["lean_policy_effective"]["target_count"], 1);
+        assert_eq!(node.trace["lean_policy_effective"]["run_lean"], true);
+        assert_eq!(node.trace["lean_policy_effective"]["exit_status"], 0);
         assert!(node
             .diagnostic_refs
             .contains_key("logs/lean_review_fix_code/stdout.log"));
@@ -3432,11 +3720,187 @@ nodes:
         std::fs::remove_dir_all(workspace).expect("cleanup temp workspace");
     }
 
+    #[tokio::test]
+    async fn lean_review_fix_code_no_lean_records_disabled_policy_trace() {
+        let workspace = std::env::temp_dir().join(format!(
+            "agenthero-grokrxiv-no-lean-verifier-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).expect("workspace exists");
+        let fake_lean = workspace.join("fake-lean.sh");
+        let invoked_path = workspace.join("invoked-lean-path.txt");
+        std::fs::write(
+            &fake_lean,
+            "#!/bin/sh\nprintf '%s' \"$1\" > invoked-lean-path.txt\nexit 0\n",
+        )
+        .expect("fake lean written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut permissions = std::fs::metadata(&fake_lean)
+                .expect("fake lean metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&fake_lean, permissions).expect("fake lean executable");
+        }
+
+        let proof_path = workspace.join("proof_obligations.json");
+        let targets_path = workspace.join("lean_targets.json");
+        std::fs::write(
+            &proof_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "1.0.0",
+                "review_id": "22222222-2222-2222-2222-222222222222",
+                "source": "review_loop/semantic_ir.json",
+                "status": "ready",
+                "lean_attempt_status": "pending",
+                "candidate_count": 1,
+                "selected_count": 1,
+                "omitted_count": 0,
+                "obligations": [
+                    {
+                        "id": "formalize_true",
+                        "kind": "theorem_formalization",
+                        "statement": "True.",
+                        "source_claim_id": "claim_true",
+                        "source_span": {
+                            "artifact": "body.md",
+                            "claim_id": "claim_true"
+                        },
+                        "semantic_category": "plain_theorem",
+                        "lean_declaration": "smoke_true",
+                        "lean_statement": "theorem smoke_true : True := by\n  trivial",
+                        "expected_proof": "closed Lean theorem proof with no sorry, admit, or unapproved axiom"
+                    }
+                ],
+                "skipped_targets": []
+            }))
+            .expect("proof obligations JSON"),
+        )
+        .expect("proof obligations written");
+        std::fs::write(
+            &targets_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "1.0.0",
+                "source": "review_loop/proof_obligations.json",
+                "candidate_count": 1,
+                "selected_count": 1,
+                "omitted_count": 0,
+                "skipped_targets": [],
+                "targets": [
+                    {
+                        "obligation_id": "formalize_true",
+                        "lean_declaration": "smoke_true",
+                        "statement": "True.",
+                        "lean_statement": "theorem smoke_true : True := by\n  trivial",
+                        "source_claim_id": "claim_true"
+                    }
+                ]
+            }))
+            .expect("lean targets JSON"),
+        )
+        .expect("lean targets written");
+
+        let manifest = DagManifest::from_str(
+            r#"
+id: review-loop
+version: 1
+accepts: []
+tools:
+  - id: review_fix_code
+    executor: rust
+    handler: review_loop::review_fix_code
+nodes:
+  - id: lean_review_fix_code
+    kind: loop
+    tool: review_fix_code
+    loop:
+      max_rounds: 1
+    inputs:
+      - review_loop/proof_obligations.json
+      - review_loop/lean_targets.json
+    outputs:
+      - review_loop/lean/GrokRxiv/Proofs.lean
+      - review_loop/lean/results.json
+      - review_loop/lean/fix_rounds.json
+      - review_loop/lean/theorem_map.json
+      - review_loop/lean/verification_report.json
+    required: true
+"#,
+        )
+        .expect("lean manifest parses");
+        let mut input = DagIo::default();
+        input.values.insert(
+            "lean_policy".to_string(),
+            serde_json::json!({
+                "requested": false,
+                "disabled": true,
+                "auto_detect": false,
+                "run_lean": false
+            }),
+        );
+        input.values.insert(
+            "lean_command".to_string(),
+            serde_json::json!([fake_lean.to_string_lossy()]),
+        );
+        for (name, path) in [
+            ("review_loop/proof_obligations.json", proof_path),
+            ("review_loop/lean_targets.json", targets_path),
+        ] {
+            input.artifacts.insert(
+                name.to_string(),
+                ArtifactRef {
+                    uri: path.to_string_lossy().to_string(),
+                    media_type: Some("application/json".to_string()),
+                    metadata: Default::default(),
+                },
+            );
+        }
+
+        let report = DagExecutor::new(GrokrxivAdapter {
+            app_name: "grokrxiv",
+            generic_tools: GenericToolRunner::new(workspace.join("generic-tools")),
+        })
+        .execute(&manifest, input)
+        .await
+        .expect("lean verifier manifest runs");
+
+        assert_eq!(report.status, DagNodeStatus::Ok);
+        assert!(
+            !invoked_path.exists(),
+            "--no-lean must not invoke the Lean binary"
+        );
+        let node = report
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "lean_review_fix_code")
+            .expect("aggregate lean loop report");
+        assert_eq!(node.exit_status, None);
+        assert_eq!(node.command, None);
+        assert_eq!(node.trace["lean_policy_effective"]["disabled"], true);
+        assert_eq!(node.trace["lean_policy_effective"]["auto_detect"], false);
+        assert_eq!(node.trace["lean_policy_effective"]["target_count"], 1);
+        assert_eq!(node.trace["lean_policy_effective"]["run_lean"], false);
+        assert_eq!(node.trace["lean_policy_effective"]["skipped"], true);
+        assert_eq!(
+            node.trace["lean_policy_effective"]["command"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            node.trace["lean_policy_effective"]["exit_status"],
+            serde_json::Value::Null
+        );
+
+        std::fs::remove_dir_all(workspace).expect("cleanup temp workspace");
+    }
+
     #[test]
     fn lean_verifier_proof_arg_uses_path_relative_to_node_workdir() {
-        let base = Path::new(
-            ".agenthero/run/grokrxiv/review-loop/lean_review_fix_code/node-attempt",
-        );
+        let base =
+            Path::new(".agenthero/run/grokrxiv/review-loop/lean_review_fix_code/node-attempt");
         let proof_path = base.join("review_loop/lean/GrokRxiv/Proofs.lean");
 
         assert_eq!(

@@ -27,6 +27,8 @@ pub fn render_html(
     paper: &PaperExtract,
     agents: &[AgentRecord],
 ) -> Result<String> {
+    let paper = crate::display::display_paper(paper);
+    let meta = crate::display::display_meta(meta);
     let agent_views: Vec<_> = agents
         .iter()
         .map(|a| {
@@ -77,6 +79,7 @@ fn agent_meta_review(agent: &AgentRecord) -> Option<serde_json::Value> {
         return None;
     }
     let meta = serde_json::from_value::<MetaReview>(agent.output.clone()).ok()?;
+    let meta = crate::display::display_meta(&meta);
     Some(json!({
         "summary": meta.summary,
         "strengths": meta.strengths,

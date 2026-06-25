@@ -18,8 +18,8 @@ Run three arXiv papers (different subjects) through the full GrokRxiv pipeline e
 
 | Role | Model | 2605.00403 (in/out) | 2605.13993 (in/out) | 2605.15132 (in/out) |
 |---|---|---|---|---|
-| citation | gemini-2.5-flash | 492 / 75 | 461 / 62 | 363 / 413 |
-| novelty | gemini-2.5-flash | 491 / 769 | 460 / 549 | 362 / 443 |
+| citation | Gemini 3.5 Flash (Medium) | 492 / 75 | 461 / 62 | 363 / 413 |
+| novelty | Gemini 3.5 Flash (Medium) | 491 / 769 | 460 / 549 | 362 / 443 |
 | summary | claude-haiku-4-5 | 839 / 654 | 790 / 581 | 631 / 459 |
 | reproducibility | gpt-5.5 | 807 / 478 | 760 / 510 | 635 / 397 |
 | technical_correctness | claude-opus-4-7 | 1,391 / 2,240 | 1,318 / 1,784 | 1,123 / 1,259 |

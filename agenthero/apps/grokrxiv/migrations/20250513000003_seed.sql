@@ -35,9 +35,9 @@ values (
   '{
      "summary":"claude-opus-4-7",
      "technical_correctness":"claude-opus-4-7",
-     "novelty":"gemini-2.5-pro",
+     "novelty":"claude-sonnet-4-6",
      "reproducibility":"o4-mini",
-     "citation":"gemini-2.5-flash",
+     "citation":"claude-haiku-4-5-20251001",
      "meta_reviewer":"claude-opus-4-7"
    }'::jsonb,
   '{

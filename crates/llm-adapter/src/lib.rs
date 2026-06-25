@@ -57,7 +57,7 @@ pub fn max_output_tokens_for(provider: &str, model: &str) -> u32 {
 
 fn anthropic_output_cap(model: &str) -> u32 {
     match model {
-        "claude-haiku-4-5-20251001" => 8_000,
+        "claude-haiku-4-5" => 8_000,
         "claude-sonnet-4-6" | "claude-opus-4-7" => 32_000,
         _ => 8_000,
     }
@@ -65,10 +65,7 @@ fn anthropic_output_cap(model: &str) -> u32 {
 
 fn gemini_output_cap(model: &str) -> u32 {
     match model {
-        "gemini-2.5-flash"
-        | "gemini-2.5-pro"
-        | "gemini-3-flash-preview"
-        | "gemini-3-pro-preview" => 32_000,
+        "Gemini 3.5 Flash (Medium)" | "gemini-3-flash-preview" | "gemini-3-pro-preview" => 32_000,
         _ => 16_000,
     }
 }
@@ -564,10 +561,7 @@ mod tests {
 
     #[test]
     fn output_token_caps_are_provider_model_table_driven() {
-        assert_eq!(
-            max_output_tokens_for("claude", "claude-haiku-4-5-20251001"),
-            8_000
-        );
+        assert_eq!(max_output_tokens_for("claude", "claude-haiku-4-5"), 8_000);
         assert_eq!(max_output_tokens_for("claude", "claude-opus-4-7"), 32_000);
         assert_eq!(
             max_output_tokens_for("gemini", "gemini-3-flash-preview"),

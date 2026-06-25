@@ -23,11 +23,11 @@ max_cost_usd    = 0.50
 # technical_correctness = "cli"
 
 [profiles.default.model_for]
-# summary               = "claude-haiku-4-5-20251001"
+# summary               = "claude-haiku-4-5"
 # technical_correctness = "claude-opus-4-7"
-# novelty               = "Gemini 3.5 Flash (High)"
+# novelty               = "claude-sonnet-4-6"
 # reproducibility       = "gpt-5.5"
-# citation              = "Gemini 3.5 Flash (Medium)"
+# citation              = "claude-sonnet-4-6"
 # meta_reviewer         = "claude-sonnet-4-6"
 
 # -----------------------------------------------------------------------------
@@ -46,7 +46,7 @@ summary               = "claude-haiku-4-5"
 technical_correctness = "claude-haiku-4-5"
 novelty               = "claude-haiku-4-5"
 reproducibility       = "claude-haiku-4-5"
-citation              = "claude-haiku-4-5"
+citation              = "claude-sonnet-4-6"
 meta_reviewer         = "claude-haiku-4-5"
 
 # -----------------------------------------------------------------------------

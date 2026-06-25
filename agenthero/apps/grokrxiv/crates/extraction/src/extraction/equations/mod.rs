@@ -16,7 +16,7 @@
 //! - `equation_hash` (agent-specific)
 //! - `submit` (core sentinel)
 //!
-//! Model: `gemini-2.5-flash`. Loop budget: `max_iters=60`,
+//! Model: `Gemini 3.5 Flash (Medium)` via Antigravity CLI. Loop budget: `max_iters=60`,
 //! `max_cost_usd=0.50`.
 
 use std::sync::Arc;
@@ -253,8 +253,8 @@ mod agent_tests {
     fn fake_spec() -> AgentSpec {
         AgentSpec::api_default(
             "summary",
-            "gemini".to_string(),
-            "gemini-2.5-pro".to_string(),
+            "claude".to_string(),
+            "claude-haiku-4-5".to_string(),
         )
     }
 

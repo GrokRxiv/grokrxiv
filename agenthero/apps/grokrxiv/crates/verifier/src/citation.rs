@@ -15,6 +15,7 @@
 //! deliberately stays metadata-only — never requests PDFs or LaTeX.
 
 use async_trait::async_trait;
+use futures::{stream, StreamExt};
 use grokrxiv_schemas::{VerifierResult, VerifierStatus};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -32,7 +33,9 @@ const FAIL_FRACTION: f32 = 0.30;
 /// rule-of-thumb floor where the result is meaningfully relevant.
 const BIBLIOGRAPHIC_MATCH_SCORE_MIN: f64 = 60.0;
 const ARXIV_ID_LIST_CHUNK_SIZE: usize = 100;
-const BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_CITATION_REQUEST_TIMEOUT_SECS: u64 = 15;
+const DEFAULT_BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_CITATION_ENTRY_CONCURRENCY: usize = 16;
 #[cfg(not(test))]
 const SEMANTIC_SCHOLAR_MIN_INTERVAL_MS: u64 = 1_100;
 /// arXiv's API guidance asks for ≥3s between requests; cheap for us because arXiv
@@ -161,6 +164,13 @@ struct CitationLookup {
     resolved_url: Option<String>,
     source: &'static str,
     reason: Option<String>,
+}
+
+struct CitationCheck {
+    raw: String,
+    status: CitationLookupStatus,
+    resolved_via_bibliographic_query: bool,
+    entry: serde_json::Value,
 }
 
 impl CitationLookup {
@@ -486,23 +496,9 @@ impl CitationVerifier {
                 .await
             }
             JsonLookup::Transient(err) => {
-                // Crossref rate-limited us or was unreachable (e.g. HTTP 429). A 429 is OUR
-                // infra problem, not a citation defect: when the citation carries a
-                // syntactically valid DOI, accept it on the identifier rather than surfacing a
-                // transient as "needs review". (A definitive missing status returns
-                // `Unresolved` above and still flags, so this only covers transient failures.)
-                if doi_well_formed(doi) {
-                    CitationLookup::resolved_with_reason(
-                        "doi",
-                        Some(doi.to_string()),
-                        Some(format!("https://doi.org/{doi}")),
-                        format!(
-                            "verified on well-formed DOI; live Crossref lookup unavailable ({err})"
-                        ),
-                    )
-                } else {
-                    CitationLookup::unknown("crossref", err)
-                }
+                // Crossref rate-limited us or was unreachable (e.g. HTTP 429).
+                // This is an infra/transient condition, not validation.
+                CitationLookup::unknown("crossref", err)
             }
         };
         if lookup.status != CitationLookupStatus::TransientUnknown {
@@ -618,23 +614,8 @@ impl CitationVerifier {
                     }
                 }
                 TextLookup::Transient(reason) => {
-                    // arXiv's API rate-limited us or was unreachable (e.g. HTTP 429). Every
-                    // id in this chunk already passed `arxiv_id_well_formed` and was extracted
-                    // from the paper's bibliography, so the identifier itself is sufficient
-                    // existence evidence. Accept the citation on its well-formed arXiv id
-                    // rather than surfacing OUR transient infra failure as a citation that
-                    // "needs review". (A definitive arXiv "not found" returns an empty Ok
-                    // body above and still flags as unresolved, so this only ever applies to
-                    // transient unreachability.)
                     for q in chunk {
-                        let lookup = CitationLookup::resolved_with_reason(
-                            "arxiv_id",
-                            None,
-                            Some(format!("https://arxiv.org/abs/{q}")),
-                            format!(
-                                "verified on well-formed arXiv identifier; live arXiv lookup unavailable ({reason})"
-                            ),
-                        );
+                        let lookup = CitationLookup::unknown("arxiv", reason.clone());
                         self.cache
                             .lock()
                             .insert(format!("arxiv::{q}"), lookup.clone());
@@ -654,6 +635,124 @@ impl CitationVerifier {
             }
         }
         out
+    }
+
+    async fn resolve_one_citation(
+        &self,
+        http: &reqwest::Client,
+        c: grokrxiv_schemas::Citation,
+        arxiv_resolved: Arc<HashMap<String, CitationLookup>>,
+    ) -> CitationCheck {
+        let mut lookup: Option<CitationLookup> = None;
+        let citation_key = citation_key_from_raw(&c.raw);
+        let extracted_title_from_raw =
+            bib_field(&c.raw, "title").or_else(|| quoted_title_from_raw(&c.raw));
+        let title_is_key = c
+            .title
+            .as_deref()
+            .zip(citation_key.as_deref())
+            .is_some_and(|(title, key)| title.trim() == key.trim());
+        let normalization_status = if title_is_key
+            && extracted_title_from_raw
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty())
+        {
+            Some("title_equals_key_but_raw_contains_title")
+        } else {
+            None
+        };
+        let normalized_title = if normalization_status.is_some() {
+            extracted_title_from_raw.clone()
+        } else {
+            c.title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .or_else(|| extracted_title_from_raw.clone())
+        };
+
+        if let Some(doi) = &c.doi {
+            lookup = Some(self.resolve_doi(http, doi).await);
+        }
+        if !matches!(
+            lookup.as_ref().map(|l| l.status),
+            Some(CitationLookupStatus::Resolved | CitationLookupStatus::Retracted)
+        ) {
+            if let Some(arxiv_id) = &c.arxiv_id {
+                if let Some(arxiv_lookup) = arxiv_resolved.get(arxiv_id).cloned() {
+                    if lookup.is_none()
+                        || matches!(
+                            arxiv_lookup.status,
+                            CitationLookupStatus::Resolved | CitationLookupStatus::TransientUnknown
+                        )
+                    {
+                        lookup = Some(arxiv_lookup);
+                    }
+                }
+            }
+        }
+        let mut resolved_via_bibliographic_query = false;
+        if lookup.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
+            let bibliographic_text = normalized_title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(&c.raw);
+            // A real citation carries author/title text. If no DOI/arXiv id was found
+            // AND no usable bibliographic text was extracted, this is a pipeline
+            // extraction gap, not a missing/fabricated paper citation. Do NOT free-text
+            // search (it would falsely report "no strong match") and do NOT flag it.
+            if bibliographic_text
+                .chars()
+                .filter(|ch| ch.is_alphanumeric())
+                .count()
+                < 8
+            {
+                lookup = Some(CitationLookup::insufficient_metadata(
+                    "no DOI/arXiv id and no bibliographic text was extracted for this citation",
+                ));
+            } else {
+                let biblio_lookup = self.resolve_bibliographic(http, bibliographic_text).await;
+                if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
+                    resolved_via_bibliographic_query = true;
+                }
+                lookup = Some(biblio_lookup);
+            }
+        }
+        let lookup = lookup.unwrap_or_else(|| {
+            CitationLookup::insufficient_metadata("no resolvable identifier or extracted text")
+        });
+        let raw = c.raw.clone();
+        let status = lookup.status;
+        let source = lookup.source;
+        let display_title = normalized_title.clone();
+        let display_year = bib_field(&c.raw, "year").or_else(|| bib_field(&c.raw, "date"));
+        let display_author = bib_field(&c.raw, "author");
+        let display_url = bib_field(&c.raw, "url");
+        let entry = json!({
+            "raw": c.raw,
+            "citation_key": citation_key,
+            "title": display_title,
+            "author": display_author,
+            "year": display_year,
+            "doi": c.doi.clone(),
+            "arxiv_id": c.arxiv_id.clone(),
+            "url": display_url,
+            "normalization_status": normalization_status,
+            "extracted_title_from_raw": extracted_title_from_raw,
+            "exists": status.exists_value(),
+            "status": status.as_str(),
+            "resolved_doi": lookup.resolved_doi,
+            "resolved_url": lookup.resolved_url,
+            "source": source,
+            "verified_via": source,
+            "reason": lookup.reason,
+        });
+        CitationCheck {
+            raw,
+            status,
+            resolved_via_bibliographic_query,
+            entry,
+        }
     }
 
     /// Free-text bibliographic lookup for refs that carry neither a DOI nor an
@@ -879,131 +978,60 @@ impl Verifier for CitationVerifier {
         // Phase 2: walk every citation, recording per-entry resolution so the
         // supervisor can overlay this onto the LLM specialist's citation_review
         // output before persisting.
-        let mut total: u32 = 0;
         let mut unresolved: Vec<String> = Vec::new();
         let mut retracted: Vec<String> = Vec::new();
         let mut unverified: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         let mut malformed: Vec<String> = Vec::new();
         let mut resolved_via_biblio: u32 = 0;
-        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(bibliography.len());
-        for c in &bibliography {
-            total += 1;
-            let mut lookup: Option<CitationLookup> = None;
-            let citation_key = citation_key_from_raw(&c.raw);
-            let extracted_title_from_raw =
-                bib_field(&c.raw, "title").or_else(|| quoted_title_from_raw(&c.raw));
-            let title_is_key = c
-                .title
-                .as_deref()
-                .zip(citation_key.as_deref())
-                .is_some_and(|(title, key)| title.trim() == key.trim());
-            let normalization_status = if title_is_key
-                && extracted_title_from_raw
-                    .as_deref()
-                    .is_some_and(|title| !title.trim().is_empty())
-            {
-                Some("title_equals_key_but_raw_contains_title")
-            } else {
-                None
-            };
-            let normalized_title = if normalization_status.is_some() {
-                extracted_title_from_raw.clone()
-            } else {
-                c.title
-                    .clone()
-                    .filter(|title| !title.trim().is_empty())
-                    .or_else(|| extracted_title_from_raw.clone())
-            };
+        let bibliography_len = bibliography.len();
+        let arxiv_resolved = Arc::new(arxiv_resolved);
+        let mut stream = stream::iter(bibliography.into_iter().enumerate())
+            .map(|(index, citation)| {
+                let arxiv_resolved = Arc::clone(&arxiv_resolved);
+                async move {
+                    (
+                        index,
+                        self.resolve_one_citation(ctx.http, citation, arxiv_resolved)
+                            .await,
+                    )
+                }
+            })
+            .buffer_unordered(citation_entry_concurrency());
+        let mut checks: Vec<(usize, CitationCheck)> = Vec::with_capacity(bibliography_len);
+        let mut completed = 0usize;
+        while let Some(check) = stream.next().await {
+            completed += 1;
+            if completed == 1 || completed == bibliography_len || completed % 25 == 0 {
+                tracing::info!(
+                    checked = completed,
+                    total = bibliography_len,
+                    "citation verifier progress"
+                );
+            }
+            checks.push(check);
+        }
+        checks.sort_by_key(|(index, _)| *index);
 
-            if let Some(doi) = &c.doi {
-                lookup = Some(self.resolve_doi(ctx.http, doi).await);
-            }
-            if !matches!(
-                lookup.as_ref().map(|l| l.status),
-                Some(CitationLookupStatus::Resolved | CitationLookupStatus::Retracted)
-            ) {
-                if let Some(arxiv_id) = &c.arxiv_id {
-                    if let Some(arxiv_lookup) = arxiv_resolved.get(arxiv_id).cloned() {
-                        if lookup.is_none()
-                            || matches!(
-                                arxiv_lookup.status,
-                                CitationLookupStatus::Resolved
-                                    | CitationLookupStatus::TransientUnknown
-                            )
-                        {
-                            lookup = Some(arxiv_lookup);
-                        }
-                    }
-                }
-            }
-            if lookup.is_none() && c.doi.is_none() && c.arxiv_id.is_none() {
-                let bibliographic_text = normalized_title
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|title| !title.is_empty())
-                    .unwrap_or(&c.raw);
-                // A real citation carries author/title text. If no DOI/arXiv id was found
-                // AND no usable bibliographic text was extracted, this is a pipeline
-                // extraction gap, not a missing/fabricated paper citation. Do NOT free-text
-                // search (it would falsely report "no strong match") and do NOT flag it.
-                if bibliographic_text
-                    .chars()
-                    .filter(|ch| ch.is_alphanumeric())
-                    .count()
-                    < 8
-                {
-                    lookup = Some(CitationLookup::insufficient_metadata(
-                        "no DOI/arXiv id and no bibliographic text was extracted for this citation",
-                    ));
-                } else {
-                    let biblio_lookup = self
-                        .resolve_bibliographic(ctx.http, bibliographic_text)
-                        .await;
-                    if matches!(biblio_lookup.status, CitationLookupStatus::Resolved) {
-                        resolved_via_biblio += 1;
-                    }
-                    lookup = Some(biblio_lookup);
-                }
-            }
-            let lookup = lookup.unwrap_or_else(|| {
-                CitationLookup::insufficient_metadata("no resolvable identifier or extracted text")
-            });
-            match lookup.status {
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(checks.len());
+        for (_index, check) in checks {
+            match check.status {
                 CitationLookupStatus::Resolved => {}
-                CitationLookupStatus::Retracted => retracted.push(c.raw.clone()),
-                CitationLookupStatus::Unresolved => unresolved.push(c.raw.clone()),
-                CitationLookupStatus::Unverified => unverified.push(c.raw.clone()),
-                CitationLookupStatus::TransientUnknown => unknown.push(c.raw.clone()),
-                CitationLookupStatus::Malformed => malformed.push(c.raw.clone()),
+                CitationLookupStatus::Retracted => retracted.push(check.raw.clone()),
+                CitationLookupStatus::Unresolved => unresolved.push(check.raw.clone()),
+                CitationLookupStatus::Unverified => unverified.push(check.raw.clone()),
+                CitationLookupStatus::TransientUnknown => unknown.push(check.raw.clone()),
+                CitationLookupStatus::Malformed => malformed.push(check.raw.clone()),
                 // Extraction gap — neither verified nor a paper-citation failure. Not flagged.
                 CitationLookupStatus::InsufficientMetadata => {}
             }
-            let display_title = normalized_title.clone();
-            let display_year = bib_field(&c.raw, "year").or_else(|| bib_field(&c.raw, "date"));
-            let display_author = bib_field(&c.raw, "author");
-            let display_url = bib_field(&c.raw, "url");
-            entries.push(json!({
-                "raw": c.raw,
-                "citation_key": citation_key,
-                "title": display_title,
-                "author": display_author,
-                "year": display_year,
-                "doi": c.doi.clone(),
-                "arxiv_id": c.arxiv_id.clone(),
-                "url": display_url,
-                "normalization_status": normalization_status,
-                "extracted_title_from_raw": extracted_title_from_raw,
-                "exists": lookup.status.exists_value(),
-                "status": lookup.status.as_str(),
-                "resolved_doi": lookup.resolved_doi,
-                "resolved_url": lookup.resolved_url,
-                "source": lookup.source,
-                "verified_via": lookup.source,
-                "reason": lookup.reason,
-            }));
+            if check.resolved_via_bibliographic_query {
+                resolved_via_biblio += 1;
+            }
+            entries.push(check.entry);
         }
 
+        let total = entries.len() as u32;
         if total == 0 {
             return VerifierResult {
                 status: VerifierStatus::Fail,
@@ -1120,7 +1148,7 @@ fn default_bibliographic_providers() -> Vec<BibliographicProvider> {
                 nonblank_env("GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL")
                     .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()),
                 nonblank_env("GROKRXIV_CITATION_GROUNDED_MODEL")
-                    .unwrap_or_else(|| "gemini-2.5-pro".to_string()),
+                    .unwrap_or_else(|| "gemini-3-flash-preview".to_string()),
                 api_key,
             ));
         }
@@ -1293,7 +1321,7 @@ fn provider_query_url(provider: &BibliographicProvider, query_text: &str) -> Str
             let model = provider
                 .model
                 .as_deref()
-                .unwrap_or("gemini-2.5-pro")
+                .unwrap_or("gemini-3-flash-preview")
                 .trim_start_matches("models/");
             format!(
                 "{}/v1beta/models/{model}:generateContent",
@@ -1715,8 +1743,8 @@ async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
             "accept",
             "application/vnd.citationstyles.csl+json, application/json;q=0.9, */*;q=0.1",
         );
-        match request.send().await {
-            Ok(response) => {
+        match tokio::time::timeout(citation_request_timeout(), request.send()).await {
+            Ok(Ok(response)) => {
                 let status = response.status();
                 if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
                     last_err = Some(format!("status {status}"));
@@ -1725,8 +1753,18 @@ async fn send_doi_with_retry(http: &reqwest::Client, url: &str) -> HttpLookup {
                 }
                 return HttpLookup::Ok(status);
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 last_err = Some(err.to_string());
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
+                    continue;
+                }
+            }
+            Err(_) => {
+                last_err = Some(format!(
+                    "timeout after {}s",
+                    citation_request_timeout().as_secs()
+                ));
                 if attempt < TRANSIENT_MAX_RETRIES {
                     transient_backoff(attempt, None).await;
                     continue;
@@ -1741,8 +1779,13 @@ async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..=TRANSIENT_MAX_RETRIES {
         throttle_host(url).await;
-        match apply_polite_headers(http.get(url)).send().await {
-            Ok(response) => {
+        match tokio::time::timeout(
+            citation_request_timeout(),
+            apply_polite_headers(http.get(url)).send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
                 let status = response.status();
                 if status.is_success() {
                     return match response.text().await {
@@ -1761,8 +1804,18 @@ async fn send_text_with_retry(http: &reqwest::Client, url: &str) -> TextLookup {
                     TextLookup::Transient(format!("status {status}"))
                 };
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 last_err = Some(err.to_string());
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
+                    continue;
+                }
+            }
+            Err(_) => {
+                last_err = Some(format!(
+                    "timeout after {}s",
+                    citation_request_timeout().as_secs()
+                ));
                 if attempt < TRANSIENT_MAX_RETRIES {
                     transient_backoff(attempt, None).await;
                     continue;
@@ -1777,60 +1830,9 @@ async fn send_json_with_retry(http: &reqwest::Client, url: &str) -> JsonLookup {
     let mut last_err: Option<String> = None;
     for attempt in 0..=TRANSIENT_MAX_RETRIES {
         throttle_host(url).await;
-        match apply_polite_headers(http.get(url)).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    return match response.json::<serde_json::Value>().await {
-                        Ok(body) => JsonLookup::Ok(body),
-                        Err(err) => JsonLookup::Transient(err.to_string()),
-                    };
-                }
-                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
-                    last_err = Some(format!("status {status}"));
-                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
-                    continue;
-                }
-                return if is_definitive_missing_status(status) {
-                    JsonLookup::Unresolved(format!("status {status}"))
-                } else {
-                    JsonLookup::Transient(format!("status {status}"))
-                };
-            }
-            Err(err) => {
-                last_err = Some(err.to_string());
-                if attempt < TRANSIENT_MAX_RETRIES {
-                    transient_backoff(attempt, None).await;
-                    continue;
-                }
-            }
-        }
-    }
-    JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
-}
-
-async fn send_provider_json_with_timeout(
-    http: &reqwest::Client,
-    url: &str,
-    provider: &BibliographicProvider,
-    query_text: &str,
-) -> JsonLookup {
-    send_provider_json_with_retry(http, url, provider, query_text).await
-}
-
-async fn send_provider_json_with_retry(
-    http: &reqwest::Client,
-    url: &str,
-    provider: &BibliographicProvider,
-    query_text: &str,
-) -> JsonLookup {
-    let mut last_err: Option<String> = None;
-    for attempt in 0..=TRANSIENT_MAX_RETRIES {
-        throttle_provider_request(provider, url).await;
-        let request = provider_request(http, url, provider, query_text);
         match tokio::time::timeout(
-            Duration::from_secs(BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS),
-            request.send(),
+            citation_request_timeout(),
+            apply_polite_headers(http.get(url)).send(),
         )
         .await
         {
@@ -1862,7 +1864,69 @@ async fn send_provider_json_with_retry(
             }
             Err(_) => {
                 last_err = Some(format!(
-                    "timeout after {BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS}s"
+                    "timeout after {}s",
+                    citation_request_timeout().as_secs()
+                ));
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
+                    continue;
+                }
+            }
+        }
+    }
+    JsonLookup::Transient(last_err.unwrap_or_else(|| "request failed".to_string()))
+}
+
+async fn send_provider_json_with_timeout(
+    http: &reqwest::Client,
+    url: &str,
+    provider: &BibliographicProvider,
+    query_text: &str,
+) -> JsonLookup {
+    send_provider_json_with_retry(http, url, provider, query_text).await
+}
+
+async fn send_provider_json_with_retry(
+    http: &reqwest::Client,
+    url: &str,
+    provider: &BibliographicProvider,
+    query_text: &str,
+) -> JsonLookup {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..=TRANSIENT_MAX_RETRIES {
+        throttle_provider_request(provider, url).await;
+        let request = provider_request(http, url, provider, query_text);
+        match tokio::time::timeout(bibliographic_provider_timeout(), request.send()).await {
+            Ok(Ok(response)) => {
+                let status = response.status();
+                if status.is_success() {
+                    return match response.json::<serde_json::Value>().await {
+                        Ok(body) => JsonLookup::Ok(body),
+                        Err(err) => JsonLookup::Transient(err.to_string()),
+                    };
+                }
+                if is_transient_status(status) && attempt < TRANSIENT_MAX_RETRIES {
+                    last_err = Some(format!("status {status}"));
+                    transient_backoff(attempt, parse_retry_after(response.headers())).await;
+                    continue;
+                }
+                return if is_definitive_missing_status(status) {
+                    JsonLookup::Unresolved(format!("status {status}"))
+                } else {
+                    JsonLookup::Transient(format!("status {status}"))
+                };
+            }
+            Ok(Err(err)) => {
+                last_err = Some(err.to_string());
+                if attempt < TRANSIENT_MAX_RETRIES {
+                    transient_backoff(attempt, None).await;
+                    continue;
+                }
+            }
+            Err(_) => {
+                last_err = Some(format!(
+                    "timeout after {}s",
+                    bibliographic_provider_timeout().as_secs()
                 ));
                 if attempt < TRANSIENT_MAX_RETRIES {
                     transient_backoff(attempt, None).await;
@@ -1906,14 +1970,28 @@ async fn throttle_host(url: &str) {
         return;
     }
     let limiter = HOST_RATE_LIMITS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
-    let mut map = limiter.lock().await;
-    if let Some(previous) = map.get(&host) {
-        let elapsed = previous.elapsed();
-        if elapsed < interval {
-            tokio::time::sleep(interval - elapsed).await;
+    loop {
+        let wait = {
+            let mut map = limiter.lock().await;
+            if let Some(previous) = map.get(&host) {
+                let elapsed = previous.elapsed();
+                if elapsed < interval {
+                    Some(interval - elapsed)
+                } else {
+                    map.insert(host.clone(), Instant::now());
+                    None
+                }
+            } else {
+                map.insert(host.clone(), Instant::now());
+                None
+            }
+        };
+        if let Some(wait) = wait {
+            tokio::time::sleep(wait).await;
+        } else {
+            return;
         }
     }
-    map.insert(host, Instant::now());
 }
 
 /// Extract the host portion of a URL without pulling in the `url` crate.
@@ -1997,6 +2075,27 @@ fn semantic_scholar_min_interval() -> Duration {
     {
         Duration::from_millis(SEMANTIC_SCHOLAR_MIN_INTERVAL_MS)
     }
+}
+
+fn citation_request_timeout() -> Duration {
+    nonblank_env("GROKRXIV_CITATION_REQUEST_TIMEOUT_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CITATION_REQUEST_TIMEOUT_SECS))
+}
+
+fn bibliographic_provider_timeout() -> Duration {
+    nonblank_env("GROKRXIV_CITATION_PROVIDER_TIMEOUT_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_BIBLIOGRAPHIC_PROVIDER_TIMEOUT_SECS))
+}
+
+fn citation_entry_concurrency() -> usize {
+    nonblank_env("GROKRXIV_CITATION_ENTRY_CONCURRENCY")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CITATION_ENTRY_CONCURRENCY)
 }
 
 fn provider_request(
@@ -2098,26 +2197,6 @@ fn is_transient_status(status: reqwest::StatusCode) -> bool {
 
 fn is_definitive_missing_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 400 | 404 | 410 | 422)
-}
-
-/// Cheap structural check that a DOI looks valid (`10.<registrant>/<suffix>`). Used to
-/// decide whether a transient Crossref failure can be accepted on the identifier alone.
-fn doi_well_formed(doi: &str) -> bool {
-    let doi = doi
-        .trim()
-        .trim_start_matches("https://doi.org/")
-        .trim_start_matches("http://doi.org/")
-        .trim_start_matches("doi:")
-        .trim();
-    let Some(rest) = doi.strip_prefix("10.") else {
-        return false;
-    };
-    let Some((registrant, suffix)) = rest.split_once('/') else {
-        return false;
-    };
-    !suffix.is_empty()
-        && !registrant.is_empty()
-        && registrant.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Strip a trailing `vN` arXiv version suffix. `2401.12345v2` → `2401.12345`.
@@ -3158,7 +3237,7 @@ mod tests {
             "GROKRXIV_CITATION_GROUNDED_GEMINI_BASE_URL",
             "http://gemini.test",
         );
-        let _model = EnvVarGuard::set("GROKRXIV_CITATION_GROUNDED_MODEL", "gemini-2.5-pro");
+        let _model = EnvVarGuard::set("GROKRXIV_CITATION_GROUNDED_MODEL", "gemini-3-flash-preview");
 
         let providers = default_bibliographic_providers();
 
@@ -3168,7 +3247,7 @@ mod tests {
             .expect("local gemini grounded provider");
         assert_eq!(provider.source, "gemini_grounded");
         assert_eq!(provider.base_url, "http://gemini.test");
-        assert_eq!(provider.model.as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(provider.model.as_deref(), Some("gemini-3-flash-preview"));
         assert_eq!(provider.api_key.as_deref(), Some("env-gemini-key"));
     }
 
@@ -3253,7 +3332,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1beta/models/gemini-2.5-pro:generateContent"))
+            .and(path("/v1beta/models/gemini-3-flash-preview:generateContent"))
             .and(header("x-goog-api-key", "test-gemini-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "candidates": [{
@@ -3287,7 +3366,7 @@ mod tests {
             format!("{}/inspire/api/literature", server.uri()),
             format!("{}/zbmath/v1/document/_structured_search", server.uri()),
             server.uri(),
-            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
             "test-gemini-key",
         );
         let paper = paper_with(vec![classic_ref(
@@ -3426,9 +3505,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn doi_429_is_accepted_on_well_formed_identifier_not_flagged() {
-        // A persistent Crossref 429 is OUR infra problem; a citation carrying a valid DOI
-        // must resolve on its identifier, never surface as "needs review".
+    async fn persistent_doi_429_is_transient_unknown_not_validated() {
+        // A persistent Crossref 429 is an API/transient condition. It must not be
+        // converted into validation just because the extracted DOI looks well formed.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/works/10.1234/abcd"))
@@ -3448,9 +3527,9 @@ mod tests {
 
         let r = v.verify(&json!({}), &ctx).await;
 
-        assert_eq!(r.notes["entries"][0]["status"], "resolved");
-        assert_eq!(r.notes["entries"][0]["source"], "doi");
-        assert_eq!(r.notes["unknown"].as_array().unwrap().len(), 0);
+        assert_eq!(r.notes["entries"][0]["status"], "transient_unknown");
+        assert_eq!(r.notes["entries"][0]["source"], "crossref");
+        assert_eq!(r.notes["unknown"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
