@@ -218,9 +218,6 @@ actions:
       - name: --benchmark-typed-ir
         kind: flag
         description: Alias for --typed-ir-only.
-      - name: --blueprint-loop
-        kind: flag
-        description: Build a source-grounded paper-level Lean blueprint, entity index, and FormalInterfaces.lean before per-theorem proof search.
       - name: --provider-for
         kind: flag
         value_name: ROLE=PROVIDER

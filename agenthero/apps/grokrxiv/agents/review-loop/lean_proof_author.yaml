@@ -1,6 +1,6 @@
 id: lean_proof_author
 kind: code_generator
-role: "Generate Lean proof obligations from the Haskell semantic model and GrokRxiv claims."
+role: "Fill proof bodies for source-faithful locked Lean theorem statements generated from paper TeX."
 provider: claude
 model: claude-opus-4-8
 runner: cli
