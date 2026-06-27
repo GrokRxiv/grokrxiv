@@ -2,7 +2,7 @@ id: pr_artifact_fixer
 kind: code_generator
 role: "Fix GrokRxiv review LaTeX artifacts before PR publication."
 provider: claude
-model: claude-opus-4-8
+model: opus[1m]
 runner: cli
 prompt_template: prompts/review-loop/pr_artifact_fixer.md
 input_schema: schemas/review_loop_code_task.schema.json

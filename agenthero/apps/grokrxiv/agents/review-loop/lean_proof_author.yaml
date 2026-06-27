@@ -2,7 +2,7 @@ id: lean_proof_author
 kind: code_generator
 role: "Fill proof bodies for source-faithful locked Lean theorem statements generated from paper TeX."
 provider: claude
-model: claude-opus-4-8
+model: opus[1m]
 runner: cli
 prompt_template: prompts/review-loop/lean_proof_author.md
 input_schema: schemas/review_loop_code_task.schema.json
@@ -10,5 +10,5 @@ output_schema: schemas/review_loop_code_artifact.schema.json
 verifiers:
   - json_schema
 max_retries: 1
-timeout_secs: 600
+timeout_secs: 0
 escalation: agent

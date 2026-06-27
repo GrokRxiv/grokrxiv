@@ -105,7 +105,7 @@ expression: html
       
       <details>
         <summary>
-          summary — <span class="muted">claude-opus-4-7</span>
+          summary — <span class="muted">opus[1m]</span>
           <span class="badge pass">pass</span>
         </summary>
         <pre>{
@@ -115,7 +115,7 @@ expression: html
       
       <details>
         <summary>
-          technical_correctness — <span class="muted">claude-opus-4-7</span>
+          technical_correctness — <span class="muted">opus[1m]</span>
           <span class="badge warn">warn</span>
         </summary>
         <pre>{

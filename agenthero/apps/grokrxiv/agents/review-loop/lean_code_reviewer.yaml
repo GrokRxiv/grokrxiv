@@ -10,5 +10,5 @@ output_schema: schemas/review_loop_code_review.schema.json
 verifiers:
   - json_schema
 max_retries: 1
-timeout_secs: 300
+timeout_secs: 0
 escalation: agent

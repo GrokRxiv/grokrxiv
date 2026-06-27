@@ -209,12 +209,20 @@ actions:
       - name: --auto-detect
         kind: flag
         description: Internal queued mode for automatic Lean formalization; skip typed-IR enrichment and use persisted review-loop proof obligations.
+      - name: --stage
+        kind: flag
+        value_name: all|inventory|packet|harness|author|lean-check|fix|faithfulness|typed-ir-diagnostic
+        description: Run one explicit formalization stage; default is all. Non-diagnostic stages use theorem_inventory.json as the canonical Lean source packet.
+      - name: --claim-id
+        kind: flag
+        value_name: CLAIM_ID
+        description: Paper theorem_inventory id to formalize for packet, author, Lean check, fix, and faithfulness stages.
       - name: --no-external-actions
         kind: flag
         description: Run formalization and render artifacts without updating PR comments or commits.
       - name: --typed-ir-only
         kind: flag
-        description: Benchmark typed-IR theorem extraction and stop before semantic/Lean stages; implies --no-external-actions.
+        description: Backward-compatible alias for --stage typed-ir-diagnostic; does not run Lean formalization.
       - name: --benchmark-typed-ir
         kind: flag
         description: Alias for --typed-ir-only.

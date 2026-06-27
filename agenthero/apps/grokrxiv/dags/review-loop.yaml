@@ -11,12 +11,18 @@ roles:
   - id: lean_proof_author
     kind: code_generator
     config: agents/review-loop/lean_proof_author.yaml
+  - id: lean_inventory_author
+    kind: code_generator
+    config: agents/review-loop/lean_inventory_author.yaml
   - id: lean_code_reviewer
     kind: verifier
     config: agents/review-loop/lean_code_reviewer.yaml
   - id: lean_code_fixer
     kind: code_generator
     config: agents/review-loop/lean_code_fixer.yaml
+  - id: lean_inventory_fixer
+    kind: code_generator
+    config: agents/review-loop/lean_inventory_fixer.yaml
   - id: lean_faithfulness_checker
     kind: verifier
     config: agents/review-loop/lean_faithfulness_checker.yaml

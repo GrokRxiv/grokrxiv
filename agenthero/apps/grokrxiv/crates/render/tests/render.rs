@@ -57,7 +57,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
     let agents = vec![
         AgentRecord {
             role: "summary".to_string(),
-            model: "claude-opus-4-7".into(),
+            model: "opus[1m]".into(),
             output: json!({"plain_summary": "Short summary."}),
             verifier: VerifierResult {
                 status: VerifierStatus::Pass,
@@ -66,7 +66,7 @@ fn fixture() -> (MetaReview, PaperExtract, Vec<AgentRecord>) {
         },
         AgentRecord {
             role: "technical_correctness".to_string(),
-            model: "claude-opus-4-7".into(),
+            model: "opus[1m]".into(),
             output: json!({"soundness_score": 4}),
             verifier: VerifierResult {
                 status: VerifierStatus::Warn,

@@ -711,9 +711,9 @@ mod tests {
 
     #[test]
     fn parse_role_model_ok() {
-        let (role, model) = parse_role_model("technical_correctness=claude-opus-4-7").unwrap();
+        let (role, model) = parse_role_model("technical_correctness=opus[1m]").unwrap();
         assert_eq!(role, "technical_correctness");
-        assert_eq!(model, "claude-opus-4-7");
+        assert_eq!(model, "opus[1m]");
     }
 
     #[test]

@@ -119,6 +119,7 @@ const CITATION_TIMEOUT_MAX_ENV: &str = "GROKRXIV_CITATION_TIMEOUT_MAX_SECS";
 const DEFAULT_CITATION_TIMEOUT_MAX_SECS: u64 = 1_800;
 const FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV: &str = "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS";
 const DEFAULT_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS: u64 = 1_800;
+const LEAN_CLAUDE_TIMEOUT_ENV: &str = "GROKRXIV_LEAN_CLAUDE_TIMEOUT_SECS";
 const LEAN_AUTHOR_TIMEOUT_MAX_ENV: &str = "GROKRXIV_LEAN_PROOF_AUTHOR_TIMEOUT_MAX_SECS";
 const DEFAULT_LEAN_AUTHOR_TIMEOUT_MAX_SECS: u64 = 1_800;
 const ADAPTIVE_TIMEOUT_MIN_SAMPLES: usize = 3;
@@ -624,21 +625,37 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 }
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
+    let lean_loop = if lean_inventory_loop_role(&input.role) {
+        "\n\
+         This role is allowed to use the local files and tools in the current directory. \
+         Read GOAL.md and PLAN.md first. Then edit GrokRxiv/Proofs.lean, run \
+         `lake env lean GrokRxiv/Proofs.lean`, fix from compiler output, and repeat until \
+         the goal is satisfied or the real blocker is exposed. Do not inspect parent \
+         directories.\n"
+    } else {
+        ""
+    };
     format!(
 	        "GrokRxiv has prepared the exact review inputs for role `{role}` in your current working directory.\n\
 	         Read and follow these files only:\n\
 	         - system.md: role instruction\n\
 	         - prompt.md: role-specific task with the bounded paper context already rendered\n\
 	         - review_input.json: canonical audit artifact and backup source; do not read it wholesale unless prompt.md explicitly requires a missing field\n\
-	         - schema.json: required output schema\n\n\
+	         - schema.json: required output schema\n\
+             - GOAL.md and PLAN.md, when present: the required agent loop contract\n\n\
 	         Return exactly one JSON object that validates against schema.json. \
 	         The first byte of stdout must be `{{` and the last byte must be `}}`. \
 	         Do not include prose, markdown fences, a plan, a strategy, a confirmation question, \
 	         or extra properties.\n\n\
 	         Do not search parent directories. Do not inspect the GrokRxiv repository checkout. \
-	         If you use local file tools, restrict them to the current directory and these files.",
+	         If you use local file tools, restrict them to the current directory and these files.{lean_loop}",
             role = role_slug(&input.role),
+            lean_loop = lean_loop,
 	    )
+}
+
+fn lean_inventory_loop_role(role: &str) -> bool {
+    matches!(role, "lean_inventory_author" | "lean_inventory_fixer")
 }
 
 fn render_tool_prompt(
@@ -1029,12 +1046,19 @@ fn build_api_fallback_providers(
 ///   4. `DEFAULT_CLI_TIMEOUT_SECS`.
 /// The global env var stays available for unconfigured roles, but it must not
 /// inflate short typed-IR/citation roles or mask explicit app policy.
-fn cli_timeout_for(spec: &AgentSpec) -> Duration {
+fn cli_timeout_for(spec: &AgentSpec) -> Option<Duration> {
     // 1. Operator per-role override (`GROKRXIV_<ROLE>_TIMEOUT_SECS`) wins as the configured
     //    floor. Adaptive roles can still lift it from recent successful samples.
     if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
         let chosen = adaptive_cli_timeout_for(spec, secs).unwrap_or(secs);
-        return Duration::from_secs(chosen);
+        return Some(Duration::from_secs(chosen));
+    }
+    if lean_claude_role(spec) {
+        if let Some(secs) = timeout_env_secs(LEAN_CLAUDE_TIMEOUT_ENV) {
+            let chosen = adaptive_cli_timeout_for(spec, secs).unwrap_or(secs);
+            return Some(Duration::from_secs(chosen));
+        }
+        return None;
     }
     // 2. Explicit app/YAML policy wins over global defaults.
     let configured = if spec.timeout_secs > 0 {
@@ -1043,11 +1067,15 @@ fn cli_timeout_for(spec: &AgentSpec) -> Duration {
         timeout_env_secs("AGENTHERO_CLI_TIMEOUT_SECS").unwrap_or(DEFAULT_CLI_TIMEOUT_SECS)
     };
     let chosen = adaptive_cli_timeout_for(spec, configured).unwrap_or(configured);
-    Duration::from_secs(chosen)
+    Some(Duration::from_secs(chosen))
 }
 
-pub(crate) fn cli_timeout_for_spec(spec: &AgentSpec) -> Duration {
+pub(crate) fn cli_timeout_for_spec(spec: &AgentSpec) -> Option<Duration> {
     cli_timeout_for(spec)
+}
+
+fn lean_claude_role(spec: &AgentSpec) -> bool {
+    spec.provider == "claude" && spec.role.starts_with("lean_")
 }
 
 fn timeout_env_secs(key: &str) -> Option<u64> {
@@ -1287,7 +1315,15 @@ fn build_command(
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
             // (help text: "Skills still resolve via /skill-name").
-            let query = if uses_review_skill {
+            let query = if lean_inventory_loop_role(&spec.role) {
+                "/goal Read GOAL.md and PLAN.md. Complete the Lean loop in this directory: \
+                 edit GrokRxiv/Proofs.lean, run `lake env lean GrokRxiv/Proofs.lean`, \
+                 fix compiler errors, repeat until the file typechecks or until the real \
+                 source-faithfulness blocker is exposed in Lean code and notes. Then print \
+                 exactly one JSON object matching schema.json, with code equal to the final \
+                 GrokRxiv/Proofs.lean contents."
+                    .to_string()
+            } else if uses_review_skill {
                 format!(
                     "/{CLAUDE_SKILL_NAME}\n\n\
                      Read the complete GrokRxiv review prompt supplied on stdin. \
@@ -1308,6 +1344,20 @@ fn build_command(
                 "--json-schema".to_string(),
                 schema_json,
             ];
+            let args = if lean_inventory_loop_role(&spec.role) {
+                let mut args = args;
+                args.extend([
+                    "--permission-mode".to_string(),
+                    "acceptEdits".to_string(),
+                    "--tools".to_string(),
+                    "Read,Write,Edit,Bash".to_string(),
+                    "--allowedTools".to_string(),
+                    "Read,Write,Edit,Bash(lake env lean *)".to_string(),
+                ]);
+                args
+            } else {
+                args
+            };
             (args, None, true)
         }
         CliProviderBackend::Codex => {
@@ -1385,10 +1435,30 @@ fn emit_cli_input_contract(spec: &AgentSpec, review_workdir: &PreparedReviewWork
     );
 }
 
+fn timeout_secs_value(timeout_dur: Option<Duration>) -> serde_json::Value {
+    timeout_dur
+        .map(|duration| serde_json::json!(duration.as_secs()))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn timeout_policy(timeout_dur: Option<Duration>) -> &'static str {
+    if timeout_dur.is_some() {
+        "bounded"
+    } else {
+        "unbounded"
+    }
+}
+
+fn timeout_display(timeout_dur: Option<Duration>) -> String {
+    timeout_dur
+        .map(|duration| format!("{}s", duration.as_secs()))
+        .unwrap_or_else(|| "unbounded".to_string())
+}
+
 fn record_cli_latency_sample(
     spec: &AgentSpec,
     latency_ms: i32,
-    timeout_dur: Duration,
+    timeout_dur: Option<Duration>,
     review_workdir: &PreparedReviewWorkdir,
     status: CliLatencySampleStatus,
     error: Option<&str>,
@@ -1420,7 +1490,8 @@ fn record_cli_latency_sample(
         "runner": "cli",
         "status": status.as_str(),
         "latency_ms": latency_ms,
-        "timeout_secs": timeout_dur.as_secs(),
+        "timeout_secs": timeout_secs_value(timeout_dur),
+        "timeout_policy": timeout_policy(timeout_dur),
         "prompt_chars": prompt_chars,
         "schema_bytes": schema_bytes,
         "review_input_bytes": review_input_bytes,
@@ -1456,19 +1527,19 @@ fn record_cli_latency_sample(
                 model = %spec.model,
                 status = status.as_str(),
                 latency_ms,
-                timeout_secs = timeout_dur.as_secs(),
+                timeout = %timeout_display(timeout_dur),
                 prompt_chars,
                 benchmark_path = %path.display(),
                 "CLI agent latency benchmark recorded"
             );
             eprintln!(
-                "agent_benchmark role={} provider={} model={} status={} latency_ms={} timeout_secs={} prompt_chars={} path={}",
+                "agent_benchmark role={} provider={} model={} status={} latency_ms={} timeout={} prompt_chars={} path={}",
                 spec.role,
                 spec.provider,
                 spec.model,
                 status.as_str(),
                 latency_ms,
-                timeout_dur.as_secs(),
+                timeout_display(timeout_dur),
                 prompt_chars,
                 path.display()
             );
@@ -1488,7 +1559,7 @@ fn record_cli_latency_sample(
 fn record_cli_latency_error_sample(
     spec: &AgentSpec,
     elapsed: Duration,
-    timeout_dur: Duration,
+    timeout_dur: Option<Duration>,
     review_workdir: &PreparedReviewWorkdir,
     err: &anyhow::Error,
 ) {
@@ -1514,7 +1585,7 @@ fn emit_cli_command_contract(
     spec: &AgentSpec,
     built: &BuiltCommand,
     backend: CliProviderBackend,
-    timeout_dur: Duration,
+    timeout_dur: Option<Duration>,
 ) {
     let command = safe_cli_command_display(built);
     tracing::info!(
@@ -1522,7 +1593,7 @@ fn emit_cli_command_contract(
         provider = %spec.provider,
         model = %spec.model,
         backend = ?backend,
-        timeout_secs = timeout_dur.as_secs(),
+        timeout = %timeout_display(timeout_dur),
         program = %built.program,
         pipe_stdin = built.pipe_stdin,
         stdin_chars = built.stdin_payload.chars().count(),
@@ -1530,18 +1601,18 @@ fn emit_cli_command_contract(
         "CLI agent command contract"
     );
     crate::cli_status::emit(format!(
-        "agent role={} provider={} model={} backend={backend:?} timeout_secs={} command={command}",
+        "agent role={} provider={} model={} backend={backend:?} timeout={} command={command}",
         spec.role,
         spec.provider,
         spec.model,
-        timeout_dur.as_secs()
+        timeout_display(timeout_dur)
     ));
     eprintln!(
-        "agent_command role={} provider={} model={} backend={backend:?} timeout_secs={} command={command}",
+        "agent_command role={} provider={} model={} backend={backend:?} timeout={} command={command}",
         spec.role,
         spec.provider,
         spec.model,
-        timeout_dur.as_secs()
+        timeout_display(timeout_dur)
     );
 }
 
@@ -1594,10 +1665,11 @@ fn safe_cli_command_display(built: &BuiltCommand) -> String {
 /// `cli_quota_fallback` (Team X2's yaml field) without re-parsing log text.
 async fn exec_and_capture(
     built: &BuiltCommand,
-    timeout_dur: Duration,
+    timeout_dur: Option<Duration>,
     role: &str,
     provider: &str,
 ) -> anyhow::Result<String> {
+    write_cli_command_audit(built, timeout_dur, role, provider);
     let mut cmd = Command::new(&built.program);
     cmd.args(&built.args);
     if let Some(cwd) = &built.cwd {
@@ -1653,39 +1725,47 @@ async fn exec_and_capture(
         }
     }
 
-    let status = match timeout(timeout_dur, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
-        Err(_) => {
-            // Timed out. Kill the whole process group first (reaps CLI sub-children), then the
-            // direct child, then VERIFY death by reaping it — if `wait()` doesn't return after
-            // the kill the process is wedged un-killably, which we surface in the error.
-            kill_process_group(&child);
-            let _ = timeout(Duration::from_secs(5), child.kill()).await;
-            stdout_task.abort();
-            stderr_task.abort();
-            let reaped = matches!(
-                timeout(Duration::from_secs(5), child.wait()).await,
-                Ok(Ok(_))
-            );
-            if !reaped {
-                tracing::warn!(
-                    role,
-                    pid = child.id(),
-                    "CliRunner subprocess did not exit after SIGKILL; possible orphaned process tree"
+    let status = if let Some(timeout_dur) = timeout_dur {
+        match timeout(timeout_dur, child.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => anyhow::bail!("waiting on `{}` failed: {e}", built.program),
+            Err(_) => {
+                // Timed out. Kill the whole process group first (reaps CLI sub-children), then the
+                // direct child, then VERIFY death by reaping it — if `wait()` doesn't return after
+                // the kill the process is wedged un-killably, which we surface in the error.
+                kill_process_group(&child);
+                let _ = timeout(Duration::from_secs(5), child.kill()).await;
+                stdout_task.abort();
+                stderr_task.abort();
+                let reaped = matches!(
+                    timeout(Duration::from_secs(5), child.wait()).await,
+                    Ok(Ok(_))
                 );
+                if !reaped {
+                    tracing::warn!(
+                        role,
+                        pid = child.id(),
+                        "CliRunner subprocess did not exit after SIGKILL; possible orphaned process tree"
+                    );
+                }
+                write_cli_timeout_audit(built, timeout_dur, role, provider, reaped);
+                return Err(anyhow::Error::new(CliError::TimedOut {
+                    provider: provider.to_string(),
+                    role: role.to_string(),
+                    timeout_secs: timeout_dur.as_secs(),
+                    subprocess_status: if reaped {
+                        "killed".to_string()
+                    } else {
+                        "kill_unconfirmed".to_string()
+                    },
+                }));
             }
-            return Err(anyhow::Error::new(CliError::TimedOut {
-                provider: provider.to_string(),
-                role: role.to_string(),
-                timeout_secs: timeout_dur.as_secs(),
-                subprocess_status: if reaped {
-                    "killed".to_string()
-                } else {
-                    "kill_unconfirmed".to_string()
-                },
-            }));
         }
+    } else {
+        child
+            .wait()
+            .await
+            .map_err(|e| anyhow::anyhow!("waiting on `{}` failed: {e}", built.program))?
     };
     let stdout = stdout_task
         .await
@@ -1699,6 +1779,7 @@ async fn exec_and_capture(
     if !status.success() {
         let stdout = String::from_utf8_lossy(&stdout).to_string();
         let stderr = String::from_utf8_lossy(&stderr).to_string();
+        write_cli_raw_io_audit(built, &stdout, &stderr);
         // FP-RPT3b B5: classify as a structured quota error when stderr/stdout
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
@@ -1726,6 +1807,7 @@ async fn exec_and_capture(
     }
 
     let stdout = String::from_utf8_lossy(&stdout).to_string();
+    write_cli_raw_io_audit(built, &stdout, "");
     if stdout.trim().is_empty() {
         let cli_log = cli_log_from_args(built).unwrap_or_default();
         if let Some(snippet) = detect_quota_signal(&cli_log) {
@@ -1754,6 +1836,64 @@ async fn exec_and_capture(
         }
     }
     Ok(stdout)
+}
+
+fn write_cli_command_audit(
+    built: &BuiltCommand,
+    timeout_dur: Option<Duration>,
+    role: &str,
+    provider: &str,
+) {
+    let Some(cwd) = built.cwd.as_ref() else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "role": role,
+        "provider": provider,
+        "program": &built.program,
+        "args": &built.args,
+        "timeout_secs": timeout_secs_value(timeout_dur),
+        "timeout_policy": timeout_policy(timeout_dur),
+        "pipe_stdin": built.pipe_stdin,
+        "cwd": cwd.display().to_string(),
+    });
+    let _ = std::fs::write(
+        cwd.join("command.json"),
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+fn write_cli_raw_io_audit(built: &BuiltCommand, stdout: &str, stderr: &str) {
+    let Some(cwd) = built.cwd.as_ref() else {
+        return;
+    };
+    let _ = std::fs::write(cwd.join("raw_stdout.txt"), stdout);
+    let _ = std::fs::write(cwd.join("raw_stderr.txt"), stderr);
+}
+
+fn write_cli_timeout_audit(
+    built: &BuiltCommand,
+    timeout_dur: Duration,
+    role: &str,
+    provider: &str,
+    reaped: bool,
+) {
+    let Some(cwd) = built.cwd.as_ref() else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "status": "runner_timeout",
+        "role": role,
+        "provider": provider,
+        "program": &built.program,
+        "args": &built.args,
+        "timeout_secs": timeout_dur.as_secs(),
+        "subprocess_status": if reaped { "killed" } else { "kill_unconfirmed" },
+    });
+    let _ = std::fs::write(
+        cwd.join("timeout_result.json"),
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
 }
 
 fn combine_subprocess_error_log(stderr: &str, stdout: &str, built: &BuiltCommand) -> String {
@@ -2520,7 +2660,7 @@ mod tests {
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.role = "custom_validator".to_string();
             spec.timeout_secs = 999;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(77));
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(77)));
         }
         // 2. invalid/blank per-role env var is ignored; with no YAML timeout the global applies.
         {
@@ -2531,7 +2671,7 @@ mod tests {
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.role = "custom_validator".to_string();
             spec.timeout_secs = 0;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(42)));
         }
         // 3. Explicit YAML beats the global default in both directions. A generic
         //    `AGENTHERO_CLI_TIMEOUT_SECS` must not silently inflate short typed-IR/citation
@@ -2541,14 +2681,14 @@ mod tests {
             let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "360")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 2400;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(2400));
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(2400)));
         }
         {
             // short YAML still beats a large global default (the typed-IR/citation leak).
             let _guard = EnvVarGuard::set(&[("AGENTHERO_CLI_TIMEOUT_SECS", "999")]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 42;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(42));
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(42)));
         }
         // 4. no env var → spec wins over default.
         {
@@ -2558,7 +2698,7 @@ mod tests {
             ]);
             let mut spec = stub_spec("claude", "claude-haiku-4-5");
             spec.timeout_secs = 120;
-            assert_eq!(cli_timeout_for(&spec), Duration::from_secs(120));
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(120)));
         }
         // 5. no env var, spec=0 → falls back to default.
         {
@@ -2570,8 +2710,28 @@ mod tests {
             spec.timeout_secs = 0;
             assert_eq!(
                 cli_timeout_for(&spec),
-                Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS)
+                Some(Duration::from_secs(DEFAULT_CLI_TIMEOUT_SECS))
             );
+        }
+    }
+
+    #[test]
+    fn lean_claude_roles_are_unbounded_by_default_but_can_be_bounded_by_env() {
+        let mut spec = stub_spec("claude", "opus[1m]");
+        spec.role = "lean_inventory_author".to_string();
+        spec.timeout_secs = 600;
+        {
+            let _guard = EnvVarGuard::clear(&[
+                "GROKRXIV_LEAN_INVENTORY_AUTHOR_TIMEOUT_SECS",
+                LEAN_CLAUDE_TIMEOUT_ENV,
+                "AGENTHERO_CLI_TIMEOUT_SECS",
+            ]);
+            assert_eq!(cli_timeout_for(&spec), None);
+        }
+
+        {
+            let _guard = EnvVarGuard::set_owned(&[(LEAN_CLAUDE_TIMEOUT_ENV, "2400".to_string())]);
+            assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(2400)));
         }
     }
 
@@ -2609,7 +2769,7 @@ mod tests {
         spec.role = "citation".to_string();
         spec.timeout_secs = 900;
 
-        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(1_500));
+        assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(1_500)));
     }
 
     #[test]
@@ -2639,7 +2799,7 @@ mod tests {
         spec.role = "citation".to_string();
         spec.timeout_secs = 900;
 
-        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(900));
+        assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(900)));
     }
 
     #[test]
@@ -2676,7 +2836,7 @@ mod tests {
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         spec.timeout_secs = 300;
 
-        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(540));
+        assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(540)));
     }
 
     #[test]
@@ -2706,7 +2866,7 @@ mod tests {
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         spec.timeout_secs = 300;
 
-        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(300));
+        assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(300)));
     }
 
     #[test]
@@ -2732,7 +2892,7 @@ mod tests {
         record_cli_latency_sample(
             &spec,
             300_064,
-            Duration::from_secs(300),
+            Some(Duration::from_secs(300)),
             &prepared,
             CliLatencySampleStatus::Timeout,
             Some("CliRunner timed out after 300s for role formalize_source_inventory_typed_transcriber (subprocess killed)"),
@@ -2763,7 +2923,7 @@ mod tests {
                 "schema_version": 1,
                 "role": "lean_proof_author",
                 "provider": "claude",
-                "model": "claude-opus-4-8",
+                "model": "opus[1m]",
                 "runner": "cli",
                 "status": "success",
                 "latency_ms": latency_ms
@@ -2787,11 +2947,11 @@ mod tests {
             ),
             ("AGENTHERO_CLI_TIMEOUT_SECS", "1800".to_string()),
         ]);
-        let mut spec = stub_spec("claude", "claude-opus-4-8");
+        let mut spec = stub_spec("claude", "opus[1m]");
         spec.role = "lean_proof_author".to_string();
         spec.timeout_secs = 600;
 
-        assert_eq!(cli_timeout_for(&spec), Duration::from_secs(1_020));
+        assert_eq!(cli_timeout_for(&spec), Some(Duration::from_secs(1_020)));
     }
 
     #[test]
@@ -2920,7 +3080,7 @@ mod tests {
     #[test]
     fn test_command_construction_claude() {
         let r = CliRunner::new();
-        let spec = stub_spec("claude", "claude-opus-4-7");
+        let spec = stub_spec("claude", "opus[1m]");
         let built = build_command(&r, &spec, "hello prompt").unwrap();
 
         // Binary
@@ -2952,7 +3112,7 @@ mod tests {
         );
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "claude-opus-4-7"),
+                .any(|w| w[0] == "--model" && w[1] == "opus[1m]"),
             "missing --model <model> pair in {args:?}"
         );
         assert!(
@@ -3192,7 +3352,7 @@ mod tests {
     #[tokio::test]
     async fn test_container_sandbox_is_rejected() {
         let r = CliRunner::new();
-        let mut spec = stub_spec("claude", "claude-opus-4-7");
+        let mut spec = stub_spec("claude", "opus[1m]");
         spec.sandbox = SandboxPolicy::Container;
 
         let input = AgentInput {
@@ -3642,7 +3802,7 @@ mod tests {
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "openai")
+        let err = exec_and_capture(&built, Some(Duration::from_secs(5)), "summary", "openai")
             .await
             .expect_err("subprocess should exit non-zero");
 
@@ -3689,7 +3849,7 @@ exit 1
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "claude")
+        let err = exec_and_capture(&built, Some(Duration::from_secs(5)), "summary", "claude")
             .await
             .expect_err("subprocess should exit non-zero");
 
@@ -3855,7 +4015,7 @@ exit 1
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "summary", "claude")
+        let err = exec_and_capture(&built, Some(Duration::from_secs(5)), "summary", "claude")
             .await
             .expect_err("subprocess should exit non-zero");
 
@@ -3895,7 +4055,7 @@ exit 0
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(5), "citation", "gemini")
+        let err = exec_and_capture(&built, Some(Duration::from_secs(5)), "citation", "gemini")
             .await
             .expect_err("empty gemini stdout should fail before schema parsing");
 
@@ -3942,9 +4102,14 @@ exit 0
             cwd: None,
         };
 
-        let err = exec_and_capture(&built, Duration::from_secs(3), "custom_validator", "gemini")
-            .await
-            .expect_err("subprocess should time out");
+        let err = exec_and_capture(
+            &built,
+            Some(Duration::from_secs(3)),
+            "custom_validator",
+            "gemini",
+        )
+        .await
+        .expect_err("subprocess should time out");
         assert!(err.to_string().contains("timed out"), "{err:#}");
         let timeout_error = err
             .chain()
@@ -4048,7 +4213,7 @@ printf '{"anthropic":"%s","openai":"%s","google_genai":"%s","google":"%s","gemin
             cwd: None,
         };
 
-        let stdout = exec_and_capture(&built, Duration::from_secs(5), "summary", "gemini")
+        let stdout = exec_and_capture(&built, Some(Duration::from_secs(5)), "summary", "gemini")
             .await
             .expect("subprocess should succeed");
         let observed: serde_json::Value =

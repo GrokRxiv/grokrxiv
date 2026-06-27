@@ -990,7 +990,8 @@ pub async fn run_grokrxiv_action(
                 request.debug_output,
                 request.external_actions_enabled,
                 request.mode,
-                request.typed_ir_only,
+                request.stage,
+                request.claim_id.as_deref(),
             )
             .await
         }
@@ -1557,7 +1558,8 @@ struct FormalizeArgs {
     debug_output: bool,
     external_actions_enabled: bool,
     mode: FormalizeMode,
-    typed_ir_only: bool,
+    stage: FormalizeStage,
+    claim_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1571,6 +1573,35 @@ impl FormalizeMode {
         match self {
             Self::AutoDetect => "auto_detect",
             Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormalizeStage {
+    All,
+    Inventory,
+    Packet,
+    Harness,
+    Author,
+    LeanCheck,
+    Fix,
+    Faithfulness,
+    TypedIrDiagnostic,
+}
+
+impl FormalizeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Inventory => "inventory",
+            Self::Packet => "packet",
+            Self::Harness => "harness",
+            Self::Author => "author",
+            Self::LeanCheck => "lean-check",
+            Self::Fix => "fix",
+            Self::Faithfulness => "faithfulness",
+            Self::TypedIrDiagnostic => "typed-ir-diagnostic",
         }
     }
 }
@@ -1689,14 +1720,27 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
     let mut debug_output = false;
     let mut external_actions_enabled = true;
     let mut mode = FormalizeMode::Full;
-    let mut typed_ir_only = false;
-    for arg in args {
+    let mut stage = FormalizeStage::All;
+    let mut claim_id: Option<String> = None;
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--debug" => debug_output = true,
             "--no-external-actions" => external_actions_enabled = false,
             "--auto-detect" | "--auto" => mode = FormalizeMode::AutoDetect,
+            "--stage" => {
+                let value = next_arg(&mut iter, "--stage")?;
+                stage = parse_formalize_stage(&value)?;
+            }
+            "--claim-id" => {
+                let value = next_arg(&mut iter, "--claim-id")?;
+                if value.trim().is_empty() {
+                    anyhow::bail!("formalize: --claim-id must not be empty");
+                }
+                claim_id = Some(value);
+            }
             "--typed-ir-only" | "--benchmark-typed-ir" => {
-                typed_ir_only = true;
+                stage = FormalizeStage::TypedIrDiagnostic;
                 external_actions_enabled = false;
             }
             other => {
@@ -1715,8 +1759,28 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
         debug_output,
         external_actions_enabled,
         mode,
-        typed_ir_only,
+        stage,
+        claim_id,
     })
+}
+
+fn parse_formalize_stage(value: &str) -> anyhow::Result<FormalizeStage> {
+    match value.trim() {
+        "all" => Ok(FormalizeStage::All),
+        "inventory" => Ok(FormalizeStage::Inventory),
+        "packet" => Ok(FormalizeStage::Packet),
+        "harness" => Ok(FormalizeStage::Harness),
+        "author" => Ok(FormalizeStage::Author),
+        "lean-check" | "lean_check" | "check" => Ok(FormalizeStage::LeanCheck),
+        "fix" => Ok(FormalizeStage::Fix),
+        "faithfulness" => Ok(FormalizeStage::Faithfulness),
+        "typed-ir-diagnostic" | "typed_ir_diagnostic" | "typed-ir-only" => {
+            Ok(FormalizeStage::TypedIrDiagnostic)
+        }
+        other => anyhow::bail!(
+            "formalize: unknown --stage `{other}` (expected all, inventory, packet, harness, author, lean-check, fix, faithfulness, or typed-ir-diagnostic)"
+        ),
+    }
 }
 
 fn parse_ingest_args(args: Vec<String>) -> anyhow::Result<IngestArgs> {
@@ -8519,7 +8583,8 @@ fn lean_role_cli_timeout_secs(state: &super::AppState, role: &str, fallback_secs
     state
         .agents
         .get(role)
-        .map(|agent| crate::agents::runners::cli::cli_timeout_for_spec(agent.spec()).as_secs())
+        .and_then(|agent| crate::agents::runners::cli::cli_timeout_for_spec(agent.spec()))
+        .map(|duration| duration.as_secs())
         .filter(|secs| *secs > 0)
         .unwrap_or(fallback_secs)
 }
@@ -9422,33 +9487,18 @@ async fn prepare_review_loop_project_harness(
     workdir: &Path,
 ) -> anyhow::Result<()> {
     if task.target_id == "lean" {
-        // The LLM authors Lean that `import Mathlib`. For `lake env lean` to actually
-        // kernel-check it, the project must require a BUILT Mathlib — otherwise every check
-        // dies on `unknown module prefix 'Mathlib'` and no real proof can ever verify. Point
-        // the lakefile at a shared, prebuilt Mathlib package (downloaded once via
-        // `lake exe cache get`) so checks reuse its oleans instead of rebuilding from source.
-        let (lakefile, toolchain) = match resolve_shared_mathlib_dir() {
-            Some(mathlib_dir) => (
-                format!(
-                    "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\n\
-                     require mathlib from \"{}\"\n\nlean_lib GrokRxiv\n",
-                    mathlib_dir.display()
-                ),
-                shared_mathlib_toolchain(&mathlib_dir)
-                    .unwrap_or_else(|| "leanprover/lean4:v4.30.0\n".to_string()),
-            ),
-            None => {
-                tracing::warn!(
-                    "no shared Mathlib found (set GROKRXIV_LEAN_MATHLIB_DIR to a prebuilt \
-                     mathlib package); `import Mathlib` kernel checks will fail until it is set"
-                );
-                (
-                    "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\nlean_lib GrokRxiv\n"
-                        .to_string(),
-                    "leanprover/lean4:v4.30.0\n".to_string(),
-                )
-            }
-        };
+        // The LLM authors Lean that `import Mathlib`. The harness must either reuse
+        // a built Mathlib package or produce a real setup error before any LLM work.
+        let mathlib_dir =
+            resolve_or_prepare_shared_mathlib_dir(workdir, task.compile_timeout_secs).await?;
+        let lakefile = format!(
+            "import Lake\nopen Lake DSL\n\npackage grokrxiv_review_loop\n\n\
+             require mathlib from \"{}\"\n\nlean_lib GrokRxiv\n",
+            mathlib_dir.display()
+        );
+        let toolchain = shared_mathlib_toolchain(&mathlib_dir)
+            .or_else(grokrxiv_eval_lean_toolchain)
+            .unwrap_or_else(|| "leanprover/lean4:v4.30.0\n".to_string());
         tokio::fs::write(workdir.join("lakefile.lean"), lakefile)
             .await
             .with_context(|| format!("write Lean lakefile in {}", workdir.display()))?;
@@ -9479,8 +9529,7 @@ async fn prepare_review_loop_project_harness(
     Ok(())
 }
 
-/// Resolve a shared, prebuilt Mathlib package directory (a mathlib source root whose
-/// `.lake/build/lib` already holds oleans). Honors `GROKRXIV_LEAN_MATHLIB_DIR`, else
+/// Resolve a shared Mathlib package directory. Honors `GROKRXIV_LEAN_MATHLIB_DIR`, else
 /// probes the in-repo eval cache at `evals/lean/.lake/packages/mathlib`.
 fn resolve_shared_mathlib_dir() -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("GROKRXIV_LEAN_MATHLIB_DIR") {
@@ -9504,6 +9553,215 @@ fn resolve_shared_mathlib_dir() -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+async fn resolve_or_prepare_shared_mathlib_dir(
+    workdir: &Path,
+    timeout_secs: u64,
+) -> anyhow::Result<PathBuf> {
+    let mut reports = Vec::new();
+    if let Some(mathlib_dir) = resolve_shared_mathlib_dir() {
+        if mathlib_package_is_built(&mathlib_dir) {
+            write_lean_mathlib_setup_report(workdir, "pass", Some(&mathlib_dir), &reports, None)
+                .await?;
+            return Ok(mathlib_dir);
+        }
+        let prepared =
+            prepare_mathlib_package_cache(&mathlib_dir, workdir, timeout_secs, &mut reports).await;
+        if prepared.is_ok() && mathlib_package_is_built(&mathlib_dir) {
+            write_lean_mathlib_setup_report(workdir, "pass", Some(&mathlib_dir), &reports, None)
+                .await?;
+            return Ok(mathlib_dir);
+        }
+        let error = prepared
+            .err()
+            .map(|err| format!("{err:#}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "Mathlib package {} did not produce .lake/build/lib/lean/Mathlib.olean",
+                    mathlib_dir.display()
+                )
+            });
+        write_lean_mathlib_setup_report(
+            workdir,
+            "environment_error",
+            Some(&mathlib_dir),
+            &reports,
+            Some(&error),
+        )
+        .await?;
+        anyhow::bail!("{error}");
+    }
+
+    let eval_project = grokrxiv_eval_lean_project_dir().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no GrokRxiv Lean eval project found; expected agenthero/apps/grokrxiv/evals/lean"
+        )
+    })?;
+    let mathlib_dir = eval_project.join(".lake/packages/mathlib");
+    let prepared =
+        prepare_mathlib_project_cache(&eval_project, workdir, timeout_secs, &mut reports).await;
+    if prepared.is_ok() && mathlib_package_is_built(&mathlib_dir) {
+        write_lean_mathlib_setup_report(workdir, "pass", Some(&mathlib_dir), &reports, None)
+            .await?;
+        return Ok(mathlib_dir);
+    }
+    let error = prepared
+        .err()
+        .map(|err| format!("{err:#}"))
+        .unwrap_or_else(|| {
+            format!(
+                "GrokRxiv Lean eval project {} did not produce {}",
+                eval_project.display(),
+                mathlib_dir
+                    .join(".lake/build/lib/lean/Mathlib.olean")
+                    .display()
+            )
+        });
+    write_lean_mathlib_setup_report(
+        workdir,
+        "environment_error",
+        Some(&mathlib_dir),
+        &reports,
+        Some(&error),
+    )
+    .await?;
+    anyhow::bail!("{error}");
+}
+
+async fn prepare_mathlib_package_cache(
+    mathlib_dir: &Path,
+    workdir: &Path,
+    timeout_secs: u64,
+    reports: &mut Vec<serde_json::Value>,
+) -> anyhow::Result<()> {
+    prepare_mathlib_cache_commands(mathlib_dir, workdir, timeout_secs, reports).await
+}
+
+async fn prepare_mathlib_project_cache(
+    eval_project: &Path,
+    workdir: &Path,
+    timeout_secs: u64,
+    reports: &mut Vec<serde_json::Value>,
+) -> anyhow::Result<()> {
+    prepare_mathlib_cache_commands(eval_project, workdir, timeout_secs, reports).await
+}
+
+async fn prepare_mathlib_cache_commands(
+    cwd: &Path,
+    workdir: &Path,
+    timeout_secs: u64,
+    reports: &mut Vec<serde_json::Value>,
+) -> anyhow::Result<()> {
+    let update = run_loop_command(
+        "lake",
+        &["update"],
+        cwd,
+        std::time::Duration::from_secs(timeout_secs),
+    )
+    .await;
+    let update_json = command_report_json(&update);
+    write_loop_json(
+        &workdir.join("mathlib_cache_lake_update.json"),
+        &update_json,
+    )
+    .await?;
+    reports.push(serde_json::json!({
+        "action": "lake update",
+        "cwd": cwd.display().to_string(),
+        "report": update_json,
+    }));
+    if update.status != "pass" {
+        anyhow::bail!(
+            "Mathlib cache lake update failed in {}: {}",
+            cwd.display(),
+            truncate(
+                &format!("{} {}", update.stdout.trim(), update.stderr.trim()),
+                600
+            )
+        );
+    }
+
+    let cache = run_loop_command(
+        "lake",
+        &["exe", "cache", "get"],
+        cwd,
+        std::time::Duration::from_secs(timeout_secs),
+    )
+    .await;
+    let cache_json = command_report_json(&cache);
+    write_loop_json(&workdir.join("mathlib_cache_get.json"), &cache_json).await?;
+    reports.push(serde_json::json!({
+        "action": "lake exe cache get",
+        "cwd": cwd.display().to_string(),
+        "report": cache_json,
+    }));
+    if cache.status != "pass" {
+        anyhow::bail!(
+            "Mathlib cache download failed in {}: {}",
+            cwd.display(),
+            truncate(
+                &format!("{} {}", cache.stdout.trim(), cache.stderr.trim()),
+                600
+            )
+        );
+    }
+    Ok(())
+}
+
+async fn write_lean_mathlib_setup_report(
+    workdir: &Path,
+    status: &str,
+    mathlib_dir: Option<&Path>,
+    reports: &[serde_json::Value],
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    write_loop_json(
+        &workdir.join("mathlib_setup.json"),
+        &serde_json::json!({
+            "schema_version": "1.0.0",
+            "status": status,
+            "mathlib_dir": mathlib_dir.map(|path| path.display().to_string()),
+            "mathlib_built": mathlib_dir.map(mathlib_package_is_built).unwrap_or(false),
+            "reports": reports,
+            "error": error,
+        }),
+    )
+    .await
+}
+
+fn mathlib_package_is_built(mathlib_dir: &Path) -> bool {
+    mathlib_dir
+        .join(".lake/build/lib/lean/Mathlib.olean")
+        .is_file()
+}
+
+fn grokrxiv_eval_lean_project_dir() -> Option<PathBuf> {
+    let candidate = crate::dag_apps::app_root("grokrxiv").join("evals/lean");
+    if candidate.join("lakefile.lean").is_file() {
+        return Some(candidate);
+    }
+    let mut base = std::env::current_dir().ok()?;
+    for _ in 0..6 {
+        let candidate = base.join("evals/lean");
+        if candidate.join("lakefile.lean").is_file() {
+            return Some(candidate);
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn grokrxiv_eval_lean_toolchain() -> Option<String> {
+    let text =
+        std::fs::read_to_string(grokrxiv_eval_lean_project_dir()?.join("lean-toolchain")).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(format!("{trimmed}\n"))
 }
 
 /// Use the shared Mathlib's own `lean-toolchain` so the per-target project's toolchain
@@ -10819,6 +11077,56 @@ fn formalize_inventory_typed_ir_item(item: &serde_json::Value) -> serde_json::Va
         obj.remove("source_context");
     }
     compact
+}
+
+fn formalize_inventory_lean_targets(inventory: &serde_json::Value) -> Vec<serde_json::Value> {
+    inventory
+        .get("items")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("role").and_then(|value| value.as_str()) == Some("lean_target"))
+        .cloned()
+        .collect()
+}
+
+fn formalize_inventory_packet_for_claim(
+    review_id: Uuid,
+    inventory: &serde_json::Value,
+    claim_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let target = formalize_inventory_lean_targets(inventory)
+        .into_iter()
+        .find(|item| {
+            item.get("id")
+                .and_then(|value| value.as_str())
+                .map(|id| id == claim_id)
+                .unwrap_or(false)
+                || item
+                    .get("labels")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str())
+                    .any(|label| label == claim_id)
+        })
+        .ok_or_else(|| anyhow::anyhow!("inventory lean target `{claim_id}` not found"))?;
+    Ok(serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "source": "review_loop/theorem_inventory.json",
+        "pipeline": "theorem_inventory_direct",
+        "typed_ir_required": false,
+        "target": target,
+        "contract": {
+            "source_tex_is_authoritative": true,
+            "source_context_is_supporting_evidence": true,
+            "llm_authors_statement_and_proof": true,
+            "deterministic_math_generation_allowed": false,
+            "forbidden_replacements": ["True", "0 = 0", "x = x", "metadata-only claims"],
+            "forbidden_terms": ["sorry", "admit", "axiom"]
+        }
+    }))
 }
 
 fn formalize_inventory_context_by_id(
@@ -12328,12 +12636,10 @@ async fn formalize_review(
     debug_output: bool,
     external_actions_enabled: bool,
     mode: FormalizeMode,
-    typed_ir_only: bool,
+    stage: FormalizeStage,
+    claim_id: Option<&str>,
 ) -> anyhow::Result<()> {
     use grokrxiv_schemas::VerifierStatus;
-    if typed_ir_only {
-        std::env::set_var("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", "1");
-    }
     if debug_output {
         cli_status::set_enabled(true);
     }
@@ -12374,6 +12680,51 @@ async fn formalize_review(
             "formalize {review_id}: no review_loop/paper_math_sources.json — run the review first"
         );
     }
+    if stage == FormalizeStage::TypedIrDiagnostic {
+        cli_status::emit(format!(
+            "formalize {review_id}: running typed-IR diagnostic only"
+        ));
+        let _ = refresh_formalization_math_artifacts(
+            &state,
+            pool,
+            paper_id,
+            review_id,
+            &artifact_dir,
+            existing_paper_math_sources,
+            mode,
+        )
+        .await;
+        emit_formalize_node_event(formalize_node_event(
+            review_id,
+            mode,
+            "node.completed",
+            "formalize_typed_ir_diagnostic",
+            "llm",
+            "formalize_source_inventory_typed_transcriber",
+            "ok",
+            "typed-IR diagnostic completed after refreshing math artifacts",
+            serde_json::json!({
+                "artifact_id": "review_loop/paper_math_sources.json",
+                "stage": stage.as_str(),
+            }),
+        ));
+        return Ok(());
+    }
+    if !formalize_env_bool("GROKRXIV_FORMALIZE_LEGACY_SEMANTIC_PATH", false) {
+        return run_inventory_direct_formalize_review(
+            &state,
+            paper_id,
+            review_id,
+            mode,
+            &artifact_dir,
+            stage,
+            claim_id,
+            external_actions_enabled,
+            debug_output,
+        )
+        .await;
+    }
+
     cli_status::emit(format!(
         "formalize {review_id}: refreshing source-first math artifacts"
     ));
@@ -12755,6 +13106,789 @@ async fn formalize_review(
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("?")
+    ));
+    Ok(())
+}
+
+fn formalize_inventory_direct_dir(artifact_dir: &Path) -> PathBuf {
+    artifact_dir.join("lean").join("inventory_direct")
+}
+
+fn formalize_inventory_target_slug(claim_id: &str) -> String {
+    let slug = claim_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    let slug = slug.trim_matches('_');
+    if slug.is_empty() {
+        "claim".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn formalize_inventory_target_dir(artifact_dir: &Path, claim_id: &str) -> PathBuf {
+    artifact_dir
+        .join("lean")
+        .join("targets")
+        .join(formalize_inventory_target_slug(claim_id))
+}
+
+fn read_formalize_theorem_inventory(artifact_dir: &Path) -> anyhow::Result<serde_json::Value> {
+    let path = artifact_dir.join("theorem_inventory.json");
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+}
+
+fn first_formalize_inventory_claim_id(inventory: &serde_json::Value) -> anyhow::Result<String> {
+    formalize_inventory_lean_targets(inventory)
+        .into_iter()
+        .find_map(|item| {
+            item.get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| anyhow::anyhow!("theorem_inventory has no role=lean_target items"))
+}
+
+fn required_formalize_claim_id(
+    stage: FormalizeStage,
+    claim_id: Option<&str>,
+    inventory: &serde_json::Value,
+) -> anyhow::Result<String> {
+    if let Some(claim_id) = claim_id.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(claim_id.to_string());
+    }
+    match stage {
+        FormalizeStage::All => first_formalize_inventory_claim_id(inventory),
+        _ => anyhow::bail!("formalize --stage {} requires --claim-id", stage.as_str()),
+    }
+}
+
+fn inventory_direct_lean_task() -> ReviewFixCodeTask {
+    ReviewFixCodeTask {
+        target_id: "lean",
+        language: "lean",
+        filename: "GrokRxiv/Proofs.lean",
+        author_role: "lean_inventory_author",
+        reviewer_role: "lean_code_reviewer",
+        fixer_role: "lean_inventory_fixer",
+        compile_program: "lake",
+        compile_args: vec![
+            "env".to_string(),
+            "lean".to_string(),
+            "GrokRxiv/Proofs.lean".to_string(),
+        ],
+        compile_timeout_secs: 1800,
+        forbidden_terms: vec!["sorry", "admit", "axiom"],
+        max_attempts: 2,
+    }
+}
+
+async fn write_inventory_stage_result(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    inventory: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let direct_dir = formalize_inventory_direct_dir(artifact_dir);
+    tokio::fs::create_dir_all(&direct_dir).await?;
+    let targets = formalize_inventory_lean_targets(inventory);
+    let result = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "inventory",
+        "status": "pass",
+        "source": "review_loop/theorem_inventory.json",
+        "pipeline": "theorem_inventory_direct",
+        "target_count": targets.len(),
+        "targets": targets.iter().map(|item| {
+            serde_json::json!({
+                "id": item.get("id").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "kind": item.get("kind").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "file": item.get("file").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "char_start": item.get("char_start").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "char_end": item.get("char_end").cloned().unwrap_or_else(|| serde_json::json!(null)),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    write_loop_json(&direct_dir.join("inventory.json"), inventory).await?;
+    write_loop_json(&direct_dir.join("inventory_result.json"), &result).await?;
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        "node.completed",
+        "formalize_inventory",
+        "inventory",
+        "theorem_inventory",
+        "pass",
+        "theorem inventory targets selected for direct Lean formalization",
+        serde_json::json!({
+            "stage": "inventory",
+            "artifact_id": "review_loop/lean/inventory_direct/inventory_result.json",
+            "target_count": targets.len(),
+        }),
+    ));
+    Ok(result)
+}
+
+async fn write_inventory_packet_stage(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    inventory: &serde_json::Value,
+    claim_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
+    tokio::fs::create_dir_all(&target_dir).await?;
+    let packet = formalize_inventory_packet_for_claim(review_id, inventory, claim_id)?;
+    write_loop_json(&target_dir.join("packet.json"), &packet).await?;
+    let result = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "packet",
+        "status": "pass",
+        "claim_id": claim_id,
+        "artifact": format!("review_loop/lean/targets/{}/packet.json", formalize_inventory_target_slug(claim_id)),
+    });
+    write_loop_json(&target_dir.join("packet_result.json"), &result).await?;
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        "node.completed",
+        "formalize_packet",
+        "packet",
+        "theorem_inventory_packet",
+        "pass",
+        "inventory target packet written",
+        serde_json::json!({
+            "stage": "packet",
+            "claim_id": claim_id,
+            "artifact_id": result["artifact"].clone(),
+        }),
+    ));
+    Ok(packet)
+}
+
+async fn run_inventory_harness_stage(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+) -> anyhow::Result<serde_json::Value> {
+    let task = inventory_direct_lean_task();
+    let harness_dir = formalize_inventory_direct_dir(artifact_dir).join("harness");
+    tokio::fs::create_dir_all(harness_dir.join("GrokRxiv")).await?;
+    let result = match prepare_review_loop_project_harness(&task, &harness_dir).await {
+        Ok(()) => {
+            let smoke_path = harness_dir.join("GrokRxiv").join("HarnessSmoke.lean");
+            write_review_loop_code_file(
+                &smoke_path,
+                "import Mathlib\n\n#check Nat\n#check Polynomial\n",
+            )
+            .await?;
+            let report = run_loop_command(
+                "lake",
+                &["env", "lean", "GrokRxiv/HarnessSmoke.lean"],
+                &harness_dir,
+                std::time::Duration::from_secs(120),
+            )
+            .await;
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "harness",
+                "status": if report.status == "pass" { "pass" } else { "environment_error" },
+                "cwd": harness_dir.display().to_string(),
+                "mathlib_env": std::env::var("GROKRXIV_LEAN_MATHLIB_DIR").ok(),
+                "smoke": command_report_json(&report),
+            })
+        }
+        Err(err) => {
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "harness",
+                "status": "environment_error",
+                "cwd": harness_dir.display().to_string(),
+                "mathlib_env": std::env::var("GROKRXIV_LEAN_MATHLIB_DIR").ok(),
+                "error": format!("{err:#}"),
+            })
+        }
+    };
+    write_loop_json(&harness_dir.join("harness_result.json"), &result).await?;
+    let status = result
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("environment_error");
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        if status == "pass" {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        "formalize_harness",
+        "lean",
+        "lake_env_lean",
+        status,
+        "Lean harness smoke check completed",
+        serde_json::json!({
+            "stage": "harness",
+            "artifact_id": "review_loop/lean/inventory_direct/harness/harness_result.json",
+        }),
+    ));
+    Ok(result)
+}
+
+async fn run_inventory_author_stage(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    packet: &serde_json::Value,
+    claim_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
+    let round_dir = target_dir.join("rounds").join("0").join("author");
+    tokio::fs::create_dir_all(&round_dir).await?;
+    prepare_review_loop_project_harness(&inventory_direct_lean_task(), &round_dir).await?;
+    write_inventory_lean_loop_files(&round_dir, packet, claim_id, "author", None).await?;
+    let artifact = serde_json::json!({
+        "phase": "generate",
+        "target": "inventory_lean",
+        "language": "lean",
+        "filename": "GrokRxiv/Proofs.lean",
+        "claim_id": claim_id,
+        "packet": packet,
+        "requirements": [
+            "Write a complete Lean 4 file beginning with import Mathlib.",
+            "Author the theorem statement and proof from source_tex and source_context.",
+            "Do not use sorry, admit, or axiom.",
+            "Do not replace the paper claim with True, 0 = 0, x = x, or metadata."
+        ]
+    });
+    let system_prompt = "You are GrokRxiv role `lean_inventory_author`. Author one source-faithful Lean 4 file from a theorem_inventory packet. Return strict JSON matching schema.json exactly.".to_string();
+    let user_prompt = "Use review_input.json. Generate GrokRxiv/Proofs.lean for the single inventory packet. If the theorem cannot be honestly formalized, still return Lean code that exposes the blocker rather than a fake theorem.".to_string();
+    let started = std::time::Instant::now();
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_inventory_author",
+        artifact,
+        system_prompt,
+        user_prompt,
+        Some(&round_dir),
+    )
+    .await;
+    let result = match run {
+        Ok(run) => {
+            write_loop_json(&round_dir.join("parsed_output.json"), &run.output).await?;
+            if let Some(raw) = run.raw_output.as_deref() {
+                let _ = tokio::fs::write(round_dir.join("raw_output.txt"), raw).await;
+            }
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "author",
+                "status": "pass",
+                "claim_id": claim_id,
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "output": run.output,
+            })
+        }
+        Err(err) => serde_json::json!({
+            "schema_version": "1.0.0",
+            "stage": "author",
+            "status": if format!("{err:#}").contains("timed out") { "runner_timeout" } else { "agent_error" },
+            "claim_id": claim_id,
+            "error": format!("{err:#}"),
+            "duration_ms": started.elapsed().as_millis() as u64,
+        }),
+    };
+    write_loop_json(&round_dir.join("result.json"), &result).await?;
+    let status = result
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("agent_error");
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        if status == "pass" {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        "formalize_author",
+        "llm",
+        "lean_inventory_author",
+        status,
+        "inventory Lean author stage completed",
+        serde_json::json!({
+            "stage": "author",
+            "claim_id": claim_id,
+            "artifact_id": format!("review_loop/lean/targets/{}/rounds/0/author/result.json", formalize_inventory_target_slug(claim_id)),
+        }),
+    ));
+    Ok(result)
+}
+
+async fn write_inventory_lean_loop_files(
+    round_dir: &Path,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    phase: &str,
+    compile_result: Option<&serde_json::Value>,
+) -> anyhow::Result<()> {
+    tokio::fs::create_dir_all(round_dir.join("GrokRxiv")).await?;
+    write_review_loop_code_file(
+        &round_dir.join("GrokRxiv").join("Proofs.lean"),
+        "import Mathlib\n",
+    )
+    .await?;
+    let source_tex = packet
+        .get("target")
+        .and_then(|value| value.get("source_tex"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let compile_note = compile_result
+        .map(|value| {
+            format!(
+                "\n\nPrior compile result for fixer phase:\n```json\n{}\n```",
+                serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+            )
+        })
+        .unwrap_or_default();
+    let goal = format!(
+        "# Lean Formalization Goal\n\n\
+         Claim id: `{claim_id}`\n\
+         Phase: `{phase}`\n\n\
+         Source theorem inventory text:\n\
+         ```tex\n{source_tex}\n```\n\n\
+         Use `review_input.json` as the source of truth. Author or fix \
+         `GrokRxiv/Proofs.lean` from the source packet, then run:\n\n\
+         ```sh\nlake env lean GrokRxiv/Proofs.lean\n```\n\n\
+         Loop until one of these is true:\n\
+         1. Lean accepts `GrokRxiv/Proofs.lean` with no `sorry`, `admit`, or `axiom`.\n\
+         2. A real source-faithfulness blocker remains; expose it in the Lean code and \
+         `notes` without replacing the claim by `True`, `0 = 0`, `x = x`, metadata, or a \
+         strawman theorem.\n\n\
+         Final stdout must be one JSON object matching `schema.json`. Its `code` field \
+         must equal the final contents of `GrokRxiv/Proofs.lean`.{compile_note}\n"
+    );
+    let plan = "# Lean Agent Loop Plan\n\n\
+1. Read `review_input.json`, `system.md`, `prompt.md`, and this goal.\n\
+2. Inspect the existing `GrokRxiv/Proofs.lean` seed.\n\
+3. Write a source-grounded Lean file beginning with `import Mathlib`.\n\
+4. Run `lake env lean GrokRxiv/Proofs.lean`.\n\
+5. If Lean reports errors, fix the file from the exact compiler output and rerun the command.\n\
+6. Repeat step 5 until the file typechecks or the remaining blocker is genuinely about missing paper-local/Mathlib interfaces.\n\
+7. Return only the final schema-valid JSON object.\n";
+    tokio::fs::write(round_dir.join("GOAL.md"), goal).await?;
+    tokio::fs::write(round_dir.join("PLAN.md"), plan).await?;
+    Ok(())
+}
+
+fn inventory_author_code(author_result: &serde_json::Value) -> Option<String> {
+    author_result
+        .get("output")
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            author_result
+                .get("code")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
+async fn run_inventory_lean_check_stage(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    claim_id: &str,
+    author_result: Option<&serde_json::Value>,
+) -> anyhow::Result<serde_json::Value> {
+    let task = inventory_direct_lean_task();
+    let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
+    let check_dir = target_dir.join("check");
+    tokio::fs::create_dir_all(check_dir.join("GrokRxiv")).await?;
+    let code = author_result.and_then(inventory_author_code).or_else(|| {
+        std::fs::read_to_string(
+            target_dir
+                .join("rounds")
+                .join("0")
+                .join("author")
+                .join("parsed_output.json"),
+        )
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|output| {
+            output
+                .get("code")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    });
+    let Some(code) = code else {
+        let result = serde_json::json!({
+            "schema_version": "1.0.0",
+            "stage": "lean-check",
+            "status": "missing_prerequisite",
+            "claim_id": claim_id,
+            "missing_artifact": format!("review_loop/lean/targets/{}/rounds/0/author/parsed_output.json#code", formalize_inventory_target_slug(claim_id)),
+        });
+        write_loop_json(&check_dir.join("compile.json"), &result).await?;
+        return Ok(result);
+    };
+    prepare_review_loop_project_harness(&task, &check_dir)
+        .await
+        .ok();
+    write_review_loop_code_file(&check_dir.join("GrokRxiv").join("Proofs.lean"), &code).await?;
+    let report = run_loop_command(
+        "lake",
+        &["env", "lean", "GrokRxiv/Proofs.lean"],
+        &check_dir,
+        std::time::Duration::from_secs(task.compile_timeout_secs),
+    )
+    .await;
+    let forbidden = task
+        .forbidden_terms
+        .iter()
+        .filter(|term| code.contains(**term))
+        .copied()
+        .collect::<Vec<_>>();
+    let status = if report.status == "pass" && forbidden.is_empty() {
+        "pass"
+    } else if report.status == "pass" {
+        "forbidden_term"
+    } else if report.status == "unavailable" {
+        "environment_error"
+    } else {
+        "lean_compile_error"
+    };
+    let result = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "lean-check",
+        "status": status,
+        "claim_id": claim_id,
+        "forbidden_terms": forbidden,
+        "compile": command_report_json(&report),
+        "code_path": format!("review_loop/lean/targets/{}/check/GrokRxiv/Proofs.lean", formalize_inventory_target_slug(claim_id)),
+    });
+    write_loop_json(&check_dir.join("compile.json"), &result).await?;
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        if status == "pass" {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        "formalize_lean_check",
+        "lean",
+        "lake_env_lean",
+        status,
+        "inventory Lean check completed",
+        serde_json::json!({
+            "stage": "lean-check",
+            "claim_id": claim_id,
+            "artifact_id": format!("review_loop/lean/targets/{}/check/compile.json", formalize_inventory_target_slug(claim_id)),
+        }),
+    ));
+    Ok(result)
+}
+
+async fn run_inventory_fix_stage(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
+    let round_dir = target_dir.join("rounds").join("1").join("fix");
+    tokio::fs::create_dir_all(&round_dir).await?;
+    prepare_review_loop_project_harness(&inventory_direct_lean_task(), &round_dir).await?;
+    write_inventory_lean_loop_files(&round_dir, packet, claim_id, "fix", Some(compile_result))
+        .await?;
+    let prior_code = std::fs::read_to_string(target_dir.join("check/GrokRxiv/Proofs.lean")).ok();
+    if let Some(code) = prior_code.as_deref() {
+        write_review_loop_code_file(&round_dir.join("GrokRxiv").join("Proofs.lean"), code).await?;
+    }
+    let artifact = serde_json::json!({
+        "phase": "fix",
+        "target": "inventory_lean",
+        "language": "lean",
+        "filename": "GrokRxiv/Proofs.lean",
+        "claim_id": claim_id,
+        "packet": packet,
+        "prior_code": prior_code,
+        "compile_result": compile_result,
+        "requirements": [
+            "Fix the Lean file using the exact compiler error.",
+            "Preserve source faithfulness to source_tex and source_context.",
+            "Do not use sorry, admit, or axiom."
+        ]
+    });
+    let system_prompt = "You are GrokRxiv role `lean_inventory_fixer`. Fix one Lean 4 file using the compiler output and source packet. Return strict JSON matching schema.json exactly.".to_string();
+    let user_prompt = "Use review_input.json. Return the corrected full GrokRxiv/Proofs.lean code only in the JSON code field.".to_string();
+    let started = std::time::Instant::now();
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_inventory_fixer",
+        artifact,
+        system_prompt,
+        user_prompt,
+        Some(&round_dir),
+    )
+    .await;
+    let result = match run {
+        Ok(run) => {
+            write_loop_json(&round_dir.join("parsed_output.json"), &run.output).await?;
+            if let Some(raw) = run.raw_output.as_deref() {
+                let _ = tokio::fs::write(round_dir.join("raw_output.txt"), raw).await;
+            }
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "fix",
+                "status": "pass",
+                "claim_id": claim_id,
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "output": run.output,
+            })
+        }
+        Err(err) => serde_json::json!({
+            "schema_version": "1.0.0",
+            "stage": "fix",
+            "status": if format!("{err:#}").contains("timed out") { "runner_timeout" } else { "agent_error" },
+            "claim_id": claim_id,
+            "error": format!("{err:#}"),
+            "duration_ms": started.elapsed().as_millis() as u64,
+        }),
+    };
+    write_loop_json(&round_dir.join("result.json"), &result).await?;
+    let status = result
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("agent_error");
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        if status == "pass" {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        "formalize_fix",
+        "llm",
+        "lean_inventory_fixer",
+        status,
+        "inventory Lean fix stage completed",
+        serde_json::json!({
+            "stage": "fix",
+            "claim_id": claim_id,
+            "artifact_id": format!("review_loop/lean/targets/{}/rounds/1/fix/result.json", formalize_inventory_target_slug(claim_id)),
+        }),
+    ));
+    Ok(result)
+}
+
+async fn run_inventory_faithfulness_stage(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
+    let faithfulness_dir = target_dir.join("faithfulness");
+    tokio::fs::create_dir_all(&faithfulness_dir).await?;
+    let lean_code = std::fs::read_to_string(target_dir.join("check/GrokRxiv/Proofs.lean")).ok();
+    let result = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "faithfulness",
+        "status": if compile_result.get("status").and_then(|value| value.as_str()) == Some("pass") { "pending_review" } else { "skipped" },
+        "skip_reason": if compile_result.get("status").and_then(|value| value.as_str()) == Some("pass") { serde_json::Value::Null } else { serde_json::json!("lean_not_kernel_verified") },
+        "claim_id": claim_id,
+        "source_packet": packet,
+        "lean_code": lean_code,
+        "note": "Faithfulness packet captured for independent review; this stage does not generate math.",
+    });
+    write_loop_json(&faithfulness_dir.join("faithfulness.json"), &result).await?;
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        "node.completed",
+        "formalize_faithfulness",
+        "review",
+        "source_faithfulness_packet",
+        result
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("skipped"),
+        "inventory Lean faithfulness packet written",
+        serde_json::json!({
+            "stage": "faithfulness",
+            "claim_id": claim_id,
+            "artifact_id": format!("review_loop/lean/targets/{}/faithfulness/faithfulness.json", formalize_inventory_target_slug(claim_id)),
+        }),
+    ));
+    Ok(result)
+}
+
+async fn run_inventory_direct_formalize_review(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    stage: FormalizeStage,
+    claim_id: Option<&str>,
+    external_actions_enabled: bool,
+    _debug_output: bool,
+) -> anyhow::Result<()> {
+    cli_status::emit(format!(
+        "formalize {review_id}: theorem-inventory direct Lean pipeline stage={}",
+        stage.as_str()
+    ));
+    let inventory = read_formalize_theorem_inventory(artifact_dir)?;
+    let _inventory_result =
+        write_inventory_stage_result(review_id, mode, artifact_dir, &inventory).await?;
+    if stage == FormalizeStage::Inventory {
+        return Ok(());
+    }
+    if stage == FormalizeStage::Harness {
+        let harness = run_inventory_harness_stage(review_id, mode, artifact_dir).await?;
+        if harness.get("status").and_then(|value| value.as_str()) != Some("pass") {
+            anyhow::bail!("Lean harness failed: {}", harness);
+        }
+        return Ok(());
+    }
+    let claim_id = required_formalize_claim_id(stage, claim_id, &inventory)?;
+    let packet =
+        write_inventory_packet_stage(review_id, mode, artifact_dir, &inventory, &claim_id).await?;
+    if stage == FormalizeStage::Packet {
+        return Ok(());
+    }
+    let harness = run_inventory_harness_stage(review_id, mode, artifact_dir).await?;
+    if harness.get("status").and_then(|value| value.as_str()) != Some("pass") {
+        let message = format!(
+            "formalize {review_id}: stopping before LLM because Lean harness status={}",
+            harness
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
+        cli_status::emit(message.clone());
+        if stage != FormalizeStage::All {
+            anyhow::bail!("{message}: {}", harness);
+        }
+        return Ok(());
+    }
+    let author = if stage == FormalizeStage::Author || stage == FormalizeStage::All {
+        Some(
+            run_inventory_author_stage(
+                state,
+                paper_id,
+                review_id,
+                mode,
+                artifact_dir,
+                &packet,
+                &claim_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if stage == FormalizeStage::Author {
+        return Ok(());
+    }
+    let compile =
+        run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, author.as_ref())
+            .await?;
+    if stage == FormalizeStage::LeanCheck {
+        return Ok(());
+    }
+    let mut final_compile = compile.clone();
+    if compile.get("status").and_then(|value| value.as_str()) != Some("pass") {
+        let fix = run_inventory_fix_stage(
+            state,
+            paper_id,
+            review_id,
+            mode,
+            artifact_dir,
+            &packet,
+            &claim_id,
+            &compile,
+        )
+        .await?;
+        if stage == FormalizeStage::Fix {
+            return Ok(());
+        }
+        final_compile =
+            run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&fix))
+                .await?;
+    } else if stage == FormalizeStage::Fix {
+        cli_status::emit(format!(
+            "formalize {review_id}: fix skipped because Lean check already passed for {claim_id}"
+        ));
+        return Ok(());
+    }
+    let faithfulness = run_inventory_faithfulness_stage(
+        review_id,
+        mode,
+        artifact_dir,
+        &packet,
+        &claim_id,
+        &final_compile,
+    )
+    .await?;
+    let summary = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "all",
+        "source": "theorem_inventory_direct",
+        "claim_id": claim_id,
+        "status": final_compile.get("status").cloned().unwrap_or_else(|| serde_json::json!("unknown")),
+        "compile": final_compile,
+        "faithfulness": faithfulness,
+        "external_actions_enabled": external_actions_enabled,
+    });
+    let lean_dir = artifact_dir.join("lean");
+    tokio::fs::create_dir_all(&lean_dir).await?;
+    write_loop_json(&lean_dir.join("results.json"), &summary).await?;
+    write_loop_json(&lean_dir.join("theorem_map.json"), &serde_json::json!({
+        "schema_version": "1.0.0",
+        "source": "theorem_inventory_direct",
+        "status": summary["status"].clone(),
+        "entries": [{
+            "source_claim_id": claim_id,
+            "status": summary["status"].clone(),
+            "source_packet": format!("review_loop/lean/targets/{}/packet.json", formalize_inventory_target_slug(&claim_id)),
+            "compile": format!("review_loop/lean/targets/{}/check/compile.json", formalize_inventory_target_slug(&claim_id)),
+        }]
+    })).await?;
+    if !external_actions_enabled {
+        cli_status::emit(format!(
+            "formalize {review_id}: external actions disabled; skipped PR comment and Lean commit"
+        ));
+    }
+    cli_status::emit(format!(
+        "formalize {review_id}: inventory-direct done (status={})",
+        summary
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
     ));
     Ok(())
 }
@@ -20446,6 +21580,84 @@ mod tests {
             Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
         );
         assert_eq!(parsed.mode, FormalizeMode::AutoDetect);
+        assert_eq!(parsed.stage, FormalizeStage::All);
+    }
+
+    #[test]
+    fn parse_formalize_args_accepts_explicit_stage_and_claim_id() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--stage".to_string(),
+            "author".to_string(),
+            "--claim-id".to_string(),
+            "prop:st-explicit-pres".to_string(),
+            "--no-external-actions".to_string(),
+        ])
+        .expect("formalize stage args parse");
+
+        assert_eq!(parsed.stage, FormalizeStage::Author);
+        assert_eq!(parsed.claim_id.as_deref(), Some("prop:st-explicit-pres"));
+        assert!(!parsed.external_actions_enabled);
+    }
+
+    #[test]
+    fn parse_formalize_args_typed_ir_only_is_diagnostic_stage_without_env_side_effect_contract() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--typed-ir-only".to_string(),
+        ])
+        .expect("formalize typed-ir diagnostic args parse");
+
+        assert_eq!(parsed.stage, FormalizeStage::TypedIrDiagnostic);
+        assert!(!parsed.external_actions_enabled);
+    }
+
+    #[test]
+    fn formalize_inventory_packet_preserves_source_and_context_without_typed_ir() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let inventory = serde_json::json!({
+            "schema_version": "1.0.0",
+            "arxiv_id": "test",
+            "items": [
+                {
+                    "id": "def:thing",
+                    "kind": "definition",
+                    "role": "context",
+                    "source_tex": "\\begin{definition}A thing.\\end{definition}"
+                },
+                {
+                    "id": "prop:ctx",
+                    "kind": "proposition",
+                    "role": "lean_target",
+                    "labels": ["prop:ctx"],
+                    "file": "paper.tex",
+                    "char_start": 10,
+                    "char_end": 90,
+                    "refs": ["def:thing"],
+                    "source_tex": "\\begin{proposition}\\label{prop:ctx} The map is an isomorphism.\\end{proposition}",
+                    "source_context": {
+                        "before": "Definitions before.",
+                        "after": "Explanation after."
+                    }
+                }
+            ]
+        });
+
+        let packet = formalize_inventory_packet_for_claim(review_id, &inventory, "prop:ctx")
+            .expect("packet");
+
+        assert_eq!(packet["source"], "review_loop/theorem_inventory.json");
+        assert_eq!(packet["target"]["id"], "prop:ctx");
+        assert_eq!(
+            packet["target"]["source_tex"].as_str().unwrap(),
+            "\\begin{proposition}\\label{prop:ctx} The map is an isomorphism.\\end{proposition}"
+        );
+        assert_eq!(
+            packet["target"]["source_context"]["before"],
+            "Definitions before."
+        );
+        assert_eq!(packet["target"]["role"], "lean_target");
+        assert_eq!(packet["typed_ir_required"], false);
     }
 
     #[test]
@@ -21037,7 +22249,7 @@ After-marker explains the displayed map.
             Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap()
         );
         assert_eq!(parsed.mode, FormalizeMode::Full);
-        assert!(parsed.typed_ir_only);
+        assert_eq!(parsed.stage, FormalizeStage::TypedIrDiagnostic);
         assert!(!parsed.external_actions_enabled);
     }
 

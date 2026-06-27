@@ -8,7 +8,7 @@ provider: claude
 # are meaningless on the $0 subscription CLI path and are now lifted for CLI runs (see
 # run_agent_safe). Codex/openai is not a valid tool_loop backend (build_tool_command bails),
 # so Claude is the strong option for this extraction agent.
-model: claude-opus-4-8
+model: opus[1m]
 runner: cli
 execution_mode: tool_loop
 prompt_template: prompts/extraction/theorems.md

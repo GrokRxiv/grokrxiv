@@ -38,7 +38,7 @@ pub const PUBLIC_DISCLAIMER: &str = "";
 pub struct AgentRecord {
     /// DAG-scoped agent id this run belongs to.
     pub role: String,
-    /// LLM model identifier (e.g. `claude-opus-4-7`).
+    /// LLM model identifier (e.g. `opus[1m]`).
     pub model: String,
     /// Raw agent output as JSON; renderers display it pretty-printed.
     pub output: serde_json::Value,

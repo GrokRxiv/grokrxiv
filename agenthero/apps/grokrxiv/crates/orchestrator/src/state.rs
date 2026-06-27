@@ -663,6 +663,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn review_loop_registers_inventory_direct_lean_roles() {
+        let refs = role_config_refs(REVIEW_LOOP_DAG_ID).expect("review-loop role refs");
+        assert!(
+            refs.iter()
+                .any(|config_ref| config_ref.role_id == "lean_inventory_author"),
+            "review-loop DAG must register the inventory-direct Lean author role"
+        );
+        assert!(
+            refs.iter()
+                .any(|config_ref| config_ref.role_id == "lean_inventory_fixer"),
+            "review-loop DAG must register the inventory-direct Lean fixer role"
+        );
+
+        let role_yaml = load_role_configs().expect("load role configs");
+        for role in ["lean_inventory_author", "lean_inventory_fixer"] {
+            let cfg = role_yaml
+                .get(role)
+                .and_then(|cfg| cfg.as_ref())
+                .unwrap_or_else(|| panic!("{role} YAML must load"));
+            assert_eq!(cfg.provider, "claude");
+            assert_eq!(cfg.model, "opus[1m]");
+            assert_eq!(cfg.runner, Some(AgentRunnerKind::Cli));
+            assert_eq!(
+                cfg.output_schema.as_deref(),
+                Some("schemas/review_loop_code_artifact.schema.json")
+            );
+        }
+    }
+
     #[tokio::test]
     async fn configured_ladders_follow_yaml_verifier_names() {
         let mut role_yaml = RoleYamlMap::new();

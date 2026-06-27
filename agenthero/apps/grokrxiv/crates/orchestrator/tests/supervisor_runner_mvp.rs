@@ -282,7 +282,7 @@ async fn claude_runner_live_smoke() {
             Stage::Review,
             &runs_root,
             RunnerConfigPartial {
-                model: "claude-opus-4-7".to_string(),
+                model: "opus[1m]".to_string(),
                 max_cost_usd: 0.50,
                 timeout_seconds: 600,
             },
