@@ -693,6 +693,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn review_loop_registers_paper_local_lean_library_roles() {
+        let refs = role_config_refs(REVIEW_LOOP_DAG_ID).expect("review-loop role refs");
+        assert!(
+            refs.iter()
+                .any(|config_ref| config_ref.role_id == "lean_library_author"),
+            "review-loop DAG must register the paper-local Lean library author role"
+        );
+        assert!(
+            refs.iter()
+                .any(|config_ref| config_ref.role_id == "lean_library_fixer"),
+            "review-loop DAG must register the paper-local Lean library fixer role"
+        );
+
+        let role_yaml = load_role_configs().expect("load role configs");
+        for role in ["lean_library_author", "lean_library_fixer"] {
+            let cfg = role_yaml
+                .get(role)
+                .and_then(|cfg| cfg.as_ref())
+                .unwrap_or_else(|| panic!("{role} YAML must load"));
+            assert_eq!(cfg.provider, "claude");
+            assert_eq!(cfg.model, "opus[1m]");
+            assert_eq!(cfg.runner, Some(AgentRunnerKind::Cli));
+            assert_eq!(
+                cfg.output_schema.as_deref(),
+                Some("schemas/lean_library_artifact.schema.json")
+            );
+        }
+    }
+
     #[tokio::test]
     async fn configured_ladders_follow_yaml_verifier_names() {
         let mut role_yaml = RoleYamlMap::new();

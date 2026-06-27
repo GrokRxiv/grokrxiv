@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -625,13 +625,62 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 }
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
-    let lean_loop = if lean_inventory_loop_role(&input.role) {
-        "\n\
-         This role is allowed to use the local files and tools in the current directory. \
-         Read GOAL.md and PLAN.md first. Then edit GrokRxiv/Proofs.lean, run \
-         `lake env lean GrokRxiv/Proofs.lean`, fix from compiler output, and repeat until \
-         the goal is satisfied or the real blocker is exposed. Do not inspect parent \
-         directories.\n"
+    let lean_loop = if lean_library_loop_role(&input.role) {
+        let artifact_json = serde_json::to_string_pretty(&input.artifact)
+            .unwrap_or_else(|_| input.artifact.to_string());
+        return format!(
+            "GrokRxiv has prepared the exact paper-local Lean library inputs for role `{role}`.\n\n\
+             System instruction:\n{system}\n\n\
+             Task instruction:\n{user}\n\n\
+             Canonical review_input.json content is inlined below. The same JSON is also written \
+             to review_input.json in the working directory for audit, but you do not need to call \
+             file tools to answer.\n\n\
+             Return exactly one JSON object that validates against schema.json. The JSON `files` \
+             array must contain the complete paper-local Lean library files, including \
+             `GrokRxiv/Paper/Definitions.lean`, `GrokRxiv/Paper/Interfaces.lean`, \
+             `GrokRxiv/Paper/Statements.lean`, and `GrokRxiv/Paper/Lemmas.lean`; `manifest` \
+             must be the complete library_manifest.json payload. Do not use `sorry`, `admit`, \
+             or `axiom`. Use `opaque` only for source-grounded paper-local interfaces in \
+             `GrokRxiv/Paper/Interfaces.lean`, and map every interface to source evidence in \
+             the manifest. If a source/library gap remains, report it explicitly in `notes` \
+             and the manifest rather than silently changing the paper claim.\n\n\
+             <review_input_json>\n{artifact_json}\n</review_input_json>",
+            role = role_slug(&input.role),
+            system = input.system_prompt,
+            user = input.user_prompt,
+            artifact_json = artifact_json,
+        );
+    } else if lean_inventory_loop_role(&input.role) {
+        let artifact_json = serde_json::to_string_pretty(&input.artifact)
+            .unwrap_or_else(|_| input.artifact.to_string());
+        return format!(
+            "GrokRxiv has prepared the exact Lean inventory authoring inputs for role `{role}`.\n\n\
+             System instruction:\n{system}\n\n\
+             Task instruction:\n{user}\n\n\
+             Canonical review_input.json content is inlined below. The same JSON is also written \
+             to review_input.json in the working directory for audit, but you do not need to call \
+             file tools to answer.\n\n\
+             This runner may not expose shell, editor, or filesystem tools. Do not output \
+             tool calls, Bash blocks, Markdown fences, analysis, or a plan. Use the inlined \
+             review_input JSON as the authoritative input. If you need checked paper-local \
+             declaration names, use `packet.paper_local_library.declarations` or \
+             `paper_local_library.declarations` from the JSON. If the needed declaration is \
+             absent, state that as a source/library gap in `notes` and write Lean code that \
+             exposes the blocker without inventing a theorem.\n\n\
+             Return exactly one JSON object that validates against schema.json. The JSON `code` \
+             field must be the complete contents GrokRxiv should write to \
+             `GrokRxiv/Proofs.lean`. The file must import the checked `GrokRxiv.Paper` \
+             library modules already provided by the Lean project; do not use `sorry`, `admit`, \
+             `axiom`, `True`, `0 = 0`, `x = x`, metadata-only claims, or a strawman theorem. \
+             GrokRxiv will materialize your `code` field into \
+             `GrokRxiv/Proofs.lean` and run `lake build GrokRxiv.Proofs` after you \
+             return, then feed exact compiler output to the fixer role if needed.\n\n\
+             <review_input_json>\n{artifact_json}\n</review_input_json>",
+            role = role_slug(&input.role),
+            system = input.system_prompt,
+            user = input.user_prompt,
+            artifact_json = artifact_json,
+        );
     } else {
         ""
     };
@@ -656,6 +705,14 @@ fn render_review_prompt_with_files(input: &AgentInput) -> String {
 
 fn lean_inventory_loop_role(role: &str) -> bool {
     matches!(role, "lean_inventory_author" | "lean_inventory_fixer")
+}
+
+fn lean_library_loop_role(role: &str) -> bool {
+    matches!(role, "lean_library_author" | "lean_library_fixer")
+}
+
+fn lean_no_tool_loop_role(role: &str) -> bool {
+    lean_inventory_loop_role(role) || lean_library_loop_role(role)
 }
 
 fn render_tool_prompt(
@@ -702,14 +759,24 @@ fn build_tool_command(
     let program = runner.binary_for(&spec.provider)?;
     let backend = cli_provider_backend(&spec.provider, &program)?;
     let args = match backend {
-        CliProviderBackend::Claude => vec![
-            "-p".to_string(),
-            "Use the complete GrokRxiv extraction tool-call prompt supplied on stdin. Return only the requested JSON object.".to_string(),
-            "--model".to_string(),
-            spec.model.clone(),
-            "--output-format".to_string(),
-            "json".to_string(),
-        ],
+        CliProviderBackend::Claude => {
+            let mut args = vec![
+                "-p".to_string(),
+                "Use the complete GrokRxiv extraction tool-call prompt supplied on stdin. Return only the requested JSON object.".to_string(),
+                "--model".to_string(),
+                spec.model.clone(),
+            ];
+            args.extend(claude_effort_args(&spec.role));
+            args.extend([
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+                "--include-partial-messages".to_string(),
+                "--include-hook-events".to_string(),
+            ]);
+            args.extend(claude_no_tool_args());
+            args
+        }
         CliProviderBackend::Antigravity => vec![
             "-p".to_string(),
             prompt.to_string(),
@@ -940,26 +1007,15 @@ fn raw_cli_payload(provider: &str, raw_stdout: &str, extracted: &str) -> serde_j
 }
 
 fn usage_from_cli_wrapper(provider: &str, raw_stdout: &str) -> Usage {
-    let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(raw_stdout.trim()) else {
-        return Usage::default();
-    };
     match provider {
         "claude" => {
-            let usage = wrapper.get("usage").unwrap_or(&serde_json::Value::Null);
-            Usage {
-                tokens_in: u32_field(usage, &["input_tokens", "tokens_in", "prompt_tokens"]),
-                tokens_out: u32_field(usage, &["output_tokens", "tokens_out", "completion_tokens"]),
-                cache_hits: u32_field(
-                    usage,
-                    &[
-                        "cache_read_input_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_hits",
-                    ],
-                ),
-            }
+            let wrapper = serde_json::from_str::<serde_json::Value>(raw_stdout.trim()).ok();
+            usage_from_claude_json_or_stream(wrapper.as_ref(), raw_stdout)
         }
         "gemini" => {
+            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(raw_stdout.trim()) else {
+                return Usage::default();
+            };
             let stats = wrapper.get("stats").unwrap_or(&serde_json::Value::Null);
             Usage {
                 tokens_in: find_nested_token_count(
@@ -986,7 +1042,64 @@ fn usage_from_cli_wrapper(provider: &str, raw_stdout: &str) -> Usage {
                 ),
             }
         }
-        _ => Usage::default(),
+        _ => {
+            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(raw_stdout.trim()) else {
+                return Usage::default();
+            };
+            let usage = wrapper.get("usage").unwrap_or(&serde_json::Value::Null);
+            Usage {
+                tokens_in: u32_field(usage, &["input_tokens", "tokens_in", "prompt_tokens"]),
+                tokens_out: u32_field(usage, &["output_tokens", "tokens_out", "completion_tokens"]),
+                cache_hits: u32_field(usage, &["cache_hits"]),
+            }
+        }
+    }
+}
+
+fn usage_from_claude_json_or_stream(
+    wrapper: Option<&serde_json::Value>,
+    raw_stdout: &str,
+) -> Usage {
+    if let Some(wrapper) = wrapper {
+        return usage_from_claude_event(wrapper);
+    }
+    let mut usage = Usage::default();
+    for line in raw_stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let event_usage = usage_from_claude_event(&event);
+        usage.tokens_in = usage.tokens_in.saturating_add(event_usage.tokens_in);
+        usage.tokens_out = usage.tokens_out.saturating_add(event_usage.tokens_out);
+        usage.cache_hits = usage.cache_hits.saturating_add(event_usage.cache_hits);
+    }
+    usage
+}
+
+fn usage_from_claude_event(event: &serde_json::Value) -> Usage {
+    let usage = event
+        .get("usage")
+        .or_else(|| {
+            event
+                .get("message")
+                .and_then(|message| message.get("usage"))
+        })
+        .unwrap_or(&serde_json::Value::Null);
+    Usage {
+        tokens_in: u32_field(usage, &["input_tokens", "tokens_in", "prompt_tokens"]),
+        tokens_out: u32_field(usage, &["output_tokens", "tokens_out", "completion_tokens"]),
+        cache_hits: u32_field(
+            usage,
+            &[
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "cache_hits",
+            ],
+        ),
     }
 }
 
@@ -1275,6 +1388,47 @@ fn role_timeout_env_var(role: &str) -> String {
     format!("GROKRXIV_{}_TIMEOUT_SECS", role_env_suffix(role))
 }
 
+fn claude_effort_for_role(role: &str) -> String {
+    let mut candidates = vec![format!("GROKRXIV_{}_CLAUDE_EFFORT", role_env_suffix(role))];
+    if lean_no_tool_loop_role(role) {
+        candidates.push("GROKRXIV_LEAN_CLAUDE_EFFORT".to_string());
+    }
+    candidates.extend([
+        "GROKRXIV_CLAUDE_EFFORT".to_string(),
+        "AGENTHERO_CLAUDE_EFFORT".to_string(),
+    ]);
+
+    for env_var in candidates {
+        if let Ok(value) = std::env::var(&env_var) {
+            let value = value.trim().to_ascii_lowercase();
+            if valid_claude_effort(&value) {
+                return value;
+            }
+        }
+    }
+    "medium".to_string()
+}
+
+fn valid_claude_effort(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "xhigh" | "max")
+}
+
+fn claude_effort_args(role: &str) -> [String; 2] {
+    ["--effort".to_string(), claude_effort_for_role(role)]
+}
+
+fn claude_no_tool_args() -> Vec<String> {
+    vec![
+        "--safe-mode".to_string(),
+        "--disable-slash-commands".to_string(),
+        "--mcp-config".to_string(),
+        "{\"mcpServers\":{}}".to_string(),
+        "--strict-mcp-config".to_string(),
+        "--tools".to_string(),
+        String::new(),
+    ]
+}
+
 /// Compose the per-CLI command. Pure: does not spawn anything. For codex it
 /// also materialises the schema JSON to a temp file under
 /// `$TMPDIR/grokrxiv-schemas/` so the unit tests can assert the path shape.
@@ -1315,13 +1469,23 @@ fn build_command(
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
             // (help text: "Skills still resolve via /skill-name").
-            let query = if lean_inventory_loop_role(&spec.role) {
-                "/goal Read GOAL.md and PLAN.md. Complete the Lean loop in this directory: \
-                 edit GrokRxiv/Proofs.lean, run `lake env lean GrokRxiv/Proofs.lean`, \
-                 fix compiler errors, repeat until the file typechecks or until the real \
-                 source-faithfulness blocker is exposed in Lean code and notes. Then print \
-                 exactly one JSON object matching schema.json, with code equal to the final \
-                 GrokRxiv/Proofs.lean contents."
+            let query = if lean_library_loop_role(&spec.role) {
+                "Read the complete inline GrokRxiv paper-local Lean library prompt supplied on \
+                 stdin. Do not use file or shell tools for the first authoring response; all \
+                 bounded source data needed for this role is in stdin. Return exactly one JSON \
+                 object matching schema.json. Its files array must contain the complete \
+                 paper-local Lean library files, including GrokRxiv/Paper/Definitions.lean. \
+                 Put the complete library_manifest.json payload in the top-level manifest field, \
+                 not in the files array."
+                    .to_string()
+            } else if lean_inventory_loop_role(&spec.role) {
+                "Read the complete inline GrokRxiv Lean inventory prompt supplied on stdin. Do \
+                 not use file or shell tools for the first authoring response; all bounded source \
+                 data needed for this role is in stdin. Return exactly one JSON object matching \
+                 schema.json. Its code field must be the complete source-faithful \
+                 GrokRxiv/Proofs.lean contents importing the checked GrokRxiv.Paper library. \
+                 GrokRxiv will write that code to disk and run \
+                 lake build GrokRxiv.Proofs after you return."
                     .to_string()
             } else if uses_review_skill {
                 format!(
@@ -1334,30 +1498,25 @@ fn build_command(
                  Follow it exactly and return only the requested schema-valid JSON object."
                     .to_string()
             };
-            let args = vec![
+            let mut args = vec![
                 "-p".to_string(),
                 query,
                 "--model".to_string(),
                 spec.model.clone(),
+            ];
+            args.extend(claude_effort_args(&spec.role));
+            args.extend([
                 "--output-format".to_string(),
-                "json".to_string(),
+                "stream-json".to_string(),
                 "--json-schema".to_string(),
                 schema_json,
-            ];
-            let args = if lean_inventory_loop_role(&spec.role) {
-                let mut args = args;
-                args.extend([
-                    "--permission-mode".to_string(),
-                    "acceptEdits".to_string(),
-                    "--tools".to_string(),
-                    "Read,Write,Edit,Bash".to_string(),
-                    "--allowedTools".to_string(),
-                    "Read,Write,Edit,Bash(lake env lean *)".to_string(),
-                ]);
-                args
-            } else {
-                args
-            };
+                "--verbose".to_string(),
+                "--include-partial-messages".to_string(),
+                "--include-hook-events".to_string(),
+            ]);
+            if lean_no_tool_loop_role(&spec.role) {
+                args.extend(claude_no_tool_args());
+            }
             (args, None, true)
         }
         CliProviderBackend::Codex => {
@@ -1697,21 +1856,48 @@ async fn exec_and_capture(
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn `{}`: {e}", built.program))?;
-    let mut stdout = child
+    let live_status = CliLiveStatusContext::new(built, role, provider, child.id(), timeout_dur);
+    write_cli_agent_status(&live_status, "running", None);
+    append_cli_agent_event_sync(
+        &live_status,
+        serde_json::json!({
+            "event": "started",
+            "status": "running",
+        }),
+    );
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for `{}`", built.program))?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture stderr for `{}`", built.program))?;
+    let stdout_live_path = cli_live_io_audit_path(built, "stdout");
+    let stderr_live_path = cli_live_io_audit_path(built, "stderr");
+    let stdout_program = built.program.clone();
+    let stderr_program = built.program.clone();
+    let stdout_live_status = live_status.clone();
+    let stderr_live_status = live_status.clone();
     let stdout_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        stdout.read_to_end(&mut buf).await.map(|_| buf)
+        read_stream_with_live_audit(
+            stdout,
+            stdout_live_path,
+            stdout_live_status,
+            &stdout_program,
+            "stdout",
+        )
+        .await
     });
     let stderr_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        stderr.read_to_end(&mut buf).await.map(|_| buf)
+        read_stream_with_live_audit(
+            stderr,
+            stderr_live_path,
+            stderr_live_status,
+            &stderr_program,
+            "stderr",
+        )
+        .await
     });
 
     if built.pipe_stdin {
@@ -1749,6 +1935,23 @@ async fn exec_and_capture(
                     );
                 }
                 write_cli_timeout_audit(built, timeout_dur, role, provider, reaped);
+                write_cli_agent_status(
+                    &live_status,
+                    "runner_timeout",
+                    Some(serde_json::json!({
+                        "timeout_secs": timeout_dur.as_secs(),
+                        "subprocess_status": if reaped { "killed" } else { "kill_unconfirmed" },
+                    })),
+                );
+                append_cli_agent_event_sync(
+                    &live_status,
+                    serde_json::json!({
+                        "event": "timeout",
+                        "status": "runner_timeout",
+                        "timeout_secs": timeout_dur.as_secs(),
+                        "subprocess_status": if reaped { "killed" } else { "kill_unconfirmed" },
+                    }),
+                );
                 return Err(anyhow::Error::new(CliError::TimedOut {
                     provider: provider.to_string(),
                     role: role.to_string(),
@@ -1769,17 +1972,30 @@ async fn exec_and_capture(
     };
     let stdout = stdout_task
         .await
-        .map_err(|e| anyhow::anyhow!("stdout task failed for `{}`: {e}", built.program))?
-        .map_err(|e| anyhow::anyhow!("read stdout for `{}` failed: {e}", built.program))?;
+        .map_err(|e| anyhow::anyhow!("stdout task failed for `{}`: {e}", built.program))??;
     let stderr = stderr_task
         .await
-        .map_err(|e| anyhow::anyhow!("stderr task failed for `{}`: {e}", built.program))?
-        .map_err(|e| anyhow::anyhow!("read stderr for `{}` failed: {e}", built.program))?;
+        .map_err(|e| anyhow::anyhow!("stderr task failed for `{}`: {e}", built.program))??;
 
     if !status.success() {
         let stdout = String::from_utf8_lossy(&stdout).to_string();
         let stderr = String::from_utf8_lossy(&stderr).to_string();
         write_cli_raw_io_audit(built, &stdout, &stderr);
+        write_cli_agent_status(
+            &live_status,
+            "failed",
+            Some(serde_json::json!({
+                "exit_code": status.code(),
+            })),
+        );
+        append_cli_agent_event_sync(
+            &live_status,
+            serde_json::json!({
+                "event": "exited",
+                "status": "failed",
+                "exit_code": status.code(),
+            }),
+        );
         // FP-RPT3b B5: classify as a structured quota error when stderr/stdout
         // matches a known signature. The caller can then fall back to a
         // different runner instead of treating it as a generic subprocess
@@ -1808,6 +2024,21 @@ async fn exec_and_capture(
 
     let stdout = String::from_utf8_lossy(&stdout).to_string();
     write_cli_raw_io_audit(built, &stdout, "");
+    write_cli_agent_status(
+        &live_status,
+        "completed",
+        Some(serde_json::json!({
+            "exit_code": status.code(),
+        })),
+    );
+    append_cli_agent_event_sync(
+        &live_status,
+        serde_json::json!({
+            "event": "exited",
+            "status": "completed",
+            "exit_code": status.code(),
+        }),
+    );
     if stdout.trim().is_empty() {
         let cli_log = cli_log_from_args(built).unwrap_or_default();
         if let Some(snippet) = detect_quota_signal(&cli_log) {
@@ -1856,11 +2087,322 @@ fn write_cli_command_audit(
         "timeout_policy": timeout_policy(timeout_dur),
         "pipe_stdin": built.pipe_stdin,
         "cwd": cwd.display().to_string(),
+        "live_stdout_path": cwd.join("raw_stdout.live.txt").display().to_string(),
+        "live_stderr_path": cwd.join("raw_stderr.live.txt").display().to_string(),
+        "agent_status_path": cwd.join("agent_status.live.json").display().to_string(),
+        "agent_events_path": cwd.join("agent_events.live.jsonl").display().to_string(),
+        "visibility": cli_visibility_contract(provider),
     });
     let _ = std::fs::write(
         cwd.join("command.json"),
         serde_json::to_vec_pretty(&payload).unwrap_or_default(),
     );
+}
+
+fn cli_visibility_contract(provider: &str) -> serde_json::Value {
+    match provider {
+        "claude" => serde_json::json!({
+            "streaming_required": true,
+            "recommended_cli_shape": "claude -p <query> --model <model> --effort <low|medium|high|xhigh|max> --output-format stream-json --verbose --include-partial-messages --include-hook-events",
+            "no_tool_cli_shape": "claude -p <query> --model <model> --effort <level> --output-format stream-json --verbose --include-partial-messages --include-hook-events --safe-mode --disable-slash-commands --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --tools ''",
+            "prompt_transport": "large prompt on stdin; concise query in -p",
+            "live_stdout": "raw_stdout.live.txt contains Claude stream-json events, tool calls, partial messages, hook events, and final result while the process is still running",
+            "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
+        }),
+        "openai" => serde_json::json!({
+            "streaming_required": true,
+            "recommended_cli_shape": "codex exec --skip-git-repo-check --json --output-schema <schema.json> <prompt>",
+            "prompt_transport": "prompt as final positional argument; schema as --output-schema file",
+            "live_stdout": "raw_stdout.live.txt contains Codex --json JSONL events while the process is still running",
+            "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
+        }),
+        "gemini" => serde_json::json!({
+            "streaming_required": true,
+            "recommended_cli_shape": "agy -p <prompt> --model <model>",
+            "prompt_transport": "prompt in -p argument",
+            "live_stdout": "raw_stdout.live.txt is flushed incrementally while the process is still running",
+            "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
+        }),
+        other => serde_json::json!({
+            "streaming_required": true,
+            "recommended_cli_shape": format!("{other} <visible-json-or-text-mode>"),
+            "live_stdout": "raw_stdout.live.txt is flushed incrementally while the process is still running",
+            "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
+        }),
+    }
+}
+
+fn cli_live_io_audit_path(built: &BuiltCommand, stream: &str) -> Option<PathBuf> {
+    built
+        .cwd
+        .as_ref()
+        .map(|cwd| cwd.join(format!("raw_{stream}.live.txt")))
+}
+
+#[derive(Clone, Debug)]
+struct CliLiveStatusContext {
+    role: String,
+    provider: String,
+    program: String,
+    model: Option<String>,
+    pid: Option<u32>,
+    cwd: PathBuf,
+    started_unix_ms: u128,
+    timeout_secs: Option<u64>,
+}
+
+impl CliLiveStatusContext {
+    fn new(
+        built: &BuiltCommand,
+        role: &str,
+        provider: &str,
+        pid: Option<u32>,
+        timeout_dur: Option<Duration>,
+    ) -> Option<Self> {
+        Some(Self {
+            role: role.to_string(),
+            provider: provider.to_string(),
+            program: built.program.clone(),
+            model: cli_arg_value(&built.args, "--model"),
+            pid,
+            cwd: built.cwd.as_ref()?.clone(),
+            started_unix_ms: unix_millis(),
+            timeout_secs: timeout_dur.map(|duration| duration.as_secs()),
+        })
+    }
+}
+
+fn cli_arg_value(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair.first().map(String::as_str) == Some(name))
+        .and_then(|pair| pair.get(1))
+        .cloned()
+}
+
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn write_cli_agent_status(
+    ctx: &Option<CliLiveStatusContext>,
+    status: &str,
+    detail: Option<serde_json::Value>,
+) {
+    let Some(ctx) = ctx.as_ref() else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "schema_version": "1.0.0",
+        "status": status,
+        "role": &ctx.role,
+        "provider": &ctx.provider,
+        "program": &ctx.program,
+        "model": &ctx.model,
+        "pid": ctx.pid,
+        "cwd": ctx.cwd.display().to_string(),
+        "started_unix_ms": ctx.started_unix_ms,
+        "last_activity_unix_ms": unix_millis(),
+        "timeout_secs": ctx.timeout_secs,
+        "raw_stdout_live_path": ctx.cwd.join("raw_stdout.live.txt").display().to_string(),
+        "raw_stderr_live_path": ctx.cwd.join("raw_stderr.live.txt").display().to_string(),
+        "agent_events_path": ctx.cwd.join("agent_events.live.jsonl").display().to_string(),
+        "detail": detail,
+    });
+    let _ = std::fs::write(
+        ctx.cwd.join("agent_status.live.json"),
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+fn write_cli_agent_stream_status(
+    ctx: &Option<CliLiveStatusContext>,
+    stream: &str,
+    chunk: &[u8],
+    captured_bytes: usize,
+) {
+    let Some(ctx) = ctx.as_ref() else {
+        return;
+    };
+    let summary = cli_stream_chunk_summary(&ctx.provider, chunk);
+    let payload = serde_json::json!({
+        "schema_version": "1.0.0",
+        "status": "running",
+        "role": &ctx.role,
+        "provider": &ctx.provider,
+        "program": &ctx.program,
+        "model": &ctx.model,
+        "pid": ctx.pid,
+        "cwd": ctx.cwd.display().to_string(),
+        "started_unix_ms": ctx.started_unix_ms,
+        "last_activity_unix_ms": unix_millis(),
+        "timeout_secs": ctx.timeout_secs,
+        "last_stream": stream,
+        "captured_stream_bytes": captured_bytes,
+        "raw_stdout_live_path": ctx.cwd.join("raw_stdout.live.txt").display().to_string(),
+        "raw_stderr_live_path": ctx.cwd.join("raw_stderr.live.txt").display().to_string(),
+        "agent_events_path": ctx.cwd.join("agent_events.live.jsonl").display().to_string(),
+        "last_event": summary,
+    });
+    let _ = std::fs::write(
+        ctx.cwd.join("agent_status.live.json"),
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+fn append_cli_agent_event_sync(ctx: &Option<CliLiveStatusContext>, event: serde_json::Value) {
+    let Some(ctx) = ctx.as_ref() else {
+        return;
+    };
+    let path = ctx.cwd.join("agent_events.live.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({
+        "schema_version": "1.0.0",
+        "timestamp_unix_ms": unix_millis(),
+        "role": &ctx.role,
+        "provider": &ctx.provider,
+        "program": &ctx.program,
+        "model": &ctx.model,
+        "pid": ctx.pid,
+        "event": event,
+    });
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&payload).unwrap_or_default()
+        );
+    }
+}
+
+fn cli_stream_chunk_summary(provider: &str, chunk: &[u8]) -> serde_json::Value {
+    let text = String::from_utf8_lossy(chunk);
+    let mut summary = serde_json::json!({
+        "provider": provider,
+        "bytes": chunk.len(),
+        "line_count": text.lines().count(),
+    });
+    for line in text.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            summary["json_type"] = value
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null);
+            summary["json_subtype"] = value
+                .get("subtype")
+                .and_then(|value| value.as_str())
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null);
+            summary["session_id"] = value
+                .get("session_id")
+                .and_then(|value| value.as_str())
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null);
+            if let Some(tokens) = value
+                .get("estimated_tokens")
+                .and_then(|value| value.as_u64())
+            {
+                summary["estimated_tokens"] = serde_json::json!(tokens);
+            }
+            break;
+        }
+        summary["text_preview"] = serde_json::json!(trimmed.chars().take(160).collect::<String>());
+        break;
+    }
+    summary
+}
+
+async fn read_stream_with_live_audit<R>(
+    mut reader: R,
+    audit_path: Option<PathBuf>,
+    live_status: Option<CliLiveStatusContext>,
+    program: &str,
+    stream: &str,
+) -> anyhow::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut audit_file = if let Some(path) = audit_path {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                anyhow::anyhow!("create CLI live audit dir {}: {e}", parent.display())
+            })?;
+        }
+        Some(
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "open CLI {stream} live audit for `{}` at {} failed: {e}",
+                        program,
+                        path.display()
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|e| anyhow::anyhow!("read {stream} for `{}` failed: {e}", program))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        write_cli_agent_stream_status(&live_status, stream, &chunk[..n], buf.len());
+        append_cli_agent_event_sync(
+            &live_status,
+            serde_json::json!({
+                "event": "stream_chunk",
+                "status": "running",
+                "stream": stream,
+                "captured_stream_bytes": buf.len(),
+                "summary": cli_stream_chunk_summary(
+                    live_status
+                        .as_ref()
+                        .map(|ctx| ctx.provider.as_str())
+                        .unwrap_or("unknown"),
+                    &chunk[..n],
+                ),
+            }),
+        );
+        if let Some(file) = audit_file.as_mut() {
+            file.write_all(&chunk[..n]).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "write CLI {stream} live audit for `{}` failed: {e}",
+                    program
+                )
+            })?;
+            file.flush().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "flush CLI {stream} live audit for `{}` failed: {e}",
+                    program
+                )
+            })?;
+        }
+    }
+    Ok(buf)
 }
 
 fn write_cli_raw_io_audit(built: &BuiltCommand, stdout: &str, stderr: &str) {
@@ -2016,17 +2558,11 @@ fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
         "claude" => {
             // `claude -p --output-format json` returns
             // {"type":"result","subtype":"success","result":"<json-string>", ...}
-            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-                return trimmed.to_string();
-            };
-            if let Some(structured_output) = wrapper.get("structured_output") {
-                return structured_output.to_string();
-            }
-            match wrapper.get("result") {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-                None => trimmed.to_string(),
-            }
+            // `claude -p --output-format stream-json` returns JSONL events and
+            // the final event carries the same `result`/`structured_output`
+            // fields. Prefer stream parsing when stdout is JSONL so live audit
+            // files remain useful without breaking final schema validation.
+            extract_claude_result_text(trimmed)
         }
         "gemini" => {
             // A7: `gemini -o json` returns
@@ -2077,6 +2613,70 @@ fn extract_json_text(provider: &str, raw_stdout: &str) -> String {
             last_agent_text.unwrap_or_else(|| trimmed.to_string())
         }
         _ => trimmed.to_string(),
+    }
+}
+
+fn extract_claude_result_text(trimmed: &str) -> String {
+    if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return claude_result_text_from_event(&wrapper).unwrap_or_else(|| trimmed.to_string());
+    }
+
+    let mut last_result: Option<String> = None;
+    let mut last_assistant_text: Option<String> = None;
+    for line in trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(result) = claude_result_text_from_event(&event) {
+            last_result = Some(result);
+        }
+        if let Some(text) = claude_assistant_text_from_event(&event) {
+            last_assistant_text = Some(text);
+        }
+    }
+    last_result
+        .or(last_assistant_text)
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+fn claude_result_text_from_event(event: &serde_json::Value) -> Option<String> {
+    if let Some(structured_output) = event.get("structured_output") {
+        return Some(structured_output.to_string());
+    }
+    match event.get("result") {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(other) => Some(other.to_string()),
+        None => None,
+    }
+}
+
+fn claude_assistant_text_from_event(event: &serde_json::Value) -> Option<String> {
+    if event.get("type").and_then(|value| value.as_str()) != Some("assistant") {
+        return None;
+    }
+    let content = event
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .or_else(|| event.get("content"))?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let mut out = String::new();
+    for item in content.as_array()? {
+        if item.get("type").and_then(|value| value.as_str()) == Some("text") {
+            if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
+                out.push_str(text);
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -2973,6 +3573,47 @@ mod tests {
     }
 
     #[test]
+    fn claude_extraction_tool_command_uses_stream_json_for_visibility() {
+        let _env = EnvVarGuard::clear(&[
+            "GROKRXIV_SUMMARY_CLAUDE_EFFORT",
+            "GROKRXIV_CLAUDE_EFFORT",
+            "AGENTHERO_CLAUDE_EFFORT",
+        ]);
+        let r = CliRunner::new();
+        let spec = stub_spec("claude", "sonnet[1m]");
+        let workdir = std::env::temp_dir().join("grokrxiv-claude-tool-cwd-test");
+
+        let built = build_tool_command(&r, &spec, "prompt", &workdir).expect("build command");
+
+        assert_eq!(built.cwd.as_deref(), Some(workdir.as_path()));
+        assert!(built.pipe_stdin);
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--output-format" && w[1] == "stream-json"));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "medium"));
+        assert!(built.args.contains(&"--safe-mode".to_string()));
+        assert!(built.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(built.args.contains(&"--strict-mcp-config".to_string()));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| { w[0] == "--mcp-config" && w[1] == "{\"mcpServers\":{}}" }));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--tools" && w[1].is_empty()));
+        assert!(built.args.contains(&"--verbose".to_string()));
+        assert!(built
+            .args
+            .contains(&"--include-partial-messages".to_string()));
+        assert!(built.args.contains(&"--include-hook-events".to_string()));
+    }
+
+    #[test]
     fn review_workdir_materializes_explicit_input_files() {
         let spec = stub_spec("gemini", "gemini-test");
         let input = AgentInput {
@@ -3036,6 +3677,32 @@ mod tests {
     }
 
     #[test]
+    fn lean_inventory_prompt_inlines_source_packet_for_no_tool_authoring() {
+        let input = AgentInput {
+            context: Default::default(),
+            role: "lean_inventory_author".to_string(),
+            content_hash_material: serde_json::json!({"ignored": true}),
+            artifact: serde_json::json!({
+                "claim_id": "lem:test",
+                "packet": {"target": {"source_tex": "\\begin{lemma}A\\end{lemma}"}}
+            }),
+            system_prompt: "system instructions".to_string(),
+            user_prompt: "write GrokRxiv/Proofs.lean".to_string(),
+            source_bundle_path: None,
+        };
+
+        let rendered = render_review_prompt_with_files(&input);
+
+        assert!(rendered.contains("<review_input_json>"));
+        assert!(rendered.contains("lem:test"));
+        assert!(rendered.contains("GrokRxiv/Proofs.lean"));
+        assert!(rendered.contains("do not need to call file tools"));
+        assert!(rendered.contains("Do not output tool calls, Bash blocks"));
+        assert!(rendered.contains("packet.paper_local_library.declarations"));
+        assert!(rendered.contains("lake build GrokRxiv.Proofs"));
+    }
+
+    #[test]
     fn claude_schema_rewrites_union_type_arrays_to_anyof() {
         let schema = serde_json::json!({
             "type": "object",
@@ -3090,7 +3757,7 @@ mod tests {
             built.program
         );
 
-        // Args: -p <query> --model <m> --output-format json --json-schema <schema>
+        // Args: -p <query> --model <m> --output-format stream-json --json-schema <schema>
         // (Skill is invoked via the `/grokrxiv-review` query prefix, and the
         // large prompt is piped to stdin. Claude CLI has no `--skill` flag.)
         let args = &built.args;
@@ -3117,9 +3784,12 @@ mod tests {
         );
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "--output-format" && w[1] == "json"),
-            "missing --output-format json pair in {args:?}"
+                .any(|w| w[0] == "--output-format" && w[1] == "stream-json"),
+            "missing --output-format stream-json pair in {args:?}"
         );
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--include-partial-messages".to_string()));
+        assert!(args.contains(&"--include-hook-events".to_string()));
         assert!(
             args.windows(2).any(|w| w[0] == "--json-schema"),
             "missing --json-schema pair in {args:?}"
@@ -3229,6 +3899,45 @@ mod tests {
     }
 
     #[test]
+    fn codex_persistent_workdir_command_audit_includes_live_io_paths() {
+        let _env = EnvVarGuard::clear(&["AGENTHERO_CODEX_BIN"]);
+        let r = CliRunner::new();
+        let spec = stub_spec("openai", "gpt-5-codex");
+        let mut built = build_command(&r, &spec, "do a review").unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        built.cwd = Some(tempdir.path().to_path_buf());
+
+        write_cli_command_audit(&built, Some(Duration::from_secs(30)), "summary", "openai");
+
+        let command: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tempdir.path().join("command.json")).expect("command audit"),
+        )
+        .expect("command json");
+        assert_eq!(command["provider"], "openai");
+        assert_eq!(command["program"], built.program);
+        assert!(command["live_stdout_path"]
+            .as_str()
+            .expect("live stdout path")
+            .ends_with("raw_stdout.live.txt"));
+        assert!(command["live_stderr_path"]
+            .as_str()
+            .expect("live stderr path")
+            .ends_with("raw_stderr.live.txt"));
+        assert!(command["agent_status_path"]
+            .as_str()
+            .expect("agent status path")
+            .ends_with("agent_status.live.json"));
+        assert!(command["agent_events_path"]
+            .as_str()
+            .expect("agent events path")
+            .ends_with("agent_events.live.jsonl"));
+
+        if let Some(path) = built.schema_path.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
     fn test_command_construction_gemini() {
         let r = CliRunner::new();
         let _env = EnvVarGuard::clear(&["AGENTHERO_ANTIGRAVITY_BIN", "AGENTHERO_AGY_BIN"]);
@@ -3329,6 +4038,123 @@ mod tests {
     }
 
     #[test]
+    fn claude_lean_inventory_roles_require_real_lean_project_loop() {
+        let _env = EnvVarGuard::clear(&[
+            "GROKRXIV_LEAN_INVENTORY_AUTHOR_CLAUDE_EFFORT",
+            "GROKRXIV_LEAN_CLAUDE_EFFORT",
+            "GROKRXIV_CLAUDE_EFFORT",
+            "AGENTHERO_CLAUDE_EFFORT",
+        ]);
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "opus[1m]");
+        spec.role = "lean_inventory_author".to_string();
+        let built = build_command(&r, &spec, "lean prompt").unwrap();
+
+        let prompt_idx = built
+            .args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in claude args");
+        let prompt_value = built
+            .args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in claude args");
+
+        assert!(prompt_value.contains("complete inline GrokRxiv Lean inventory prompt"));
+        assert!(prompt_value.contains("Do not use file or shell tools"));
+        assert!(prompt_value.contains("code field must be the complete source-faithful"));
+        assert!(prompt_value.contains("GrokRxiv will write that code to disk"));
+        assert!(prompt_value.contains("lake build GrokRxiv.Proofs"));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "medium"));
+        assert!(!built.args.iter().any(|arg| arg == "--system-prompt"));
+        assert!(built.args.contains(&"--safe-mode".to_string()));
+        assert!(built.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(built.args.contains(&"--strict-mcp-config".to_string()));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| { w[0] == "--mcp-config" && w[1] == "{\"mcpServers\":{}}" }));
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--tools" && w[1].is_empty()));
+        assert!(!built.args.iter().any(|arg| arg == "--allowedTools"));
+    }
+
+    #[test]
+    fn claude_lean_library_roles_require_paper_local_library_loop() {
+        let _env = EnvVarGuard::clear(&[
+            "GROKRXIV_LEAN_LIBRARY_AUTHOR_CLAUDE_EFFORT",
+            "GROKRXIV_LEAN_CLAUDE_EFFORT",
+            "GROKRXIV_CLAUDE_EFFORT",
+            "AGENTHERO_CLAUDE_EFFORT",
+        ]);
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "opus[1m]");
+        spec.role = "lean_library_author".to_string();
+        let built = build_command(&r, &spec, "library prompt").unwrap();
+
+        let prompt_idx = built
+            .args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("missing -p flag in claude args");
+        let prompt_value = built
+            .args
+            .get(prompt_idx + 1)
+            .expect("missing -p value in claude args");
+
+        assert!(prompt_value.contains("paper-local Lean library"));
+        assert!(prompt_value.contains("GrokRxiv/Paper/Definitions.lean"));
+        assert!(prompt_value.contains("library_manifest.json"));
+        assert!(prompt_value.contains("not in the files array"));
+        assert!(!prompt_value.contains("GrokRxiv/Proofs.lean contents"));
+        assert!(built.args.contains(&"--safe-mode".to_string()));
+        assert!(built.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(built.args.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn claude_lean_inventory_effort_is_env_overridable_and_validated() {
+        let _env = EnvVarGuard::set(&[
+            ("GROKRXIV_LEAN_INVENTORY_AUTHOR_CLAUDE_EFFORT", "xhigh"),
+            ("GROKRXIV_LEAN_CLAUDE_EFFORT", "low"),
+            ("GROKRXIV_CLAUDE_EFFORT", "max"),
+        ]);
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "opus[1m]");
+        spec.role = "lean_inventory_author".to_string();
+
+        let built = build_command(&r, &spec, "lean prompt").unwrap();
+
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "xhigh"));
+    }
+
+    #[test]
+    fn claude_lean_inventory_effort_invalid_env_falls_back() {
+        let _env = EnvVarGuard::set(&[
+            ("GROKRXIV_LEAN_INVENTORY_AUTHOR_CLAUDE_EFFORT", "huge"),
+            ("GROKRXIV_LEAN_CLAUDE_EFFORT", "medium"),
+        ]);
+        let r = CliRunner::new();
+        let mut spec = stub_spec("claude", "opus[1m]");
+        spec.role = "lean_inventory_author".to_string();
+
+        let built = build_command(&r, &spec, "lean prompt").unwrap();
+
+        assert!(built
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "medium"));
+    }
+
+    #[test]
     fn test_command_construction_antigravity_override() {
         let _env = EnvVarGuard::set(&[("AGENTHERO_ANTIGRAVITY_BIN", "/opt/bin/agy")]);
         let r = CliRunner::new();
@@ -3394,6 +4220,62 @@ mod tests {
         })
         .to_string();
         let got = extract_json_text("claude", &wrapped);
+        assert_eq!(got, "{\"foo\":\"bar\"}");
+    }
+
+    #[test]
+    fn test_extract_json_text_unwraps_claude_stream_json_result() {
+        let stream = [
+            serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s1"
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "working..."}],
+                    "usage": {"input_tokens": 10, "output_tokens": 2}
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "result": "{\"foo\":\"bar\"}",
+                "usage": {"input_tokens": 1, "output_tokens": 3}
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let got = extract_json_text("claude", &stream);
+        assert_eq!(got, "{\"foo\":\"bar\"}");
+        let usage = usage_from_cli_wrapper("claude", &stream);
+        assert_eq!(usage.tokens_in, 11);
+        assert_eq!(usage.tokens_out, 5);
+    }
+
+    #[test]
+    fn test_extract_json_text_prefers_claude_stream_structured_output() {
+        let stream = [
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "working..."}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "structured_output": {"foo": "bar"},
+                "result": "ignored"
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let got = extract_json_text("claude", &stream);
         assert_eq!(got, "{\"foo\":\"bar\"}");
     }
 
@@ -3627,6 +4509,32 @@ mod tests {
         assert_eq!(completion.usage.tokens_in, 12);
         assert_eq!(completion.usage.tokens_out, 8);
         assert_eq!(completion.finish_reason, FinishReason::ToolUse);
+    }
+
+    #[test]
+    fn parse_tool_completion_unwraps_claude_stream_json_result() {
+        let tools = vec![ToolSpec {
+            name: "submit".into(),
+            description: "Submit final payload".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let inner = serde_json::json!({
+            "tool_calls": [{
+                "name": "submit",
+                "arguments": {"ok": true}
+            }]
+        })
+        .to_string();
+        let stream = [
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "checking"}]}}).to_string(),
+            serde_json::json!({"type": "result", "subtype": "success", "result": inner}).to_string(),
+        ]
+        .join("\n");
+
+        let completion =
+            parse_tool_completion("claude", &stream, &tools).expect("valid completion");
+        assert_eq!(completion.tool_calls.len(), 1);
+        assert_eq!(completion.tool_calls[0].name, "submit");
     }
 
     #[test]
@@ -4070,6 +4978,87 @@ exit 0
             downcast.is_none(),
             "non-quota empty stdout must not be tagged as QuotaExhausted"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_and_capture_writes_live_stdout_and_stderr_before_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake-streaming-cli.sh");
+        let ready_file = dir.path().join("ready");
+        let workdir = dir.path().join("workdir");
+        std::fs::create_dir_all(&workdir).expect("create workdir");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf 'stdout-before\\n'\nprintf 'stderr-before\\n' >&2\ntouch '{}'\nsleep 2\nprintf '{{\"ok\":true}}\\n'\n",
+                ready_file.to_string_lossy()
+            ),
+        )
+        .expect("write fake script");
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let built = BuiltCommand {
+            program: script.to_string_lossy().to_string(),
+            args: vec![],
+            stdin_payload: String::new(),
+            pipe_stdin: false,
+            schema_path: None,
+            cwd: Some(workdir.clone()),
+        };
+
+        let handle = tokio::spawn(async move {
+            exec_and_capture(&built, Some(Duration::from_secs(5)), "summary", "gemini").await
+        });
+        for _ in 0..40 {
+            if ready_file.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            ready_file.is_file(),
+            "fake CLI did not reach streaming point"
+        );
+
+        let live_stdout = std::fs::read_to_string(workdir.join("raw_stdout.live.txt"))
+            .expect("live stdout must exist before subprocess exits");
+        let live_stderr = std::fs::read_to_string(workdir.join("raw_stderr.live.txt"))
+            .expect("live stderr must exist before subprocess exits");
+        let live_status = std::fs::read_to_string(workdir.join("agent_status.live.json"))
+            .expect("agent status must exist before subprocess exits");
+        let live_events = std::fs::read_to_string(workdir.join("agent_events.live.jsonl"))
+            .expect("agent events must exist before subprocess exits");
+        assert!(
+            live_stdout.contains("stdout-before"),
+            "live stdout missing early chunk: {live_stdout:?}"
+        );
+        assert!(
+            live_stderr.contains("stderr-before"),
+            "live stderr missing early chunk: {live_stderr:?}"
+        );
+        assert!(
+            live_status.contains("\"status\""),
+            "live agent status missing status field: {live_status:?}"
+        );
+        assert!(
+            live_events.contains("stream_chunk"),
+            "live agent events missing stream chunk: {live_events:?}"
+        );
+
+        let stdout = handle
+            .await
+            .expect("join streaming CLI")
+            .expect("streaming CLI exits successfully");
+        assert!(stdout.contains("\"ok\":true"));
+        let final_stdout =
+            std::fs::read_to_string(workdir.join("raw_stdout.txt")).expect("final stdout");
+        assert!(final_stdout.contains("stdout-before"));
+        assert!(final_stdout.contains("\"ok\":true"));
     }
 
     #[cfg(unix)]

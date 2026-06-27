@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GrokRxiv Paper-Local Lean Library Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["language", "files", "manifest", "notes", "confidence"],
+  "properties": {
+    "language": {
+      "type": "string",
+      "const": "lean"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "code"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "enum": [
+              "GrokRxiv/Paper/Notation.lean",
+              "GrokRxiv/Paper/Definitions.lean",
+              "GrokRxiv/Paper/Interfaces.lean",
+              "GrokRxiv/Paper/Statements.lean",
+              "GrokRxiv/Paper/Lemmas.lean"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "declarations"],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "1.0.0"
+        },
+        "declarations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "lean_decl",
+              "import",
+              "kind",
+              "signature",
+              "source_terms",
+              "source_evidence",
+              "trust_status"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lean_decl": {
+                "type": "string",
+                "minLength": 1
+              },
+              "import": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["notation", "definition", "interface", "statement", "lemma"]
+              },
+              "signature": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "source_evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["artifact", "source_tex"],
+                  "properties": {
+                    "artifact": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "claim_id": {
+                      "type": ["string", "null"]
+                    },
+                    "source_tex": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "trust_status": {
+                "type": "string",
+                "enum": ["lean_checked", "interface_checked", "blocked"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

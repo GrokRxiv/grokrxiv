@@ -23,6 +23,12 @@ roles:
   - id: lean_inventory_fixer
     kind: code_generator
     config: agents/review-loop/lean_inventory_fixer.yaml
+  - id: lean_library_author
+    kind: code_generator
+    config: agents/review-loop/lean_library_author.yaml
+  - id: lean_library_fixer
+    kind: code_generator
+    config: agents/review-loop/lean_library_fixer.yaml
   - id: lean_faithfulness_checker
     kind: verifier
     config: agents/review-loop/lean_faithfulness_checker.yaml
@@ -158,6 +164,9 @@ nodes:
       - review_loop/proof_obligations.json
       - review_loop/lean_targets.json
     outputs:
+      - review_loop/lean/env/env_result.json
+      - review_loop/lean/library/library_manifest.json
+      - review_loop/lean/library/compile.json
       - review_loop/lean/GrokRxiv/Proofs.lean
       - review_loop/lean/results.json
       - review_loop/lean/fix_rounds.json

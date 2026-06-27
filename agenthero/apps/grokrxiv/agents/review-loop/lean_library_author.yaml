@@ -1,0 +1,14 @@
+id: lean_library_author
+kind: code_generator
+role: "Author a checked paper-local Lean library from theorem inventory and source context."
+provider: claude
+model: opus[1m]
+runner: cli
+prompt_template: prompts/review-loop/lean_library_author.md
+input_schema: schemas/review_loop_code_task.schema.json
+output_schema: schemas/lean_library_artifact.schema.json
+verifiers:
+  - json_schema
+max_retries: 1
+timeout_secs: 0
+escalation: agent

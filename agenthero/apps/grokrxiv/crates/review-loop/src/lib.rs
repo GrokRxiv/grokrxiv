@@ -486,7 +486,7 @@ pub fn build_proof_obligations(
     })
 }
 
-fn lean_max_targets_from_env() -> Option<usize> {
+pub fn lean_max_targets_from_env() -> Option<usize> {
     match std::env::var("GROKRXIV_LEAN_MAX_TARGETS") {
         Ok(value) => value
             .trim()
@@ -624,7 +624,7 @@ pub fn build_formalization_goal(
         "schema_version": "1.0.0",
         "review_id": review_id,
         "mode": mode,
-        "objective": "Run LLM-authored Lean statement/proof attempts with source-faithfulness verification before proof search.",
+        "objective": "Build a checked paper-local Lean library, then run LLM-authored Lean statement/proof attempts with source-faithfulness verification.",
         "source_artifacts": {
             "paper_math_sources": "review_loop/paper_math_sources.json",
             "semantic_ir": "review_loop/semantic_ir.json",
@@ -632,12 +632,18 @@ pub fn build_formalization_goal(
         },
         "roles": {
             "statement_author": "lean_statement_author",
+            "library_author": "lean_library_author",
+            "library_fixer": "lean_library_fixer",
             "statement_faithfulness_checker": "lean_faithfulness_checker",
             "proof_author": "lean_proof_author",
             "proof_fixer": "lean_code_fixer",
             "post_proof_faithfulness_checker": "lean_faithfulness_checker"
         },
         "verification_artifacts": {
+            "lean_environment": "review_loop/lean/env/env_result.json",
+            "paper_local_library": "review_loop/lean/library",
+            "paper_local_library_manifest": "review_loop/lean/library/library_manifest.json",
+            "paper_local_library_compile": "review_loop/lean/library/compile.json",
             "statement_author_input": "review_loop/lean/targets/*/statement_author/input.json",
             "statement_author_output": "review_loop/lean/targets/*/statement_author/output.json",
             "statement_structural_validation": "review_loop/lean/targets/*/statement_author/structural_validation.json",
@@ -664,17 +670,23 @@ pub fn build_formalization_goal(
             "typed_ir_is_scaffolding_only": true,
             "no_paper_id_hardcoding": true,
             "deterministic_math_generation_allowed": false,
-            "formal_interfaces_generated": false,
-            "locked_statement_required_before_proof": true,
-            "independent_statement_faithfulness_required_before_proof": true,
+            "paper_local_library_required_before_targets": true,
+            "paper_local_interfaces_must_be_source_grounded": true,
+            "locked_statement_preferred_before_proof": true,
+            "source_first_authoring_allowed_when_statement_preflight_fails": true,
+            "independent_statement_faithfulness_required_before_paper_claim_proved": true,
             "forbidden_lean_terms": ["sorry", "admit", "axiom"],
             "forbidden_placeholder_statements": ["True", "0 = 0", "x = x"]
         },
         "success_criteria": [
-            "Every authored Lean statement has source TeX, author output, symbol map, structural typecheck, independent faithfulness verdict, and locked statement hash available for manual inspection.",
+            "Global Lean/Mathlib environment setup passes before any Lean LLM authoring runs; environment failures are run-level failures, not per-theorem failures.",
+            "A checked paper-local Lean library exists under review_loop/lean/library and every opaque interface has source evidence in library_manifest.json.",
+            "Every selected Lean target produces a target-local GrokRxiv/Proofs.lean for manual inspection, even if statement preflight fails.",
+            "Every target Proofs.lean imports the checked paper-local GrokRxiv.Paper library instead of redefining paper-local objects.",
+            "When statement preflight succeeds, the authored Lean statement has source TeX, author output, symbol map, structural typecheck, independent faithfulness verdict, and locked statement hash available for manual inspection.",
             "No deterministic paper-to-Lean math/interface artifact is generated.",
-            "Every proof target uses the source-faithful locked statement verbatim.",
-            "Lean kernel acceptance is required for PROVED."
+            "Every locked proof target uses the source-faithful locked statement verbatim; source-first targets must be reviewed for faithfulness after proof authoring.",
+            "Lean kernel acceptance and source faithfulness are required for PROVED."
         ]
     })
 }
@@ -1037,9 +1049,9 @@ pub fn validate_haskell_semantic_model_code(
 
 pub fn validate_lean_proof_code(code: &str, obligations: &serde_json::Value) -> Vec<String> {
     let mut issues = Vec::new();
-    let lower = code.to_ascii_lowercase();
+    let searchable = lean_code_without_comments_or_strings(code).to_ascii_lowercase();
     for forbidden in ["sorry", "admit", "axiom"] {
-        if lower.contains(forbidden) {
+        if lean_code_contains_token(&searchable, forbidden) {
             issues.push(format!("Lean proof uses forbidden term {forbidden}."));
         }
     }
@@ -1068,17 +1080,143 @@ pub fn validate_lean_proof_code(code: &str, obligations: &serde_json::Value) -> 
             // Deterministic code no longer synthesizes theorem statements from typed IR,
             // so this validator only checks the mechanical floor here: declaration present
             // and no forbidden terms.
-            // Proof correctness is enforced by the Lean kernel (`lake env lean`) plus the
+            // Proof correctness is enforced by the Lean kernel (`lake build`) plus the
             // forbidden-term check above. Statement faithfulness is checked separately before
             // proof authoring and locked by hash.
         }
     }
-    if lower.contains("claimcount") || lower.contains("claim_count") {
+    if searchable.contains("claimcount") || searchable.contains("claim_count") {
         issues.push(
             "Lean proof is metadata-only; claim counts are not theorem formalization.".to_string(),
         );
     }
     issues
+}
+
+fn lean_code_contains_token(code: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(offset) = code[start..].find(needle) {
+        let idx = start + offset;
+        let end = idx + needle.len();
+        if !is_lean_ident_continue_before(code, idx) && !is_lean_ident_continue_after(code, end) {
+            return true;
+        }
+        start = end;
+    }
+    false
+}
+
+fn is_lean_ident_continue_before(code: &str, idx: usize) -> bool {
+    code[..idx]
+        .chars()
+        .next_back()
+        .map(is_lean_ident_continue)
+        .unwrap_or(false)
+}
+
+fn is_lean_ident_continue_after(code: &str, idx: usize) -> bool {
+    code[idx..]
+        .chars()
+        .next()
+        .map(is_lean_ident_continue)
+        .unwrap_or(false)
+}
+
+fn is_lean_ident_continue(ch: char) -> bool {
+    ch == '_' || ch == '\'' || ch.is_alphanumeric()
+}
+
+fn lean_code_without_comments_or_strings(code: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Code,
+        LineComment,
+        BlockComment(usize),
+        String,
+    }
+
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.char_indices().peekable();
+    let mut state = State::Code;
+    let mut escaped = false;
+
+    while let Some((_, ch)) = chars.next() {
+        match state {
+            State::Code => match ch {
+                '-' if chars.peek().map(|(_, next)| *next) == Some('-') => {
+                    out.push(' ');
+                    if let Some((_, next)) = chars.next() {
+                        out.push(if next == '\n' { '\n' } else { ' ' });
+                        if next == '\n' {
+                            state = State::Code;
+                        } else {
+                            state = State::LineComment;
+                        }
+                    }
+                }
+                '/' if chars.peek().map(|(_, next)| *next) == Some('-') => {
+                    out.push(' ');
+                    let _ = chars.next();
+                    out.push(' ');
+                    state = State::BlockComment(1);
+                }
+                '"' => {
+                    out.push(' ');
+                    escaped = false;
+                    state = State::String;
+                }
+                _ => out.push(ch),
+            },
+            State::LineComment => {
+                if ch == '\n' {
+                    out.push('\n');
+                    state = State::Code;
+                } else {
+                    out.push(' ');
+                }
+            }
+            State::BlockComment(depth) => {
+                if ch == '/' && chars.peek().map(|(_, next)| *next) == Some('-') {
+                    out.push(' ');
+                    let _ = chars.next();
+                    out.push(' ');
+                    state = State::BlockComment(depth + 1);
+                } else if ch == '-' && chars.peek().map(|(_, next)| *next) == Some('/') {
+                    out.push(' ');
+                    let _ = chars.next();
+                    out.push(' ');
+                    state = if depth == 1 {
+                        State::Code
+                    } else {
+                        State::BlockComment(depth - 1)
+                    };
+                } else if ch == '\n' {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+            }
+            State::String => {
+                if ch == '\n' {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    state = State::Code;
+                }
+            }
+        }
+    }
+
+    out
 }
 
 fn validate_locked_lean_statement(code: &str, base_artifact: &serde_json::Value) -> Vec<String> {
@@ -1910,7 +2048,7 @@ fn lean_entry_status(
     // status/diagnostics for THIS obligation come from it (so a paper with some proved and
     // some unproved theorems yields per-theorem PROVED/FAILED rather than a single global
     // verdict). The Lean kernel is still the sole proof authority: a declaration is only
-    // recorded `pass` after `lake env lean` accepted it with no sorry/admit/axiom.
+    // recorded `pass` after `lake build` accepted it with no sorry/admit/axiom.
     if let Some(decl_results) = lean_declaration_results(lean_declaration, lean_results) {
         if lean_results_deferred(decl_results) {
             return "AWAITING_FORMALIZATION";
@@ -3622,7 +3760,7 @@ end GrokRxiv
     #[test]
     fn lean_validator_no_longer_byte_matches_statement() {
         // Phase 3: the LLM authors the FAITHFUL Lean statement directly from the paper
-        // theorem. The deterministic validator therefore only enforces mechanical checks
+        // theorem. The structural validator therefore only enforces mechanical checks
         // here: the declaration is present and forbidden terms are absent. A statement that
         // differs from an old stale obligation statement but still declares the right name
         // passes this validator; source faithfulness is enforced by the pre-proof reviewer
@@ -3658,7 +3796,7 @@ end GrokRxiv
             "byte-match statement lock must be gone: {issues:?}"
         );
         // The required declaration is present and no forbidden term is used, so the
-        // deterministic validator finds no issues.
+        // structural validator finds no issues.
         assert!(
             issues.is_empty(),
             "faithful-statement authoring must pass deterministic validation: {issues:?}"
@@ -3706,6 +3844,40 @@ end GrokRxiv
         assert!(issues
             .iter()
             .any(|issue| issue.contains("missing theorem declaration thm_add_zero")));
+    }
+
+    #[test]
+    fn lean_validator_ignores_forbidden_terms_in_comments_strings_and_identifiers() {
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_theorem_thm_add_zero",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "thm_add_zero",
+                    "statement": "For all n : Nat, n + 0 = n."
+                }
+            ]
+        });
+        let code = r#"
+namespace GrokRxiv
+
+/- Saying axiomatizing unavailable paper objects would be invalid is commentary,
+   not an axiom declaration. This comment also says sorry and admit. -/
+def message : String := "sorry/admit/axiom are forbidden"
+def not_sorryful : Nat := 0
+
+theorem thm_add_zero (n : Nat) : n + 0 = n := by
+  have h' : n + 0 = n := by simp
+  exact h'
+
+end GrokRxiv
+"#;
+
+        let issues = validate_lean_proof_code(code, &obligations);
+        assert!(
+            issues.is_empty(),
+            "comments, strings, and identifier substrings must not trip forbidden-term validation: {issues:?}"
+        );
     }
 
     #[test]

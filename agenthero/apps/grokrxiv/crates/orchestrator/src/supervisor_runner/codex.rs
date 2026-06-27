@@ -1,7 +1,10 @@
 //! `CodexRunner` — stub. Not implemented in the FP-RPT3d MVP.
 //!
-//! TODO FP-RPT3d-followup: spawn `codex exec --json --output-schema <path>`
-//! with the same supervisor contract as ClaudeRunner.
+//! TODO FP-RPT3d-followup: spawn
+//! `codex exec --skip-git-repo-check --json --output-schema <path> <prompt>`
+//! and tee stdout/stderr incrementally to the supervisor logs while the process
+//! is still running. `--json` is required so tool activity and partial events
+//! are visible instead of buffered behind a final transcript.
 
 use async_trait::async_trait;
 
@@ -44,7 +47,9 @@ impl AgentRunner for CodexRunner {
         let stdout_path = job.output_dir.join("..").join("logs").join("stdout.log");
         let _ = std::fs::write(
             &stderr_path,
-            "CodexRunner: MVP stub — not implemented (see FP-RPT3d-followup).\n",
+            "CodexRunner: MVP stub — not implemented. Required visible CLI shape: \
+             codex exec --skip-git-repo-check --json --output-schema <schema.json> <prompt>, \
+             with stdout/stderr streamed live to logs while running.\n",
         );
         let _ = std::fs::write(&stdout_path, "");
         AgentRunResult {

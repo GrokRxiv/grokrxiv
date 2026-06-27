@@ -18,7 +18,7 @@ Declare each theorem using the exact `lean_declaration` name supplied for that
 obligation, so the kernel and the validator can find it.
 
 Do not change the locked theorem/lemma header, binders, conclusion, declaration
-name, Lean context, or symbol map. The deterministic validator recomputes the
+name, Lean context, or symbol map. The structural validator recomputes the
 locked statement header before compilation and rejects changed statements.
 `lean_targets` does not define the theorem statement; it only identifies the
 source claim and declaration name. The source-faithful locked statement is the
@@ -37,5 +37,5 @@ degenerate statement.
 If the theorem cannot honestly be formalized and proved from the supplied
 evidence, produce code that fails review rather than pretending the paper
 theorem was proved. The code must verify with the provided Lake command
-(`lake env lean`) — the kernel must accept the proof with no `sorry`, `admit`,
+(`lake build`) — the kernel must accept the proof with no `sorry`, `admit`,
 or `axiom` — whenever a closed proof exists.

@@ -3,11 +3,15 @@
 //! Invocation (locked):
 //!
 //! ```text
-//! claude -p - --model <model> --output-format json
+//! claude -p <query> --model <model> --effort <level> --output-format stream-json --verbose
+//!   --include-partial-messages --include-hook-events
+//!   --safe-mode --disable-slash-commands --mcp-config '{"mcpServers":{}}'
+//!   --strict-mcp-config --tools ''
 //! ```
 //!
 //! stdin   = the rendered prompt (read from `RunnerConfig::prompt_path`)
-//! stdout  = `{"type":"result","subtype":"success","result":"<text>", "total_cost_usd":..., "usage":{...}}`
+//! stdout  = Claude stream JSONL events, including tool use, partial messages,
+//! and a final result event.
 //!
 //! The `result` field is itself the agent's three-field JSON wrapper
 //! (`review_md` + `verdict_json` + `audit_json`). The supervisor — not
@@ -18,7 +22,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -74,6 +78,12 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
     let started_at = chrono::Utc::now();
     let stdout_path = job.output_dir.join("..").join("logs").join("stdout.log");
     let stderr_path = job.output_dir.join("..").join("logs").join("stderr.log");
+    if let Some(parent) = stdout_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Some(parent) = stderr_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
 
     let prompt = match std::fs::read_to_string(&job.runner_config.prompt_path) {
         Ok(s) => s,
@@ -101,11 +111,26 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
 
     let mut cmd = Command::new(binary);
     cmd.arg("-p")
-        .arg("-")
+        .arg(
+            "Read the complete AgentHero prompt supplied on stdin. Use visible tool actions when \
+             tools are available and return the required JSON artifact.",
+        )
         .arg("--model")
         .arg(&job.runner_config.model)
+        .arg("--effort")
+        .arg(claude_effort())
         .arg("--output-format")
-        .arg("json")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--include-partial-messages")
+        .arg("--include-hook-events")
+        .arg("--safe-mode")
+        .arg("--disable-slash-commands")
+        .arg("--mcp-config")
+        .arg("{\"mcpServers\":{}}")
+        .arg("--strict-mcp-config")
+        .arg("--tools")
+        .arg("")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -137,13 +162,14 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
         drop(stdin);
     }
 
-    let dur = Duration::from_secs(job.timeout_seconds);
-    let wait_fut = child.wait_with_output();
-    let output = match timeout(dur, wait_fut).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
             let finished_at = chrono::Utc::now();
-            let _ = std::fs::write(&stderr_path, format!("supervisor: wait failed: {e}\n"));
+            let _ = append_log(
+                &stderr_path,
+                "supervisor: failed to capture claude stdout\n",
+            );
             let _ = std::fs::write(&stdout_path, "");
             return AgentRunResult {
                 status: RunStatus::Failed,
@@ -155,16 +181,62 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
                 exit_code: None,
             };
         }
-        Err(_) => {
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
             let finished_at = chrono::Utc::now();
-            let _ = std::fs::write(
+            let _ = append_log(
                 &stderr_path,
-                format!(
+                "supervisor: failed to capture claude stderr\n",
+            );
+            let _ = std::fs::write(&stdout_path, "");
+            return AgentRunResult {
+                status: RunStatus::Failed,
+                stdout_path,
+                stderr_path,
+                output_files: Vec::new(),
+                started_at,
+                finished_at,
+                exit_code: None,
+            };
+        }
+    };
+    let stdout_for_task = stdout_path.clone();
+    let stderr_for_task = stderr_path.clone();
+    let stdout_task =
+        tokio::spawn(async move { read_stream_to_live_log(stdout, stdout_for_task).await });
+    let stderr_task =
+        tokio::spawn(async move { read_stream_to_live_log(stderr, stderr_for_task).await });
+
+    let dur = Duration::from_secs(job.timeout_seconds);
+    let status = match timeout(dur, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            let finished_at = chrono::Utc::now();
+            let _ = append_log(&stderr_path, &format!("supervisor: wait failed: {e}\n"));
+            return AgentRunResult {
+                status: RunStatus::Failed,
+                stdout_path,
+                stderr_path,
+                output_files: Vec::new(),
+                started_at,
+                finished_at,
+                exit_code: None,
+            };
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let finished_at = chrono::Utc::now();
+            let _ = append_log(
+                &stderr_path,
+                &format!(
                     "supervisor: timeout after {}s for runner=claude model={}\n",
                     job.timeout_seconds, job.runner_config.model
                 ),
             );
-            let _ = std::fs::write(&stdout_path, "");
+            stdout_task.abort();
+            stderr_task.abort();
             return AgentRunResult {
                 status: RunStatus::Timeout,
                 stdout_path,
@@ -178,12 +250,42 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
     };
 
     let finished_at = chrono::Utc::now();
-    let stdout_bytes = output.stdout;
-    let stderr_bytes = output.stderr;
-    let _ = std::fs::write(&stdout_path, &stdout_bytes);
-    let _ = std::fs::write(&stderr_path, &stderr_bytes);
+    let stdout_bytes = match stdout_task.await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            let _ = append_log(
+                &stderr_path,
+                &format!("supervisor: stdout read failed: {e}\n"),
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            let _ = append_log(
+                &stderr_path,
+                &format!("supervisor: stdout task failed: {e}\n"),
+            );
+            Vec::new()
+        }
+    };
+    let stderr_bytes = match stderr_task.await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            let _ = append_log(
+                &stderr_path,
+                &format!("supervisor: stderr read failed: {e}\n"),
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            let _ = append_log(
+                &stderr_path,
+                &format!("supervisor: stderr task failed: {e}\n"),
+            );
+            Vec::new()
+        }
+    };
 
-    if !output.status.success() {
+    if !status.success() {
         return AgentRunResult {
             status: RunStatus::Failed,
             stdout_path,
@@ -191,40 +293,19 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
             output_files: Vec::new(),
             started_at,
             finished_at,
-            exit_code: output.status.code(),
+            exit_code: status.code(),
         };
     }
 
     let stdout_text = String::from_utf8_lossy(&stdout_bytes).to_string();
 
-    // Step 1: parse the claude wrapper.
-    let wrapper: serde_json::Value = match serde_json::from_str(stdout_text.trim()) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = std::fs::write(
-                &stderr_path,
-                format!(
-                    "{}\n--- supervisor: failed to parse claude wrapper JSON: {e} ---\n",
-                    String::from_utf8_lossy(&stderr_bytes)
-                ),
-            );
-            return AgentRunResult {
-                status: RunStatus::Failed,
-                stdout_path,
-                stderr_path,
-                output_files: Vec::new(),
-                started_at,
-                finished_at,
-                exit_code: output.status.code(),
-            };
-        }
-    };
-    let result_text = match wrapper.get("result").and_then(|v| v.as_str()) {
+    // Step 1: parse the final Claude stream result.
+    let result_text = match claude_result_text(&stdout_text) {
         Some(s) => s.to_string(),
         None => {
-            let _ = std::fs::write(
+            let _ = append_log(
                 &stderr_path,
-                format!(
+                &format!(
                     "{}\n--- supervisor: claude wrapper missing string `.result` ---\n",
                     String::from_utf8_lossy(&stderr_bytes)
                 ),
@@ -236,7 +317,7 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
                 output_files: Vec::new(),
                 started_at,
                 finished_at,
-                exit_code: output.status.code(),
+                exit_code: status.code(),
             };
         }
     };
@@ -250,12 +331,12 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
             output_files: files,
             started_at,
             finished_at,
-            exit_code: output.status.code(),
+            exit_code: status.code(),
         },
         Err(super::supervisor::MaterialiseError::Invalid(msg)) => {
-            let _ = std::fs::write(
+            let _ = append_log(
                 &stderr_path,
-                format!(
+                &format!(
                     "{}\n--- supervisor: invalid agent output ---\n{msg}\n",
                     String::from_utf8_lossy(&stderr_bytes)
                 ),
@@ -267,13 +348,13 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
                 output_files: Vec::new(),
                 started_at,
                 finished_at,
-                exit_code: output.status.code(),
+                exit_code: status.code(),
             }
         }
         Err(super::supervisor::MaterialiseError::Failed(msg)) => {
-            let _ = std::fs::write(
+            let _ = append_log(
                 &stderr_path,
-                format!(
+                &format!(
                     "{}\n--- supervisor: materialisation failed ---\n{msg}\n",
                     String::from_utf8_lossy(&stderr_bytes)
                 ),
@@ -285,8 +366,97 @@ async fn run_inner(binary: &str, job: AgentJob) -> AgentRunResult {
                 output_files: Vec::new(),
                 started_at,
                 finished_at,
-                exit_code: output.status.code(),
+                exit_code: status.code(),
             }
         }
     }
+}
+
+async fn read_stream_to_live_log<R>(
+    mut reader: R,
+    path: std::path::PathBuf,
+) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .await?;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        file.write_all(&chunk[..n]).await?;
+        file.flush().await?;
+    }
+    Ok(out)
+}
+
+fn append_log(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())
+}
+
+fn claude_result_text(stdout_text: &str) -> Option<String> {
+    let trimmed = stdout_text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return claude_result_from_value(&value);
+    }
+    let mut last = None;
+    for line in trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(result) = claude_result_from_value(&value) {
+            last = Some(result);
+        }
+    }
+    last
+}
+
+fn claude_result_from_value(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("structured_output")
+        .map(|structured| structured.to_string())
+        .or_else(|| {
+            value
+                .get("result")
+                .and_then(|result| result.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn claude_effort() -> String {
+    for env_var in ["AGENTHERO_CLAUDE_EFFORT", "GROKRXIV_CLAUDE_EFFORT"] {
+        if let Ok(value) = std::env::var(env_var) {
+            let value = value.trim().to_ascii_lowercase();
+            if matches!(value.as_str(), "low" | "medium" | "high" | "xhigh" | "max") {
+                return value;
+            }
+        }
+    }
+    "medium".to_string()
 }
