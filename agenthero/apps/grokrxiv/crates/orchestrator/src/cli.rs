@@ -18505,8 +18505,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard};
 
-    static CLI_ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn app_runs_filters_and_cancel_commands_parse() {
         let keep = Uuid::parse_str("68c3a3dd-4ae0-402a-82cc-953153b36702").unwrap();
@@ -18711,7 +18709,7 @@ mod tests {
 
     impl EnvVarGuard {
         fn clear(key: &'static str) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let previous = std::env::var(key).ok();
             std::env::remove_var(key);
             Self {
@@ -18722,7 +18720,7 @@ mod tests {
         }
 
         fn set(key: &'static str, value: &str) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let previous = std::env::var(key).ok();
             std::env::set_var(key, value);
             Self {
@@ -18744,7 +18742,7 @@ mod tests {
 
     impl EnvVarsGuard {
         fn clear(keys: &[&'static str]) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let previous = keys
                 .iter()
                 .map(|key| {
@@ -18760,7 +18758,7 @@ mod tests {
         }
 
         fn set(keys: &[(&'static str, &str)]) -> Self {
-            let lock = CLI_ENV_LOCK.lock().expect("cli env lock");
+            let lock = crate::test_env_lock();
             let previous = keys
                 .iter()
                 .map(|(key, value)| {
