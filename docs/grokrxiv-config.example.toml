@@ -25,10 +25,10 @@ max_cost_usd    = 0.50
 [profiles.default.model_for]
 # summary               = "claude-haiku-4-5"
 # technical_correctness = "claude-opus-4-7"
-# novelty               = "claude-sonnet-4-6"
+# novelty               = "sonnet[1m]"
 # reproducibility       = "gpt-5.5"
-# citation              = "claude-sonnet-4-6"
-# meta_reviewer         = "claude-sonnet-4-6"
+# citation              = "sonnet[1m]"
+# meta_reviewer         = "sonnet[1m]"
 
 # -----------------------------------------------------------------------------
 # Profile: dev — cheap, fast, no real PRs.
@@ -46,7 +46,7 @@ summary               = "claude-haiku-4-5"
 technical_correctness = "claude-haiku-4-5"
 novelty               = "claude-haiku-4-5"
 reproducibility       = "claude-haiku-4-5"
-citation              = "claude-sonnet-4-6"
+citation              = "sonnet[1m]"
 meta_reviewer         = "claude-haiku-4-5"
 
 # -----------------------------------------------------------------------------

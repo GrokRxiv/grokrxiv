@@ -127,14 +127,14 @@ mod tests {
         let run = AgentRun::from_cache(
             "summary",
             AgentRunnerKind::Cli,
-            "claude-sonnet-4".to_string(),
+            "sonnet[1m]".to_string(),
             json!({ "tldr": "cached" }),
             Some(11),
             Some(7),
         );
 
         assert_eq!(run.runner, AgentRunnerKind::Cli);
-        assert_eq!(run.model, "claude-sonnet-4");
+        assert_eq!(run.model, "sonnet[1m]");
         assert!(run.cache_hit);
     }
 }

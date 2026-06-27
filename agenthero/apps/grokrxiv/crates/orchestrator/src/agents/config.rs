@@ -565,7 +565,7 @@ output_schema: schemas/does-not-exist.schema.json
         .expect("citation agent config parses");
 
         assert_eq!(config.provider, "claude");
-        assert_eq!(config.model, "claude-sonnet-4-6");
+        assert_eq!(config.model, "sonnet[1m]");
         assert_eq!(config.timeout_secs, Some(900));
         assert_eq!(config.prompt_context.body_budget_chars, Some(30_000));
         assert_eq!(
@@ -586,7 +586,7 @@ output_schema: schemas/does-not-exist.schema.json
                 .expect("novelty agent config parses");
 
         assert_eq!(config.provider, "claude");
-        assert_eq!(config.model, "claude-sonnet-4-6");
+        assert_eq!(config.model, "sonnet[1m]");
     }
 
     #[test]

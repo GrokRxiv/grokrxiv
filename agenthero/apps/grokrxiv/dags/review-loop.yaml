@@ -5,6 +5,9 @@ accepts:
   - code_generator
 concurrency: 2
 roles:
+  - id: lean_statement_author
+    kind: code_generator
+    config: agents/review-loop/lean_statement_author.yaml
   - id: lean_proof_author
     kind: code_generator
     config: agents/review-loop/lean_proof_author.yaml

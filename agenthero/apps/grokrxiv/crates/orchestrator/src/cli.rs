@@ -11,7 +11,7 @@ use agenthero_dag_runtime::{
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -991,6 +991,7 @@ pub async fn run_grokrxiv_action(
                 request.external_actions_enabled,
                 request.mode,
                 request.typed_ir_only,
+                request.blueprint_loop,
             )
             .await
         }
@@ -1558,6 +1559,7 @@ struct FormalizeArgs {
     external_actions_enabled: bool,
     mode: FormalizeMode,
     typed_ir_only: bool,
+    blueprint_loop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1690,11 +1692,13 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
     let mut external_actions_enabled = true;
     let mut mode = FormalizeMode::Full;
     let mut typed_ir_only = false;
+    let mut blueprint_loop = false;
     for arg in args {
         match arg.as_str() {
             "--debug" => debug_output = true,
             "--no-external-actions" => external_actions_enabled = false,
             "--auto-detect" | "--auto" => mode = FormalizeMode::AutoDetect,
+            "--blueprint-loop" => blueprint_loop = true,
             "--typed-ir-only" | "--benchmark-typed-ir" => {
                 typed_ir_only = true;
                 external_actions_enabled = false;
@@ -1716,6 +1720,7 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
         external_actions_enabled,
         mode,
         typed_ir_only,
+        blueprint_loop,
     })
 }
 
@@ -6376,6 +6381,32 @@ fn review_loop_agent_input_requirements(
                 remediation: "pass the kernel-proved Lean source for the target",
             },
         ]),
+        "statement_faithfulness" => requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/lean_declaration",
+                artifact: "review_loop/lean/targets/*/locked_statement.json#lean_declaration",
+                reason: "statement faithfulness checking must name the Lean declaration",
+                remediation: "rerun lean_statement_author before statement faithfulness checking",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/paper_theorem",
+                artifact: "review_loop/lean/targets/*/statement_author/input.json#source_packet.source_tex",
+                reason: "statement faithfulness checking must compare against the source TeX theorem block",
+                remediation: "rerun lean_statement_author with source_packet.source_tex",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/lean_statement",
+                artifact: "review_loop/lean/targets/*/statement_author/output.json#lean_statement",
+                reason: "statement faithfulness checking must read the authored Lean statement before proof generation",
+                remediation: "rerun lean_statement_author before statement faithfulness checking",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/symbol_map",
+                artifact: "review_loop/lean/targets/*/locked_statement.json#symbol_map",
+                reason: "statement faithfulness checking must inspect the Lean-to-source symbol map",
+                remediation: "rerun lean_statement_author and require a symbol_map for generated opaque names",
+            },
+        ]),
         "lean" => requirements.extend([
             ReviewLoopInputRequirement {
                 json_pointer: "/base/proof_obligations",
@@ -6386,7 +6417,7 @@ fn review_loop_agent_input_requirements(
             ReviewLoopInputRequirement {
                 json_pointer: "/base/lean_targets",
                 artifact: "review_loop/lean_targets.json",
-                reason: "Lean proof completion must preserve the emitted theorem statements",
+                reason: "Lean proof completion must consume Lean target hints or statement-author packets",
                 remediation: "rerun proof_obligation_generator before lean_review_fix_code",
             },
             ReviewLoopInputRequirement {
@@ -6394,6 +6425,26 @@ fn review_loop_agent_input_requirements(
                 artifact: "review_loop/semantic_ir.json",
                 reason: "Lean proof completion must trace theorem targets back to the typed semantic IR",
                 remediation: "rerun semantic_category_mapper before lean_review_fix_code",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/base/locked_statement",
+                artifact: "review_loop/lean/targets/*/locked_statement.json",
+                reason: "Lean proof completion must consume the statement-author locked statement before proof generation",
+                remediation: "rerun lean_statement_author before lean_review_fix_code",
+            },
+        ]),
+        "lean_statement" => requirements.extend([
+            ReviewLoopInputRequirement {
+                json_pointer: "/source_packet/source_tex",
+                artifact: "review_loop/lean/targets/*/statement_author/input.json#source_packet.source_tex",
+                reason: "Lean statement author must read the original source TeX theorem block",
+                remediation: "rerun proof_obligation_generator so statement_author_packet.source_tex is available",
+            },
+            ReviewLoopInputRequirement {
+                json_pointer: "/source_packet/statement",
+                artifact: "review_loop/proof_obligations.json#obligations.statement",
+                reason: "Lean statement author must read the extracted paper theorem statement",
+                remediation: "rerun proof_obligation_generator before lean_statement_author",
             },
         ]),
         "pr" => requirements.extend([
@@ -7560,6 +7611,7 @@ async fn run_per_theorem_lean_loop(
     semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
     theorem_nodes: &[serde_json::Value],
+    blueprint_context: Option<&serde_json::Value>,
     lean_dir: &Path,
     lean_final_path: &Path,
     debug_output: bool,
@@ -7576,13 +7628,15 @@ async fn run_per_theorem_lean_loop(
 
     let requirements = serde_json::json!([
         "Write a complete, self-contained Lean 4 file GrokRxiv/Proofs.lean importing Mathlib that contains ONLY this single theorem.",
-        "Author the FAITHFUL Lean 4 statement of the paper theorem directly from its `statement` text: capture EVERY hypothesis and the exact conclusion. The deterministic `lean_skeleton`/`lean_statement` is only a hint and MAY drop or weaken hypotheses (e.g. collapse a typed relation to an opaque predicate) — correct it so no hypothesis is dropped and the conclusion matches the paper.",
-        "Then prove the statement against the Lean kernel. Do NOT use sorry, admit, or axiom. A proof you cannot complete honestly MUST fail review — never fabricate a proof and never prove a trivially-true strawman in place of the paper's theorem.",
+        "Use `locked_statement.lean_context` and `locked_statement.lean_statement` verbatim. The statement has already been authored from source_tex by lean_statement_author and hash-locked; do not change the theorem/lemma header, binders, conclusion, declaration name, or symbol map.",
+        "Fill in the proof body only and prove the locked statement against the Lean kernel. Do NOT use sorry, admit, or axiom. A proof you cannot complete honestly MUST fail review — never fabricate a proof and never prove a trivially-true strawman in place of the paper's theorem.",
         "Declare the theorem with its exact `lean_declaration` name; do not alter the declaration name.",
+        "The deterministic validator recomputes the locked statement header before compilation and rejects any changed statement hash.",
         "Do not prove claim counts, review statuses, semantic labels, or metadata in place of the mathematical theorem target.",
         "If this task input includes a `dependencies` array, those are the paper definitions/lemmas/constructions your theorem references (resolved from the paper's dependency graph). Formalize your statement faithfully against their structure and hypotheses — introduce or import the structures they describe; NEVER restate a referenced object as an opaque `True`, an empty placeholder, or a vacuously-true strawman.",
+        "If this task input includes `blueprint_context`, it is source-grounded retrieval context from the paper-level blueprint and entity index; use it to understand paper-local interfaces, but preserve the locked statement exactly.",
         "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
-        "If the theorem genuinely cannot be faithfully formalized, state your best faithful approximation and let the proof fail rather than masking the gap."
+        "If the locked theorem genuinely cannot be proved, keep the locked statement unchanged and let the proof fail rather than masking the gap."
     ]);
 
     let mut declarations = serde_json::Map::new();
@@ -7631,6 +7685,7 @@ async fn run_per_theorem_lean_loop(
                     semantic_ir,
                     semantic_model,
                     theorem_nodes,
+                    blueprint_context,
                     lean_dir,
                     debug_output,
                     target_budget,
@@ -7775,6 +7830,417 @@ fn source_theorem_node_for_obligation(
         .cloned()
 }
 
+fn lean_statement_author_artifact(
+    review_id: Uuid,
+    obligation: &serde_json::Value,
+    lean_target: &serde_json::Value,
+    dependencies: &[serde_json::Value],
+    source_theorem_node: Option<&serde_json::Value>,
+    blueprint_context: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let packet = lean_target
+        .get("statement_author_packet")
+        .unwrap_or(&serde_json::Value::Null);
+    let lean_declaration = obligation
+        .get("lean_declaration")
+        .or_else(|| lean_target.get("lean_declaration"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let source_claim_id = packet
+        .get("source_claim_id")
+        .or_else(|| obligation.get("source_claim_id"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let source_tex = packet
+        .get("source_tex")
+        .or_else(|| obligation.get("source_tex"))
+        .or_else(|| source_theorem_node.and_then(|node| node.get("source_tex")))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let statement = packet
+        .get("statement")
+        .or_else(|| obligation.get("statement"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(""));
+    let section = packet
+        .get("section")
+        .or_else(|| obligation.get("section"))
+        .or_else(|| source_theorem_node.and_then(|node| node.get("section")))
+        .or_else(|| source_theorem_node.and_then(|node| node.get("section_id")))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let typed_ir = packet
+        .get("typed_ir")
+        .or_else(|| obligation.get("theorem_ir"))
+        .or_else(|| source_theorem_node.and_then(|node| node.get("theorem_ir")))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let typed_transcription = packet
+        .get("typed_transcription")
+        .or_else(|| source_theorem_node.and_then(|node| node.get("typed_transcription")))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let source_context = packet
+        .get("source_context")
+        .or_else(|| obligation.get("source_context"))
+        .or_else(|| source_theorem_node.and_then(|node| node.get("source_context")))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let source_dependencies = if dependencies.is_empty() {
+        packet
+            .get("dependencies")
+            .or_else(|| obligation.get("dependencies"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]))
+    } else {
+        serde_json::json!(dependencies)
+    };
+    let nearby_definitions = serde_json::json!(dependencies);
+
+    serde_json::json!({
+        "phase": "generate",
+        "target": "lean_statement",
+        "review_id": review_id,
+        "lean_declaration": lean_declaration,
+        "source_packet": {
+            "source_claim_id": source_claim_id,
+            "label": source_claim_id,
+            "section": section,
+            "source_tex": source_tex,
+            "statement": statement,
+            "source_context": source_context,
+            "nearby_definitions": nearby_definitions,
+            "dependencies": source_dependencies,
+            "typed_ir": typed_ir,
+            "typed_transcription": typed_transcription,
+        },
+        "blueprint_context": blueprint_context.cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "statement_author_contract": {
+            "source_tex_is_authoritative": true,
+            "source_context_is_supporting_evidence": true,
+            "blueprint_context_is_supporting_evidence": blueprint_context.is_some(),
+            "typed_ir_is_scaffolding_only": true,
+            "required_output": {
+                "lean_context": "Lean declarations, variables, or local structure needed before the theorem statement.",
+                "lean_statement": "The theorem or lemma declaration header for the exact source claim.",
+                "symbol_map": "Every generated opaque Lean name mapped back to source TeX.",
+                "unsupported_reason": "Required when a faithful statement cannot be authored."
+            },
+            "forbidden_replacements": ["True", "0 = 0", "x = x", "metadata-only claims"]
+        },
+        "input_contract": review_loop_code_input_contract("lean_statement", "generate"),
+    })
+}
+
+async fn run_lean_statement_author_preflight(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    lean_task: &ReviewFixCodeTask,
+    lean_declaration: &str,
+    artifact: serde_json::Value,
+    obligation_dir: &Path,
+    debug_output: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let statement_dir = obligation_dir.join("statement_author");
+    tokio::fs::create_dir_all(&statement_dir)
+        .await
+        .with_context(|| format!("create {}", statement_dir.display()))?;
+    write_loop_json(&statement_dir.join("input.json"), &artifact).await?;
+
+    let system_prompt = format!(
+        "You are GrokRxiv role `lean_statement_author`. Author ONLY the Lean 4 context \
+         and theorem statement for `{lean_declaration}` from the supplied source_packet. \
+         The source TeX is authoritative; typed-IR is scaffolding only. Return strict JSON \
+         matching schema.json exactly."
+    );
+    let user_prompt = format!(
+        "Use review_input.json. Create a faithful Lean context, theorem statement, and \
+         symbol_map for `{lean_declaration}`. Do not prove it. Do not replace hard math \
+         with True, 0 = 0, x = x, metadata, or a claim-count statement. If no faithful \
+         statement can be authored from the supplied source, return \
+         status=not_faithfully_formalizable with unsupported_reason. Do not include \
+         `import` commands in lean_context; imports are supplied by the harness. If you need \
+         uninterpreted paper objects, introduce them with `opaque` declarations or variables; \
+         never use `axiom`. Use source_context only to resolve paper-local notation, surrounding \
+         definitions, numbered relations, displayed maps, and referenced objects; source_tex \
+         remains the theorem being stated. If blueprint_context is present, use it only as \
+         supporting evidence for source-grounded entities, dependency ids, and generated Lean \
+         interface names."
+    );
+
+    if debug_output {
+        cli_status::emit_detail(
+            "lean_statement_author",
+            cli_status::StatusMark::Run,
+            &format!("statement preflight decl={lean_declaration}"),
+        );
+    }
+
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_statement_author",
+        artifact.clone(),
+        system_prompt,
+        user_prompt,
+        None,
+    )
+    .await?;
+    write_loop_json(&statement_dir.join("output.json"), &run.output).await?;
+
+    let issues = validate_lean_statement_author_output(lean_declaration, &run.output);
+    let validation = serde_json::json!({
+        "status": if issues.is_empty() { "pass" } else { "fail" },
+        "issues": issues,
+    });
+    write_loop_json(
+        &statement_dir.join("structural_validation.json"),
+        &validation,
+    )
+    .await?;
+    if validation.get("status").and_then(|value| value.as_str()) != Some("pass") {
+        let summary = validation
+            .get("issues")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|| "statement author validation failed".to_string());
+        anyhow::bail!("{summary}");
+    }
+
+    let structural_typecheck =
+        run_lean_statement_structural_check(lean_task, &run.output, obligation_dir, &statement_dir)
+            .await?;
+
+    let faithfulness = run_lean_statement_faithfulness_review(
+        state,
+        paper_id,
+        review_id,
+        lean_declaration,
+        &artifact,
+        &run.output,
+        &statement_dir,
+        debug_output,
+    )
+    .await?;
+    let verdict = faithfulness
+        .get("verdict")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    if verdict != "faithful" {
+        anyhow::bail!(
+            "statement faithfulness reviewer returned verdict={verdict} for {lean_declaration}"
+        );
+    }
+
+    let mut locked = locked_lean_statement_from_author_output(lean_declaration, &run.output)?;
+    if let Some(object) = locked.as_object_mut() {
+        object.insert(
+            "author_role".to_string(),
+            serde_json::json!("lean_statement_author"),
+        );
+        object.insert("author_model".to_string(), serde_json::json!(run.model));
+        object.insert(
+            "structural_typecheck".to_string(),
+            serde_json::to_value(&structural_typecheck).unwrap_or_else(|_| serde_json::json!({})),
+        );
+        object.insert("faithfulness_review".to_string(), faithfulness);
+        object.insert(
+            "artifacts".to_string(),
+            serde_json::json!({
+                "input": "statement_author/input.json",
+                "output": "statement_author/output.json",
+                "structural_validation": "statement_author/structural_validation.json",
+                "structural_typecheck": "statement_author/structural_typecheck.json",
+                "faithfulness": "statement_author/faithfulness.json",
+                "locked_statement": "locked_statement.json",
+            }),
+        );
+    }
+    write_loop_json(&obligation_dir.join("locked_statement.json"), &locked).await?;
+    Ok(locked)
+}
+
+fn lean_statement_structural_check_code(output: &serde_json::Value) -> anyhow::Result<String> {
+    let lean_context_raw = output
+        .get("lean_context")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim();
+    let lean_context = strip_lean_import_lines(lean_context_raw);
+    let lean_statement = output
+        .get("lean_statement")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim();
+    if lean_statement.is_empty() {
+        anyhow::bail!("lean_statement is empty");
+    }
+    let normalized_statement =
+        grokrxiv_review_loop::normalize_lean_statement_header(lean_statement);
+    if normalized_statement.is_empty() {
+        anyhow::bail!("lean_statement normalizes to an empty header");
+    }
+
+    let context_block = if lean_context.is_empty() {
+        String::new()
+    } else {
+        format!("{lean_context}\n\n")
+    };
+    Ok(format!(
+        "import Mathlib\n\
+         set_option autoImplicit false\n\n\
+         namespace GrokRxiv\n\n\
+         {context_block}{normalized_statement} := by\n\
+           all_goals sorry\n\n\
+         end GrokRxiv\n"
+    ))
+}
+
+fn strip_lean_import_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("import ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+async fn run_lean_statement_structural_check(
+    lean_task: &ReviewFixCodeTask,
+    author_output: &serde_json::Value,
+    obligation_dir: &Path,
+    statement_dir: &Path,
+) -> anyhow::Result<CommandRunReport> {
+    prepare_review_loop_project_harness(lean_task, obligation_dir).await?;
+    let source_dir = obligation_dir.join("GrokRxiv");
+    tokio::fs::create_dir_all(&source_dir)
+        .await
+        .with_context(|| format!("create {}", source_dir.display()))?;
+    let check_code = lean_statement_structural_check_code(author_output)?;
+    let check_path = source_dir.join("StatementCheck.lean");
+    write_review_loop_code_file(&check_path, &check_code).await?;
+    let report = run_loop_command(
+        lean_task.compile_program,
+        &["env", "lean", "GrokRxiv/StatementCheck.lean"],
+        obligation_dir,
+        std::time::Duration::from_secs(lean_task.compile_timeout_secs),
+    )
+    .await;
+    let report_json = serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({}));
+    write_loop_json(
+        &statement_dir.join("structural_typecheck.json"),
+        &report_json,
+    )
+    .await?;
+    if report.status != "pass" {
+        let detail = if report.stderr.trim().is_empty() {
+            report.stdout.as_str()
+        } else {
+            report.stderr.as_str()
+        };
+        anyhow::bail!(
+            "Lean statement structural typecheck failed: {}",
+            truncate(&detail.replace('\n', " "), 600)
+        );
+    }
+    Ok(report)
+}
+
+async fn run_lean_statement_faithfulness_review(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    lean_declaration: &str,
+    statement_author_artifact: &serde_json::Value,
+    author_output: &serde_json::Value,
+    statement_dir: &Path,
+    debug_output: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let source_packet = statement_author_artifact
+        .get("source_packet")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let paper_theorem = source_packet
+        .get("source_tex")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            source_packet
+                .get("statement")
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or_default()
+        .to_string();
+    let lean_context = author_output
+        .get("lean_context")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let lean_statement = author_output
+        .get("lean_statement")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let symbol_map = author_output
+        .get("symbol_map")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let artifact = serde_json::json!({
+        "phase": "advisory",
+        "target": "statement_faithfulness",
+        "lean_declaration": lean_declaration,
+        "paper_theorem": paper_theorem,
+        "lean_statement": format!("{lean_context}\n{lean_statement}"),
+        "symbol_map": symbol_map,
+        "source_packet": source_packet,
+        "review_scope": "pre_proof_statement_author_output",
+    });
+    write_loop_json(&statement_dir.join("faithfulness_input.json"), &artifact).await?;
+
+    if debug_output {
+        cli_status::emit_detail(
+            "lean_faithfulness_checker",
+            cli_status::StatusMark::Run,
+            &format!("statement faithfulness decl={lean_declaration}"),
+        );
+    }
+
+    let system_prompt = format!(
+        "You are GrokRxiv role `lean_faithfulness_checker`, independently reviewing a \
+         PRE-PROOF Lean statement for `{lean_declaration}`. No Lean proof has run yet. \
+         Back-translate the Lean statement without consulting the paper text, then compare \
+         it to the source TeX and symbol_map. Return strict JSON matching schema.json."
+    );
+    let user_prompt = format!(
+        "Use review_input.json. Compare `paper_theorem` and `source_packet.source_tex` \
+         against `lean_statement` and `symbol_map` for `{lean_declaration}`. Verdict must be \
+         `faithful` only if the Lean statement captures every hypothesis and the exact \
+         conclusion, with no placeholder or strawman."
+    );
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_faithfulness_checker",
+        artifact,
+        system_prompt,
+        user_prompt,
+        None,
+    )
+    .await?;
+    write_loop_json(&statement_dir.join("faithfulness.json"), &run.output).await?;
+    Ok(run.output)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lean_target_base_artifact(
     review_id: Uuid,
@@ -7787,13 +8253,15 @@ fn lean_target_base_artifact(
     semantic_model: &serde_json::Value,
     proof_obligations: &serde_json::Value,
     lean_targets: &serde_json::Value,
+    locked_statement: Option<&serde_json::Value>,
+    blueprint_context: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let compact_proof_obligations =
         compact_proof_obligations_for_target(proof_obligations, obligation);
     let compact_lean_targets = compact_lean_targets_for_obligation(lean_targets, obligation);
     let compact_semantic_ir =
         compact_semantic_ir_for_lean_target(review_id, obligation, source_theorem_node);
-    serde_json::json!({
+    let mut artifact = serde_json::json!({
         "review_id": review_id,
         "task": "Formalize ONE paper theorem into self-contained Lean 4 and prove it.",
         "requirements": requirements,
@@ -7830,8 +8298,28 @@ fn lean_target_base_artifact(
                 .and_then(|value| value.as_array())
                 .map(|items| items.len())
                 .unwrap_or(0),
+        },
+        "work_packet_contract": {
+            "source_grounded_blueprint_context": blueprint_context.is_some(),
+            "proof_author_must_preserve_locked_statement": locked_statement.is_some(),
+            "formal_interfaces_artifact": if blueprint_context.is_some() { serde_json::json!("review_loop/blueprint/FormalInterfaces.lean") } else { serde_json::json!(null) }
         }
-    })
+    });
+    if let Some(blueprint_context) = blueprint_context {
+        if let Some(object) = artifact.as_object_mut() {
+            object.insert("blueprint_context".to_string(), blueprint_context.clone());
+        }
+    }
+    if let Some(locked_statement) = locked_statement {
+        if let Some(object) = artifact.as_object_mut() {
+            object.insert(
+                "proof_author_contract".to_string(),
+                serde_json::json!("fill_proof_body_only_preserve_locked_statement"),
+            );
+            object.insert("locked_statement".to_string(), locked_statement.clone());
+        }
+    }
+    artifact
 }
 
 fn compact_proof_obligations_for_target(
@@ -8184,6 +8672,7 @@ async fn run_one_lean_target(
     _semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
     theorem_nodes: &[serde_json::Value],
+    blueprint_context: Option<&serde_json::Value>,
     lean_dir: &Path,
     debug_output: bool,
     target_budget: std::time::Duration,
@@ -8270,6 +8759,94 @@ async fn run_one_lean_target(
     // referenced object as an opaque `True`.
     let dependencies = resolve_obligation_dependencies(obligation, theorem_nodes);
     let source_theorem_node = source_theorem_node_for_obligation(obligation, theorem_nodes);
+    let target_blueprint_context = blueprint_context.map(|context| {
+        grokrxiv_review_loop::compact_blueprint_context_for_obligation(
+            context
+                .get("paper_blueprint")
+                .unwrap_or(&serde_json::Value::Null),
+            context
+                .get("entity_index")
+                .unwrap_or(&serde_json::Value::Null),
+            obligation,
+        )
+    });
+    let compact_lean_targets = compact_lean_targets_for_obligation(lean_targets, obligation);
+    let lean_target = compact_lean_targets
+        .get("targets")
+        .and_then(|value| value.as_array())
+        .and_then(|targets| targets.first())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let statement_author_artifact = lean_statement_author_artifact(
+        review_id,
+        obligation,
+        &lean_target,
+        &dependencies,
+        source_theorem_node.as_ref(),
+        target_blueprint_context.as_ref(),
+    );
+    let locked_statement = match run_lean_statement_author_preflight(
+        state,
+        paper_id,
+        review_id,
+        lean_task,
+        &lean_declaration,
+        statement_author_artifact,
+        &obligation_dir,
+        debug_output,
+    )
+    .await
+    {
+        Ok(lock) => lock,
+        Err(err) => {
+            let failed = serde_json::json!({
+                "status": "fail",
+                "reason": "statement_author_preflight_failed",
+                "lean_declaration": lean_declaration,
+                "obligation_id": obligation_id,
+                "statement_author_error": format!("{err:#}"),
+                "attempts": [{
+                    "attempt": 0,
+                    "status": "fail",
+                    "author_role": "lean_statement_author",
+                    "author_error": format!("{err:#}"),
+                }],
+            });
+            emit_formalize_node_event(formalize_lean_target_author_completed_event(
+                review_id,
+                mode,
+                lean_task,
+                index,
+                total,
+                &lean_declaration,
+                &obligation_id,
+                &artifact_path,
+                started.elapsed().as_millis() as u64,
+                "fail",
+                "statement_author_preflight_failed",
+                false,
+            ));
+            return LeanTargetResult {
+                index,
+                lean_declaration: lean_declaration.clone(),
+                run: failed.clone(),
+                proved: false,
+                verified_code: None,
+                combined_entry: format!(
+                    "-- ===== {lean_declaration} (STATEMENT_AUTHOR_FAILED) =====\n/- {err:#} -/"
+                ),
+                attempts_with_decl: failed
+                    .get("attempts")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                decl_record: failed,
+                duration_ms: started.elapsed().as_millis() as u64,
+                outcome: "statement_author_preflight_failed",
+                retried: false,
+            };
+        }
+    };
     let base_artifact = lean_target_base_artifact(
         review_id,
         requirements,
@@ -8281,7 +8858,10 @@ async fn run_one_lean_target(
         semantic_model,
         proof_obligations,
         lean_targets,
+        Some(&locked_statement),
+        target_blueprint_context.as_ref(),
     );
+    let _ = write_loop_json(&obligation_dir.join("work_packet.json"), &base_artifact).await;
     let author_system_prompt = review_loop_code_system_prompt(lean_task, lean_task.author_role, 1);
     let author_user_prompt = review_loop_code_user_prompt(lean_task, lean_task.author_role, 1);
     let author_prompt_hash =
@@ -8792,6 +9372,26 @@ async fn prepare_review_loop_project_harness(
         tokio::fs::write(workdir.join("lean-toolchain"), toolchain)
             .await
             .with_context(|| format!("write Lean toolchain in {}", workdir.display()))?;
+        let update = run_loop_command(
+            task.compile_program,
+            &["update"],
+            workdir,
+            std::time::Duration::from_secs(task.compile_timeout_secs),
+        )
+        .await;
+        let update_json = serde_json::to_value(&update).unwrap_or_else(|_| serde_json::json!({}));
+        write_loop_json(&workdir.join("lake_update.json"), &update_json).await?;
+        if update.status != "pass" {
+            let detail = if update.stderr.trim().is_empty() {
+                update.stdout.as_str()
+            } else {
+                update.stderr.as_str()
+            };
+            anyhow::bail!(
+                "Lean harness lake update failed: {}",
+                truncate(&detail.replace('\n', " "), 600)
+            );
+        }
     }
     Ok(())
 }
@@ -9436,15 +10036,19 @@ async fn refresh_formalization_math_artifacts(
     {
         Ok(Some(theorem_graph)) => {
             if let Some(obj) = paper_math_sources.as_object_mut() {
-                obj.insert(
-                    "theorem_inventory".to_string(),
-                    serde_json::json!({
-                        "artifact": "review_loop/theorem_inventory.json",
-                        "inventory_count": theorem_graph.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-                        "theorem_level_count": theorem_graph.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-                        "typed_count": theorem_graph.get("typed_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-                    }),
-                );
+                let theorem_inventory = theorem_graph
+                    .get("source_inventory")
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "artifact": "review_loop/theorem_inventory.json",
+                            "inventory_count": theorem_graph.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                            "theorem_level_count": theorem_graph.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+                        })
+                    });
+                let theorem_inventory =
+                    formalize_theorem_inventory_with_typed_count(theorem_inventory, &theorem_graph);
+                obj.insert("theorem_inventory".to_string(), theorem_inventory);
                 obj.insert("theorem_graph".to_string(), theorem_graph);
                 append_paper_math_source(
                     obj,
@@ -9675,7 +10279,10 @@ async fn run_formalize_inventory_typed_transcription(
         .cloned()
         .unwrap_or_default();
     let inventory_item_count = items.len();
-    let items = formalize_inventory_transcription_items(&items, config);
+    let items = formalize_inventory_transcription_items(&items, config)
+        .iter()
+        .map(formalize_inventory_typed_ir_item)
+        .collect::<Vec<_>>();
     let batches = formalize_inventory_batches(&items, config);
     let batch_count = batches.len();
     let total_items = items.len();
@@ -9779,7 +10386,12 @@ async fn run_formalize_inventory_typed_transcription(
                                 "error": error,
                             }),
                         ));
-                        return Err(err).context("typed-ir runner failed");
+                        return FormalizeTypedIrBatchResult {
+                            batch_index,
+                            batch_number,
+                            nodes: Vec::new(),
+                            error: Some(format!("typed-ir runner failed: {err:#}")),
+                        };
                     }
                 };
                 let batch_nodes = run
@@ -9821,7 +10433,12 @@ async fn run_formalize_inventory_typed_transcription(
                             "reason": reason,
                         }),
                     ));
-                    anyhow::bail!("typed-ir runner returned {reason}");
+                    return FormalizeTypedIrBatchResult {
+                        batch_index,
+                        batch_number,
+                        nodes: Vec::new(),
+                        error: Some(format!("typed-ir runner returned {reason}")),
+                    };
                 }
                 let duration_ms = started.elapsed().as_millis() as u64;
                 emit_formalize_node_event(formalize_node_event(
@@ -9854,34 +10471,100 @@ async fn run_formalize_inventory_typed_transcription(
                     batch_nodes.len(),
                     run.latency_ms
                 ));
-                Ok(FormalizeTypedIrBatchResult {
+                FormalizeTypedIrBatchResult {
                     batch_index,
+                    batch_number,
                     nodes: batch_nodes,
-                })
+                    error: None,
+                }
             }
         }))
         .buffer_unordered(config.typed_ir_batch_concurrency)
-        .collect::<Vec<anyhow::Result<FormalizeTypedIrBatchResult>>>()
+        .collect::<Vec<FormalizeTypedIrBatchResult>>()
         .await
         .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     batch_results.sort_by_key(|result| result.batch_index);
 
     let mut nodes = Vec::new();
+    let mut failed_batches = Vec::new();
     for result in &mut batch_results {
-        nodes.append(&mut result.nodes);
+        if let Some(error) = result.error.take() {
+            failed_batches.push(serde_json::json!({
+                "batch_index": result.batch_index,
+                "batch_number": result.batch_number,
+                "error": error,
+            }));
+        } else {
+            nodes.append(&mut result.nodes);
+        }
     }
     if nodes.is_empty() {
-        return Ok(None);
+        let inventory_count = theorem_inventory["inventory_count"].as_u64().unwrap_or(0);
+        let theorem_level_count = theorem_inventory["theorem_level_count"]
+            .as_u64()
+            .unwrap_or(0);
+        cli_status::emit(format!(
+            "formalize {review_id}: typed-IR transcription failed for all batches; using deterministic source inventory fallback inventory_count={inventory_count} theorem_level_count={theorem_level_count}"
+        ));
+        emit_formalize_node_event(formalize_node_event(
+            review_id,
+            FormalizeMode::Full,
+            "node.completed",
+            "formalize_typed_ir",
+            "deterministic",
+            "formalize_theorem_inventory_source_fallback",
+            "fallback",
+            "typed-IR transcription failed; using deterministic source inventory fallback",
+            serde_json::json!({
+                "provider": &spec.provider,
+                "model": &spec.model,
+                "batch_count": batch_count,
+                "items": total_items,
+                "inventory_items": inventory_item_count,
+                "max_items": config.typed_ir_max_items,
+                "nodes": theorem_inventory
+                    .get("items")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0),
+                "failed_count": failed_batches.len(),
+                "failed_batches": failed_batches.clone(),
+                "concurrency": config.typed_ir_batch_concurrency,
+                "duration_ms": total_started.elapsed().as_millis() as u64,
+                "timeout_secs": spec.timeout_secs,
+                "artifact_id": "review_loop/theorem_inventory.json",
+            }),
+        ));
+        return Ok(Some(formalize_inventory_source_fallback_theorem_graph(
+            seed,
+            theorem_inventory,
+            failed_batches,
+        )));
     }
+    merge_formalize_inventory_context_into_nodes(&mut nodes, theorem_inventory);
     let inventory_count = theorem_inventory["inventory_count"].as_u64().unwrap_or(0);
     let theorem_level_count = theorem_inventory["theorem_level_count"]
         .as_u64()
         .unwrap_or(0);
-    cli_status::emit(format!(
-        "formalize {review_id}: source-first typed-IR theorem extraction ok inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={}",
-        nodes.len()
-    ));
+    let failed_count = failed_batches.len();
+    if failed_count == 0 {
+        cli_status::emit(format!(
+            "formalize {review_id}: source-first typed-IR theorem extraction ok inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={}",
+            nodes.len()
+        ));
+    } else {
+        cli_status::emit(format!(
+            "formalize {review_id}: source-first typed-IR theorem extraction partial inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={} failed_batches={failed_count}",
+            nodes.len()
+        ));
+    }
+    let status = if failed_count == 0 { "ok" } else { "partial" };
+    let message = if failed_count == 0 {
+        "typed-IR transcription completed"
+    } else {
+        "typed-IR transcription partially completed"
+    };
     emit_formalize_node_event(formalize_node_event(
         review_id,
         FormalizeMode::Full,
@@ -9889,8 +10572,8 @@ async fn run_formalize_inventory_typed_transcription(
         "formalize_typed_ir",
         "llm",
         "formalize_source_inventory_typed_transcriber",
-        "ok",
-        "typed-IR transcription completed",
+        status,
+        message,
         serde_json::json!({
             "provider": &spec.provider,
             "model": &spec.model,
@@ -9899,6 +10582,8 @@ async fn run_formalize_inventory_typed_transcription(
             "inventory_items": inventory_item_count,
             "max_items": config.typed_ir_max_items,
             "nodes": nodes.len(),
+            "failed_count": failed_count,
+            "failed_batches": failed_batches.clone(),
             "concurrency": config.typed_ir_batch_concurrency,
             "duration_ms": total_started.elapsed().as_millis() as u64,
             "timeout_secs": spec.timeout_secs,
@@ -9912,15 +10597,216 @@ async fn run_formalize_inventory_typed_transcription(
         "inventory_count": inventory_count,
         "theorem_level_count": theorem_level_count,
         "typed_count": nodes.len(),
+        "failed_count": failed_count,
+        "failed_batches": failed_batches,
+        "partial": failed_count > 0,
         "nodes": nodes,
+        "source_inventory": theorem_inventory.clone(),
         "source": "formalize_source_inventory_typed_transcriber",
     })))
+}
+
+fn formalize_theorem_inventory_with_typed_count(
+    mut theorem_inventory: serde_json::Value,
+    theorem_graph: &serde_json::Value,
+) -> serde_json::Value {
+    if let Some(obj) = theorem_inventory.as_object_mut() {
+        obj.entry("artifact".to_string())
+            .or_insert_with(|| serde_json::json!("review_loop/theorem_inventory.json"));
+        obj.insert(
+            "typed_count".to_string(),
+            theorem_graph
+                .get("typed_count")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(null)),
+        );
+    }
+    theorem_inventory
+}
+
+fn formalize_inventory_source_fallback_theorem_graph(
+    seed: &crate::db::PaperReviewSeedRow,
+    theorem_inventory: &serde_json::Value,
+    failed_batches: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let nodes = theorem_inventory
+        .get("items")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(formalize_inventory_source_fallback_node)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "artifact": "theorem_graph.json",
+        "arxiv_id": &seed.arxiv_id,
+        "inventory_artifact": "review_loop/theorem_inventory.json",
+        "inventory_count": theorem_inventory.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "theorem_level_count": theorem_inventory.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "typed_count": 0,
+        "failed_count": failed_batches.len(),
+        "failed_batches": failed_batches,
+        "partial": true,
+        "nodes": nodes,
+        "source_inventory": theorem_inventory,
+        "source": "formalize_theorem_inventory_source_fallback",
+        "typed_ir_status": "failed_source_inventory_fallback",
+    })
+}
+
+fn formalize_inventory_source_fallback_node(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let source_tex = item
+        .get("source_tex")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let id = item
+        .get("id")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            item.get("labels")
+                .and_then(|value| value.as_array())
+                .and_then(|labels| labels.first())
+                .and_then(|value| value.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let kind = item
+        .get("kind")
+        .or_else(|| item.get("type"))
+        .or_else(|| item.get("env"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("theorem");
+    let section = item
+        .get("section")
+        .or_else(|| item.get("section_id"))
+        .cloned()
+        .or_else(|| {
+            let file = item.get("file").and_then(|value| value.as_str())?;
+            let char_start = item.get("char_start").and_then(|value| value.as_u64())?;
+            Some(serde_json::json!(format!("{file}:{char_start}")))
+        })
+        .unwrap_or_else(|| serde_json::json!(null));
+    let depends_on = item
+        .get("depends_on")
+        .or_else(|| item.get("refs"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let mut node = serde_json::Map::new();
+    node.insert("id".to_string(), serde_json::json!(id));
+    node.insert("type".to_string(), serde_json::json!(kind));
+    node.insert(
+        "role".to_string(),
+        item.get("role")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null)),
+    );
+    node.insert(
+        "statement".to_string(),
+        item.get("statement")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| serde_json::json!(value))
+            .unwrap_or_else(|| serde_json::json!(source_tex)),
+    );
+    node.insert("source_tex".to_string(), serde_json::json!(source_tex));
+    if let Some(source_context) = item.get("source_context") {
+        node.insert("source_context".to_string(), source_context.clone());
+    }
+    node.insert("section".to_string(), section);
+    node.insert("depends_on".to_string(), depends_on);
+    if let Some(typed_transcription) = item.get("typed_transcription") {
+        node.insert(
+            "typed_transcription".to_string(),
+            typed_transcription.clone(),
+        );
+    }
+    if let Some(theorem_ir) = item.get("theorem_ir") {
+        node.insert("theorem_ir".to_string(), theorem_ir.clone());
+    }
+    Some(serde_json::Value::Object(node))
+}
+
+fn formalize_inventory_typed_ir_item(item: &serde_json::Value) -> serde_json::Value {
+    let mut compact = item.clone();
+    if let Some(obj) = compact.as_object_mut() {
+        obj.remove("source_context");
+    }
+    compact
+}
+
+fn formalize_inventory_context_by_id(
+    theorem_inventory: &serde_json::Value,
+) -> HashMap<String, serde_json::Value> {
+    let mut by_id = HashMap::new();
+    let Some(items) = theorem_inventory
+        .get("items")
+        .and_then(|value| value.as_array())
+    else {
+        return by_id;
+    };
+    for item in items {
+        let Some(source_context) = item.get("source_context").cloned() else {
+            continue;
+        };
+        let Some(id) = item
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        by_id.entry(id.to_string()).or_insert(source_context);
+    }
+    by_id
+}
+
+fn merge_formalize_inventory_context_into_nodes(
+    nodes: &mut [serde_json::Value],
+    theorem_inventory: &serde_json::Value,
+) {
+    let contexts = formalize_inventory_context_by_id(theorem_inventory);
+    if contexts.is_empty() {
+        return;
+    }
+    for node in nodes {
+        let Some(obj) = node.as_object_mut() else {
+            continue;
+        };
+        if obj.contains_key("source_context") {
+            continue;
+        }
+        let Some(id) = obj
+            .get("id")
+            .or_else(|| obj.get("label"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if let Some(source_context) = contexts.get(id) {
+            obj.insert("source_context".to_string(), source_context.clone());
+        }
+    }
+}
+
+fn paper_math_sources_source_inventory(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    value
+        .pointer("/theorem_graph/source_inventory")
+        .or_else(|| value.get("theorem_inventory"))
 }
 
 #[derive(Debug)]
 struct FormalizeTypedIrBatchResult {
     batch_index: usize,
+    batch_number: usize,
     nodes: Vec<serde_json::Value>,
+    error: Option<String>,
 }
 
 fn formalize_typed_ir_nodes_cover_batch(
@@ -10014,8 +10900,8 @@ struct FormalizeSourceConfig {
 }
 
 const FORMALIZE_TYPED_IR_DEFAULT_PROVIDER: &str = "claude";
-const FORMALIZE_TYPED_IR_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
-const FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS: u32 = 120;
+const FORMALIZE_TYPED_IR_DEFAULT_MODEL: &str = "sonnet[1m]";
+const FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS: u32 = 300;
 const FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS: usize = 1;
 const FORMALIZE_TYPED_IR_DEFAULT_BATCH_CONCURRENCY: usize = 4;
 const FORMALIZE_TYPED_IR_ROLE: &str = "formalize_source_inventory_typed_transcriber";
@@ -10136,6 +11022,140 @@ fn apply_formalize_typed_ir_transcriber_config(
     spec.timeout_secs = config.typed_ir_timeout_secs;
 }
 
+fn validate_lean_statement_author_output(
+    lean_declaration: &str,
+    output: &serde_json::Value,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let status = output
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if status != "statement_ready" {
+        let reason = output
+            .get("unsupported_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("statement author did not produce a Lean statement");
+        issues.push(format!(
+            "Lean statement author did not produce statement_ready for {lean_declaration}: {reason}"
+        ));
+        return issues;
+    }
+
+    let lean_statement = output
+        .get("lean_statement")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim();
+    if lean_statement.is_empty() {
+        issues.push(format!(
+            "Lean statement author returned an empty lean_statement for {lean_declaration}."
+        ));
+        return issues;
+    }
+
+    if grokrxiv_review_loop::lean_statement_is_placeholder(lean_statement) {
+        issues.push(format!(
+            "Lean statement author returned a placeholder statement for {lean_declaration}."
+        ));
+    }
+
+    let theorem_decl = format!("theorem {lean_declaration}");
+    let lemma_decl = format!("lemma {lean_declaration}");
+    if !lean_statement.contains(&theorem_decl) && !lean_statement.contains(&lemma_decl) {
+        issues.push(format!(
+            "Lean statement author must declare theorem or lemma {lean_declaration}."
+        ));
+    }
+
+    let lean_context = output
+        .get("lean_context")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let generated_text = format!("{lean_context}\n{lean_statement}").to_ascii_lowercase();
+    for forbidden in ["sorry", "admit", "axiom"] {
+        if generated_text.contains(forbidden) {
+            issues.push(format!(
+                "Lean statement author output uses forbidden term {forbidden}."
+            ));
+        }
+    }
+
+    for item in output
+        .get("symbol_map")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let lean_name = item
+            .get("lean_name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim();
+        if lean_name.is_empty() {
+            issues
+                .push("Lean statement author symbol_map contains an empty lean_name.".to_string());
+            continue;
+        }
+        if !lean_context.contains(lean_name) && !lean_statement.contains(lean_name) {
+            issues.push(format!(
+                "Lean statement author symbol_map name {lean_name} does not appear in the Lean context or statement."
+            ));
+        }
+    }
+
+    issues
+}
+
+fn locked_lean_statement_from_author_output(
+    lean_declaration: &str,
+    output: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let issues = validate_lean_statement_author_output(lean_declaration, output);
+    if !issues.is_empty() {
+        anyhow::bail!("{}", issues.join("; "));
+    }
+    let lean_context = strip_lean_import_lines(
+        output
+            .get("lean_context")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim(),
+    );
+    let lean_statement = output
+        .get("lean_statement")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let normalized_statement =
+        grokrxiv_review_loop::normalize_lean_statement_header(&lean_statement);
+    let symbol_map = output
+        .get("symbol_map")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let statement_hash =
+        locked_lean_statement_hash(&lean_context, &normalized_statement, &symbol_map);
+
+    Ok(serde_json::json!({
+        "schema_version": "1.0.0",
+        "lean_declaration": lean_declaration,
+        "lean_context": lean_context,
+        "lean_statement": lean_statement,
+        "normalized_statement": normalized_statement,
+        "symbol_map": symbol_map,
+        "statement_hash": statement_hash,
+    }))
+}
+
+fn locked_lean_statement_hash(
+    lean_context: &str,
+    normalized_statement: &str,
+    symbol_map: &serde_json::Value,
+) -> String {
+    grokrxiv_review_loop::lean_statement_lock_hash(lean_context, normalized_statement, symbol_map)
+}
+
 fn formalize_prompt_hash(
     system_prompt: &str,
     user_prompt: &str,
@@ -10251,9 +11271,16 @@ struct FormalizeLatexSourceBlock {
     char_start: usize,
     char_end: usize,
     source_tex: String,
+    source_context_before: String,
+    source_context_after: String,
+    source_context_truncated_before: bool,
+    source_context_truncated_after: bool,
     labels: Vec<String>,
     refs: Vec<String>,
 }
+
+const FORMALIZE_THEOREM_CONTEXT_BEFORE_BYTES: usize = 12_000;
+const FORMALIZE_THEOREM_CONTEXT_AFTER_BYTES: usize = 4_000;
 
 fn build_formalize_latex_source_context(
     entries: &[FormalizeSourceArchiveEntry],
@@ -10440,19 +11467,54 @@ fn formalize_inventory_item(index: usize, block: &FormalizeLatexSourceBlock) -> 
             block.char_start
         )
     });
-    serde_json::json!({
-        "id": stable_id,
-        "ordinal": index + 1,
-        "kind": block.kind.clone(),
-        "role": if formalize_kind_is_theorem_level(&block.kind) { "lean_target" } else { "context" },
-        "env": block.env.clone(),
-        "file": block.file.clone(),
-        "char_start": block.char_start,
-        "char_end": block.char_end,
-        "labels": block.labels.clone(),
-        "refs": block.refs.clone(),
-        "source_tex": block.source_tex.clone(),
-    })
+    let mut item = serde_json::Map::new();
+    item.insert("id".to_string(), serde_json::json!(stable_id));
+    item.insert("ordinal".to_string(), serde_json::json!(index + 1));
+    item.insert("kind".to_string(), serde_json::json!(block.kind.clone()));
+    item.insert(
+        "role".to_string(),
+        serde_json::json!(if formalize_kind_is_theorem_level(&block.kind) {
+            "lean_target"
+        } else {
+            "context"
+        }),
+    );
+    item.insert("env".to_string(), serde_json::json!(block.env.clone()));
+    item.insert("file".to_string(), serde_json::json!(block.file.clone()));
+    item.insert(
+        "char_start".to_string(),
+        serde_json::json!(block.char_start),
+    );
+    item.insert("char_end".to_string(), serde_json::json!(block.char_end));
+    item.insert(
+        "labels".to_string(),
+        serde_json::json!(block.labels.clone()),
+    );
+    item.insert("refs".to_string(), serde_json::json!(block.refs.clone()));
+    item.insert(
+        "source_tex".to_string(),
+        serde_json::json!(block.source_tex.clone()),
+    );
+    if formalize_kind_is_theorem_level(&block.kind)
+        && (!block.source_context_before.trim().is_empty()
+            || !block.source_context_after.trim().is_empty())
+    {
+        item.insert(
+            "source_context".to_string(),
+            serde_json::json!({
+                "file": block.file.clone(),
+                "char_start": block.char_start,
+                "char_end": block.char_end,
+                "before": block.source_context_before.clone(),
+                "after": block.source_context_after.clone(),
+                "truncated_before": block.source_context_truncated_before,
+                "truncated_after": block.source_context_truncated_after,
+                "max_before_bytes": FORMALIZE_THEOREM_CONTEXT_BEFORE_BYTES,
+                "max_after_bytes": FORMALIZE_THEOREM_CONTEXT_AFTER_BYTES,
+            }),
+        );
+    }
+    serde_json::Value::Object(item)
 }
 
 fn formalize_kind_is_theorem_level(kind: &str) -> bool {
@@ -10662,6 +11724,8 @@ fn formalize_latex_source_blocks(
         };
         for mat in re.find_iter(&parsed_text) {
             let source_tex = text[mat.start()..mat.end()].trim().to_string();
+            let (source_context_before, source_context_after) =
+                formalize_source_context_window(text, mat.start(), mat.end());
             let labels = label_re
                 .captures_iter(&source_tex)
                 .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
@@ -10681,12 +11745,52 @@ fn formalize_latex_source_blocks(
                 char_start: mat.start(),
                 char_end: mat.end(),
                 source_tex,
+                source_context_truncated_before: mat.start()
+                    > FORMALIZE_THEOREM_CONTEXT_BEFORE_BYTES,
+                source_context_truncated_after: text.len().saturating_sub(mat.end())
+                    > FORMALIZE_THEOREM_CONTEXT_AFTER_BYTES,
+                source_context_before,
+                source_context_after,
                 labels,
                 refs,
             });
         }
     }
     blocks
+}
+
+fn formalize_source_context_window(text: &str, start: usize, end: usize) -> (String, String) {
+    let before_start = previous_char_boundary(
+        text,
+        start.saturating_sub(FORMALIZE_THEOREM_CONTEXT_BEFORE_BYTES),
+    );
+    let before_end = previous_char_boundary(text, start);
+    let after_start = next_char_boundary(text, end);
+    let after_end = next_char_boundary(
+        text,
+        end.saturating_add(FORMALIZE_THEOREM_CONTEXT_AFTER_BYTES)
+            .min(text.len()),
+    );
+    (
+        text[before_start..before_end].trim().to_string(),
+        text[after_start..after_end].trim().to_string(),
+    )
+}
+
+fn previous_char_boundary(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn next_char_boundary(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn strip_latex_comments_preserve_len(text: &str) -> String {
@@ -11088,6 +12192,7 @@ async fn formalize_review(
     external_actions_enabled: bool,
     mode: FormalizeMode,
     typed_ir_only: bool,
+    blueprint_loop: bool,
 ) -> anyhow::Result<()> {
     use grokrxiv_schemas::VerifierStatus;
     if typed_ir_only {
@@ -11097,8 +12202,9 @@ async fn formalize_review(
         cli_status::set_enabled(true);
     }
     cli_status::emit(format!(
-        "formalize {review_id}: loading runtime config (mode={})",
-        mode.as_str()
+        "formalize {review_id}: loading runtime config (mode={}, blueprint_loop={})",
+        mode.as_str(),
+        blueprint_loop
     ));
     ensure_min_cli_timeout_secs(1800);
     let config = super::Config::from_env();
@@ -11215,12 +12321,15 @@ async fn formalize_review(
     // Paper dependency graph (A1): the extractor records each theorem's "uses" edges on its
     // `proof:<id>` node here, which `resolve_obligation_dependencies` mines to give the Lean
     // author the referenced definitions/lemmas instead of an isolated statement.
-    let theorem_nodes: Vec<serde_json::Value> = paper_math_sources
+    let mut theorem_nodes: Vec<serde_json::Value> = paper_math_sources
         .get("theorem_graph")
         .and_then(|tg| tg.get("nodes").or_else(|| tg.get("theorem_graph")))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    if let Some(source_inventory) = paper_math_sources_source_inventory(&paper_math_sources) {
+        merge_formalize_inventory_context_into_nodes(&mut theorem_nodes, source_inventory);
+    }
 
     let proof_obligations_ready =
         grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
@@ -11259,6 +12368,22 @@ async fn formalize_review(
         forbidden_terms: vec!["sorry", "admit", "axiom"],
         max_attempts: 2,
     };
+    let blueprint_context = if blueprint_loop {
+        Some(
+            write_formalization_blueprint_artifacts(
+                review_id,
+                mode,
+                &artifact_dir,
+                &paper_math_sources,
+                &semantic_ir,
+                &proof_obligations,
+                &lean_task,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let lean_final_path = lean_src_dir.join("Proofs.lean");
 
     cli_status::emit(format!(
@@ -11276,6 +12401,7 @@ async fn formalize_review(
             &semantic_ir,
             &semantic_model,
             &theorem_nodes,
+            blueprint_context.as_ref(),
             &lean_dir,
             &lean_final_path,
             debug_output,
@@ -11502,6 +12628,97 @@ async fn formalize_review(
             .unwrap_or("?")
     ));
     Ok(())
+}
+
+async fn write_formalization_blueprint_artifacts(
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    paper_math_sources: &serde_json::Value,
+    semantic_ir: &serde_json::Value,
+    proof_obligations: &serde_json::Value,
+    lean_task: &ReviewFixCodeTask,
+) -> anyhow::Result<serde_json::Value> {
+    let blueprint_dir = artifact_dir.join("blueprint");
+    tokio::fs::create_dir_all(&blueprint_dir)
+        .await
+        .with_context(|| format!("create {}", blueprint_dir.display()))?;
+
+    let formalization_goal = grokrxiv_review_loop::build_formalization_goal(
+        review_id,
+        mode.as_str(),
+        semantic_ir,
+        proof_obligations,
+    );
+    write_loop_json(
+        &artifact_dir.join("formalization_goal.json"),
+        &formalization_goal,
+    )
+    .await?;
+
+    let paper_blueprint = grokrxiv_review_loop::build_paper_blueprint(
+        review_id,
+        paper_math_sources,
+        semantic_ir,
+        proof_obligations,
+        &formalization_goal,
+    );
+    write_loop_json(
+        &blueprint_dir.join("paper_blueprint.json"),
+        &paper_blueprint,
+    )
+    .await?;
+
+    let entity_index = grokrxiv_review_loop::build_entity_index(review_id, &paper_blueprint);
+    write_loop_json(&blueprint_dir.join("entity_index.json"), &entity_index).await?;
+
+    let formal_interfaces = grokrxiv_review_loop::build_formal_interfaces_lean(&entity_index);
+    write_review_loop_code_file(
+        &blueprint_dir.join("FormalInterfaces.lean"),
+        &formal_interfaces,
+    )
+    .await?;
+
+    prepare_review_loop_project_harness(lean_task, &blueprint_dir).await?;
+    let typecheck = run_loop_command(
+        lean_task.compile_program,
+        &["env", "lean", "FormalInterfaces.lean"],
+        &blueprint_dir,
+        std::time::Duration::from_secs(lean_task.compile_timeout_secs),
+    )
+    .await;
+    let typecheck_json = serde_json::to_value(&typecheck).unwrap_or_else(|_| serde_json::json!({}));
+    write_loop_json(
+        &blueprint_dir.join("formal_interfaces_typecheck.json"),
+        &typecheck_json,
+    )
+    .await?;
+    if typecheck.status != "pass" {
+        let detail = if typecheck.stderr.trim().is_empty() {
+            typecheck.stdout.as_str()
+        } else {
+            typecheck.stderr.as_str()
+        };
+        anyhow::bail!(
+            "FormalInterfaces.lean typecheck failed: {}",
+            truncate(&detail.replace('\n', " "), 600)
+        );
+    }
+
+    Ok(serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "formalization_goal": formalization_goal,
+        "paper_blueprint": paper_blueprint,
+        "entity_index": entity_index,
+        "artifacts": {
+            "formalization_goal": "review_loop/formalization_goal.json",
+            "paper_blueprint": "review_loop/blueprint/paper_blueprint.json",
+            "entity_index": "review_loop/blueprint/entity_index.json",
+            "formal_interfaces": "review_loop/blueprint/FormalInterfaces.lean",
+            "formal_interfaces_typecheck": "review_loop/blueprint/formal_interfaces_typecheck.json"
+        }
+    }))
 }
 
 async fn refresh_formalize_review_loop_report(
@@ -17700,6 +18917,76 @@ mod tests {
         }
     }
 
+    struct TypedIrSelectiveFailingRunner {
+        fail_id: &'static str,
+    }
+
+    #[async_trait]
+    impl crate::agents::AgentRunner for TypedIrSelectiveFailingRunner {
+        fn name(&self) -> &'static str {
+            "typed-ir-selective-failing-runner"
+        }
+
+        async fn run(
+            &self,
+            spec: &crate::agents::AgentSpec,
+            input: &crate::agents::AgentInput,
+        ) -> anyhow::Result<crate::agents::AgentRun> {
+            let batch_items = input
+                .artifact
+                .get("batch_items")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if batch_items
+                .iter()
+                .any(|item| item.get("id").and_then(|value| value.as_str()) == Some(self.fail_id))
+            {
+                anyhow::bail!("simulated timeout for {}", self.fail_id);
+            }
+            let nodes = batch_items
+                .into_iter()
+                .map(|item| {
+                    let id = item
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    serde_json::json!({
+                        "id": id,
+                        "type": "theorem",
+                        "statement": format!("typed {id}"),
+                        "depends_on": [],
+                        "source_tex": item.get("source_tex").cloned().unwrap_or_default(),
+                        "typed_transcription": {"status": "transcribed"},
+                        "theorem_ir": {
+                            "math_type": {"kind": "custom", "name": "synthetic"},
+                            "proposition": {
+                                "kind": "uninterpreted_predicate",
+                                "name": "Synthetic",
+                                "args": []
+                            }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            Ok(crate::agents::AgentRun {
+                role: spec.role.clone(),
+                runner: spec.runner,
+                model: spec.model.clone(),
+                output: serde_json::json!({ "nodes": nodes }),
+                raw_output: None,
+                verifier_status: None,
+                verifier_notes: None,
+                tokens_in: None,
+                tokens_out: None,
+                latency_ms: 1,
+                cache_hit: false,
+                sandbox_ref: None,
+            })
+        }
+    }
+
     #[test]
     fn bare_agenthero_prints_help_instead_of_serving() {
         let err = Cli::try_parse_from(["agh"]).expect_err("bare CLI should print help");
@@ -18558,8 +19845,8 @@ mod tests {
         assert!(!config.typed_ir_include_context);
         assert_eq!(config.typed_ir_max_items, 8);
         assert_eq!(config.typed_ir_provider, "claude");
-        assert_eq!(config.typed_ir_model, FORMALIZE_TYPED_IR_DEFAULT_MODEL);
-        assert_eq!(config.typed_ir_timeout_secs, 120);
+        assert_eq!(config.typed_ir_model, "sonnet[1m]");
+        assert_eq!(config.typed_ir_timeout_secs, 300);
         assert!(!config.typed_ir_only);
     }
 
@@ -18593,7 +19880,7 @@ mod tests {
     fn formalize_source_config_accepts_role_level_typed_ir_overrides() {
         let _env = EnvVarsGuard::set(&[
             ("GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER", "claude"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_MODEL", "claude-sonnet-4-6"),
+            ("GROKRXIV_FORMALIZE_TYPED_IR_MODEL", "sonnet[1m]"),
             (
                 "AGENTHERO_PROVIDER_OVERRIDE_FORMALIZE_SOURCE_INVENTORY_TYPED_TRANSCRIBER",
                 "gemini",
@@ -18634,6 +19921,7 @@ mod tests {
         assert_eq!(spec.provider, "claude");
         assert_eq!(spec.model, FORMALIZE_TYPED_IR_DEFAULT_MODEL);
         assert_eq!(spec.timeout_secs, FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS);
+        assert_eq!(spec.timeout_secs, 300);
     }
 
     #[tokio::test]
@@ -18696,10 +19984,16 @@ mod tests {
             "typed-IR batch prompts already include source_tex; passing the whole source bundle makes the fast path slow and stale"
         );
         assert_eq!(theorem_graph["typed_count"], 4);
+        assert_eq!(
+            theorem_graph["source_inventory"]["items"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(4)
+        );
     }
 
     #[tokio::test]
-    async fn formalize_typed_ir_runner_error_fails_instead_of_fabricating_math_ir() {
+    async fn formalize_typed_ir_runner_error_falls_back_to_source_inventory_without_math_ir() {
         let runner = Arc::new(TypedIrFailingRunner);
         let config = FormalizeSourceConfig {
             source_context_max_blocks: 240,
@@ -18750,7 +20044,7 @@ mod tests {
         });
         let workdir = tempfile::tempdir().expect("temp workdir");
 
-        let err = run_formalize_inventory_typed_transcription(
+        let theorem_graph = run_formalize_inventory_typed_transcription(
             runner,
             &spec,
             Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
@@ -18761,12 +20055,107 @@ mod tests {
             workdir.path(),
         )
         .await
-        .expect_err("runner failure must not synthesize typed theorem IR");
+        .expect("runner failure should fall back to deterministic source inventory")
+        .expect("source inventory fallback returns a theorem graph");
 
-        assert!(
-            err.to_string().contains("typed-ir runner failed"),
-            "unexpected error: {err:#}"
+        assert_eq!(
+            theorem_graph["source"],
+            "formalize_theorem_inventory_source_fallback"
         );
+        assert_eq!(theorem_graph["typed_count"], 0);
+        assert_eq!(theorem_graph["failed_count"], 1);
+        assert_eq!(theorem_graph["nodes"][0]["id"], "thm:main");
+        assert_eq!(
+            theorem_graph["nodes"][0]["source_tex"],
+            "\\begin{theorem}\\label{thm:main} Main result.\\end{theorem}"
+        );
+        assert!(
+            theorem_graph["nodes"][0].get("theorem_ir").is_none(),
+            "source fallback must not fabricate typed theorem_ir"
+        );
+        assert!(
+            theorem_graph["source_inventory"]["items"]
+                .as_array()
+                .map(|items| items.len())
+                == Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn formalize_typed_ir_preserves_successful_batches_when_one_batch_fails() {
+        let runner = Arc::new(TypedIrSelectiveFailingRunner {
+            fail_id: "thm:slow",
+        });
+        let config = FormalizeSourceConfig {
+            source_context_max_blocks: 240,
+            source_context_max_chars: 500_000,
+            transcription_batch_items: 1,
+            transcription_batch_chars: 30_000,
+            source_extraction_timeout_secs: 1_800,
+            typed_ir_provider: "claude".to_string(),
+            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
+            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
+            typed_ir_batch_concurrency: 2,
+            typed_ir_include_context: false,
+            typed_ir_max_items: 64,
+            typed_ir_only: false,
+        };
+        let mut spec =
+            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
+        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
+        let seed = crate::db::PaperReviewSeedRow {
+            arxiv_id: "2606.23906".to_string(),
+            title: "Typed IR Partial Fixture".to_string(),
+            abstract_: None,
+            field: None,
+            submitted_date: None,
+        };
+        let theorem_inventory = serde_json::json!({
+            "inventory_count": 2,
+            "theorem_level_count": 2,
+            "items": [
+                {
+                    "id": "thm:ok",
+                    "kind": "theorem",
+                    "role": "lean_target",
+                    "file": "paper.tex",
+                    "char_start": 12,
+                    "source_tex": "\\begin{theorem} OK result.\\end{theorem}"
+                },
+                {
+                    "id": "thm:slow",
+                    "kind": "theorem",
+                    "role": "lean_target",
+                    "file": "paper.tex",
+                    "char_start": 88,
+                    "source_tex": "\\begin{theorem} Slow result.\\end{theorem}"
+                }
+            ]
+        });
+        let workdir = tempfile::tempdir().expect("temp workdir");
+
+        let theorem_graph = run_formalize_inventory_typed_transcription(
+            runner,
+            &spec,
+            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            &seed,
+            &theorem_inventory,
+            &config,
+            workdir.path(),
+        )
+        .await
+        .expect("partial typed-IR transcription should retain successful batches")
+        .expect("partial typed-IR returns a theorem graph");
+
+        assert_eq!(theorem_graph["typed_count"], 1);
+        assert_eq!(theorem_graph["failed_count"], 1);
+        assert_eq!(theorem_graph["partial"], true);
+        assert_eq!(theorem_graph["nodes"][0]["id"], "thm:ok");
+        assert!(theorem_graph["failed_batches"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("simulated timeout for thm:slow"));
     }
 
     #[test]
@@ -19092,7 +20481,7 @@ mod tests {
             "formalize_add_zero",
             artifact_path,
             Some("claude"),
-            Some("claude-sonnet-4-6"),
+            Some("sonnet[1m]"),
             Some("prompt-hash-1"),
         );
 
@@ -19107,7 +20496,7 @@ mod tests {
         assert_eq!(author.payload["obligation_id"], "formalize_add_zero");
         assert_eq!(author.payload["artifact_path"], artifact_path);
         assert_eq!(author.payload["provider"], "claude");
-        assert_eq!(author.payload["model"], "claude-sonnet-4-6");
+        assert_eq!(author.payload["model"], "sonnet[1m]");
         assert_eq!(author.payload["prompt_hash"], "prompt-hash-1");
 
         let author_completed = formalize_lean_target_author_completed_event(
@@ -19149,7 +20538,7 @@ mod tests {
                 "agent_output_audits": [{
                     "role": "lean_code_fixer",
                     "phase": "generate",
-                    "model": "claude-sonnet-4-6",
+                    "model": "sonnet[1m]",
                     "artifact_dir": "review_loop/agent_outputs/lean_review_fix_code/round_2/lean_code_fixer"
                 }]
             }],
@@ -19428,6 +20817,89 @@ The pure braid group is polyfree.
     }
 
     #[test]
+    fn formalize_theorem_inventory_attaches_source_context_to_lean_targets() {
+        let entries = vec![FormalizeSourceArchiveEntry {
+            path: "paper.tex".to_string(),
+            bytes: br#"\documentclass{article}
+\newtheorem{prop}{Proposition}
+\newtheorem{defn}{Definition}
+\begin{document}
+\begin{defn}\label{def:thing}A context definition.\end{defn}
+Before the proposition we define relations:
+\begin{enumerate}[(1)] \setcounter{enumi}{-1}
+  \item relation zero
+  \item relation one
+\end{enumerate}
+\begin{prop}\label{prop:ctx} The quotient by relations (0)--(1) maps isomorphically to $T$.\end{prop}
+After-marker explains the displayed map.
+\end{document}
+"#
+            .to_vec(),
+        }];
+        let config = FormalizeSourceConfig::from_env();
+
+        let inventory = build_formalize_theorem_inventory(&entries, "test", "Context", &config);
+        let items = inventory["items"].as_array().expect("inventory items");
+        let prop = items
+            .iter()
+            .find(|item| item["id"] == "prop:ctx")
+            .expect("prop item");
+
+        assert_eq!(prop["role"], "lean_target");
+        assert!(prop["source_context"]["before"]
+            .as_str()
+            .unwrap()
+            .contains("relation zero"));
+        assert!(prop["source_context"]["before"]
+            .as_str()
+            .unwrap()
+            .contains("\\begin{enumerate}"));
+        assert!(prop["source_context"]["after"]
+            .as_str()
+            .unwrap()
+            .contains("After-marker"));
+        assert_eq!(prop["source_context"]["truncated_before"], false);
+
+        let defn = items
+            .iter()
+            .find(|item| item["id"] == "def:thing")
+            .expect("definition item");
+        assert_eq!(defn["role"], "context");
+        assert!(defn.get("source_context").is_none());
+    }
+
+    #[test]
+    fn formalize_typed_ir_prompt_item_strips_source_context_but_nodes_keep_it() {
+        let inventory = serde_json::json!({
+            "items": [{
+                "id": "prop:ctx",
+                "kind": "proposition",
+                "role": "lean_target",
+                "source_tex": "\\begin{prop}\\label{prop:ctx} Claim.\\end{prop}",
+                "source_context": {
+                    "before": "relations (0)--(3)",
+                    "after": "map construction"
+                }
+            }]
+        });
+        let item = inventory["items"][0].clone();
+        let compact = formalize_inventory_typed_ir_item(&item);
+        assert!(compact.get("source_context").is_none());
+
+        let mut nodes = vec![serde_json::json!({
+            "id": "prop:ctx",
+            "type": "proposition",
+            "statement": "Claim."
+        })];
+        merge_formalize_inventory_context_into_nodes(&mut nodes, &inventory);
+
+        assert_eq!(
+            nodes[0]["source_context"]["before"],
+            serde_json::json!("relations (0)--(3)")
+        );
+    }
+
+    #[test]
     fn formalize_inventory_prompt_requires_typed_ir_without_sampling() {
         let system = formalize_inventory_typed_transcription_system_prompt();
         let batch_items = vec![serde_json::json!({
@@ -19490,6 +20962,21 @@ The pure braid group is polyfree.
     }
 
     #[test]
+    fn parse_formalize_args_accepts_blueprint_loop_mode() {
+        let parsed = parse_formalize_args(vec![
+            "59486169-9357-42b4-b520-339723816013".to_string(),
+            "--blueprint-loop".to_string(),
+            "--no-external-actions".to_string(),
+        ])
+        .expect("formalize blueprint-loop args parse");
+
+        assert_eq!(parsed.mode, FormalizeMode::Full);
+        assert!(parsed.blueprint_loop);
+        assert!(!parsed.typed_ir_only);
+        assert!(!parsed.external_actions_enabled);
+    }
+
+    #[test]
     fn lean_target_base_artifact_omits_full_semantic_ir_blob() {
         let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
         let obligation = serde_json::json!({
@@ -19534,6 +21021,8 @@ The pure braid group is polyfree.
             &semantic_model,
             &proof_obligations,
             &lean_targets,
+            None,
+            None,
         );
         let rendered = serde_json::to_string(&artifact).unwrap();
 
@@ -19544,6 +21033,115 @@ The pure braid group is polyfree.
             rendered.len() < 12_000,
             "artifact too large: {}",
             rendered.len()
+        );
+    }
+
+    #[test]
+    fn lean_target_base_artifact_includes_locked_statement_for_proof_author() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_theorem_thm_add_zero",
+            "source_claim_id": "thm:add-zero",
+            "statement": "For all n : Nat, n + 0 = n.",
+            "lean_declaration": "thm_add_zero"
+        });
+        let proof_obligations = serde_json::json!({
+            "status": "ready",
+            "source": "review_loop/semantic_ir.json",
+            "obligations": [obligation.clone()]
+        });
+        let lean_targets = serde_json::json!({"status": "ready", "targets": []});
+        let locked_statement = serde_json::json!({
+            "lean_declaration": "thm_add_zero",
+            "lean_context": "",
+            "lean_statement": "theorem thm_add_zero (n : Nat) : n + 0 = n := by",
+            "normalized_statement": "theorem thm_add_zero (n : Nat) : n + 0 = n",
+            "symbol_map": [],
+            "statement_hash": "sha256:test-lock"
+        });
+
+        let artifact = lean_target_base_artifact(
+            review_id,
+            &serde_json::json!(["requirement"]),
+            &obligation,
+            "thm_add_zero",
+            "For all n : Nat, n + 0 = n.",
+            &[],
+            None,
+            &serde_json::json!({}),
+            &proof_obligations,
+            &lean_targets,
+            Some(&locked_statement),
+            None,
+        );
+
+        assert_eq!(
+            artifact["locked_statement"]["statement_hash"],
+            "sha256:test-lock"
+        );
+        assert_eq!(
+            artifact["proof_author_contract"],
+            "fill_proof_body_only_preserve_locked_statement"
+        );
+    }
+
+    #[test]
+    fn lean_target_base_artifact_includes_blueprint_work_packet_context() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_theorem_thm_add_zero",
+            "source_claim_id": "thm:add-zero",
+            "statement": "For all n : Nat, n + 0 = n.",
+            "lean_declaration": "thm_add_zero"
+        });
+        let proof_obligations = serde_json::json!({
+            "status": "ready",
+            "source": "review_loop/semantic_ir.json",
+            "obligations": [obligation.clone()]
+        });
+        let lean_targets = serde_json::json!({"status": "ready", "targets": []});
+        let locked_statement = serde_json::json!({
+            "lean_declaration": "thm_add_zero",
+            "lean_context": "",
+            "lean_statement": "theorem thm_add_zero (n : Nat) : n + 0 = n := by",
+            "normalized_statement": "theorem thm_add_zero (n : Nat) : n + 0 = n",
+            "symbol_map": [],
+            "statement_hash": "sha256:test-lock"
+        });
+        let blueprint_context = serde_json::json!({
+            "target_theorem": {
+                "source_claim_id": "thm:add-zero",
+                "lean_declaration": "thm_add_zero"
+            },
+            "entities": [{
+                "source_claim_id": "thm:add-zero",
+                "lean_name": "paper_theorem_thm_add_zero",
+                "target_lean_declaration": "thm_add_zero"
+            }]
+        });
+
+        let artifact = lean_target_base_artifact(
+            review_id,
+            &serde_json::json!(["requirement"]),
+            &obligation,
+            "thm_add_zero",
+            "For all n : Nat, n + 0 = n.",
+            &[],
+            None,
+            &serde_json::json!({}),
+            &proof_obligations,
+            &lean_targets,
+            Some(&locked_statement),
+            Some(&blueprint_context),
+        );
+
+        assert_eq!(
+            artifact["blueprint_context"]["entities"][0]["lean_name"],
+            "paper_theorem_thm_add_zero"
+        );
+        assert_eq!(
+            artifact["work_packet_contract"]["formal_interfaces_artifact"],
+            "review_loop/blueprint/FormalInterfaces.lean"
         );
     }
 
@@ -21021,6 +22619,341 @@ obligationToLean = LeanTarget\n";
     }
 
     #[test]
+    fn review_loop_agent_input_contract_requires_locked_statement_before_lean_proof_author() {
+        let artifact = serde_json::json!({
+            "phase": "generate",
+            "target": "lean",
+            "language": "lean",
+            "filename": "GrokRxiv/Proofs.lean",
+            "attempt": 1,
+            "max_attempts": 2,
+            "base": {
+                "review_id": "11111111-1111-1111-1111-111111111111",
+                "proof_obligations": {"status": "ready", "obligations": [{"kind": "theorem_formalization"}]},
+                "lean_targets": {"targets": [{"lean_declaration": "thm"}]},
+                "semantic_ir": {"theorem_candidates": []}
+            },
+            "previous_code": null,
+            "previous_compile": null,
+            "previous_codex_review": null,
+            "harness": {"path": "/tmp/harness", "branch": "review-loop/lean/abc123"}
+        });
+
+        let issue = review_loop_agent_input_contract_issue("lean_proof_author", &artifact)
+            .expect("missing locked statement must block the proof author");
+        let issue_json = issue.as_json();
+
+        assert_eq!(
+            issue_json["missing_artifact"],
+            "review_loop/lean/targets/*/locked_statement.json"
+        );
+        assert!(issue_json["reason"]
+            .as_str()
+            .unwrap()
+            .contains("locked statement"));
+    }
+
+    #[test]
+    fn review_loop_agent_input_contract_requires_statement_faithfulness_symbol_map() {
+        let artifact = serde_json::json!({
+            "phase": "advisory",
+            "target": "statement_faithfulness",
+            "lean_declaration": "lem_stl_cobracket_vanishing",
+            "paper_theorem": "\\zeta^\\alt \\circ \\delta = 0",
+            "lean_statement": "theorem lem_stl_cobracket_vanishing : zeta_alt_circ_delta := by"
+        });
+
+        let issue = review_loop_agent_input_contract_issue("lean_faithfulness_checker", &artifact)
+            .expect("missing symbol_map must block the statement reviewer");
+        let issue_json = issue.as_json();
+
+        assert_eq!(
+            issue_json["missing_artifact"],
+            "review_loop/lean/targets/*/locked_statement.json#symbol_map"
+        );
+    }
+
+    #[test]
+    fn lean_statement_author_output_builds_locked_statement_hash() {
+        let output = serde_json::json!({
+            "status": "statement_ready",
+            "lean_context": "import Mathlib\n\nvariable (zeta_alt_circ_delta : Prop)",
+            "lean_statement": "theorem lem_stl_cobracket_vanishing : zeta_alt_circ_delta := by",
+            "symbol_map": [
+                {
+                    "lean_name": "zeta_alt_circ_delta",
+                    "source_tex": "\\zeta^\\alt \\circ \\delta = 0",
+                    "source_claim": "The cobracket vanishes."
+                }
+            ],
+            "unsupported_reason": null,
+            "faithfulness_notes": ["Uses a mapped opaque proposition for the source composite."],
+            "confidence": 0.62
+        });
+
+        let issues = validate_lean_statement_author_output("lem_stl_cobracket_vanishing", &output);
+        assert!(
+            issues.is_empty(),
+            "valid statement output rejected: {issues:?}"
+        );
+
+        let lock = locked_lean_statement_from_author_output("lem_stl_cobracket_vanishing", &output)
+            .expect("lock valid statement output");
+
+        assert_eq!(lock["lean_declaration"], "lem_stl_cobracket_vanishing");
+        assert_eq!(
+            lock["lean_context"],
+            "variable (zeta_alt_circ_delta : Prop)"
+        );
+        assert_eq!(
+            lock["normalized_statement"],
+            "theorem lem_stl_cobracket_vanishing : zeta_alt_circ_delta"
+        );
+        assert!(lock["statement_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(lock["symbol_map"][0]["lean_name"], "zeta_alt_circ_delta");
+    }
+
+    #[test]
+    fn lean_statement_author_output_rejects_placeholder_statement() {
+        let output = serde_json::json!({
+            "status": "statement_ready",
+            "lean_context": "",
+            "lean_statement": "theorem lem_stl_cobracket_vanishing : 0 = 0 := by",
+            "symbol_map": [],
+            "unsupported_reason": null,
+            "faithfulness_notes": [],
+            "confidence": 0.2
+        });
+
+        let issues = validate_lean_statement_author_output("lem_stl_cobracket_vanishing", &output);
+
+        assert!(
+            issues.iter().any(|issue| issue.contains("placeholder")),
+            "placeholder authored statement must be rejected: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn lean_statement_structural_check_code_wraps_authored_statement() {
+        let output = serde_json::json!({
+            "status": "statement_ready",
+            "lean_context": "import Mathlib\n\nvariable (zeta_alt_circ_delta : Prop)",
+            "lean_statement": "theorem lem_stl_cobracket_vanishing : zeta_alt_circ_delta := by",
+            "symbol_map": [
+                {
+                    "lean_name": "zeta_alt_circ_delta",
+                    "source_tex": "\\zeta^\\alt \\circ \\delta = 0",
+                    "source_claim": "The cobracket vanishes."
+                }
+            ],
+            "unsupported_reason": null,
+            "faithfulness_notes": [],
+            "confidence": 0.62
+        });
+
+        let code = lean_statement_structural_check_code(&output)
+            .expect("structural check code should be generated");
+
+        assert!(code.contains("import Mathlib"));
+        assert_eq!(code.matches("import Mathlib").count(), 1);
+        assert!(code.contains("set_option autoImplicit false"));
+        assert!(code.contains("variable (zeta_alt_circ_delta : Prop)"));
+        assert!(code.contains("theorem lem_stl_cobracket_vanishing : zeta_alt_circ_delta := by"));
+        assert!(code.contains("all_goals sorry"));
+    }
+
+    #[test]
+    fn lean_statement_author_artifact_preserves_source_packet() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_lem_stl_cobracket_vanishing",
+            "source_claim_id": "lem:stl-cobracket-vanishing",
+            "statement": "The standard Lie cobracket vanishes.",
+            "lean_declaration": "lem_stl_cobracket_vanishing",
+            "theorem_ir": {
+                "conclusion": {
+                    "kind": "equals",
+                    "lhs": {"kind": "raw_term", "tex": "\\zeta^\\alt \\circ \\delta"},
+                    "rhs": {"kind": "int_lit", "value": 0}
+                }
+            }
+        });
+        let lean_target = serde_json::json!({
+            "lean_declaration": "lem_stl_cobracket_vanishing",
+            "statement_author_packet": {
+                "source_claim_id": "lem:stl-cobracket-vanishing",
+                "source_tex": "\\begin{lemma}\\label{lem:stl-cobracket-vanishing}$\\zeta^\\alt \\circ \\delta = 0$.\\end{lemma}",
+                "statement": "The standard Lie cobracket vanishes.",
+                "section": "sec-2-3-2",
+                "dependencies": ["def:stl-cobracket"],
+                "typed_ir": {
+                    "conclusion": {
+                        "kind": "equals",
+                        "lhs": {"kind": "raw_term", "tex": "\\zeta^\\alt \\circ \\delta"},
+                        "rhs": {"kind": "int_lit", "value": 0}
+                    }
+                }
+            }
+        });
+        let dependencies = vec![serde_json::json!({
+            "id": "def:stl-cobracket",
+            "type": "definition",
+            "source_tex": "\\begin{definition}...\\end{definition}"
+        })];
+
+        let artifact = lean_statement_author_artifact(
+            review_id,
+            &obligation,
+            &lean_target,
+            &dependencies,
+            None,
+            None,
+        );
+
+        assert_eq!(artifact["target"], "lean_statement");
+        assert_eq!(
+            artifact["source_packet"]["source_tex"],
+            "\\begin{lemma}\\label{lem:stl-cobracket-vanishing}$\\zeta^\\alt \\circ \\delta = 0$.\\end{lemma}"
+        );
+        assert_eq!(artifact["source_packet"]["section"], "sec-2-3-2");
+        assert_eq!(
+            artifact["source_packet"]["typed_ir"]["conclusion"]["lhs"]["kind"],
+            "raw_term"
+        );
+        assert_eq!(
+            artifact["source_packet"]["dependencies"][0]["id"],
+            "def:stl-cobracket"
+        );
+    }
+
+    #[test]
+    fn lean_statement_author_artifact_preserves_unresolved_packet_dependencies() {
+        let review_id = Uuid::parse_str("495d0f6a-5df0-4590-a029-14de314bd253").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_lem_nesterenko_suslin",
+            "source_claim_id": "lem:nesterenko-suslin",
+            "statement": "\\begin{lemma}[Nesterenko--Suslin] ...\\end{lemma}",
+            "lean_declaration": "lem_nesterenko_suslin"
+        });
+        let lean_target = serde_json::json!({
+            "lean_declaration": "lem_nesterenko_suslin",
+            "statement_author_packet": {
+                "source_claim_id": "lem:nesterenko-suslin",
+                "source_tex": "\\begin{lemma}[Nesterenko--Suslin] ...\\end{lemma}",
+                "statement": "\\begin{lemma}[Nesterenko--Suslin] ...\\end{lemma}",
+                "section": "paper-general-fields.tex:190038",
+                "dependencies": ["def:st-module", "lem:homology-comparison"],
+                "typed_ir": null,
+                "typed_transcription": null
+            }
+        });
+        let artifact =
+            lean_statement_author_artifact(review_id, &obligation, &lean_target, &[], None, None);
+
+        assert_eq!(
+            artifact["source_packet"]["dependencies"],
+            serde_json::json!(["def:st-module", "lem:homology-comparison"])
+        );
+        assert_eq!(
+            artifact["source_packet"]["nearby_definitions"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn lean_statement_author_artifact_includes_source_context_from_theorem_node() {
+        let review_id = Uuid::parse_str("495d0f6a-5df0-4590-a029-14de314bd253").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_prop_ctx",
+            "source_claim_id": "prop:ctx",
+            "statement": "The quotient by relations maps isomorphically to T.",
+            "lean_declaration": "prop_ctx"
+        });
+        let lean_target = serde_json::json!({
+            "lean_declaration": "prop_ctx"
+        });
+        let source_node = serde_json::json!({
+            "id": "prop:ctx",
+            "type": "proposition",
+            "source_tex": "\\begin{prop}\\label{prop:ctx} The quotient by relations (0)--(3) maps isomorphically to $T$.\\end{prop}",
+            "source_context": {
+                "before": "Relations (0)--(3) are listed here.",
+                "after": "The map is constructed after the proposition."
+            }
+        });
+
+        let artifact = lean_statement_author_artifact(
+            review_id,
+            &obligation,
+            &lean_target,
+            &[],
+            Some(&source_node),
+            None,
+        );
+
+        assert_eq!(
+            artifact["source_packet"]["source_context"]["before"],
+            serde_json::json!("Relations (0)--(3) are listed here.")
+        );
+        assert_eq!(
+            artifact["statement_author_contract"]["source_context_is_supporting_evidence"],
+            true
+        );
+    }
+
+    #[test]
+    fn lean_statement_author_artifact_includes_blueprint_context_when_available() {
+        let review_id = Uuid::parse_str("495d0f6a-5df0-4590-a029-14de314bd253").unwrap();
+        let obligation = serde_json::json!({
+            "id": "formalize_thm_add_zero",
+            "source_claim_id": "thm:add-zero",
+            "statement": "For all n : Nat, n + 0 = n.",
+            "lean_declaration": "thm_add_zero"
+        });
+        let lean_target = serde_json::json!({
+            "lean_declaration": "thm_add_zero",
+            "statement_author_packet": {
+                "source_claim_id": "thm:add-zero",
+                "source_tex": "\\begin{theorem}\\label{thm:add-zero} For all $n : Nat$, $n + 0 = n$.\\end{theorem}",
+                "statement": "For all n : Nat, n + 0 = n.",
+                "section": "sec-main",
+                "dependencies": [],
+                "typed_ir": null,
+                "typed_transcription": null
+            }
+        });
+        let blueprint_context = serde_json::json!({
+            "target_theorem": {"source_claim_id": "thm:add-zero"},
+            "entities": [{
+                "source_claim_id": "thm:add-zero",
+                "lean_name": "paper_theorem_thm_add_zero",
+                "target_lean_declaration": "thm_add_zero"
+            }]
+        });
+
+        let artifact = lean_statement_author_artifact(
+            review_id,
+            &obligation,
+            &lean_target,
+            &[],
+            None,
+            Some(&blueprint_context),
+        );
+
+        assert_eq!(
+            artifact["blueprint_context"]["entities"][0]["target_lean_declaration"],
+            "thm_add_zero"
+        );
+        assert_eq!(
+            artifact["statement_author_contract"]["blueprint_context_is_supporting_evidence"],
+            true
+        );
+    }
+
+    #[test]
     fn review_fix_loop_agent_output_audit_summary_counts_rejected_outputs() {
         let results = serde_json::json!({
             "attempts": [
@@ -21804,7 +23737,7 @@ grokrxiv-review-id: 11111111-1111-1111-1111-111111111111
     #[test]
     fn review_loop_citation_report_from_references_preserves_resolver_evidence() {
         let references = serde_json::json!({
-            "arxiv_id": "2606.23863",
+            "arxiv_id": "test-arxiv-id",
             "citations": [
                 {
                     "key": "AMP",

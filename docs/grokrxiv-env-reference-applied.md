@@ -99,8 +99,8 @@ files are gitignored.
 | `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS` | `30000`        | Character budget for one typed-transcription LLM batch |
 | `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory typed transcription calls |
 | `GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER` | `claude`                | Provider key for typed-IR transcription; set to `gemini` only to use agy as a backup route |
-| `GROKRXIV_FORMALIZE_TYPED_IR_MODEL` | `claude-sonnet-4-6`     | Model passed to the selected typed-IR provider |
-| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS` | `120`              | Per-batch timeout floor for typed-IR transcription; failed or stale model output is recorded as a failure, not converted to fake math IR |
+| `GROKRXIV_FORMALIZE_TYPED_IR_MODEL` | `sonnet[1m]`     | Model passed to the selected typed-IR provider |
+| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS` | `300`              | Per-batch timeout floor for typed-IR transcription; failed or stale model output is recorded as a failure, not converted to fake math IR |
 | `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS` | `1800`        | Adaptive timeout ceiling for typed-IR Sonnet batches when recent successful benchmarks show longer latency |
 | `GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY` | `4`             | Maximum typed-IR transcription batches running concurrently |
 | `GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT` | `0`             | Include definition/remark/context inventory entries in typed-IR; default transcribes only theorem-level Lean targets |

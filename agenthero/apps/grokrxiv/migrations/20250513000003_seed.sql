@@ -35,7 +35,7 @@ values (
   '{
      "summary":"claude-opus-4-7",
      "technical_correctness":"claude-opus-4-7",
-     "novelty":"claude-sonnet-4-6",
+     "novelty":"sonnet[1m]",
      "reproducibility":"o4-mini",
      "citation":"claude-haiku-4-5-20251001",
      "meta_reviewer":"claude-opus-4-7"

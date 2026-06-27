@@ -3158,7 +3158,8 @@ fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body:
             .unwrap_or("theorem")
             .to_string();
         let statement = block
-            .get("statement_preview")
+            .get("statement")
+            .or_else(|| block.get("statement_preview"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim()
@@ -3172,13 +3173,27 @@ fn append_theorem_blocks(nodes: &mut Vec<Value>, section_id: Option<&str>, body:
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("thm-{}", nodes.len() + 1));
-        nodes.push(json!({
+        let mut node = json!({
             "id": id,
             "type": node_type,
             "statement": statement,
             "section_id": section_id.map(Value::from).unwrap_or(Value::Null),
             "depends_on": [],
-        }));
+        });
+        if let Some(source_tex) = block
+            .get("source_tex")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some(obj) = node.as_object_mut() {
+                obj.insert(
+                    "source_tex".to_string(),
+                    Value::String(source_tex.to_string()),
+                );
+            }
+        }
+        nodes.push(node);
     }
 }
 
@@ -4123,6 +4138,41 @@ mod a4_tests {
         assert_eq!(node["typed_transcription"]["binders"][0]["name"], "n");
         assert_eq!(node["theorem_ir"]["conclusion"]["kind"], "equals");
         assert_eq!(node["theorem_ir"]["conclusion"]["lhs"]["kind"], "add");
+    }
+
+    #[test]
+    fn append_theorem_blocks_persists_full_statement_not_preview() {
+        let body = r#"
+::: {#prop:st-explicit-pres .proposition}
+**Proposition 9**. *The following map of
+${\mathds{Q}}[{\mathrm{GL}}(V)]$-modules is an isomorphism
+$$\frac{{\mathds{Q}}[[v_1,\mathinner{\ldotp\mkern-2mu\ldotp\mkern-2mu\ldotp},v_n] \text{ for ordered collections $v_1,\ldots,v_n$}]}{\text{(0)--(3)}}\overset{\cong}\longrightarrow{\mathrm{St}}(V).$$*
+:::
+"#;
+        let mut nodes = Vec::new();
+
+        append_theorem_blocks(&mut nodes, Some("sec-2-3-2"), body);
+
+        let node = &nodes[0];
+        let statement = node["statement"].as_str().unwrap();
+        assert_eq!(node["id"], "prop:st-explicit-pres");
+        assert_eq!(node["type"], "proposition");
+        assert_eq!(node["section_id"], "sec-2-3-2");
+        assert!(
+            statement.contains("\\overset{\\cong}\\longrightarrow{\\mathrm{St}}(V)."),
+            "statement should contain the full displayed map, got: {statement}"
+        );
+        assert!(
+            !statement.ends_with("..."),
+            "statement must not persist the statement_preview truncation: {statement}"
+        );
+        assert!(
+            node["source_tex"]
+                .as_str()
+                .unwrap()
+                .contains("#prop:st-explicit-pres"),
+            "source_tex should preserve the original theorem block"
+        );
     }
 
     #[test]

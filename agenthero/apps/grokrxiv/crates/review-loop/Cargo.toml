@@ -11,5 +11,7 @@ description = "GrokRxiv review-loop mathematical IR and proof artifact helpers."
 path = "src/lib.rs"
 
 [dependencies]
+hex = "0.4"
 serde_json = { workspace = true }
+sha2 = "0.10"
 uuid = { workspace = true }

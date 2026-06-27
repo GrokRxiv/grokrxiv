@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GrokRxiv Lean Statement Author Output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "lean_context",
+    "lean_statement",
+    "symbol_map",
+    "unsupported_reason",
+    "faithfulness_notes",
+    "confidence"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "statement_ready",
+        "not_faithfully_formalizable"
+      ]
+    },
+    "lean_context": {
+      "type": "string"
+    },
+    "lean_statement": {
+      "description": "The theorem or lemma declaration header using the requested Lean declaration name, ending with `:= by` and containing no proof body lines.",
+      "type": ["string", "null"]
+    },
+    "symbol_map": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lean_name",
+          "source_tex",
+          "source_claim"
+        ],
+        "properties": {
+          "lean_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_tex": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_claim": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "unsupported_reason": {
+      "type": ["string", "null"]
+    },
+    "faithfulness_notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "statement_ready"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "unsupported_reason": {
+            "type": "null"
+          },
+          "lean_statement": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "not_faithfully_formalizable"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "unsupported_reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ]
+}

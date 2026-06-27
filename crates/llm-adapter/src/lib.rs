@@ -58,7 +58,7 @@ pub fn max_output_tokens_for(provider: &str, model: &str) -> u32 {
 fn anthropic_output_cap(model: &str) -> u32 {
     match model {
         "claude-haiku-4-5" => 8_000,
-        "claude-sonnet-4-6" | "claude-opus-4-7" => 32_000,
+        "sonnet[1m]" | "claude-opus-4-7" => 32_000,
         _ => 8_000,
     }
 }

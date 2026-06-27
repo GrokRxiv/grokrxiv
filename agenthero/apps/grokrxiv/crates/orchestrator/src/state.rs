@@ -524,7 +524,7 @@ mod tests {
         let role = "lean_proof_author";
         let _guard = EnvVarGuard::set(
             crate::runtime_config::role_model_override_env_var(role),
-            "claude-sonnet-test",
+            "sonnet[1m]",
         );
         let mut role_yaml = RoleYamlMap::new();
         role_yaml.insert(
@@ -537,7 +537,7 @@ mod tests {
         let registry = build_agent_registry(&role_yaml, &Arc::new(schemas)).unwrap();
         let agent = registry.get(role).expect("lean proof author agent");
 
-        assert_eq!(agent.spec().model, "claude-sonnet-test");
+        assert_eq!(agent.spec().model, "sonnet[1m]");
         assert!(
             Arc::ptr_eq(&agent.spec().schema, &schema),
             "agent registry should share schema Arcs instead of cloning large Values"
@@ -637,6 +637,29 @@ mod tests {
             err.to_string()
                 .contains("could not load `missing-review-dag`"),
             "error should identify the missing DAG config, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn review_loop_registers_lean_statement_author_role() {
+        let refs = role_config_refs(REVIEW_LOOP_DAG_ID).expect("review-loop role refs");
+        assert!(
+            refs.iter()
+                .any(|config_ref| config_ref.role_id == "lean_statement_author"),
+            "review-loop DAG must register the Lean statement author role"
+        );
+
+        let role_yaml = load_role_configs().expect("load role configs");
+        let cfg = role_yaml
+            .get("lean_statement_author")
+            .and_then(|cfg| cfg.as_ref())
+            .expect("lean_statement_author YAML must load");
+        assert_eq!(cfg.id.as_deref(), Some("lean_statement_author"));
+        assert_eq!(cfg.provider, "claude");
+        assert_eq!(cfg.runner, Some(AgentRunnerKind::Cli));
+        assert_eq!(
+            cfg.output_schema.as_deref(),
+            Some("schemas/lean_statement_author.schema.json")
         );
     }
 

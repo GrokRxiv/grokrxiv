@@ -5,7 +5,7 @@ provider: claude
 # Defaults can be overridden with GROKRXIV_NOVELTY_PROVIDER /
 # GROKRXIV_NOVELTY_MODEL or `--provider-for novelty=<provider>` /
 # `--model-for novelty=<model>`.
-model: claude-sonnet-4-6
+model: sonnet[1m]
 runner: cli
 prompt_template: prompts/novelty.md
 input_schema: schemas/paper_extract.schema.json

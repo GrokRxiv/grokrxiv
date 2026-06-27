@@ -1237,7 +1237,7 @@ fn cli_quota_fallback_spec(spec: &AgentSpec, err: &anyhow::Error) -> Option<Agen
 
 fn default_cli_quota_fallback_model(provider: &str) -> &'static str {
     match provider {
-        "claude" => "claude-sonnet-4-6",
+        "claude" => "sonnet[1m]",
         "gemini" => "Gemini 3.5 Flash (Medium)",
         _ => "gpt-5.5",
     }
@@ -1281,7 +1281,8 @@ fn build_command(
             // document `cat file | claude -p "query"` for piped content; they
             // do not document `-p -` as a stdin sentinel.
             stdin_payload = prompt.to_string();
-            let schema_json = serde_json::to_string(spec.schema.as_ref())
+            let schema_for_claude = claude_json_schema(spec.schema.as_ref());
+            let schema_json = serde_json::to_string(&schema_for_claude)
                 .map_err(|e| anyhow::anyhow!("failed to serialise claude json schema: {e}"))?;
             // NOTE: claude CLI does NOT have a `--skill` flag — skills are
             // invoked via `/skill-name` at the start of the prompt body
@@ -2063,6 +2064,50 @@ fn role_slug(role: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn claude_json_schema(schema: &serde_json::Value) -> serde_json::Value {
+    match schema {
+        serde_json::Value::Object(map) => {
+            let union_types = map
+                .get("type")
+                .and_then(|value| value.as_array())
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .filter(|items| items.len() > 1);
+
+            let mut rewritten = serde_json::Map::new();
+            for (key, value) in map {
+                if union_types.is_some() && key == "type" {
+                    continue;
+                }
+                rewritten.insert(key.clone(), claude_json_schema(value));
+            }
+
+            if let Some(types) = union_types {
+                serde_json::json!({
+                    "anyOf": types
+                        .into_iter()
+                        .map(|type_name| {
+                            let mut branch = rewritten.clone();
+                            branch.insert("type".to_string(), serde_json::json!(type_name));
+                            serde_json::Value::Object(branch)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            } else {
+                serde_json::Value::Object(rewritten)
+            }
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(claude_json_schema).collect())
+        }
+        _ => schema.clone(),
+    }
+}
+
 fn grokrxiv_review_skill_role(role_slug: &str) -> bool {
     matches!(
         role_slug,
@@ -2539,7 +2584,7 @@ mod tests {
                 "schema_version": 1,
                 "role": "citation",
                 "provider": "claude",
-                "model": "claude-sonnet-4-6",
+                "model": "sonnet[1m]",
                 "runner": "cli",
                 "status": "success",
                 "latency_ms": latency_ms
@@ -2560,7 +2605,7 @@ mod tests {
             ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
             (CITATION_TIMEOUT_MAX_ENV, "1800".to_string()),
         ]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "citation".to_string();
         spec.timeout_secs = 900;
 
@@ -2575,7 +2620,7 @@ mod tests {
             "schema_version": 1,
             "role": "citation",
             "provider": "claude",
-            "model": "claude-sonnet-4-6",
+            "model": "sonnet[1m]",
             "runner": "cli",
             "status": "success",
             "latency_ms": 100_000
@@ -2590,7 +2635,7 @@ mod tests {
             ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
             (CITATION_TIMEOUT_MAX_ENV, "1800".to_string()),
         ]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "citation".to_string();
         spec.timeout_secs = 900;
 
@@ -2606,7 +2651,7 @@ mod tests {
                 "schema_version": 1,
                 "role": "formalize_source_inventory_typed_transcriber",
                 "provider": "claude",
-                "model": "claude-sonnet-4-6",
+                "model": "sonnet[1m]",
                 "runner": "cli",
                 "status": "success",
                 "latency_ms": latency_ms
@@ -2627,7 +2672,7 @@ mod tests {
             ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
             (FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV, "1800".to_string()),
         ]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         spec.timeout_secs = 300;
 
@@ -2642,7 +2687,7 @@ mod tests {
             "schema_version": 1,
             "role": "formalize_source_inventory_typed_transcriber",
             "provider": "claude",
-            "model": "claude-sonnet-4-6",
+            "model": "sonnet[1m]",
             "runner": "cli",
             "status": "success",
             "latency_ms": 672_933
@@ -2657,7 +2702,7 @@ mod tests {
             ("AGENTHERO_CLI_TIMEOUT_SECS", "".to_string()),
             (FORMALIZE_TYPED_IR_TIMEOUT_MAX_ENV, "1800".to_string()),
         ]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         spec.timeout_secs = 300;
 
@@ -2682,7 +2727,7 @@ mod tests {
             AGENT_BENCHMARK_PATH_ENV,
             path.to_string_lossy().into_owned(),
         )]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         record_cli_latency_sample(
             &spec,
@@ -2831,6 +2876,48 @@ mod tests {
     }
 
     #[test]
+    fn claude_schema_rewrites_union_type_arrays_to_anyof() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": ["string", "null"],
+                    "enum": [null, "no_theorems_in_paper"]
+                },
+                "value": {
+                    "type": ["number", "integer", "string"]
+                },
+                "nested": {
+                    "items": {
+                        "type": ["string", "null"]
+                    }
+                }
+            }
+        });
+
+        let rewritten = claude_json_schema(&schema);
+        let body = serde_json::to_string(&rewritten).unwrap();
+
+        assert!(
+            !body.contains("\"type\":["),
+            "Claude CLI rejects union type arrays in strict schema mode: {body}"
+        );
+        assert_eq!(rewritten["type"], "object");
+        assert!(rewritten["properties"]["reason"]["anyOf"].is_array());
+        assert_eq!(
+            rewritten["properties"]["value"]["anyOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            rewritten["properties"]["nested"]["items"]["anyOf"][1]["type"],
+            "null"
+        );
+    }
+
+    #[test]
     fn test_command_construction_claude() {
         let r = CliRunner::new();
         let spec = stub_spec("claude", "claude-opus-4-7");
@@ -2898,7 +2985,7 @@ mod tests {
     #[test]
     fn citation_claude_command_uses_sonnet_review_skill_and_piped_prompt() {
         let r = CliRunner::new();
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "citation".to_string();
         let built = build_command(&r, &spec, "citation prompt").unwrap();
 
@@ -2919,14 +3006,14 @@ mod tests {
             built
                 .args
                 .windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-6"),
+                .any(|w| w[0] == "--model" && w[1] == "sonnet[1m]"),
             "citation command must use Sonnet by default: {:?}",
             built.args
         );
         assert_eq!(built.stdin_payload, "citation prompt");
 
         let display = safe_cli_command_display(&built);
-        assert!(display.contains("claude-sonnet-4-6"));
+        assert!(display.contains("sonnet[1m]"));
         assert!(!display.contains("citation prompt"));
     }
 
@@ -3053,7 +3140,7 @@ mod tests {
     #[test]
     fn claude_formalize_typed_ir_avoids_review_skill() {
         let r = CliRunner::new();
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         let built = build_command(&r, &spec, "typed ir prompt").unwrap();
 
@@ -3074,7 +3161,7 @@ mod tests {
             built
                 .args
                 .windows(2)
-                .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-6"),
+                .any(|w| w[0] == "--model" && w[1] == "sonnet[1m]"),
             "typed-IR command must use configured Sonnet model: {:?}",
             built.args
         );
@@ -3514,7 +3601,7 @@ mod tests {
             ("AGENTHERO_CLI_QUOTA_FALLBACK_PROVIDER", "gemini"),
             ("AGENTHERO_CLI_QUOTA_FALLBACK_MODEL", ""),
         ]);
-        let spec = stub_spec("claude", "claude-sonnet-4-6");
+        let spec = stub_spec("claude", "sonnet[1m]");
         let err = anyhow::Error::new(CliError::QuotaExhausted {
             provider: "claude".to_string(),
             message: "session limit reached".to_string(),
@@ -3718,7 +3805,7 @@ exit 1
                 "Gemini 3.5 Flash (Medium)".to_string(),
             ),
         ]);
-        let mut spec = stub_spec("claude", "claude-sonnet-4-6");
+        let mut spec = stub_spec("claude", "sonnet[1m]");
         spec.role = "formalize_source_inventory_typed_transcriber".to_string();
         let input = AgentInput {
             context: Default::default(),
