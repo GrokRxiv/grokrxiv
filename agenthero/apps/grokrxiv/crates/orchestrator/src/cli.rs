@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt as _;
@@ -11303,7 +11303,61 @@ fn formalize_node_event(
     }
 }
 
+fn formalize_trace_path_for_event(
+    event: &agenthero_dag_executor::DagExecutionEvent,
+) -> Option<PathBuf> {
+    event
+        .payload
+        .get("review_id")
+        .and_then(|value| value.as_str())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .map(|review_id| {
+            crate::artifacts::review_artifact_dir(review_id)
+                .join("review_loop")
+                .join("formalize_trace.jsonl")
+        })
+}
+
+fn append_formalize_trace_event(
+    path: &Path,
+    event: &agenthero_dag_executor::DagExecutionEvent,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut record = serde_json::to_value(event).unwrap_or_else(|_| {
+        serde_json::json!({
+            "level": event.level.clone(),
+            "event_type": event.event_type.clone(),
+            "node_id": event.node_id.clone(),
+            "message": event.message.clone(),
+            "payload": event.payload.clone(),
+        })
+    });
+    if let Some(object) = record.as_object_mut() {
+        object.insert(
+            "emitted_at".to_string(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    let line = serde_json::to_string(&record).unwrap_or_else(|_| {
+        format!(
+            r#"{{"emitted_at":"{}","event_type":"formalize_trace_serialization_failed"}}"#,
+            chrono::Utc::now().to_rfc3339()
+        )
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
 fn emit_formalize_node_event(event: agenthero_dag_executor::DagExecutionEvent) {
+    if let Some(path) = formalize_trace_path_for_event(&event) {
+        let _ = append_formalize_trace_event(&path, &event);
+    }
     let _ = agenthero_agent_runtime::write_adapter_event(std::io::stderr(), &event);
 }
 
@@ -20429,6 +20483,50 @@ mod tests {
         );
         assert_eq!(event.payload["model"], FORMALIZE_TYPED_IR_DEFAULT_MODEL);
         assert_eq!(event.payload["duration_ms"], 42);
+    }
+
+    #[test]
+    fn formalize_node_event_appends_durable_trace_jsonl() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let trace_path = tempdir
+            .path()
+            .join("review_loop")
+            .join("formalize_trace.jsonl");
+        let event = formalize_node_event(
+            review_id,
+            FormalizeMode::Full,
+            "node.completed",
+            "formalize_typed_ir_batch_1",
+            "llm",
+            "formalize_source_inventory_typed_transcriber",
+            "ok",
+            "typed-IR batch completed",
+            serde_json::json!({
+                "model": FORMALIZE_TYPED_IR_DEFAULT_MODEL,
+                "batch_number": 1,
+                "batch_count": 2,
+                "duration_ms": 42,
+            }),
+        );
+
+        append_formalize_trace_event(&trace_path, &event).expect("append first trace event");
+        append_formalize_trace_event(&trace_path, &event).expect("append second trace event");
+
+        let lines = std::fs::read_to_string(&trace_path).expect("trace file");
+        let records = lines
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trace json"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["event_type"], "node.completed");
+        assert_eq!(records[0]["node_id"], "formalize_typed_ir_batch_1");
+        assert_eq!(records[0]["payload"]["review_id"], review_id.to_string());
+        assert_eq!(
+            records[0]["payload"]["tool_id"],
+            "formalize_source_inventory_typed_transcriber"
+        );
+        assert!(records[0]["emitted_at"].as_str().is_some());
     }
 
     #[test]
