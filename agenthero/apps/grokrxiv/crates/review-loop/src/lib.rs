@@ -754,9 +754,31 @@ pub fn build_theorem_map(
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             let lean_declaration = obligation.get("lean_declaration").and_then(|v| v.as_str());
+            let decl_results = lean_declaration_results(lean_declaration, lean_results);
+            let statement_preflight_failed = decl_results
+                .map(lean_statement_preflight_failed)
+                .unwrap_or(false);
             let status = lean_entry_status(kind, lean_declaration, lean_results);
             let lean_attempt_status =
                 lean_attempt_status_for_entry(kind, lean_declaration, lean_results);
+            let emitted_statement = if statement_preflight_failed {
+                json!(null)
+            } else {
+                obligation
+                    .get("lean_statement")
+                    .cloned()
+                    .unwrap_or_else(|| json!(null))
+            };
+            let verified_statement = if statement_preflight_failed {
+                json!(null)
+            } else {
+                lean_results
+                    .get("verified_statements")
+                    .and_then(|items| obligation.get("lean_declaration").and_then(|decl| decl.as_str()).and_then(|decl| items.get(decl)))
+                    .cloned()
+                    .or_else(|| obligation.get("lean_statement").cloned())
+                    .unwrap_or_else(|| json!(null))
+            };
             json!({
                 "obligation_id": obligation.get("id").cloned().unwrap_or_else(|| json!(null)),
                 "kind": kind,
@@ -766,13 +788,8 @@ pub fn build_theorem_map(
                 "status": status,
                 "lean_attempt_status": lean_attempt_status,
                 "statement": obligation.get("statement").cloned().unwrap_or_else(|| json!("")),
-                "emitted_statement": obligation.get("lean_statement").cloned().unwrap_or_else(|| json!(null)),
-                "verified_statement": lean_results
-                    .get("verified_statements")
-                    .and_then(|items| obligation.get("lean_declaration").and_then(|decl| decl.as_str()).and_then(|decl| items.get(decl)))
-                    .cloned()
-                    .or_else(|| obligation.get("lean_statement").cloned())
-                    .unwrap_or_else(|| json!(null)),
+                "emitted_statement": emitted_statement,
+                "verified_statement": verified_statement,
             })
         })
         .collect::<Vec<_>>();
@@ -2357,16 +2374,18 @@ fn lean_entry_status(
     // some unproved theorems yields per-theorem PROVED/FAILED rather than a single global
     // verdict). The Lean kernel is still the sole proof authority: a declaration is only
     // recorded `pass` after `lake env lean` accepted it with no sorry/admit/axiom.
-    if let Some(decl_results) = lean_declaration.and_then(|decl| {
-        lean_results
-            .get("declarations")
-            .and_then(|map| map.get(decl))
-    }) {
+    if let Some(decl_results) = lean_declaration_results(lean_declaration, lean_results) {
         if lean_results_deferred(decl_results) {
             return "AWAITING_FORMALIZATION";
         }
         if decl_results.get("status").and_then(|v| v.as_str()) == Some("pass") {
             return "PROVED";
+        }
+        if lean_statement_unfaithful(decl_results) {
+            return "STATEMENT_UNFAITHFUL";
+        }
+        if lean_statement_preflight_failed(decl_results) {
+            return "STATEMENT_PRECHECK_FAILED";
         }
         let diagnostics = lean_status_diagnostics(decl_results);
         return classify_lean_failure(&diagnostics);
@@ -2403,11 +2422,7 @@ fn lean_attempt_status_for_entry(
     if kind == "semantic_gap" {
         return "not_formalizable";
     }
-    if let Some(decl_results) = lean_declaration.and_then(|decl| {
-        lean_results
-            .get("declarations")
-            .and_then(|map| map.get(decl))
-    }) {
+    if let Some(decl_results) = lean_declaration_results(lean_declaration, lean_results) {
         return lean_attempt_status_from_results(decl_results);
     }
     lean_attempt_status_from_results(lean_results)
@@ -2428,7 +2443,11 @@ fn lean_attempt_status_from_results(results: &serde_json::Value) -> &'static str
         };
     }
     let diagnostics = lean_status_diagnostics(results).to_ascii_lowercase();
-    if diagnostics.contains("not_formalizable")
+    if lean_statement_unfaithful(results) {
+        "unfaithful_statement"
+    } else if lean_statement_preflight_failed(results) {
+        "statement_preflight_failed"
+    } else if diagnostics.contains("not_formalizable")
         || diagnostics.contains("not formalizable")
         || diagnostics.contains("formalization blocker")
         || diagnostics.contains("cannot faithfully formalize")
@@ -2439,6 +2458,30 @@ fn lean_attempt_status_from_results(results: &serde_json::Value) -> &'static str
     } else {
         "failed_typecheck"
     }
+}
+
+fn lean_declaration_results<'a>(
+    lean_declaration: Option<&str>,
+    lean_results: &'a serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    lean_declaration.and_then(|decl| {
+        lean_results
+            .get("declarations")
+            .and_then(|map| map.get(decl))
+    })
+}
+
+fn lean_statement_preflight_failed(results: &serde_json::Value) -> bool {
+    let diagnostics = lean_status_diagnostics(results);
+    results.get("reason").and_then(|v| v.as_str()) == Some("statement_author_preflight_failed")
+        || diagnostics.contains("statement_author_preflight_failed")
+        || diagnostics.contains("statement faithfulness reviewer returned verdict=")
+}
+
+fn lean_statement_unfaithful(results: &serde_json::Value) -> bool {
+    let diagnostics = lean_status_diagnostics(results);
+    diagnostics.contains("statement faithfulness reviewer returned verdict=unfaithful")
+        || diagnostics.contains("verdict=unfaithful")
 }
 
 fn lean_results_deferred(results: &serde_json::Value) -> bool {
@@ -2485,13 +2528,20 @@ fn lean_status_diagnostics(lean_results: &serde_json::Value) -> String {
             "/compile/stdout",
             "/compile/stderr",
             "/semantic_validation/issues/0",
+            "/author_error",
         ] {
             if let Some(value) = attempt.pointer(pointer).and_then(|value| value.as_str()) {
                 parts.push(value);
             }
         }
     }
-    for pointer in ["/skip_reason", "/status"] {
+    for pointer in [
+        "/skip_reason",
+        "/reason",
+        "/statement_author_error",
+        "/error",
+        "/status",
+    ] {
         if let Some(value) = lean_results
             .pointer(pointer)
             .and_then(|value| value.as_str())
@@ -4386,6 +4436,54 @@ end GrokRxiv
             "failed_typecheck"
         );
         assert_eq!(theorem_map["lean_attempt_status"], "failed_typecheck");
+    }
+
+    #[test]
+    fn theorem_map_reports_statement_author_preflight_without_fake_statement() {
+        let obligations = json!({
+            "obligations": [
+                {
+                    "id": "formalize_theorem_enum_FormulaGoncharovConjecture2",
+                    "kind": "theorem_formalization",
+                    "lean_declaration": "enum_FormulaGoncharovConjecture2",
+                    "source_claim_id": "enum:FormulaGoncharovConjecture2",
+                    "statement": "There is an isomorphism K^{(3)}_4(F)_Q ≅ H^2(PolyL(F))_3.",
+                    "lean_statement": "theorem enum_FormulaGoncharovConjecture2 (F : Field) : Isomorphism lhs rhs := by"
+                }
+            ]
+        });
+        let lean_results = json!({
+            "status": "fail",
+            "declarations": {
+                "enum_FormulaGoncharovConjecture2": {
+                    "status": "fail",
+                    "reason": "statement_author_preflight_failed",
+                    "statement_author_error": "statement faithfulness reviewer returned verdict=unfaithful for enum_FormulaGoncharovConjecture2",
+                    "attempts": [{
+                        "attempt": 0,
+                        "author_role": "lean_statement_author",
+                        "author_error": "statement faithfulness reviewer returned verdict=unfaithful for enum_FormulaGoncharovConjecture2",
+                        "status": "fail"
+                    }]
+                }
+            },
+            "verified_statements": {}
+        });
+
+        let theorem_map = build_theorem_map(&obligations, &lean_results);
+
+        assert_eq!(theorem_map["status"], "STATEMENT_UNFAITHFUL");
+        assert_eq!(theorem_map["lean_attempt_status"], "unfaithful_statement");
+        assert_eq!(theorem_map["entries"][0]["status"], "STATEMENT_UNFAITHFUL");
+        assert_eq!(
+            theorem_map["entries"][0]["lean_attempt_status"],
+            "unfaithful_statement"
+        );
+        assert!(
+            theorem_map["entries"][0]["emitted_statement"].is_null(),
+            "preflight failures must not report an unverified scaffold as emitted Lean"
+        );
+        assert!(theorem_map["entries"][0]["verified_statement"].is_null());
     }
 
     #[test]
