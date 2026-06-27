@@ -9,9 +9,10 @@ For every obligation with `kind = "theorem_formalization"`, use
 been authored from source TeX by `lean_statement_author`, structurally checked,
 and hash-locked.
 
-If `base.blueprint_context` is present, treat it as source-grounded retrieval
-context for paper-local entities, dependency ids, and generated Lean interface
-names. It is not permission to alter the locked theorem statement.
+Use `base.source_faithfulness_verification` to inspect the source TeX,
+statement-author output, symbol map, independent faithfulness verdict, and
+locked statement hash. These artifacts are evidence for preserving the paper
+claim, not permission to alter the locked theorem statement.
 
 Declare each theorem using the exact `lean_declaration` name supplied for that
 obligation, so the kernel and the validator can find it.

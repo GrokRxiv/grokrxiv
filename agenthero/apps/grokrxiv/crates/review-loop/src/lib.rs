@@ -666,11 +666,29 @@ pub fn build_formalization_goal(
         "schema_version": "1.0.0",
         "review_id": review_id,
         "mode": mode,
-        "objective": "Build a source-grounded paper-level Lean blueprint before per-theorem proof search.",
+        "objective": "Run LLM-authored Lean statement/proof attempts with source-faithfulness verification before proof search.",
         "source_artifacts": {
             "paper_math_sources": "review_loop/paper_math_sources.json",
             "semantic_ir": "review_loop/semantic_ir.json",
             "proof_obligations": "review_loop/proof_obligations.json"
+        },
+        "roles": {
+            "statement_author": "lean_statement_author",
+            "statement_faithfulness_checker": "lean_faithfulness_checker",
+            "proof_author": "lean_proof_author",
+            "proof_fixer": "lean_code_fixer",
+            "post_proof_faithfulness_checker": "lean_faithfulness_checker"
+        },
+        "verification_artifacts": {
+            "statement_author_input": "review_loop/lean/targets/*/statement_author/input.json",
+            "statement_author_output": "review_loop/lean/targets/*/statement_author/output.json",
+            "statement_structural_validation": "review_loop/lean/targets/*/statement_author/structural_validation.json",
+            "statement_structural_typecheck": "review_loop/lean/targets/*/statement_author/structural_typecheck.json",
+            "statement_faithfulness": "review_loop/lean/targets/*/statement_author/faithfulness.json",
+            "locked_statement": "review_loop/lean/targets/*/locked_statement.json",
+            "proof_work_packet": "review_loop/lean/targets/*/work_packet.json",
+            "kernel_result": "review_loop/lean/results.json",
+            "post_proof_faithfulness": "review_loop/faithfulness.json"
         },
         "selected_theorems": selected_theorem_ids,
         "budgets": {
@@ -687,346 +705,20 @@ pub fn build_formalization_goal(
             "source_tex_is_authoritative": true,
             "typed_ir_is_scaffolding_only": true,
             "no_paper_id_hardcoding": true,
+            "deterministic_math_generation_allowed": false,
+            "formal_interfaces_generated": false,
             "locked_statement_required_before_proof": true,
+            "independent_statement_faithfulness_required_before_proof": true,
             "forbidden_lean_terms": ["sorry", "admit", "axiom"],
             "forbidden_placeholder_statements": ["True", "0 = 0", "x = x"]
         },
         "success_criteria": [
-            "Every Lean-facing entity has a source id/span or is explicitly unresolved.",
-            "FormalInterfaces.lean typechecks before per-theorem proof authoring.",
-            "Every proof target uses a source-faithful locked statement.",
+            "Every authored Lean statement has source TeX, author output, symbol map, structural typecheck, independent faithfulness verdict, and locked statement hash available for manual inspection.",
+            "No deterministic paper-to-Lean math/interface artifact is generated.",
+            "Every proof target uses the source-faithful locked statement verbatim.",
             "Lean kernel acceptance is required for PROVED."
         ]
     })
-}
-
-pub fn build_paper_blueprint(
-    review_id: Uuid,
-    paper_math_sources: &serde_json::Value,
-    semantic_ir: &serde_json::Value,
-    proof_obligations: &serde_json::Value,
-    formalization_goal: &serde_json::Value,
-) -> serde_json::Value {
-    let definitions = semantic_ir
-        .get("definitions")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .map(|item| blueprint_node(item, "definition"))
-        .collect::<Vec<_>>();
-    let theorem_nodes = semantic_ir
-        .get("theorem_candidates")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .map(|item| {
-            let source_claim_id = item
-                .get("source_claim_id")
-                .cloned()
-                .unwrap_or_else(|| item.get("id").cloned().unwrap_or_else(|| json!(null)));
-            let obligation = proof_obligations
-                .get("obligations")
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-                .find(|obligation| obligation.get("source_claim_id") == Some(&source_claim_id));
-            let mut node = blueprint_node(item, "theorem");
-            if let Some(object) = node.as_object_mut() {
-                object.insert(
-                    "lean_declaration".to_string(),
-                    item.get("formalization_target")
-                        .and_then(|target| target.get("lean_declaration"))
-                        .cloned()
-                        .or_else(|| obligation.and_then(|obligation| obligation.get("lean_declaration").cloned()))
-                        .unwrap_or_else(|| json!(null)),
-                );
-                object.insert(
-                    "obligation_id".to_string(),
-                    obligation
-                        .and_then(|obligation| obligation.get("id").cloned())
-                        .unwrap_or_else(|| json!(null)),
-                );
-                object.insert(
-                    "selected_for_lean".to_string(),
-                    json!(obligation.is_some()),
-                );
-                object.insert(
-                    "dependencies".to_string(),
-                    item.get("dependencies").cloned().unwrap_or_else(|| json!([])),
-                );
-            }
-            node
-        })
-        .collect::<Vec<_>>();
-    let supporting_equations = semantic_ir
-        .get("supporting_equations")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .map(|item| blueprint_node(item, "equation"))
-        .collect::<Vec<_>>();
-    let theorem_inventory = paper_math_sources
-        .get("theorem_inventory")
-        .or_else(|| paper_math_sources.get("source_inventory"))
-        .cloned()
-        .unwrap_or_else(|| json!(null));
-    json!({
-        "schema_version": "1.0.0",
-        "review_id": review_id,
-        "source": "review_loop/paper_math_sources.json",
-        "formalization_goal": "review_loop/formalization_goal.json",
-        "goal": formalization_goal,
-        "source_inventory_summary": {
-            "inventory_count": theorem_inventory.get("inventory_count").cloned().unwrap_or_else(|| json!(null)),
-            "counts_by_kind": theorem_inventory.get("counts_by_kind").cloned().unwrap_or_else(|| json!(null)),
-            "diagnostics": theorem_inventory.get("diagnostics").cloned().unwrap_or_else(|| json!(null))
-        },
-        "definitions": definitions,
-        "theorems": theorem_nodes,
-        "supporting_equations": supporting_equations,
-        "proof_outline_dag": build_blueprint_proof_outline_dag(proof_obligations),
-        "artifacts": {
-            "entity_index": "review_loop/blueprint/entity_index.json",
-            "formal_interfaces": "review_loop/blueprint/FormalInterfaces.lean"
-        }
-    })
-}
-
-pub fn build_entity_index(review_id: Uuid, paper_blueprint: &serde_json::Value) -> serde_json::Value {
-    let mut entities = Vec::new();
-    let mut used_names = BTreeSet::<String>::new();
-    for (section, interface_kind) in [
-        ("definitions", "type"),
-        ("theorems", "prop"),
-        ("supporting_equations", "prop"),
-    ] {
-        for item in paper_blueprint
-            .get(section)
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-        {
-            let id = item
-                .get("source_claim_id")
-                .or_else(|| item.get("id"))
-                .and_then(|value| value.as_str())
-                .unwrap_or(section);
-            let target_lean_declaration = if section == "theorems" {
-                item.get("lean_declaration").cloned().unwrap_or_else(|| json!(null))
-            } else {
-                json!(null)
-            };
-            let lean_name = unique_blueprint_lean_name(
-                match section {
-                    "definitions" => "paper_def",
-                    "theorems" => "paper_theorem",
-                    _ => "paper_prop",
-                },
-                id,
-                &mut used_names,
-            );
-            used_names.insert(lean_name.clone());
-            entities.push(json!({
-                "id": id,
-                "kind": item.get("kind").cloned().unwrap_or_else(|| json!(section.trim_end_matches('s'))),
-                "source_claim_id": item.get("source_claim_id").cloned().unwrap_or_else(|| json!(id)),
-                "paper_label": item.get("source_claim_id").cloned().unwrap_or_else(|| json!(id)),
-                "lean_name": lean_name,
-                "target_lean_declaration": target_lean_declaration,
-                "interface_kind": interface_kind,
-                "statement": item.get("statement").cloned().unwrap_or_else(|| json!("")),
-                "source_tex": item.get("source_tex").cloned().unwrap_or_else(|| json!(null)),
-                "source_span": item.get("source_span").cloned().unwrap_or_else(|| json!(null)),
-                "dependencies": item.get("dependencies").cloned().unwrap_or_else(|| json!([])),
-                "resolution_status": if item.get("source_span").is_some_and(|value| !value.is_null()) { "source_grounded" } else { "unresolved_source_span" },
-            }));
-        }
-    }
-    json!({
-        "schema_version": "1.0.0",
-        "review_id": review_id,
-        "source": "review_loop/blueprint/paper_blueprint.json",
-        "entities": entities,
-        "resolution_policy": {
-            "unresolved_symbols_are_explicit": true,
-            "opaque_names_require_source_mapping": true,
-            "source_spans_required_for_claimed_paper_entities": true
-        }
-    })
-}
-
-pub fn build_formal_interfaces_lean(entity_index: &serde_json::Value) -> String {
-    let mut lines = vec![
-        "import Mathlib".to_string(),
-        "set_option autoImplicit false".to_string(),
-        "".to_string(),
-        "namespace GrokRxiv".to_string(),
-        "".to_string(),
-        "/- Source-grounded paper-local interfaces generated by GrokRxiv. -/".to_string(),
-    ];
-    for entity in entity_index
-        .get("entities")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let Some(lean_name) = entity.get("lean_name").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if lean_name.trim().is_empty() {
-            continue;
-        }
-        let source_claim_id = entity
-            .get("source_claim_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown");
-        lines.push(format!("/-- Source entity: {source_claim_id}. -/"));
-        if let Some(declaration) = blueprint_interface_declaration(entity) {
-            lines.push(declaration);
-        }
-        lines.push(String::new());
-    }
-    lines.push("end GrokRxiv".to_string());
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-pub fn compact_blueprint_context_for_obligation(
-    paper_blueprint: &serde_json::Value,
-    entity_index: &serde_json::Value,
-    obligation: &serde_json::Value,
-) -> serde_json::Value {
-    let source_claim_id = obligation
-        .get("source_claim_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let theorem = paper_blueprint
-        .get("theorems")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .find(|item| {
-            item.get("source_claim_id")
-                .and_then(|value| value.as_str())
-                == Some(source_claim_id)
-        })
-        .cloned()
-        .unwrap_or_else(|| json!(null));
-    let dependency_ids = theorem
-        .get("dependencies")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| value.as_str().map(str::to_string))
-        .collect::<BTreeSet<_>>();
-    let entities = entity_index
-        .get("entities")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|entity| {
-            let entity_id = entity
-                .get("source_claim_id")
-                .or_else(|| entity.get("id"))
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            entity_id == source_claim_id || dependency_ids.contains(entity_id)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let interface_declarations = entities
-        .iter()
-        .filter_map(|entity| blueprint_interface_declaration(entity))
-        .collect::<Vec<_>>();
-    json!({
-        "schema_version": "1.0.0",
-        "source": "review_loop/blueprint/paper_blueprint.json",
-        "entity_index": "review_loop/blueprint/entity_index.json",
-        "formal_interfaces": "review_loop/blueprint/FormalInterfaces.lean",
-        "target_theorem": theorem,
-        "entities": entities,
-        "interface_declarations": interface_declarations,
-        "dependency_ids": dependency_ids.into_iter().collect::<Vec<_>>(),
-    })
-}
-
-fn blueprint_node(item: &serde_json::Value, default_kind: &str) -> serde_json::Value {
-    json!({
-        "id": item.get("id").cloned().unwrap_or_else(|| item.get("source_claim_id").cloned().unwrap_or_else(|| json!(null))),
-        "kind": item.get("kind").cloned().unwrap_or_else(|| json!(default_kind)),
-        "statement": item.get("statement").cloned().unwrap_or_else(|| json!("")),
-        "source_claim_id": item.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
-        "source_tex": item.get("source_tex").cloned().unwrap_or_else(|| json!(null)),
-        "source_span": item.get("source_span").cloned().unwrap_or_else(|| json!(null)),
-        "typed_transcription": item.get("typed_transcription").cloned().unwrap_or_else(|| json!(null)),
-        "theorem_ir": item.get("theorem_ir").cloned().unwrap_or_else(|| json!(null)),
-    })
-}
-
-fn build_blueprint_proof_outline_dag(proof_obligations: &serde_json::Value) -> serde_json::Value {
-    let nodes = proof_obligations
-        .get("obligations")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .map(|obligation| {
-            json!({
-                "id": obligation.get("id").cloned().unwrap_or_else(|| json!(null)),
-                "source_claim_id": obligation.get("source_claim_id").cloned().unwrap_or_else(|| json!(null)),
-                "lean_declaration": obligation.get("lean_declaration").cloned().unwrap_or_else(|| json!(null)),
-                "status": "pending_locked_statement",
-                "requires": [
-                    "source_faithful_statement",
-                    "locked_statement_hash",
-                    "lake_env_lean"
-                ]
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "nodes": nodes,
-        "edges": [],
-        "policy": {
-            "proof_author_may_not_change_statement": true,
-            "retrieval_context_must_be_source_grounded": true
-        }
-    })
-}
-
-fn blueprint_interface_declaration(entity: &serde_json::Value) -> Option<String> {
-    let lean_name = entity.get("lean_name").and_then(|value| value.as_str())?;
-    if lean_name.trim().is_empty() {
-        return None;
-    }
-    Some(match entity
-        .get("interface_kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or("prop")
-    {
-        "type" => format!("opaque {lean_name} : Type"),
-        _ => format!("opaque {lean_name} : Prop"),
-    })
-}
-
-fn unique_blueprint_lean_name(prefix: &str, source_id: &str, used: &mut BTreeSet<String>) -> String {
-    let base = lean_identifier(&format!("{prefix}_{source_id}"));
-    let mut candidate = if base.is_empty() {
-        prefix.to_string()
-    } else {
-        base
-    };
-    if !used.contains(&candidate) {
-        return candidate;
-    }
-    for index in 2usize.. {
-        let next = format!("{candidate}_{index}");
-        if !used.contains(&next) {
-            candidate = next;
-            break;
-        }
-    }
-    candidate
 }
 
 pub fn build_theorem_map(
@@ -1570,7 +1262,7 @@ fn collect_paper_theorem_sources(paper_math_sources: &serde_json::Value) -> Vec<
                 .and_then(|v| v.as_str())
                 .filter(|value| !value.trim().is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("paper_theorem_{}", idx + 1));
+                .unwrap_or_else(|| format!("source_theorem_{}", idx + 1));
             let inventory = inventory_by_id.get(&id);
             let graph_statement = node
                 .get("statement")
@@ -4129,7 +3821,7 @@ end GrokRxiv
     }
 
     #[test]
-    fn formalization_blueprint_builds_source_grounded_entities_and_interfaces() {
+    fn formalization_goal_describes_source_faithfulness_verification_without_interfaces() {
         let _env = EnvVarGuard::set("GROKRXIV_LEAN_MAX_TARGETS", "0");
         let review_id = Uuid::parse_str("0a0491e6-1dfb-4519-8407-f6f8ebf9ac1e").unwrap();
         let paper_math = json!({
@@ -4193,46 +3885,24 @@ end GrokRxiv
         let obligations =
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "retired"}));
         let goal = build_formalization_goal(review_id, "full", &semantic_ir, &obligations);
-        let blueprint =
-            build_paper_blueprint(review_id, &paper_math, &semantic_ir, &obligations, &goal);
-        let entity_index = build_entity_index(review_id, &blueprint);
-        let interfaces = build_formal_interfaces_lean(&entity_index);
-        let compact = compact_blueprint_context_for_obligation(
-            &blueprint,
-            &entity_index,
-            &obligations["obligations"][0],
-        );
+        let rendered = serde_json::to_string(&goal).unwrap();
 
         assert_eq!(goal["constraints"]["no_paper_id_hardcoding"], true);
-        assert_eq!(blueprint["theorems"][0]["selected_for_lean"], true);
         assert_eq!(
-            entity_index["entities"][1]["target_lean_declaration"],
-            "thm_add_zero"
-        );
-        assert_ne!(entity_index["entities"][1]["lean_name"], "thm_add_zero");
-        assert!(interfaces.contains("opaque paper_def_def_add_zero_context : Type"));
-        assert!(interfaces.contains("opaque paper_theorem_thm_add_zero : Prop"));
-        assert!(!interfaces.contains("opaque thm_add_zero : Prop"));
-        assert_eq!(
-            compact["target_theorem"]["source_claim_id"],
-            serde_json::json!("thm:add-zero")
+            goal["constraints"]["deterministic_math_generation_allowed"],
+            false
         );
         assert_eq!(
-            compact["entities"][0]["resolution_status"],
-            serde_json::json!("source_grounded")
+            goal["verification_artifacts"]["statement_author_input"],
+            "review_loop/lean/targets/*/statement_author/input.json"
         );
+        assert!(rendered.contains("lean_faithfulness_checker"));
+        assert!(!rendered.contains("FormalInterfaces"));
+        assert!(!rendered.contains("paper_theorem_"));
+        assert!(!rendered.contains("paper_def_"));
         assert!(
-            compact["interface_declarations"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value.as_str() == Some("opaque paper_theorem_thm_add_zero : Prop"))
-        );
-        assert!(
-            !serde_json::to_string(&blueprint)
-                .unwrap()
-                .contains("2606.23863"),
-            "blueprint must not hardcode the regression paper id"
+            !rendered.contains("2606.23863"),
+            "formalization goal must not hardcode the regression paper id"
         );
     }
 

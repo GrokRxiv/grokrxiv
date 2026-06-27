@@ -991,7 +991,6 @@ pub async fn run_grokrxiv_action(
                 request.external_actions_enabled,
                 request.mode,
                 request.typed_ir_only,
-                request.blueprint_loop,
             )
             .await
         }
@@ -1559,7 +1558,6 @@ struct FormalizeArgs {
     external_actions_enabled: bool,
     mode: FormalizeMode,
     typed_ir_only: bool,
-    blueprint_loop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1692,13 +1690,11 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
     let mut external_actions_enabled = true;
     let mut mode = FormalizeMode::Full;
     let mut typed_ir_only = false;
-    let mut blueprint_loop = false;
     for arg in args {
         match arg.as_str() {
             "--debug" => debug_output = true,
             "--no-external-actions" => external_actions_enabled = false,
             "--auto-detect" | "--auto" => mode = FormalizeMode::AutoDetect,
-            "--blueprint-loop" => blueprint_loop = true,
             "--typed-ir-only" | "--benchmark-typed-ir" => {
                 typed_ir_only = true;
                 external_actions_enabled = false;
@@ -1720,7 +1716,6 @@ fn parse_formalize_args(args: Vec<String>) -> anyhow::Result<FormalizeArgs> {
         external_actions_enabled,
         mode,
         typed_ir_only,
-        blueprint_loop,
     })
 }
 
@@ -7611,7 +7606,6 @@ async fn run_per_theorem_lean_loop(
     semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
     theorem_nodes: &[serde_json::Value],
-    blueprint_context: Option<&serde_json::Value>,
     lean_dir: &Path,
     lean_final_path: &Path,
     debug_output: bool,
@@ -7634,7 +7628,7 @@ async fn run_per_theorem_lean_loop(
         "The deterministic validator recomputes the locked statement header before compilation and rejects any changed statement hash.",
         "Do not prove claim counts, review statuses, semantic labels, or metadata in place of the mathematical theorem target.",
         "If this task input includes a `dependencies` array, those are the paper definitions/lemmas/constructions your theorem references (resolved from the paper's dependency graph). Formalize your statement faithfully against their structure and hypotheses — introduce or import the structures they describe; NEVER restate a referenced object as an opaque `True`, an empty placeholder, or a vacuously-true strawman.",
-        "If this task input includes `blueprint_context`, it is source-grounded retrieval context from the paper-level blueprint and entity index; use it to understand paper-local interfaces, but preserve the locked statement exactly.",
+        "Use the source-faithfulness verification artifacts in the work packet to preserve the locked statement; do not add paper-local declarations that are not grounded by source_tex, source_context, dependencies, or symbol_map.",
         "The file must verify with lake env lean GrokRxiv/Proofs.lean.",
         "If the locked theorem genuinely cannot be proved, keep the locked statement unchanged and let the proof fail rather than masking the gap."
     ]);
@@ -7685,7 +7679,6 @@ async fn run_per_theorem_lean_loop(
                     semantic_ir,
                     semantic_model,
                     theorem_nodes,
-                    blueprint_context,
                     lean_dir,
                     debug_output,
                     target_budget,
@@ -7836,7 +7829,6 @@ fn lean_statement_author_artifact(
     lean_target: &serde_json::Value,
     dependencies: &[serde_json::Value],
     source_theorem_node: Option<&serde_json::Value>,
-    blueprint_context: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let packet = lean_target
         .get("statement_author_packet")
@@ -7914,11 +7906,9 @@ fn lean_statement_author_artifact(
             "typed_ir": typed_ir,
             "typed_transcription": typed_transcription,
         },
-        "blueprint_context": blueprint_context.cloned().unwrap_or_else(|| serde_json::json!(null)),
         "statement_author_contract": {
             "source_tex_is_authoritative": true,
             "source_context_is_supporting_evidence": true,
-            "blueprint_context_is_supporting_evidence": blueprint_context.is_some(),
             "typed_ir_is_scaffolding_only": true,
             "required_output": {
                 "lean_context": "Lean declarations, variables, or local structure needed before the theorem statement.",
@@ -7964,9 +7954,7 @@ async fn run_lean_statement_author_preflight(
          uninterpreted paper objects, introduce them with `opaque` declarations or variables; \
          never use `axiom`. Use source_context only to resolve paper-local notation, surrounding \
          definitions, numbered relations, displayed maps, and referenced objects; source_tex \
-         remains the theorem being stated. If blueprint_context is present, use it only as \
-         supporting evidence for source-grounded entities, dependency ids, and generated Lean \
-         interface names."
+         remains the theorem being stated."
     );
 
     if debug_output {
@@ -8241,6 +8229,53 @@ async fn run_lean_statement_faithfulness_review(
     Ok(run.output)
 }
 
+fn source_faithfulness_verification_manifest(
+    locked_statement: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": if locked_statement.is_some() { "required_before_proof" } else { "pending_locked_statement" },
+        "purpose": "Verify the LLM-authored Lean statement is sourced from the original TeX before proof authoring.",
+        "deterministic_math_generation_allowed": false,
+        "artifacts": {
+            "statement_author_input": "statement_author/input.json",
+            "statement_author_output": "statement_author/output.json",
+            "structural_validation": "statement_author/structural_validation.json",
+            "structural_typecheck": "statement_author/structural_typecheck.json",
+            "faithfulness": "statement_author/faithfulness.json",
+            "locked_statement": "locked_statement.json",
+            "proof_work_packet": "work_packet.json"
+        },
+        "manual_review_fields": [
+            "statement_author/input.json#source_packet.source_tex",
+            "statement_author/input.json#source_packet.source_context",
+            "statement_author/output.json#lean_context",
+            "statement_author/output.json#lean_statement",
+            "statement_author/output.json#symbol_map",
+            "statement_author/faithfulness.json#back_translation",
+            "statement_author/faithfulness.json#verdict",
+            "locked_statement.json#statement_hash",
+            "GrokRxiv/Proofs.lean"
+        ],
+        "gates": [
+            "lean_statement_author must emit statement_ready",
+            "structural validator rejects placeholders, sorry, admit, axiom, and missing declaration name",
+            "lake env lean typechecks the statement shape before proof authoring",
+            "lean_faithfulness_checker must return verdict=faithful before proof authoring",
+            "proof author must preserve locked_statement.statement_hash",
+            "final PROVED status requires lake env lean on the proof file with no sorry/admit/axiom"
+        ],
+        "locked_statement_hash": locked_statement
+            .and_then(|value| value.get("statement_hash"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null)),
+        "faithfulness_verdict": locked_statement
+            .and_then(|value| value.get("faithfulness_review"))
+            .and_then(|value| value.get("verdict"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null))
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lean_target_base_artifact(
     review_id: Uuid,
@@ -8254,7 +8289,6 @@ fn lean_target_base_artifact(
     proof_obligations: &serde_json::Value,
     lean_targets: &serde_json::Value,
     locked_statement: Option<&serde_json::Value>,
-    blueprint_context: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let compact_proof_obligations =
         compact_proof_obligations_for_target(proof_obligations, obligation);
@@ -8300,16 +8334,11 @@ fn lean_target_base_artifact(
                 .unwrap_or(0),
         },
         "work_packet_contract": {
-            "source_grounded_blueprint_context": blueprint_context.is_some(),
             "proof_author_must_preserve_locked_statement": locked_statement.is_some(),
-            "formal_interfaces_artifact": if blueprint_context.is_some() { serde_json::json!("review_loop/blueprint/FormalInterfaces.lean") } else { serde_json::json!(null) }
-        }
+            "deterministic_math_generation_allowed": false
+        },
+        "source_faithfulness_verification": source_faithfulness_verification_manifest(locked_statement)
     });
-    if let Some(blueprint_context) = blueprint_context {
-        if let Some(object) = artifact.as_object_mut() {
-            object.insert("blueprint_context".to_string(), blueprint_context.clone());
-        }
-    }
     if let Some(locked_statement) = locked_statement {
         if let Some(object) = artifact.as_object_mut() {
             object.insert(
@@ -8672,7 +8701,6 @@ async fn run_one_lean_target(
     _semantic_ir: &serde_json::Value,
     semantic_model: &serde_json::Value,
     theorem_nodes: &[serde_json::Value],
-    blueprint_context: Option<&serde_json::Value>,
     lean_dir: &Path,
     debug_output: bool,
     target_budget: std::time::Duration,
@@ -8759,17 +8787,6 @@ async fn run_one_lean_target(
     // referenced object as an opaque `True`.
     let dependencies = resolve_obligation_dependencies(obligation, theorem_nodes);
     let source_theorem_node = source_theorem_node_for_obligation(obligation, theorem_nodes);
-    let target_blueprint_context = blueprint_context.map(|context| {
-        grokrxiv_review_loop::compact_blueprint_context_for_obligation(
-            context
-                .get("paper_blueprint")
-                .unwrap_or(&serde_json::Value::Null),
-            context
-                .get("entity_index")
-                .unwrap_or(&serde_json::Value::Null),
-            obligation,
-        )
-    });
     let compact_lean_targets = compact_lean_targets_for_obligation(lean_targets, obligation);
     let lean_target = compact_lean_targets
         .get("targets")
@@ -8783,7 +8800,6 @@ async fn run_one_lean_target(
         &lean_target,
         &dependencies,
         source_theorem_node.as_ref(),
-        target_blueprint_context.as_ref(),
     );
     let locked_statement = match run_lean_statement_author_preflight(
         state,
@@ -8859,7 +8875,6 @@ async fn run_one_lean_target(
         proof_obligations,
         lean_targets,
         Some(&locked_statement),
-        target_blueprint_context.as_ref(),
     );
     let _ = write_loop_json(&obligation_dir.join("work_packet.json"), &base_artifact).await;
     let author_system_prompt = review_loop_code_system_prompt(lean_task, lean_task.author_role, 1);
@@ -9014,6 +9029,7 @@ async fn run_one_lean_target(
         "paper_theorem": statement,
         "verified_statement": verified_code,
         "final_path": obligation_final_path.display().to_string(),
+        "source_faithfulness_verification": source_faithfulness_verification_manifest(Some(&locked_statement)),
         "attempts": run.get("attempts").cloned().unwrap_or_else(|| serde_json::json!([])),
     });
     emit_formalize_node_event(formalize_lean_target_compile_result_event(
@@ -12192,7 +12208,6 @@ async fn formalize_review(
     external_actions_enabled: bool,
     mode: FormalizeMode,
     typed_ir_only: bool,
-    blueprint_loop: bool,
 ) -> anyhow::Result<()> {
     use grokrxiv_schemas::VerifierStatus;
     if typed_ir_only {
@@ -12202,9 +12217,8 @@ async fn formalize_review(
         cli_status::set_enabled(true);
     }
     cli_status::emit(format!(
-        "formalize {review_id}: loading runtime config (mode={}, blueprint_loop={})",
-        mode.as_str(),
-        blueprint_loop
+        "formalize {review_id}: loading runtime config (mode={})",
+        mode.as_str()
     ));
     ensure_min_cli_timeout_secs(1800);
     let config = super::Config::from_env();
@@ -12316,6 +12330,17 @@ async fn formalize_review(
         &proof_obligations,
     )
     .await?;
+    let formalization_goal = grokrxiv_review_loop::build_formalization_goal(
+        review_id,
+        mode.as_str(),
+        &semantic_ir,
+        &proof_obligations,
+    );
+    write_loop_json(
+        &artifact_dir.join("formalization_goal.json"),
+        &formalization_goal,
+    )
+    .await?;
     let lean_targets = grokrxiv_review_loop::build_lean_targets(&proof_obligations);
     write_loop_json(&artifact_dir.join("lean_targets.json"), &lean_targets).await?;
     // Paper dependency graph (A1): the extractor records each theorem's "uses" edges on its
@@ -12368,22 +12393,6 @@ async fn formalize_review(
         forbidden_terms: vec!["sorry", "admit", "axiom"],
         max_attempts: 2,
     };
-    let blueprint_context = if blueprint_loop {
-        Some(
-            write_formalization_blueprint_artifacts(
-                review_id,
-                mode,
-                &artifact_dir,
-                &paper_math_sources,
-                &semantic_ir,
-                &proof_obligations,
-                &lean_task,
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
     let lean_final_path = lean_src_dir.join("Proofs.lean");
 
     cli_status::emit(format!(
@@ -12401,7 +12410,6 @@ async fn formalize_review(
             &semantic_ir,
             &semantic_model,
             &theorem_nodes,
-            blueprint_context.as_ref(),
             &lean_dir,
             &lean_final_path,
             debug_output,
@@ -12628,97 +12636,6 @@ async fn formalize_review(
             .unwrap_or("?")
     ));
     Ok(())
-}
-
-async fn write_formalization_blueprint_artifacts(
-    review_id: Uuid,
-    mode: FormalizeMode,
-    artifact_dir: &Path,
-    paper_math_sources: &serde_json::Value,
-    semantic_ir: &serde_json::Value,
-    proof_obligations: &serde_json::Value,
-    lean_task: &ReviewFixCodeTask,
-) -> anyhow::Result<serde_json::Value> {
-    let blueprint_dir = artifact_dir.join("blueprint");
-    tokio::fs::create_dir_all(&blueprint_dir)
-        .await
-        .with_context(|| format!("create {}", blueprint_dir.display()))?;
-
-    let formalization_goal = grokrxiv_review_loop::build_formalization_goal(
-        review_id,
-        mode.as_str(),
-        semantic_ir,
-        proof_obligations,
-    );
-    write_loop_json(
-        &artifact_dir.join("formalization_goal.json"),
-        &formalization_goal,
-    )
-    .await?;
-
-    let paper_blueprint = grokrxiv_review_loop::build_paper_blueprint(
-        review_id,
-        paper_math_sources,
-        semantic_ir,
-        proof_obligations,
-        &formalization_goal,
-    );
-    write_loop_json(
-        &blueprint_dir.join("paper_blueprint.json"),
-        &paper_blueprint,
-    )
-    .await?;
-
-    let entity_index = grokrxiv_review_loop::build_entity_index(review_id, &paper_blueprint);
-    write_loop_json(&blueprint_dir.join("entity_index.json"), &entity_index).await?;
-
-    let formal_interfaces = grokrxiv_review_loop::build_formal_interfaces_lean(&entity_index);
-    write_review_loop_code_file(
-        &blueprint_dir.join("FormalInterfaces.lean"),
-        &formal_interfaces,
-    )
-    .await?;
-
-    prepare_review_loop_project_harness(lean_task, &blueprint_dir).await?;
-    let typecheck = run_loop_command(
-        lean_task.compile_program,
-        &["env", "lean", "FormalInterfaces.lean"],
-        &blueprint_dir,
-        std::time::Duration::from_secs(lean_task.compile_timeout_secs),
-    )
-    .await;
-    let typecheck_json = serde_json::to_value(&typecheck).unwrap_or_else(|_| serde_json::json!({}));
-    write_loop_json(
-        &blueprint_dir.join("formal_interfaces_typecheck.json"),
-        &typecheck_json,
-    )
-    .await?;
-    if typecheck.status != "pass" {
-        let detail = if typecheck.stderr.trim().is_empty() {
-            typecheck.stdout.as_str()
-        } else {
-            typecheck.stderr.as_str()
-        };
-        anyhow::bail!(
-            "FormalInterfaces.lean typecheck failed: {}",
-            truncate(&detail.replace('\n', " "), 600)
-        );
-    }
-
-    Ok(serde_json::json!({
-        "schema_version": "1.0.0",
-        "review_id": review_id,
-        "formalization_goal": formalization_goal,
-        "paper_blueprint": paper_blueprint,
-        "entity_index": entity_index,
-        "artifacts": {
-            "formalization_goal": "review_loop/formalization_goal.json",
-            "paper_blueprint": "review_loop/blueprint/paper_blueprint.json",
-            "entity_index": "review_loop/blueprint/entity_index.json",
-            "formal_interfaces": "review_loop/blueprint/FormalInterfaces.lean",
-            "formal_interfaces_typecheck": "review_loop/blueprint/formal_interfaces_typecheck.json"
-        }
-    }))
 }
 
 async fn refresh_formalize_review_loop_report(
@@ -20962,18 +20879,17 @@ After-marker explains the displayed map.
     }
 
     #[test]
-    fn parse_formalize_args_accepts_blueprint_loop_mode() {
-        let parsed = parse_formalize_args(vec![
+    fn parse_formalize_args_rejects_removed_blueprint_loop_mode() {
+        let result = parse_formalize_args(vec![
             "59486169-9357-42b4-b520-339723816013".to_string(),
             "--blueprint-loop".to_string(),
             "--no-external-actions".to_string(),
-        ])
-        .expect("formalize blueprint-loop args parse");
+        ]);
+        let err = result
+            .err()
+            .expect("deterministic blueprint-loop mode must be removed");
 
-        assert_eq!(parsed.mode, FormalizeMode::Full);
-        assert!(parsed.blueprint_loop);
-        assert!(!parsed.typed_ir_only);
-        assert!(!parsed.external_actions_enabled);
+        assert!(err.to_string().contains("--blueprint-loop"));
     }
 
     #[test]
@@ -21021,7 +20937,6 @@ After-marker explains the displayed map.
             &semantic_model,
             &proof_obligations,
             &lean_targets,
-            None,
             None,
         );
         let rendered = serde_json::to_string(&artifact).unwrap();
@@ -21072,7 +20987,6 @@ After-marker explains the displayed map.
             &proof_obligations,
             &lean_targets,
             Some(&locked_statement),
-            None,
         );
 
         assert_eq!(
@@ -21086,7 +21000,8 @@ After-marker explains the displayed map.
     }
 
     #[test]
-    fn lean_target_base_artifact_includes_blueprint_work_packet_context() {
+    fn lean_target_base_artifact_exposes_source_faithfulness_verification_without_blueprint_interfaces(
+    ) {
         let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
         let obligation = serde_json::json!({
             "id": "formalize_theorem_thm_add_zero",
@@ -21108,17 +21023,6 @@ After-marker explains the displayed map.
             "symbol_map": [],
             "statement_hash": "sha256:test-lock"
         });
-        let blueprint_context = serde_json::json!({
-            "target_theorem": {
-                "source_claim_id": "thm:add-zero",
-                "lean_declaration": "thm_add_zero"
-            },
-            "entities": [{
-                "source_claim_id": "thm:add-zero",
-                "lean_name": "paper_theorem_thm_add_zero",
-                "target_lean_declaration": "thm_add_zero"
-            }]
-        });
 
         let artifact = lean_target_base_artifact(
             review_id,
@@ -21132,17 +21036,20 @@ After-marker explains the displayed map.
             &proof_obligations,
             &lean_targets,
             Some(&locked_statement),
-            Some(&blueprint_context),
         );
+        let rendered = serde_json::to_string(&artifact).unwrap();
 
         assert_eq!(
-            artifact["blueprint_context"]["entities"][0]["lean_name"],
-            "paper_theorem_thm_add_zero"
+            artifact["source_faithfulness_verification"]["status"],
+            "required_before_proof"
         );
         assert_eq!(
-            artifact["work_packet_contract"]["formal_interfaces_artifact"],
-            "review_loop/blueprint/FormalInterfaces.lean"
+            artifact["source_faithfulness_verification"]["artifacts"]["faithfulness"],
+            "statement_author/faithfulness.json"
         );
+        assert!(artifact.get("blueprint_context").is_none());
+        assert!(!rendered.contains("FormalInterfaces"));
+        assert!(!rendered.contains("paper_theorem_"));
     }
 
     #[test]
@@ -22810,7 +22717,6 @@ obligationToLean = LeanTarget\n";
             &lean_target,
             &dependencies,
             None,
-            None,
         );
 
         assert_eq!(artifact["target"], "lean_statement");
@@ -22851,7 +22757,7 @@ obligationToLean = LeanTarget\n";
             }
         });
         let artifact =
-            lean_statement_author_artifact(review_id, &obligation, &lean_target, &[], None, None);
+            lean_statement_author_artifact(review_id, &obligation, &lean_target, &[], None);
 
         assert_eq!(
             artifact["source_packet"]["dependencies"],
@@ -22891,7 +22797,6 @@ obligationToLean = LeanTarget\n";
             &lean_target,
             &[],
             Some(&source_node),
-            None,
         );
 
         assert_eq!(
@@ -22905,7 +22810,7 @@ obligationToLean = LeanTarget\n";
     }
 
     #[test]
-    fn lean_statement_author_artifact_includes_blueprint_context_when_available() {
+    fn lean_statement_author_artifact_does_not_accept_blueprint_context() {
         let review_id = Uuid::parse_str("495d0f6a-5df0-4590-a029-14de314bd253").unwrap();
         let obligation = serde_json::json!({
             "id": "formalize_thm_add_zero",
@@ -22925,32 +22830,17 @@ obligationToLean = LeanTarget\n";
                 "typed_transcription": null
             }
         });
-        let blueprint_context = serde_json::json!({
-            "target_theorem": {"source_claim_id": "thm:add-zero"},
-            "entities": [{
-                "source_claim_id": "thm:add-zero",
-                "lean_name": "paper_theorem_thm_add_zero",
-                "target_lean_declaration": "thm_add_zero"
-            }]
-        });
 
-        let artifact = lean_statement_author_artifact(
-            review_id,
-            &obligation,
-            &lean_target,
-            &[],
-            None,
-            Some(&blueprint_context),
-        );
+        let artifact =
+            lean_statement_author_artifact(review_id, &obligation, &lean_target, &[], None);
+        let rendered = serde_json::to_string(&artifact).unwrap();
 
-        assert_eq!(
-            artifact["blueprint_context"]["entities"][0]["target_lean_declaration"],
-            "thm_add_zero"
-        );
-        assert_eq!(
-            artifact["statement_author_contract"]["blueprint_context_is_supporting_evidence"],
-            true
-        );
+        assert!(artifact["statement_author_contract"]
+            .get("blueprint_context_is_supporting_evidence")
+            .is_none());
+        assert!(artifact.get("blueprint_context").is_none());
+        assert!(!rendered.contains("paper_theorem_"));
+        assert!(!rendered.contains("FormalInterfaces"));
     }
 
     #[test]

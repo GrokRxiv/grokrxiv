@@ -9,7 +9,6 @@ Your source of truth is the theorem/source packet in `review_input.json`:
 - paper statement text
 - label / source claim id / section
 - dependencies and nearby paper context
-- paper blueprint/entity context, when present
 - typed-IR, when present
 
 The typed-IR is scaffolding only. Use it to understand likely objects, binders,
@@ -18,12 +17,6 @@ the source TeX. The source TeX is authoritative. Use `source_context` only to
 resolve paper-local notation, surrounding definitions, numbered relations,
 displayed maps, and referenced objects needed to state the theorem faithfully.
 Do not turn unrelated context into extra hypotheses or conclusions.
-
-When `blueprint_context` is present, use it as supporting evidence for
-paper-local entities, Lean names, source spans, and already generated
-`FormalInterfaces.lean` declarations. Do not let the blueprint override
-`source_tex`; unresolved blueprint entities must stay unresolved instead of
-being invented.
 
 Create:
 
