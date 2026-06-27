@@ -7619,6 +7619,30 @@ async fn run_per_theorem_lean_loop(
         .iter()
         .filter(|item| item.get("kind").and_then(|v| v.as_str()) == Some("theorem_formalization"))
         .collect::<Vec<_>>();
+    if let Err(err) = reset_lean_run_artifacts(lean_dir, lean_final_path).await {
+        return serde_json::json!({
+            "stage": "lean_review_fix_code",
+            "target": lean_task.target_id,
+            "language": lean_task.language,
+            "filename": lean_task.filename,
+            "author_role": lean_task.author_role,
+            "reviewer_role": lean_task.reviewer_role,
+            "fixer_role": lean_task.fixer_role,
+            "compile_timeout_secs": lean_task.compile_timeout_secs,
+            "max_attempts": lean_task.max_attempts,
+            "mode": "per_theorem",
+            "theorem_total": theorem_obligations.len(),
+            "theorem_proved": 0,
+            "status": "fail",
+            "reason": "stale_lean_artifact_reset_failed",
+            "error": format!("{err:#}"),
+            "declarations": {},
+            "verified_statements": {},
+            "attempts": [],
+            "per_obligation_runs": [],
+            "final_path": lean_final_path.display().to_string(),
+        });
+    }
 
     let requirements = serde_json::json!([
         "Write a complete, self-contained Lean 4 file GrokRxiv/Proofs.lean importing Mathlib that contains ONLY this single theorem.",
@@ -8227,6 +8251,49 @@ async fn run_lean_statement_faithfulness_review(
     .await?;
     write_loop_json(&statement_dir.join("faithfulness.json"), &run.output).await?;
     Ok(run.output)
+}
+
+async fn reset_lean_run_artifacts(lean_dir: &Path, lean_final_path: &Path) -> anyhow::Result<()> {
+    let targets_dir = lean_dir.join("targets");
+    remove_dir_if_exists(&targets_dir)
+        .await
+        .with_context(|| format!("remove stale Lean target dir {}", targets_dir.display()))?;
+    tokio::fs::create_dir_all(&targets_dir)
+        .await
+        .with_context(|| format!("create fresh Lean target dir {}", targets_dir.display()))?;
+    for path in [
+        lean_dir.join("results.json"),
+        lean_dir.join("hang_report.json"),
+    ] {
+        remove_file_if_exists(&path)
+            .await
+            .with_context(|| format!("remove stale Lean artifact {}", path.display()))?;
+    }
+    remove_file_if_exists(lean_final_path)
+        .await
+        .with_context(|| {
+            format!(
+                "remove stale combined Lean file {}",
+                lean_final_path.display()
+            )
+        })?;
+    Ok(())
+}
+
+async fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove dir {}", path.display())),
+    }
+}
+
+async fn remove_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove file {}", path.display())),
+    }
 }
 
 fn source_faithfulness_verification_manifest(
@@ -21050,6 +21117,50 @@ After-marker explains the displayed map.
         assert!(artifact.get("blueprint_context").is_none());
         assert!(!rendered.contains("FormalInterfaces"));
         assert!(!rendered.contains("paper_theorem_"));
+    }
+
+    #[tokio::test]
+    async fn reset_lean_run_artifacts_removes_stale_results_and_target_outputs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let lean_dir = tempdir.path().join("lean");
+        let target_dir = lean_dir.join("targets").join("00_stale_target");
+        tokio::fs::create_dir_all(target_dir.join("statement_author"))
+            .await
+            .expect("create stale statement dir");
+        tokio::fs::write(
+            target_dir.join("statement_author").join("output.json"),
+            r#"{"status":"statement_ready","lean_statement":"theorem stale : True := by"}"#,
+        )
+        .await
+        .expect("write stale statement output");
+        tokio::fs::write(lean_dir.join("results.json"), r#"{"status":"pass"}"#)
+            .await
+            .expect("write stale results");
+        let final_path = lean_dir.join("GrokRxiv").join("Proofs.lean");
+        tokio::fs::create_dir_all(final_path.parent().unwrap())
+            .await
+            .expect("create final parent");
+        tokio::fs::write(&final_path, "theorem stale : True := by trivial\n")
+            .await
+            .expect("write stale final lean");
+
+        reset_lean_run_artifacts(&lean_dir, &final_path)
+            .await
+            .expect("reset stale lean artifacts");
+
+        assert!(
+            !target_dir.exists(),
+            "stale target dir must be removed before a fresh formalize run"
+        );
+        assert!(
+            !lean_dir.join("results.json").exists(),
+            "stale aggregate results must be removed before a fresh formalize run"
+        );
+        assert!(
+            !final_path.exists(),
+            "stale combined Proofs.lean must be removed before a fresh formalize run"
+        );
+        assert!(lean_dir.join("targets").is_dir());
     }
 
     #[test]
