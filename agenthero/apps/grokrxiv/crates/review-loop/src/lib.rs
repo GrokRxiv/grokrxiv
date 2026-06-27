@@ -1567,26 +1567,21 @@ fn theorem_ir_from_statement(
     statement: &str,
     source_span: &serde_json::Value,
 ) -> serde_json::Value {
-    if statement_has_extraction_truncation(statement) {
-        return json!({
-            "theorem_name": theorem_name,
-            "source_span": source_span.clone(),
-            "binders": [],
-            "assumptions": [],
-            "conclusion": {
-                "kind": "unknown_prop",
-                "reason": "statement_truncated_by_extraction",
-                "text": statement.trim(),
-            },
-        });
-    }
-    let (binders, conclusion) = parse_statement_to_typed_parts(statement);
+    let reason = if statement_has_extraction_truncation(statement) {
+        "statement_truncated_by_extraction"
+    } else {
+        "typed_ir_missing_requires_llm_transcription"
+    };
     json!({
         "theorem_name": theorem_name,
         "source_span": source_span.clone(),
-        "binders": binders,
+        "binders": [],
         "assumptions": [],
-        "conclusion": conclusion,
+        "conclusion": {
+            "kind": "unknown_prop",
+            "reason": reason,
+            "text": statement.trim(),
+        },
     })
 }
 
@@ -1603,196 +1598,6 @@ fn legacy_theorem_ir(lean_declaration: &str, theorem: &serde_json::Value) -> ser
             .unwrap_or_default(),
         theorem.get("source_span").unwrap_or(&json!(null)),
     )
-}
-
-fn parse_statement_to_typed_parts(statement: &str) -> (serde_json::Value, serde_json::Value) {
-    let cleaned = statement
-        .trim()
-        .trim_end_matches('.')
-        .trim()
-        .replace('∀', "forall");
-    let lower = cleaned.to_ascii_lowercase();
-    if let Some(rest) = lower
-        .strip_prefix("for all ")
-        .or_else(|| lower.strip_prefix("forall "))
-    {
-        let offset = cleaned.len() - rest.len();
-        let original_rest = cleaned[offset..].trim();
-        let (binder_name, binder_type, conclusion_text) = parse_forall_prefix(original_rest);
-        let binders = json!([{
-            "name": binder_name,
-            "type": binder_type,
-        }]);
-        return (binders, parse_proposition(&conclusion_text));
-    }
-    (json!([]), parse_proposition(&cleaned))
-}
-
-fn parse_forall_prefix(rest: &str) -> (String, serde_json::Value, String) {
-    if let Some((name_part, after_colon)) = rest.split_once(':') {
-        let name = name_part
-            .split_whitespace()
-            .next()
-            .unwrap_or("x")
-            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .to_string();
-        let after_colon = after_colon.trim();
-        let type_end = after_colon
-            .find(|c: char| c == ',' || c.is_whitespace())
-            .unwrap_or(after_colon.len());
-        let ty_text = &after_colon[..type_end];
-        let conclusion = after_colon[type_end..]
-            .trim()
-            .trim_start_matches(',')
-            .trim()
-            .to_string();
-        return (name, parse_type(ty_text), conclusion);
-    }
-    if let Some((name_part, after_in)) = rest.split_once(" in ") {
-        let name = name_part
-            .split_whitespace()
-            .next()
-            .unwrap_or("x")
-            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .to_string();
-        let after_in = after_in.trim();
-        let type_end = after_in
-            .find(|c: char| c == ',' || c.is_whitespace())
-            .unwrap_or(after_in.len());
-        let ty_text = &after_in[..type_end];
-        let conclusion = after_in[type_end..]
-            .trim()
-            .trim_start_matches(',')
-            .trim()
-            .to_string();
-        return (name, parse_type(ty_text), conclusion);
-    }
-    (
-        "x".to_string(),
-        json!({"kind": "unknown_type", "reason": "forall binder type not specified"}),
-        rest.to_string(),
-    )
-}
-
-fn parse_type(value: &str) -> serde_json::Value {
-    match value.trim().trim_matches(|c: char| c == ',' || c == '.') {
-        "Nat" | "N" | "\\mathbb{N}" | "ℕ" => json!({"kind": "nat"}),
-        "Int" | "Z" | "\\mathbb{Z}" | "ℤ" => json!({"kind": "int"}),
-        "Real" | "R" | "\\mathbb{R}" | "ℝ" => json!({"kind": "real"}),
-        "Bool" => json!({"kind": "bool"}),
-        "Prop" => json!({"kind": "prop"}),
-        other if !other.is_empty() => json!({"kind": "custom", "name": other}),
-        _ => json!({"kind": "unknown_type", "reason": "empty type annotation"}),
-    }
-}
-
-fn parse_proposition(value: &str) -> serde_json::Value {
-    let cleaned = value.trim().trim_end_matches('.').trim();
-
-    // Implication is the top-level connective; split first so each side becomes
-    // its own proposition. Only explicit arrows — never infer implication from
-    // prose, which would risk fabricating structure.
-    for arrow in ["⟹", "⇒", "\\implies", "\\Rightarrow", "=>"] {
-        if let Some((premise, conclusion)) = cleaned.split_once(arrow) {
-            if !premise.trim().is_empty() && !conclusion.trim().is_empty() {
-                return json!({
-                    "kind": "implies",
-                    "premise": parse_proposition(premise),
-                    "conclusion": parse_proposition(conclusion),
-                });
-            }
-        }
-    }
-
-    // Inequalities. Only explicit two-char / unicode / LaTeX forms, so a stray
-    // '<' or '>' inside a complex statement never fabricates a relation. `\leq`
-    // is matched before `\le` so the longer token wins.
-    for (op, kind) in [
-        ("≤", "less_equal"),
-        ("\\leq", "less_equal"),
-        ("\\le", "less_equal"),
-        ("<=", "less_equal"),
-        ("≥", "greater_equal"),
-        ("\\geq", "greater_equal"),
-        ("\\ge", "greater_equal"),
-        (">=", "greater_equal"),
-    ] {
-        if let Some((lhs, rhs)) = cleaned.split_once(op) {
-            if !lhs.trim().is_empty() && !rhs.trim().is_empty() {
-                return json!({
-                    "kind": kind,
-                    "lhs": parse_term(lhs),
-                    "rhs": parse_term(rhs),
-                });
-            }
-        }
-    }
-
-    if let Some((lhs, rhs)) = cleaned.split_once('=') {
-        return json!({
-            "kind": "equals",
-            "lhs": parse_term(lhs),
-            "rhs": parse_term(rhs),
-        });
-    }
-    json!({
-        "kind": "unknown_prop",
-        "text": cleaned,
-    })
-}
-
-fn parse_term(value: &str) -> serde_json::Value {
-    let cleaned = value
-        .trim()
-        .trim_matches(|c: char| c == '(' || c == ')' || c == '.')
-        .trim();
-    if let Some((lhs, rhs)) = split_once_top_level(cleaned, '+') {
-        return json!({
-            "kind": "add",
-            "lhs": parse_term(lhs),
-            "rhs": parse_term(rhs),
-        });
-    }
-    if let Ok(value) = cleaned.parse::<u64>() {
-        return json!({"kind": "nat_lit", "value": value});
-    }
-    // Only a genuinely simple identifier becomes a `var`. Anything else (LaTeX
-    // macros, norms, multi-token expressions) is honestly `unknown_term` so the
-    // proof-readiness gate rejects relations we cannot faithfully type, rather
-    // than fabricating a clean-looking obligation from noise.
-    if is_simple_identifier(cleaned) {
-        return json!({"kind": "var", "name": cleaned});
-    }
-    json!({"kind": "unknown_term", "text": cleaned})
-}
-
-/// A simple math variable: starts with a letter and contains only letters,
-/// digits, underscores, or primes. Rejects whitespace, LaTeX control sequences,
-/// braces, norm bars, and operators.
-fn is_simple_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) if first.is_alphabetic() => {}
-        _ => return false,
-    }
-    value
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
-}
-
-fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
-    let mut depth = 0i32;
-    for (idx, ch) in value.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            _ => {}
-        }
-        if depth == 0 && ch == needle {
-            return Some((&value[..idx], &value[idx + ch.len_utf8()..]));
-        }
-    }
-    None
 }
 
 /// Gate for the LLM-authored Lean path: a candidate is authorable when it is a real
@@ -2343,43 +2148,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_proposition_types_simple_inequalities_and_implications() {
-        // `<=` / `>=` / unicode forms become typed relations with no unknown nodes.
-        let le = parse_proposition("a + b <= c");
-        assert_eq!(le["kind"], "less_equal");
-        assert!(
-            !contains_unknown_math_node(&le),
-            "clean <= must be fully typed"
-        );
-
-        let ge = parse_proposition("n ≥ 0");
-        assert_eq!(ge["kind"], "greater_equal");
-        assert_eq!(ge["rhs"], json!({"kind": "nat_lit", "value": 0}));
-        assert!(!contains_unknown_math_node(&ge));
-
-        let leq = parse_proposition("x \\leq y");
-        assert_eq!(leq["kind"], "less_equal");
-        assert!(!contains_unknown_math_node(&leq));
-
-        let imp = parse_proposition("a = b => c = d");
-        assert_eq!(imp["kind"], "implies");
-        assert_eq!(imp["premise"]["kind"], "equals");
-        assert_eq!(imp["conclusion"]["kind"], "equals");
-        assert!(!contains_unknown_math_node(&imp));
-    }
-
-    #[test]
-    fn parse_term_is_honest_about_untypeable_terms() {
-        // Simple identifiers and literals type cleanly.
-        assert_eq!(parse_term("n"), json!({"kind": "var", "name": "n"}));
-        assert_eq!(parse_term("x_0"), json!({"kind": "var", "name": "x_0"}));
-        assert_eq!(parse_term("0"), json!({"kind": "nat_lit", "value": 0}));
-
-        // Complex terms (LaTeX, norms, multi-token) are unknown, NOT a bogus var,
-        // so relations over them are honestly rejected by the proof-readiness gate.
-        assert!(contains_unknown_math_node(&parse_term("\\|T_n - T\\|")));
-        assert!(contains_unknown_math_node(&parse_term("\\sin(x)")));
-        assert!(contains_unknown_math_node(&parse_term("a b c")));
+    fn fallback_theorem_ir_does_not_parse_simple_math_from_statement_text() {
+        let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-le"});
+        for statement in ["For all n : Nat, 0 <= n", "a = b => c = d", "x \\leq y"] {
+            let theorem_ir =
+                typed_theorem_ir_from_source("thm_untyped", statement, &source_span, None, None);
+            assert_eq!(theorem_ir["binders"], json!([]));
+            assert_eq!(theorem_ir["conclusion"]["kind"], "unknown_prop");
+            assert_eq!(
+                theorem_ir["conclusion"]["reason"],
+                "typed_ir_missing_requires_llm_transcription"
+            );
+            assert!(contains_unknown_math_node(&theorem_ir["conclusion"]));
+        }
     }
 
     #[test]
@@ -2408,13 +2189,17 @@ mod tests {
         // A clean inequality from the reliable theorem graph can be used as typed-IR
         // scaffolding, but it still does not authorize deterministic Lean statement emission.
         let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-le"});
-        let theorem_ir = typed_theorem_ir_from_source(
-            "thm_le",
-            "For all n : Nat, 0 <= n",
-            &source_span,
-            None,
-            None,
-        );
+        let theorem_ir = json!({
+            "theorem_name": "thm_le",
+            "source_span": source_span.clone(),
+            "binders": [{"name": "n", "type": {"kind": "nat"}}],
+            "assumptions": [],
+            "conclusion": {
+                "kind": "less_equal",
+                "lhs": {"kind": "nat_lit", "value": 0},
+                "rhs": {"kind": "var", "name": "n"}
+            }
+        });
         let typed = typed_transcription_from_source("For all n : Nat, 0 <= n", &theorem_ir, None);
         let candidate = json!({
             "source_span": source_span,
@@ -3226,13 +3011,13 @@ end GrokRxiv
         assert_eq!(semantic_ir["source"], "paper_math_sources");
         assert_eq!(theorem["source_span"]["artifact"], "theorem_graph.json");
         assert_eq!(theorem["source_span"]["paper_source_id"], "thm-add-zero");
-        assert_eq!(theorem["typed_transcription"]["status"], "transcribed");
-        assert_eq!(theorem["theorem_ir"]["binders"][0]["name"], "n");
+        assert_eq!(theorem["typed_transcription"]["status"], "partial");
+        assert_eq!(theorem["theorem_ir"]["binders"], json!([]));
+        assert_eq!(theorem["theorem_ir"]["conclusion"]["kind"], "unknown_prop");
         assert_eq!(
-            theorem["theorem_ir"]["binders"][0]["type"],
-            json!({"kind": "nat"})
+            theorem["theorem_ir"]["conclusion"]["reason"],
+            "typed_ir_missing_requires_llm_transcription"
         );
-        assert_eq!(theorem["theorem_ir"]["conclusion"]["kind"], "equals");
         assert_eq!(
             theorem["formalization_target"]["lean_declaration"],
             "thm_add_zero"
