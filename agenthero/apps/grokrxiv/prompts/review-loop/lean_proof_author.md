@@ -20,8 +20,9 @@ obligation, so the kernel and the validator can find it.
 Do not change the locked theorem/lemma header, binders, conclusion, declaration
 name, Lean context, or symbol map. The deterministic validator recomputes the
 locked statement header before compilation and rejects changed statements.
-Treat the emitted `lean_skeleton`/`lean_statement` in `lean_targets` as history
-or hints only; they are not the proof target.
+`lean_targets` does not define the theorem statement; it only identifies the
+source claim and declaration name. The source-faithful locked statement is the
+only proof target.
 
 Fill in the proof body and prove each theorem against the Lean kernel. The proof must discharge the
 supplied paper-derived mathematical target — not a claim count, review status,

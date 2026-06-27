@@ -2,7 +2,6 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const LEAN_NAMESPACE: &str = "GrokRxiv";
 const DEFAULT_LEAN_MAX_TARGETS: usize = 8;
 
 pub fn build_semantic_ir(
@@ -319,7 +318,8 @@ pub fn build_semantic_ir_from_paper_math(
             "forbidden_lean_terms": ["sorry", "admit", "axiom"],
             "canonical_ir_artifact": "review_loop/semantic_ir.json",
             "haskell_is_derived_checked_artifact": true,
-            "lean_statements_are_deterministic_hints_only": true,
+            "deterministic_lean_statement_generation_allowed": false,
+            "lean_statements_are_llm_authored_only": true,
             "unsafe_or_incomplete_typed_ir_requires_statement_author": true,
             "extracted_equations_are_supporting_context": true
         },
@@ -400,34 +400,16 @@ pub fn build_proof_obligations(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}_formalized", lean_identifier(theorem_id)));
-        let deterministic_ready_reason = theorem_candidate_proof_target_issue(theorem);
         let theorem_ir = theorem
             .get("theorem_ir")
             .cloned()
             .unwrap_or_else(|| legacy_theorem_ir(&lean_declaration, &theorem));
-        let deterministic_statement_issue = deterministic_lean_statement_issue(
-            deterministic_ready_reason,
-            &lean_declaration,
-            &theorem_ir,
-        );
-        let (lean_statement, lean_skeleton, lean_statement_status, statement_author_required) =
-            if deterministic_statement_issue.is_none() {
-                let lean_statement = emit_lean_theorem_statement(&lean_declaration, &theorem_ir);
-                let lean_skeleton = emit_lean_skeleton(&lean_statement);
-                (
-                    json!(lean_statement),
-                    json!(lean_skeleton),
-                    json!("deterministic_hint_ready"),
-                    false,
-                )
-            } else {
-                (
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                    json!("requires_llm_statement_author"),
-                    true,
-                )
-            };
+        let typed_ir_quality_issue = theorem_candidate_typed_ir_quality_issue(theorem);
+        let lean_statement_issue = json!({
+            "reason": "deterministic_statement_generation_forbidden",
+            "action": "route_to_llm_statement_author",
+            "typed_ir_quality_issue": typed_ir_quality_issue,
+        });
         obligations.push(json!({
             "id": format!("formalize_{theorem_id}"),
             "kind": "theorem_formalization",
@@ -438,16 +420,14 @@ pub fn build_proof_obligations(
             "semantic_category": theorem.get("semantic_category").cloned().unwrap_or_else(|| json!("plain_theorem")),
             "theorem_ir": theorem_ir,
             "lean_declaration": lean_declaration,
-            "lean_statement": lean_statement,
-            "lean_skeleton": lean_skeleton,
-            "lean_statement_status": lean_statement_status,
-            "lean_statement_author_required": statement_author_required,
-            "lean_statement_issue": deterministic_statement_issue,
+            "lean_statement": null,
+            "lean_skeleton": null,
+            "lean_statement_status": "requires_llm_statement_author",
+            "lean_statement_author_required": true,
+            "lean_statement_issue": lean_statement_issue,
             "statement_author_packet": statement_author_packet(theorem, &lean_declaration),
-            // Hint only: did the deterministic synthesizer already produce clean typed IR?
-            // The LLM authors the faithful statement regardless; the kernel decides proved.
-            "deterministic_ready": deterministic_ready_reason.is_none(),
-            "deterministic_ready_reason": deterministic_ready_reason,
+            "deterministic_math_generation_allowed": false,
+            "typed_ir_quality_issue": typed_ir_quality_issue,
             "severity": "blocking",
             "expected_proof": "closed Lean theorem proof with no sorry, admit, or unapproved axiom",
         }));
@@ -537,28 +517,6 @@ pub fn proof_obligations_skip_lean(proof_obligations: &serde_json::Value) -> boo
             .and_then(|value| value.as_str()),
         Some("no_math_found" | "not_formalizable" | "no_math_targets")
     )
-}
-
-fn deterministic_lean_statement_issue(
-    readiness_issue: Option<&'static str>,
-    lean_declaration: &str,
-    theorem_ir: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    if let Some(reason) = readiness_issue {
-        return Some(json!({
-            "reason": reason,
-            "action": "route_to_llm_statement_author",
-        }));
-    }
-    let candidate = emit_lean_theorem_statement(lean_declaration, theorem_ir);
-    if lean_statement_is_placeholder(&candidate) {
-        return Some(json!({
-            "reason": "deterministic_statement_placeholder",
-            "action": "route_to_llm_statement_author",
-            "placeholder": candidate,
-        }));
-    }
-    None
 }
 
 fn statement_author_packet(
@@ -1106,13 +1064,13 @@ pub fn validate_lean_proof_code(code: &str, obligations: &serde_json::Value) -> 
                     "Lean proof is metadata-only or missing theorem declaration {decl}."
                 ));
             }
-            // The LLM authors the FAITHFUL Lean statement directly from the paper
-            // theorem; the deterministic `lean_statement` is only a hint and may drop
-            // hypotheses, so we no longer byte-match the statement against it (that is
-            // exactly what collapsed typed relations to operand-dropping predicates).
+            // The LLM authors the faithful Lean statement directly from the paper theorem.
+            // Deterministic code no longer synthesizes theorem statements from typed IR,
+            // so this validator only checks the mechanical floor here: declaration present
+            // and no forbidden terms.
             // Proof correctness is enforced by the Lean kernel (`lake env lean`) plus the
-            // forbidden-term check above; statement faithfulness is checked separately
-            // (back-translation / hypothesis-completeness) and surfaced for moderation.
+            // forbidden-term check above. Statement faithfulness is checked separately before
+            // proof authoring and locked by hash.
         }
     }
     if lower.contains("claimcount") || lower.contains("claim_count") {
@@ -1839,8 +1797,9 @@ fn split_once_top_level(value: &str, needle: char) -> Option<(&str, &str)> {
 
 /// Gate for the LLM-authored Lean path: a candidate is authorable when it is a real
 /// discovered theorem (sourced from `theorem_graph.json`) carrying a non-empty statement.
-/// Typed IR quality is recorded separately as `deterministic_ready`; weak IR is a reason
-/// for an honest failed Lean attempt, not a reason to skip authoring.
+/// Typed IR quality is recorded separately as advisory scaffolding; weak IR is a reason
+/// for cautious statement authoring, not a reason to synthesize a theorem statement
+/// deterministically.
 fn theorem_candidate_llm_author_issue(theorem: &serde_json::Value) -> Option<&'static str> {
     if theorem
         .get("source_span")
@@ -1861,7 +1820,7 @@ fn theorem_candidate_llm_author_issue(theorem: &serde_json::Value) -> Option<&'s
     None
 }
 
-fn theorem_candidate_proof_target_issue(theorem: &serde_json::Value) -> Option<&'static str> {
+fn theorem_candidate_typed_ir_quality_issue(theorem: &serde_json::Value) -> Option<&'static str> {
     if theorem
         .get("source_span")
         .and_then(|span| span.get("artifact"))
@@ -1915,12 +1874,11 @@ pub fn lean_statement_is_placeholder(statement: &str) -> bool {
     if compact.contains(":True:=") || compact.ends_with(":True") {
         return true;
     }
-    // The deterministic obligation generator also emits a trivially-true REFLEXIVE equality
-    // (`: 0 = 0 := by`, `: x = x := by`) when `emit_prop` hits a degenerate/unknown conclusion
-    // — see `emit_prop`'s `equals` arm over `unknown_term`s. That is still an un-authored
-    // placeholder (Lean has not run), so the faithfulness check must treat it as such, not as
-    // an OVERCLAIMED real statement. Isolate the conclusion (the segment before `:=`, after the
-    // final binder/`:`) and flag an exact reflexive equality.
+    // Legacy deterministic artifacts may contain a trivially-true REFLEXIVE equality
+    // (`: 0 = 0 := by`, `: x = x := by`). That is still an un-authored placeholder
+    // (Lean has not run), so the faithfulness check must treat it as such, not as an
+    // OVERCLAIMED real statement. Isolate the conclusion (the segment before `:=`, after
+    // the final binder/`:`) and flag an exact reflexive equality.
     let body = compact.split(":=").next().unwrap_or(&compact);
     let conclusion = body.rsplit_once(':').map(|(_, c)| c).unwrap_or(body);
     if conclusion == "True" {
@@ -1961,232 +1919,6 @@ fn semantic_category_for_statement(_text: &str, lower: &str) -> &'static str {
         "invariant_preservation"
     } else {
         "plain_theorem"
-    }
-}
-
-fn emit_lean_theorem_statement(declaration: &str, theorem_ir: &serde_json::Value) -> String {
-    let binders = theorem_ir
-        .get("binders")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|binder| {
-                    let name = binder.get("name").and_then(|v| v.as_str())?;
-                    let ty = emit_type(
-                        binder
-                            .get("type")
-                            .unwrap_or(&json!({"kind": "unknown_type"})),
-                    );
-                    Some(format!(" ({name} : {ty})"))
-                })
-                .collect::<String>()
-        })
-        .unwrap_or_default();
-    let conclusion = theorem_ir
-        .get("conclusion")
-        .map(emit_prop)
-        .unwrap_or_else(|| "True".to_string());
-    format!("theorem {declaration}{binders} : {conclusion} := by")
-}
-
-fn emit_lean_skeleton(statement: &str) -> String {
-    format!("namespace {LEAN_NAMESPACE}\n\n{statement}\n  sorry\n\nend {LEAN_NAMESPACE}\n")
-}
-
-fn emit_type(value: &serde_json::Value) -> String {
-    match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-        "nat" => "Nat".to_string(),
-        "int" => "Int".to_string(),
-        "real" => "Real".to_string(),
-        "bool" => "Bool".to_string(),
-        "prop" => "Prop".to_string(),
-        "custom" => value
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(lean_identifier)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Sort".to_string()),
-        _ => "Sort".to_string(),
-    }
-}
-
-fn emit_prop(value: &serde_json::Value) -> String {
-    match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-        "equals" => format!(
-            "{} = {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "less_equal" => format!(
-            "{} ≤ {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "less_than" => format!(
-            "{} < {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "greater_equal" => format!(
-            "{} ≥ {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "greater_than" => format!(
-            "{} > {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "implies" => format!(
-            "{} -> {}",
-            emit_prop(value.get("premise").unwrap_or(&json!(null))),
-            emit_prop(value.get("conclusion").unwrap_or(&json!(null)))
-        ),
-        "and" => value
-            .get("items")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| format!("({})", emit_prop(item)))
-                    .collect::<Vec<_>>()
-                    .join(" ∧ ")
-            })
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "True".to_string()),
-        "or" => value
-            .get("items")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| format!("({})", emit_prop(item)))
-                    .collect::<Vec<_>>()
-                    .join(" ∨ ")
-            })
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "True".to_string()),
-        "not" => format!(
-            "¬ ({})",
-            emit_prop(value.get("arg").unwrap_or(&json!(null)))
-        ),
-        "forall" => emit_quantified_prop("∀", value),
-        "exists" => emit_quantified_prop("∃", value),
-        "uninterpreted_predicate" => emit_uninterpreted_predicate(value),
-        "unknown_prop" => "True".to_string(),
-        _ => "True".to_string(),
-    }
-}
-
-fn emit_quantified_prop(quantifier: &str, value: &serde_json::Value) -> String {
-    let binders = value
-        .get("binders")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|binder| {
-                    let name = binder.get("name").and_then(|v| v.as_str())?;
-                    let ty = emit_type(
-                        binder
-                            .get("type")
-                            .unwrap_or(&json!({"kind": "unknown_type"})),
-                    );
-                    Some(format!("({name} : {ty})"))
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default();
-    let body = value
-        .get("body")
-        .map(emit_prop)
-        .unwrap_or_else(|| "True".to_string());
-    if binders.is_empty() {
-        body
-    } else {
-        format!("{quantifier} {binders}, {body}")
-    }
-}
-
-fn emit_uninterpreted_predicate(value: &serde_json::Value) -> String {
-    let name = value
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(lean_identifier)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "PaperPredicate".to_string());
-    let args = value
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .map(emit_term)
-                .filter(|value| !value.trim().is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if args.is_empty() {
-        name
-    } else {
-        format!("{} {}", name, args.join(" "))
-    }
-}
-
-fn emit_term(value: &serde_json::Value) -> String {
-    match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-        "var" => value
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(lean_identifier)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "_".to_string()),
-        "nat_lit" => value
-            .get("value")
-            .and_then(|v| v.as_u64())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "0".to_string()),
-        "int_lit" | "real_lit" => value
-            .get("value")
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| value.as_i64().map(|n| n.to_string()))
-                    .or_else(|| value.as_f64().map(|n| n.to_string()))
-                    .unwrap_or_else(|| "0".to_string())
-            })
-            .unwrap_or_else(|| "0".to_string()),
-        "add" => format!(
-            "{} + {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "sub" => format!(
-            "{} - {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "mul" => format!(
-            "{} * {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "div" => format!(
-            "{} / {}",
-            emit_term(value.get("lhs").unwrap_or(&json!(null))),
-            emit_term(value.get("rhs").unwrap_or(&json!(null)))
-        ),
-        "pow" => format!(
-            "{} ^ {}",
-            emit_term(value.get("base").unwrap_or(&json!(null))),
-            emit_term(value.get("exponent").unwrap_or(&json!(null)))
-        ),
-        "neg" => format!("-{}", emit_term(value.get("arg").unwrap_or(&json!(null)))),
-        "unknown_term" => "0".to_string(),
-        _ => "0".to_string(),
     }
 }
 
@@ -2672,8 +2404,9 @@ mod tests {
     }
 
     #[test]
-    fn simple_inequality_theorem_is_proof_ready() {
-        // A clean inequality from the reliable theorem graph must pass the gate.
+    fn simple_inequality_theorem_has_no_typed_ir_quality_issue() {
+        // A clean inequality from the reliable theorem graph can be used as typed-IR
+        // scaffolding, but it still does not authorize deterministic Lean statement emission.
         let source_span = json!({"artifact": "theorem_graph.json", "paper_source_id": "thm-le"});
         let theorem_ir = typed_theorem_ir_from_source(
             "thm_le",
@@ -2689,9 +2422,9 @@ mod tests {
             "theorem_ir": theorem_ir,
         });
         assert_eq!(
-            theorem_candidate_proof_target_issue(&candidate),
+            theorem_candidate_typed_ir_quality_issue(&candidate),
             None,
-            "a clean typed inequality from theorem_graph.json must be proof-ready"
+            "a clean typed inequality from theorem_graph.json should not add a typed-IR warning"
         );
     }
 
@@ -3080,7 +2813,7 @@ publisherReadyLowerBound = claimCount == 43
     }
 
     #[test]
-    fn proof_obligations_emit_uninterpreted_predicate_instead_of_true_placeholder() {
+    fn proof_obligations_require_statement_author_even_with_clean_typed_ir() {
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let semantic_ir = json!({
             "schema_version": "1.0.0",
@@ -3128,11 +2861,19 @@ publisherReadyLowerBound = claimCount == 43
 
         assert_eq!(obligations["status"], "ready");
         assert_eq!(item["lean_declaration"], "thm_fib");
+        assert_eq!(item["lean_statement"], serde_json::Value::Null);
+        assert_eq!(item["lean_skeleton"], serde_json::Value::Null);
         assert_eq!(
-            item["lean_statement"],
-            "theorem thm_fib : LocallyTrivialConfigurationProjection := by"
+            item["lean_statement_status"],
+            "requires_llm_statement_author"
         );
-        assert_ne!(item["lean_statement"], "theorem thm_fib : True := by");
+        assert_eq!(item["lean_statement_author_required"], true);
+        assert_eq!(item["deterministic_math_generation_allowed"], false);
+        assert_eq!(item["typed_ir_quality_issue"], serde_json::Value::Null);
+        assert_eq!(
+            item["lean_statement_issue"]["reason"],
+            "deterministic_statement_generation_forbidden"
+        );
         assert!(proof_obligations_require_lean(&obligations));
     }
 
@@ -3204,9 +2945,12 @@ publisherReadyLowerBound = claimCount == 43
         let obligation_items = obligations["obligations"].as_array().unwrap();
         assert_eq!(obligation_items.len(), 1);
         assert_eq!(obligation_items[0]["lean_declaration"], "thm_partial");
-        assert_eq!(obligation_items[0]["deterministic_ready"], false);
         assert_eq!(
-            obligation_items[0]["deterministic_ready_reason"],
+            obligation_items[0]["deterministic_math_generation_allowed"],
+            false
+        );
+        assert_eq!(
+            obligation_items[0]["typed_ir_quality_issue"],
             "typed_transcription_not_transcribed"
         );
         let skipped = obligations["skipped_targets"].as_array().unwrap();
@@ -3260,9 +3004,9 @@ publisherReadyLowerBound = claimCount == 43
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
         let obligation = &obligations["obligations"][0];
 
-        assert_eq!(obligation["deterministic_ready"], false);
+        assert_eq!(obligation["deterministic_math_generation_allowed"], false);
         assert_eq!(
-            obligation["deterministic_ready_reason"],
+            obligation["typed_ir_quality_issue"],
             "typed_transcription_contains_unknown_math"
         );
         assert_eq!(obligation["lean_statement"], serde_json::Value::Null);
@@ -4037,7 +3781,7 @@ end GrokRxiv
     }
 
     #[test]
-    fn lean_targets_are_emitted_deterministically_from_typed_ir() {
+    fn lean_targets_require_llm_statement_author_even_with_typed_ir() {
         let review_id = Uuid::parse_str("76665eba-7670-47ef-b69d-42a0af86eba7").unwrap();
         let semantic_ir = json!({
             "schema_version": "1.0.0",
@@ -4081,26 +3825,23 @@ end GrokRxiv
         let target = &lean_targets["targets"][0];
 
         assert_eq!(target["lean_declaration"], "thm_add_zero");
+        assert_eq!(target["lean_statement"], serde_json::Value::Null);
+        assert_eq!(target["lean_skeleton"], serde_json::Value::Null);
         assert_eq!(
-            target["lean_statement"],
-            "theorem thm_add_zero (n : Nat) : n + 0 = n := by"
+            target["lean_statement_status"],
+            "requires_llm_statement_author"
         );
-        assert!(target["lean_skeleton"]
-            .as_str()
-            .expect("lean skeleton")
-            .contains("  sorry"));
+        assert_eq!(target["lean_statement_author_required"], true);
     }
 
     #[test]
     fn lean_validator_no_longer_byte_matches_statement() {
         // Phase 3: the LLM authors the FAITHFUL Lean statement directly from the paper
-        // theorem; the deterministic `lean_statement` is only a hint and may itself drop
-        // hypotheses. The validator therefore NO LONGER byte-matches the authored statement
-        // against the emitted skeleton (that byte-lock is what collapsed typed relations into
-        // operand-dropping predicates). A statement that differs from the emitted hint but
-        // still declares the right name and uses no forbidden term passes deterministic
-        // validation; faithfulness (e.g. an over-narrowed strawman) is caught by the Lean
-        // kernel and the advisory faithfulness checker, not here.
+        // theorem. The deterministic validator therefore only enforces mechanical checks
+        // here: the declaration is present and forbidden terms are absent. A statement that
+        // differs from an old stale obligation statement but still declares the right name
+        // passes this validator; source faithfulness is enforced by the pre-proof reviewer
+        // and locked-statement hash.
         let obligations = json!({
             "obligations": [
                 {
@@ -4669,9 +4410,9 @@ end GrokRxiv
                 }
             ]
         });
-        // Mix the two deterministic placeholder forms the generator actually emits: a `True`
-        // conclusion AND a trivially-true reflexive equality `0 = 0` (from `emit_prop` over a
-        // degenerate `equals`). BOTH are un-authored placeholders → the whole map must SKIP.
+        // Mix two legacy deterministic placeholder forms: a `True` conclusion and a
+        // trivially-true reflexive equality `0 = 0`. BOTH are un-authored placeholders, so
+        // the whole map must SKIP.
         let theorem_map = json!({
             "entries": [
                 {
