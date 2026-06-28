@@ -8566,7 +8566,8 @@ fn initial_inventory_target_proofs_code(
 ) -> String {
     let reason = seed_reason.unwrap_or("inventory_target_seed");
     format!(
-        "{}\n\n\
+        "{}\n\
+         open GrokRxiv.Paper\n\n\
          /-!\n\
          GrokRxiv theorem target workspace.\n\n\
          claim_id: {claim_id}\n\
@@ -8688,6 +8689,7 @@ fn paper_local_library_api_summary_from_dir(library_dir: &Path) -> serde_json::V
         "compile_path": "review_loop/lean/library/compile.json",
         "compile_status": compile_status,
         "umbrella_import": "import GrokRxiv.Paper",
+        "default_namespace": "GrokRxiv.Paper",
         "declaration_count": manifest
             .get("declarations")
             .and_then(|value| value.as_array())
@@ -8702,6 +8704,7 @@ fn paper_local_library_api_summary_from_dir(library_dir: &Path) -> serde_json::V
         "declarations": declarations,
         "usage_contract": [
             "Import the checked paper-local library with `import GrokRxiv.Paper`.",
+            "Declarations authored in the paper-local library live under namespace `GrokRxiv.Paper`; use `open GrokRxiv.Paper` or fully qualified names such as `GrokRxiv.Paper.<name>`.",
             "Reuse declaration names and signatures from this summary before inventing any local object.",
             "If the required paper object is absent or too weak, report a source/library gap instead of guessing a similarly named declaration.",
             "Do not use this summary to replace the source theorem by True, 0 = 0, x = x, metadata, or another strawman."
@@ -14550,6 +14553,7 @@ async fn run_inventory_author_stage(
         "requirements": [
             "MANDATORY: operate as a coding agent inside the prepared Lean/Lake project, not as a text generator.",
             "MANDATORY: use packet.paper_local_library.declarations / author_brief.json#paper_local_library.declarations for checked GrokRxiv.Paper names before inventing local objects.",
+            "MANDATORY: paper-local declarations live under namespace GrokRxiv.Paper; use `open GrokRxiv.Paper` or fully qualified names.",
             "MANDATORY: before reading full review_input.json, edit GrokRxiv/Proofs.lean into a source-grounded Lean skeleton and return promptly.",
             "GrokRxiv runs lake build after every author/fixer edit and feeds exact compiler output into a fixer round if needed.",
             "Write a complete Lean 4 file importing GrokRxiv.Paper modules from the checked paper-local library.",
@@ -14739,6 +14743,8 @@ async fn write_inventory_lean_loop_files(
          - `author_brief.json#paper_local_library.declarations` contains the bounded \
          declaration/signature/source-evidence summary for the compiled \
          `GrokRxiv.Paper` library.\n\
+         - Paper-local declarations live in namespace `GrokRxiv.Paper`; use \
+         `open GrokRxiv.Paper` or fully qualified names such as `GrokRxiv.Paper.<name>`.\n\
          - Use those declaration names before inventing any local object. If the needed \
          paper object is absent, report a source/library gap in `notes` and expose the \
          blocker in Lean code without changing the theorem into a fake claim.\n\n\
@@ -14769,7 +14775,7 @@ async fn write_inventory_lean_loop_files(
 1. Read `system.md`, `prompt.md`, `GOAL.md`, `PLAN.md`, `LEAN_STATUS.md`, and `author_brief.json`.\n\
 2. Inspect the existing `GrokRxiv/Proofs.lean` seed.\n\
 3. Inspect `mathlib_setup.json`, `lake_update.json`, and `author_brief.json#paper_local_library.declarations`; if setup failed or a needed checked declaration is absent, report that blocker instead of inventing code.\n\
-4. Before reading full `review_input.json`, write a source-grounded Lean skeleton that reuses imported paper-local declarations.\n\
+4. Before reading full `review_input.json`, write a source-grounded Lean skeleton that reuses imported paper-local declarations with `open GrokRxiv.Paper` or fully qualified `GrokRxiv.Paper.<name>` names.\n\
 5. Return promptly; GrokRxiv will run `lake build GrokRxiv.Proofs` outside the LLM session.\n\
 6. In fixer phase, use the exact compile output already provided in the prompt to edit once, then return.\n\
 7. Read full `review_input.json` only if the brief and compiler output are insufficient.\n\
@@ -15344,6 +15350,7 @@ async fn run_inventory_fix_stage(
         "requirements": [
             "Fix the Lean file using the exact compiler error.",
             "Use packet.paper_local_library.declarations / author_brief.json#paper_local_library.declarations to resolve checked GrokRxiv.Paper names before inventing local objects.",
+            "Paper-local declarations live under namespace GrokRxiv.Paper; use `open GrokRxiv.Paper` or fully qualified names.",
             "Preserve source faithfulness to source_tex and source_context.",
             "Do not use sorry, admit, or axiom."
         ]
@@ -15732,6 +15739,26 @@ fn inventory_claim_status_from_target_status(status: &str) -> &'static str {
         | "faithfulness_checker_error" => "blocked",
         _ => "failed",
     }
+}
+
+fn inventory_direct_kernel_proved_count(entries: &[serde_json::Value]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.get("compile_status").and_then(|value| value.as_str()) == Some("pass")
+        })
+        .count()
+}
+
+fn inventory_direct_paper_claim_proved_count(entries: &[serde_json::Value]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.get("claim_status").and_then(|value| value.as_str()) == Some("proved")
+                || (entry.get("claim_status").is_none()
+                    && entry.get("status").and_then(|value| value.as_str()) == Some("pass"))
+        })
+        .count()
 }
 
 async fn run_inventory_direct_formalize_review(
@@ -16323,7 +16350,7 @@ async fn write_inventory_direct_aggregate_results(
     artifact_dir: &Path,
     status: &str,
     entries: &[serde_json::Value],
-    proved: usize,
+    _proved: usize,
     proofs_lean_created: usize,
     proof_author_invoked: usize,
     blocked: usize,
@@ -16334,6 +16361,8 @@ async fn write_inventory_direct_aggregate_results(
     let lean_dir = artifact_dir.join("lean");
     tokio::fs::create_dir_all(&lean_dir).await?;
     let selected_count = entries.len();
+    let kernel_proved = inventory_direct_kernel_proved_count(entries);
+    let paper_claim_proved = inventory_direct_paper_claim_proved_count(entries);
     let summary = serde_json::json!({
         "schema_version": "1.0.0",
         "stage": "all",
@@ -16343,8 +16372,9 @@ async fn write_inventory_direct_aggregate_results(
         "proofs_lean_created_count": proofs_lean_created,
         "proof_author_invoked_count": proof_author_invoked,
         "statement_preflight_passed_count": 0usize,
-        "kernel_proved_count": proved,
-        "theorem_proved": proved,
+        "kernel_proved_count": kernel_proved,
+        "paper_claim_proved_count": paper_claim_proved,
+        "theorem_proved": paper_claim_proved,
         "blocked_count": blocked,
         "failed_count": failed,
         "external_actions_enabled": external_actions_enabled,
@@ -24243,6 +24273,7 @@ mod tests {
         let enriched = enrich_inventory_packet_with_paper_local_library(&packet, tempdir.path());
         let library = &enriched["paper_local_library"];
         assert_eq!(library["compile_status"], "pass");
+        assert_eq!(library["default_namespace"], "GrokRxiv.Paper");
         assert_eq!(library["declarations"][0]["name"], "PaperObject");
         assert_eq!(
             library["declarations"][0]["import"],
@@ -24262,6 +24293,14 @@ mod tests {
             brief["first_skeleton_contract"]["paper_local_declarations_source"],
             "author_brief.json#paper_local_library.declarations"
         );
+        assert!(library["usage_contract"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                .as_str()
+                .unwrap_or_default()
+                .contains("open GrokRxiv.Paper")));
     }
 
     #[test]
@@ -25200,14 +25239,17 @@ After-marker explains the displayed map.
         assert!(code.contains("import GrokRxiv.Paper.Definitions"));
         assert!(code.contains("import GrokRxiv.Paper.Interfaces"));
         assert!(code.contains("import GrokRxiv.Paper.Statements"));
+        assert!(code.contains("\nopen GrokRxiv.Paper\n"));
         assert!(code.contains("For all n : Nat, n + 0 = n."));
         assert!(goal.contains("Mandatory coding-agent contract"));
         assert!(goal.contains("real Lean/Lake project"));
         assert!(goal.contains("author_brief.json"));
         assert!(goal.contains("Before reading the full `review_input.json`"));
         assert!(goal.contains("lake build GrokRxiv.Proofs"));
+        assert!(goal.contains("open GrokRxiv.Paper"));
         assert!(goal.contains("raw_stdout.live.txt"));
         assert!(plan.contains("author_brief.json#paper_local_library.declarations"));
+        assert!(plan.contains("open GrokRxiv.Paper"));
         assert!(plan.contains("Before reading full `review_input.json`"));
         assert!(author_brief.contains("\"do_not_read_before_first_edit\""));
         assert!(author_brief.contains("\"paper_local_library\""));
@@ -25427,6 +25469,27 @@ After-marker explains the displayed map.
         assert!(inventory_target_failure_reason(&compile, &unfaithful)
             .unwrap()
             .contains("faithfulness_verdict=unfaithful"));
+    }
+
+    #[test]
+    fn inventory_direct_counts_kernel_compile_separately_from_paper_claim_proof() {
+        let entries = vec![
+            serde_json::json!({
+                "source_claim_id": "claim:faithfulness-blocked",
+                "status": "faithfulness_failed",
+                "claim_status": "blocked",
+                "compile_status": "pass"
+            }),
+            serde_json::json!({
+                "source_claim_id": "claim:compile-failed",
+                "status": "lean_compile_error",
+                "claim_status": "failed",
+                "compile_status": "lean_compile_error"
+            }),
+        ];
+
+        assert_eq!(inventory_direct_kernel_proved_count(&entries), 1);
+        assert_eq!(inventory_direct_paper_claim_proved_count(&entries), 0);
     }
 
     #[test]

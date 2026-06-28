@@ -1529,8 +1529,15 @@ fn build_command(
             let path = write_codex_schema(&role_slug, spec.schema.as_ref())?;
             let args = vec![
                 "exec".to_string(),
+                "--ignore-user-config".to_string(),
+                "--ignore-rules".to_string(),
+                "--ephemeral".to_string(),
                 "--skip-git-repo-check".to_string(),
+                "--sandbox".to_string(),
+                "danger-full-access".to_string(),
                 "--json".to_string(),
+                "--model".to_string(),
+                spec.model.clone(),
                 "--output-schema".to_string(),
                 path.to_string_lossy().into_owned(),
                 provider_prompt.clone(),
@@ -2111,7 +2118,7 @@ fn cli_visibility_contract(provider: &str) -> serde_json::Value {
         }),
         "openai" => serde_json::json!({
             "streaming_required": true,
-            "recommended_cli_shape": "codex exec --skip-git-repo-check --json --output-schema <schema.json> <prompt>",
+            "recommended_cli_shape": "codex exec --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check --sandbox danger-full-access --json --model <model> --output-schema <schema.json> <prompt>",
             "prompt_transport": "prompt as final positional argument; schema as --output-schema file",
             "live_stdout": "raw_stdout.live.txt contains Codex --json JSONL events while the process is still running",
             "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
@@ -3862,13 +3869,27 @@ mod tests {
 
         let args = &built.args;
         assert_eq!(args.first().map(String::as_str), Some("exec"));
+        for required in [
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--json",
+        ] {
+            assert!(
+                args.contains(&required.to_string()),
+                "missing {required} in {args:?}"
+            );
+        }
         assert!(
-            args.contains(&"--skip-git-repo-check".to_string()),
-            "missing --skip-git-repo-check in {args:?}"
+            args.windows(2)
+                .any(|w| w[0] == "--sandbox" && w[1] == "danger-full-access"),
+            "missing automation sandbox args in {args:?}"
         );
         assert!(
-            args.contains(&"--json".to_string()),
-            "missing --json in {args:?}"
+            args.windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
+            "missing explicit --model pair in {args:?}"
         );
         // --output-schema <path>
         let schema_idx = args
