@@ -12533,20 +12533,6 @@ async fn write_paper_local_library_seed_files(library_dir: &Path) -> anyhow::Res
     Ok(())
 }
 
-fn paper_local_library_artifact_from_output(
-    output: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    let files = output.get("files")?.clone();
-    let manifest = output.get("manifest")?.clone();
-    Some(serde_json::json!({
-        "language": output.get("language").cloned().unwrap_or_else(|| serde_json::json!("lean")),
-        "files": files,
-        "manifest": manifest,
-        "notes": output.get("notes").cloned().unwrap_or_else(|| serde_json::json!([])),
-        "confidence": output.get("confidence").cloned().unwrap_or_else(|| serde_json::json!(0.5)),
-    }))
-}
-
 fn paper_local_library_artifact_from_dir(library_dir: &Path) -> serde_json::Value {
     let files = PAPER_LOCAL_LIBRARY_FILES
         .iter()
@@ -12574,39 +12560,6 @@ fn paper_local_library_artifact_from_dir(library_dir: &Path) -> serde_json::Valu
         "notes": [],
         "confidence": 0.5,
     })
-}
-
-async fn materialize_paper_local_library_artifact(
-    library_dir: &Path,
-    artifact: &serde_json::Value,
-) -> anyhow::Result<()> {
-    for file in artifact
-        .get("files")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let Some(path) = file.get("path").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if !PAPER_LOCAL_LIBRARY_FILES.contains(&path) {
-            continue;
-        }
-        let code = file
-            .get("code")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        write_review_loop_code_file(&library_dir.join(path), code).await?;
-    }
-    write_loop_json(
-        &library_dir.join("library_manifest.json"),
-        artifact.get("manifest").unwrap_or(&serde_json::json!({
-            "schema_version": "1.0.0",
-            "declarations": [],
-        })),
-    )
-    .await?;
-    Ok(())
 }
 
 async fn write_inventory_library_loop_files(
@@ -12713,40 +12666,28 @@ async fn run_inventory_library_author_stage(
         review_id,
         "lean_library_author",
         artifact,
-        "You are GrokRxiv role `lean_library_author`. Author a checked paper-local Lean library from theorem inventory and source context. Return strict JSON matching schema.json exactly.".to_string(),
-        "Return all GrokRxiv/Paper/*.lean files and the library manifest. GrokRxiv will compile the library after you return.".to_string(),
+        "You are GrokRxiv role `lean_library_author`. Author a checked paper-local Lean library from theorem inventory and source context by editing files in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string(),
+        "Edit GrokRxiv/Paper/*.lean and library_manifest.json in place. Return only the small audit JSON; GrokRxiv reads the edited files from disk and compiles the library after you return.".to_string(),
         Some(&library_dir),
     )
     .await;
     let result = match run {
         Ok(run) => {
             write_loop_json(&library_dir.join("parsed_output.json"), &run.output).await?;
-            if let Some(artifact) = paper_local_library_artifact_from_output(&run.output) {
-                materialize_paper_local_library_artifact(&library_dir, &artifact).await?;
-                let issues = validate_paper_local_library_artifact(&artifact);
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-author",
-                    "status": if issues.is_empty() { "pass" } else { "validation_error" },
-                    "role": run.role,
-                    "model": run.model,
-                    "latency_ms": run.latency_ms,
-                    "validation_issues": issues,
-                    "manifest": "review_loop/lean/library/library_manifest.json",
-                    "files": PAPER_LOCAL_LIBRARY_FILES,
-                })
-            } else {
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-author",
-                    "status": "agent_no_library_artifact",
-                    "role": run.role,
-                    "model": run.model,
-                    "latency_ms": run.latency_ms,
-                    "error": "lean_library_author returned without files/manifest",
-                    "output": run.output,
-                })
-            }
+            let artifact = paper_local_library_artifact_from_dir(&library_dir);
+            let issues = validate_paper_local_library_artifact(&artifact);
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "library-author",
+                "status": if issues.is_empty() { "pass" } else { "validation_error" },
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "validation_issues": issues,
+                "manifest": "review_loop/lean/library/library_manifest.json",
+                "files": PAPER_LOCAL_LIBRARY_FILES,
+                "reported_output": run.output,
+            })
         }
         Err(err) => serde_json::json!({
             "schema_version": "1.0.0",
@@ -12880,35 +12821,26 @@ async fn run_inventory_library_fix_stage(
         review_id,
         "lean_library_fixer",
         artifact,
-        "You are GrokRxiv role `lean_library_fixer`. Fix the checked paper-local Lean library using compiler diagnostics and source context. Return strict JSON matching schema.json exactly.".to_string(),
-        "Return the corrected GrokRxiv/Paper/*.lean files and library manifest. GrokRxiv will compile the library after you return.".to_string(),
+        "You are GrokRxiv role `lean_library_fixer`. Fix the checked paper-local Lean library using compiler diagnostics and source context by editing files in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string(),
+        "Edit GrokRxiv/Paper/*.lean and library_manifest.json in place. Return only the small audit JSON; GrokRxiv reads the edited files from disk and compiles the library after you return.".to_string(),
         Some(&library_dir),
     )
     .await;
     let result = match run {
         Ok(run) => {
             write_loop_json(&library_dir.join("fixer_output.json"), &run.output).await?;
-            if let Some(artifact) = paper_local_library_artifact_from_output(&run.output) {
-                materialize_paper_local_library_artifact(&library_dir, &artifact).await?;
-                let issues = validate_paper_local_library_artifact(&artifact);
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-fix",
-                    "status": if issues.is_empty() { "pass" } else { "validation_error" },
-                    "role": run.role,
-                    "model": run.model,
-                    "latency_ms": run.latency_ms,
-                    "validation_issues": issues,
-                })
-            } else {
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-fix",
-                    "status": "agent_no_library_artifact",
-                    "error": "lean_library_fixer returned without files/manifest",
-                    "output": run.output,
-                })
-            }
+            let artifact = paper_local_library_artifact_from_dir(&library_dir);
+            let issues = validate_paper_local_library_artifact(&artifact);
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "library-fix",
+                "status": if issues.is_empty() { "pass" } else { "validation_error" },
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "validation_issues": issues,
+                "reported_output": run.output,
+            })
         }
         Err(err) => serde_json::json!({
             "schema_version": "1.0.0",
@@ -12961,38 +12893,28 @@ async fn run_inventory_library_target_feedback_stage(
         review_id,
         "lean_library_fixer",
         artifact,
-        "You are GrokRxiv role `lean_library_fixer`. Revise the checked paper-local Lean library only if target compiler diagnostics show a missing or too-weak source-grounded paper interface. Return strict JSON matching schema.json exactly.".to_string(),
-        "Use target_packet, target_compile_result, prior_library, and source_packet. Return corrected GrokRxiv/Paper/*.lean files and library_manifest.json, or preserve the library and explain why the compiler error belongs to the target file. JSON only.".to_string(),
+        "You are GrokRxiv role `lean_library_fixer`. Revise the checked paper-local Lean library only if target compiler diagnostics show a missing or too-weak source-grounded paper interface. Edit files in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string(),
+        "Use target_packet, target_compile_result, prior_library, and source_packet. Edit GrokRxiv/Paper/*.lean and library_manifest.json in place, or preserve the library and explain why the compiler error belongs to the target file. Return only the small audit JSON.".to_string(),
         Some(&library_dir),
     )
     .await;
     let result = match run {
         Ok(run) => {
             write_loop_json(&feedback_dir.join("fixer_output.json"), &run.output).await?;
-            if let Some(artifact) = paper_local_library_artifact_from_output(&run.output) {
-                materialize_paper_local_library_artifact(&library_dir, &artifact).await?;
-                let issues = validate_paper_local_library_artifact(&artifact);
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-target-feedback",
-                    "status": if issues.is_empty() { "pass" } else { "validation_error" },
-                    "claim_id": claim_id,
-                    "role": run.role,
-                    "model": run.model,
-                    "latency_ms": run.latency_ms,
-                    "validation_issues": issues,
-                    "artifact": format!("review_loop/lean/library/target_feedback/{slug}/result.json"),
-                })
-            } else {
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-target-feedback",
-                    "status": "agent_no_library_artifact",
-                    "claim_id": claim_id,
-                    "error": "lean_library_fixer returned without files/manifest",
-                    "output": run.output,
-                })
-            }
+            let artifact = paper_local_library_artifact_from_dir(&library_dir);
+            let issues = validate_paper_local_library_artifact(&artifact);
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "library-target-feedback",
+                "status": if issues.is_empty() { "pass" } else { "validation_error" },
+                "claim_id": claim_id,
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "validation_issues": issues,
+                "artifact": format!("review_loop/lean/library/target_feedback/{slug}/result.json"),
+                "reported_output": run.output,
+            })
         }
         Err(err) => serde_json::json!({
             "schema_version": "1.0.0",
@@ -13072,38 +12994,28 @@ async fn run_inventory_library_faithfulness_feedback_stage(
         review_id,
         "lean_library_fixer",
         artifact,
-        "You are GrokRxiv role `lean_library_fixer`. Use independent source-faithfulness reviewer issues to revise the checked paper-local Lean library when needed. Return strict JSON matching schema.json exactly.".to_string(),
-        "Use faithfulness_result, target_packet, target_code, prior_library, and source_packet. Return corrected GrokRxiv/Paper/*.lean files and library_manifest.json, or preserve the library and explain why the target file alone drifted. JSON only.".to_string(),
+        "You are GrokRxiv role `lean_library_fixer`. Use independent source-faithfulness reviewer issues to revise the checked paper-local Lean library when needed. Edit files in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string(),
+        "Use faithfulness_result, target_packet, target_code, prior_library, and source_packet. Edit GrokRxiv/Paper/*.lean and library_manifest.json in place, or preserve the library and explain why the target file alone drifted. Return only the small audit JSON.".to_string(),
         Some(&library_dir),
     )
     .await;
     let result = match run {
         Ok(run) => {
             write_loop_json(&feedback_dir.join("fixer_output.json"), &run.output).await?;
-            if let Some(artifact) = paper_local_library_artifact_from_output(&run.output) {
-                materialize_paper_local_library_artifact(&library_dir, &artifact).await?;
-                let issues = validate_paper_local_library_artifact(&artifact);
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-faithfulness-feedback",
-                    "status": if issues.is_empty() { "pass" } else { "validation_error" },
-                    "claim_id": claim_id,
-                    "role": run.role,
-                    "model": run.model,
-                    "latency_ms": run.latency_ms,
-                    "validation_issues": issues,
-                    "artifact": format!("review_loop/lean/library/faithfulness_feedback/{slug}/result.json"),
-                })
-            } else {
-                serde_json::json!({
-                    "schema_version": "1.0.0",
-                    "stage": "library-faithfulness-feedback",
-                    "status": "agent_no_library_artifact",
-                    "claim_id": claim_id,
-                    "error": "lean_library_fixer returned without files/manifest",
-                    "output": run.output,
-                })
-            }
+            let artifact = paper_local_library_artifact_from_dir(&library_dir);
+            let issues = validate_paper_local_library_artifact(&artifact);
+            serde_json::json!({
+                "schema_version": "1.0.0",
+                "stage": "library-faithfulness-feedback",
+                "status": if issues.is_empty() { "pass" } else { "validation_error" },
+                "claim_id": claim_id,
+                "role": run.role,
+                "model": run.model,
+                "latency_ms": run.latency_ms,
+                "validation_issues": issues,
+                "artifact": format!("review_loop/lean/library/faithfulness_feedback/{slug}/result.json"),
+                "reported_output": run.output,
+            })
         }
         Err(err) => serde_json::json!({
             "schema_version": "1.0.0",
@@ -13287,8 +13199,8 @@ async fn run_inventory_author_stage(
             "Do not replace the paper claim with True, 0 = 0, x = x, or metadata."
         ]
     });
-    let system_prompt = "You are GrokRxiv role `lean_inventory_author`. Author one source-faithful Lean 4 file from a theorem_inventory packet. Return strict JSON matching schema.json exactly.".to_string();
-    let user_prompt = "Use packet.paper_local_library.declarations and author_brief.json for the first Lean skeleton. Do not output Bash, tool calls, Markdown, or prose. Return schema-valid JSON whose code field is the complete GrokRxiv/Proofs.lean for the single inventory packet; GrokRxiv will run lake build and pass exact compiler output to the fixer if needed. If the theorem cannot be honestly formalized, still return Lean code that exposes the blocker rather than a fake theorem.".to_string();
+    let system_prompt = "You are GrokRxiv role `lean_inventory_author`. Author one source-faithful Lean 4 file from a theorem_inventory packet by editing GrokRxiv/Proofs.lean in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string();
+    let user_prompt = "Use packet.paper_local_library.declarations and author_brief.json for the first Lean skeleton. Edit GrokRxiv/Proofs.lean in place. Return only the small audit JSON; GrokRxiv will read the file from disk, run lake build, and pass exact compiler output to the fixer if needed. If the theorem cannot be honestly formalized, still write Lean code that exposes the blocker rather than a fake theorem.".to_string();
     let started = std::time::Instant::now();
     let run = run_review_loop_agent(
         state,
@@ -13491,8 +13403,9 @@ async fn write_inventory_lean_loop_files(
          2. A real source-faithfulness blocker remains; expose it in the Lean code and \
          `notes` without replacing the claim by `True`, `0 = 0`, `x = x`, metadata, or a \
          strawman theorem.\n\n\
-         Final stdout must be one JSON object matching `schema.json`. Its `code` field \
-         must equal the final contents of `GrokRxiv/Proofs.lean`.{compile_note}\n"
+         Final stdout must be one JSON object matching `schema.json`. It is an audit \
+         record only; the source of truth is the edited `GrokRxiv/Proofs.lean` file \
+         on disk.{compile_note}\n"
     );
     let plan = "# Lean Agent Loop Plan\n\n\
 1. Read `system.md`, `prompt.md`, `GOAL.md`, `PLAN.md`, `LEAN_STATUS.md`, and `author_brief.json`.\n\
@@ -13502,7 +13415,7 @@ async fn write_inventory_lean_loop_files(
 5. Return promptly; GrokRxiv will run `lake build GrokRxiv.Proofs` outside the LLM session.\n\
 6. In fixer phase, use the exact compile output already provided in the prompt to edit once, then return.\n\
 7. Read full `review_input.json` only if the brief and compiler output are insufficient.\n\
-8. Return only the final schema-valid JSON object.\n";
+8. Return only the final schema-valid audit JSON object; do not paste the Lean source into stdout.\n";
     let status = "# Lean Harness Status\n\n\
 Prepared files in this workdir:\n\
 - `lakefile.lean`: per-target Lake project that imports the shared Mathlib package and checked paper-local library.\n\
@@ -14120,8 +14033,8 @@ async fn run_inventory_fix_stage_with_round(
             "Do not use sorry, admit, or axiom."
         ]
     });
-    let system_prompt = "You are GrokRxiv role `lean_inventory_fixer`. Fix one Lean 4 file using the compiler output and source packet. Return strict JSON matching schema.json exactly.".to_string();
-    let user_prompt = "Use compile_result plus packet.paper_local_library.declarations / author_brief.json first. Do not output Bash, tool calls, Markdown, or prose. Return schema-valid JSON whose code field is the corrected complete GrokRxiv/Proofs.lean. GrokRxiv will run lake build after you return; do not spend a long hidden loop trying to verify internally.".to_string();
+    let system_prompt = "You are GrokRxiv role `lean_inventory_fixer`. Fix one Lean 4 file using the compiler output and source packet by editing GrokRxiv/Proofs.lean in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string();
+    let user_prompt = "Use compile_result plus packet.paper_local_library.declarations / author_brief.json first. Edit GrokRxiv/Proofs.lean in place. Return only the small audit JSON; GrokRxiv reads the file from disk and runs lake build after you return. Do not spend a long hidden loop trying to verify internally.".to_string();
     let started = std::time::Instant::now();
     let run = run_review_loop_agent(
         state,
@@ -14340,8 +14253,8 @@ async fn run_inventory_faithfulness_fix_stage(
             "Do not use sorry, admit, or axiom."
         ],
     });
-    let system_prompt = "You are GrokRxiv role `lean_inventory_fixer`. Fix one Lean 4 file that already typechecked but failed independent source-faithfulness review. Return strict JSON matching schema.json exactly.".to_string();
-    let user_prompt = "Use faithfulness_result plus packet.paper_local_library.declarations / author_brief.json first. Return schema-valid JSON whose code field is the corrected complete GrokRxiv/Proofs.lean. Do not output Bash, tool calls, Markdown, or prose.".to_string();
+    let system_prompt = "You are GrokRxiv role `lean_inventory_fixer`. Fix one Lean 4 file that already typechecked but failed independent source-faithfulness review by editing GrokRxiv/Proofs.lean in the prepared Lean project. Return strict JSON matching schema.json exactly.".to_string();
+    let user_prompt = "Use faithfulness_result plus packet.paper_local_library.declarations / author_brief.json first. Edit GrokRxiv/Proofs.lean in place and return only the small audit JSON.".to_string();
     let started = std::time::Instant::now();
     let run = run_review_loop_agent(
         state,

@@ -1,8 +1,8 @@
 Fix a complete Lean 4 file generated from one theorem_inventory source packet.
 
-Return strict JSON matching `schema.json`. The `code` field must contain the
-entire corrected Lean source for `GrokRxiv/Proofs.lean`, beginning with
-`import Mathlib`.
+Work directly in the prepared Lean/Lake project. Edit `GrokRxiv/Proofs.lean`
+in place. Return strict JSON matching `schema.json`; it is a small audit record
+only, not a transport for the Lean source.
 
 Use `review_input.json` as the source of truth. Preserve faithfulness to
 `packet.target.source_tex` and `packet.target.source_context`; use
@@ -14,5 +14,5 @@ Do not change the theorem into a vacuous substitute such as `True`, `0 = 0`,
 `admit`, or `axiom`.
 
 If the theorem cannot be fixed into a closed proof from the supplied source,
-return code that preserves the real theorem attempt and exposes the compiler
+write code that preserves the real theorem attempt and exposes the compiler
 blocker rather than hiding it.

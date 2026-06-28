@@ -1,12 +1,17 @@
 Author the paper-local Lean library for this GrokRxiv run.
 
-Create only these files:
+Work directly in the prepared Lean/Lake project. Edit only these files:
 
 - `GrokRxiv/Paper/Notation.lean`
 - `GrokRxiv/Paper/Definitions.lean`
 - `GrokRxiv/Paper/Interfaces.lean`
 - `GrokRxiv/Paper/Statements.lean`
 - `GrokRxiv/Paper/Lemmas.lean`
+- `library_manifest.json`
+
+Return strict JSON matching `schema.json`; it is a small audit record only, not
+a transport for the Lean source. GrokRxiv reads the edited files from disk after
+you return.
 
 Use the supplied theorem inventory, source context, definitions, references, and TeX evidence. Missing Mathlib constructions must become source-grounded paper-local interfaces in `Interfaces.lean`, with manifest evidence. Do not prove target theorem claims in the library. Do not use `sorry`, `admit`, or `axiom`.
 

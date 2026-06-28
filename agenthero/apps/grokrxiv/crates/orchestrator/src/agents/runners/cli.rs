@@ -627,62 +627,54 @@ fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow:
 
 fn render_review_prompt_with_files(input: &AgentInput) -> String {
     let lean_loop = if lean_library_loop_role(&input.role) {
-        let artifact_json = serde_json::to_string_pretty(&input.artifact)
-            .unwrap_or_else(|_| input.artifact.to_string());
         return format!(
             "GrokRxiv has prepared the exact paper-local Lean library inputs for role `{role}`.\n\n\
              System instruction:\n{system}\n\n\
              Task instruction:\n{user}\n\n\
-             Canonical review_input.json content is inlined below. The same JSON is also written \
-             to review_input.json in the working directory for audit, but you do not need to call \
-             file tools to answer.\n\n\
-             Return exactly one JSON object that validates against schema.json. The JSON `files` \
-             array must contain the complete paper-local Lean library files, including \
-             `GrokRxiv/Paper/Definitions.lean`, `GrokRxiv/Paper/Interfaces.lean`, \
-             `GrokRxiv/Paper/Statements.lean`, and `GrokRxiv/Paper/Lemmas.lean`; `manifest` \
-             must be the complete library_manifest.json payload. Do not use `sorry`, `admit`, \
-             or `axiom`. Use `opaque` only for source-grounded paper-local interfaces in \
-             `GrokRxiv/Paper/Interfaces.lean`, and map every interface to source evidence in \
-             the manifest. If a bodyless opaque value relies on `Nonempty`/Classical choice, \
-             declare it as `noncomputable opaque`, and mark dependent defs/instances/maps \
-             `noncomputable`. If a source/library gap remains, report it explicitly in `notes` \
-             and the manifest rather than silently changing the paper claim.\n\n\
-             <review_input_json>\n{artifact_json}\n</review_input_json>",
+             Work in the current directory as a coding agent. Read `GOAL.md`, `PLAN.md`, \
+             `source_packet.json`, `theorem_inventory.json`, `review_input.json`, \
+             `lakefile.lean`, `lean-toolchain`, and the existing `GrokRxiv/Paper/*.lean` files. \
+             Edit the Lean files and `library_manifest.json` in place. Do not serialize the \
+             complete Lean library into stdout.\n\n\
+             Return exactly one small JSON object that validates against schema.json. The JSON \
+             records whether files changed, which files changed, notes, and confidence. \
+             GrokRxiv reads the actual Lean source from the edited files after you return. \
+             Do not use `sorry`, `admit`, or `axiom`. Use `opaque` only for source-grounded \
+             paper-local interfaces in `GrokRxiv/Paper/Interfaces.lean`, and map every \
+             interface to source evidence in `library_manifest.json`. If a bodyless opaque \
+             value relies on `Nonempty`/Classical choice, declare it as `noncomputable opaque`, \
+             and mark dependent defs/instances/maps `noncomputable`. If a source/library gap \
+             remains, report it explicitly in `notes` and the manifest rather than silently \
+             changing the paper claim.",
             role = role_slug(&input.role),
             system = input.system_prompt,
             user = input.user_prompt,
-            artifact_json = artifact_json,
         );
     } else if lean_inventory_loop_role(&input.role) {
-        let artifact_json = serde_json::to_string_pretty(&input.artifact)
-            .unwrap_or_else(|_| input.artifact.to_string());
         return format!(
             "GrokRxiv has prepared the exact Lean inventory authoring inputs for role `{role}`.\n\n\
              System instruction:\n{system}\n\n\
              Task instruction:\n{user}\n\n\
-             Canonical review_input.json content is inlined below. The same JSON is also written \
-             to review_input.json in the working directory for audit, but you do not need to call \
-             file tools to answer.\n\n\
-             This runner may not expose shell, editor, or filesystem tools. Do not output \
-             tool calls, Bash blocks, Markdown fences, analysis, or a plan. Use the inlined \
-             review_input JSON as the authoritative input. If you need checked paper-local \
-             declaration names, use `packet.paper_local_library.declarations` or \
-             `paper_local_library.declarations` from the JSON. If the needed declaration is \
-             absent, state that as a source/library gap in `notes` and write Lean code that \
-             exposes the blocker without inventing a theorem.\n\n\
-             Return exactly one JSON object that validates against schema.json. The JSON `code` \
-             field must be the complete contents GrokRxiv should write to \
-             `GrokRxiv/Proofs.lean`. The file must import the checked `GrokRxiv.Paper` \
-             library modules already provided by the Lean project; do not use `sorry`, `admit`, \
-             `axiom`, `True`, `0 = 0`, `x = x`, metadata-only claims, or a strawman theorem. \
-             GrokRxiv will materialize your `code` field into \
-             `GrokRxiv/Proofs.lean` and run `lake build GrokRxiv.Proofs` after you \
-             return, then feed exact compiler output to the fixer role if needed.\n\n\
-             <review_input_json>\n{artifact_json}\n</review_input_json>",
+             Work in the current directory as a coding agent. Read `GOAL.md`, `PLAN.md`, \
+             `LEAN_STATUS.md`, `author_brief.json`, `review_input.json`, `lakefile.lean`, \
+             `lean-toolchain`, and the existing `GrokRxiv/Proofs.lean` seed. Edit \
+             `GrokRxiv/Proofs.lean` in place. Do not serialize the complete Lean file into \
+             stdout.\n\n\
+             If you need checked paper-local declaration names, use \
+             `author_brief.json#paper_local_library.declarations` first. If the needed \
+             declaration is absent, state that as a source/library gap in `notes` and write \
+             Lean code that exposes the blocker without inventing a theorem.\n\n\
+             Return exactly one small JSON object that validates against schema.json. The JSON \
+             records `language`, `filename`, `changed`, `notes`, and `confidence`; GrokRxiv \
+             reads the actual Lean source from edited `GrokRxiv/Proofs.lean` after you return. \
+             The file must import the checked `GrokRxiv.Paper` library modules already provided \
+             by the Lean project; do not use `sorry`, `admit`, `axiom`, `True`, `0 = 0`, \
+             `x = x`, metadata-only claims, or a strawman theorem. GrokRxiv runs \
+             `lake build GrokRxiv.Proofs` after you return, then feeds exact compiler output \
+             to the fixer role if needed.",
             role = role_slug(&input.role),
             system = input.system_prompt,
             user = input.user_prompt,
-            artifact_json = artifact_json,
         );
     } else {
         ""
@@ -712,10 +704,6 @@ fn lean_inventory_loop_role(role: &str) -> bool {
 
 fn lean_library_loop_role(role: &str) -> bool {
     matches!(role, "lean_library_author" | "lean_library_fixer")
-}
-
-fn lean_no_tool_loop_role(role: &str) -> bool {
-    lean_inventory_loop_role(role) || lean_library_loop_role(role)
 }
 
 fn render_tool_prompt(
@@ -1416,7 +1404,7 @@ fn role_timeout_env_var(role: &str) -> String {
 
 fn claude_effort_for_role(role: &str) -> String {
     let mut candidates = vec![format!("GROKRXIV_{}_CLAUDE_EFFORT", role_env_suffix(role))];
-    if lean_no_tool_loop_role(role) {
+    if lean_inventory_loop_role(role) || lean_library_loop_role(role) {
         candidates.push("GROKRXIV_LEAN_CLAUDE_EFFORT".to_string());
     }
     candidates.extend([
@@ -1496,21 +1484,16 @@ fn build_command(
             // invoked via `/skill-name` at the start of the prompt body
             // (help text: "Skills still resolve via /skill-name").
             let query = if lean_library_loop_role(&spec.role) {
-                "Read the complete inline GrokRxiv paper-local Lean library prompt supplied on \
-                 stdin. Do not use file or shell tools for the first authoring response; all \
-                 bounded source data needed for this role is in stdin. Return exactly one JSON \
-                 object matching schema.json. Its files array must contain the complete \
-                 paper-local Lean library files, including GrokRxiv/Paper/Definitions.lean. \
-                 Put the complete library_manifest.json payload in the top-level manifest field, \
-                 not in the files array."
+                "Use the current working directory as a Lean code workspace. Read the GrokRxiv \
+                 paper-local library instructions supplied on stdin, then inspect and edit \
+                 GrokRxiv/Paper/*.lean and library_manifest.json in place. Return only the \
+                 small schema-valid JSON audit; do not paste the full Lean library into stdout."
                     .to_string()
             } else if lean_inventory_loop_role(&spec.role) {
-                "Read the complete inline GrokRxiv Lean inventory prompt supplied on stdin. Do \
-                 not use file or shell tools for the first authoring response; all bounded source \
-                 data needed for this role is in stdin. Return exactly one JSON object matching \
-                 schema.json. Its code field must be the complete source-faithful \
-                 GrokRxiv/Proofs.lean contents importing the checked GrokRxiv.Paper library. \
-                 GrokRxiv will write that code to disk and run \
+                "Use the current working directory as a Lean code workspace. Read the GrokRxiv \
+                 Lean inventory instructions supplied on stdin, then inspect and edit \
+                 GrokRxiv/Proofs.lean in place. Return only the small schema-valid JSON audit; \
+                 do not paste the full Lean file into stdout. GrokRxiv will run \
                  lake build GrokRxiv.Proofs after you return."
                     .to_string()
             } else if uses_review_skill {
@@ -1540,9 +1523,6 @@ fn build_command(
                 "--include-partial-messages".to_string(),
                 "--include-hook-events".to_string(),
             ]);
-            if lean_no_tool_loop_role(&spec.role) {
-                args.extend(claude_no_tool_args());
-            }
             (args, None, true)
         }
         CliProviderBackend::Codex => {
@@ -2148,8 +2128,8 @@ fn cli_visibility_contract(provider: &str) -> serde_json::Value {
         "claude" => serde_json::json!({
             "streaming_required": true,
             "recommended_cli_shape": "claude -p <query> --model <model> --effort <low|medium|high|xhigh|max> --output-format stream-json --verbose --include-partial-messages --include-hook-events",
-            "no_tool_cli_shape": "claude -p <query> --model <model> --effort <level> --output-format stream-json --verbose --include-partial-messages --include-hook-events --safe-mode --disable-slash-commands --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --tools ''",
-            "prompt_transport": "large prompt on stdin; concise query in -p",
+            "tool_planner_cli_shape": "claude -p <query> --model <model> --effort <level> --output-format stream-json --verbose --include-partial-messages --include-hook-events --safe-mode --disable-slash-commands --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --tools ''",
+            "prompt_transport": "role prompt on stdin; concise query in -p",
             "live_stdout": "raw_stdout.live.txt contains Claude stream-json events, tool calls, partial messages, hook events, and final result while the process is still running",
             "live_stderr": "raw_stderr.live.txt is flushed incrementally while the process is still running"
         }),
@@ -3721,7 +3701,7 @@ mod tests {
     }
 
     #[test]
-    fn lean_inventory_prompt_inlines_source_packet_for_no_tool_authoring() {
+    fn lean_inventory_prompt_uses_file_backed_coding_workspace() {
         let input = AgentInput {
             context: Default::default(),
             role: "lean_inventory_author".to_string(),
@@ -3737,12 +3717,13 @@ mod tests {
 
         let rendered = render_review_prompt_with_files(&input);
 
-        assert!(rendered.contains("<review_input_json>"));
-        assert!(rendered.contains("lem:test"));
+        assert!(!rendered.contains("<review_input_json>"));
+        assert!(!rendered.contains("lem:test"));
+        assert!(!rendered.contains("\\begin{lemma}A\\end{lemma}"));
         assert!(rendered.contains("GrokRxiv/Proofs.lean"));
-        assert!(rendered.contains("do not need to call file tools"));
-        assert!(rendered.contains("Do not output tool calls, Bash blocks"));
-        assert!(rendered.contains("packet.paper_local_library.declarations"));
+        assert!(rendered.contains("Work in the current directory as a coding agent"));
+        assert!(rendered.contains("author_brief.json#paper_local_library.declarations"));
+        assert!(rendered.contains("Do not serialize the complete Lean file into stdout"));
         assert!(rendered.contains("lake build GrokRxiv.Proofs"));
     }
 
@@ -4118,27 +4099,20 @@ mod tests {
             .get(prompt_idx + 1)
             .expect("missing -p value in claude args");
 
-        assert!(prompt_value.contains("complete inline GrokRxiv Lean inventory prompt"));
-        assert!(prompt_value.contains("Do not use file or shell tools"));
-        assert!(prompt_value.contains("code field must be the complete source-faithful"));
-        assert!(prompt_value.contains("GrokRxiv will write that code to disk"));
+        assert!(prompt_value.contains("current working directory as a Lean code workspace"));
+        assert!(prompt_value.contains("edit GrokRxiv/Proofs.lean in place"));
+        assert!(prompt_value.contains("small schema-valid JSON audit"));
+        assert!(prompt_value.contains("do not paste the full Lean file into stdout"));
         assert!(prompt_value.contains("lake build GrokRxiv.Proofs"));
         assert!(built
             .args
             .windows(2)
             .any(|w| w[0] == "--effort" && w[1] == "medium"));
         assert!(!built.args.iter().any(|arg| arg == "--system-prompt"));
-        assert!(built.args.contains(&"--safe-mode".to_string()));
-        assert!(built.args.contains(&"--disable-slash-commands".to_string()));
-        assert!(built.args.contains(&"--strict-mcp-config".to_string()));
-        assert!(built
-            .args
-            .windows(2)
-            .any(|w| { w[0] == "--mcp-config" && w[1] == "{\"mcpServers\":{}}" }));
-        assert!(built
-            .args
-            .windows(2)
-            .any(|w| w[0] == "--tools" && w[1].is_empty()));
+        assert!(!built.args.contains(&"--safe-mode".to_string()));
+        assert!(!built.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(!built.args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!built.args.iter().any(|arg| arg == "--tools"));
         assert!(!built.args.iter().any(|arg| arg == "--allowedTools"));
     }
 
@@ -4165,14 +4139,16 @@ mod tests {
             .get(prompt_idx + 1)
             .expect("missing -p value in claude args");
 
-        assert!(prompt_value.contains("paper-local Lean library"));
-        assert!(prompt_value.contains("GrokRxiv/Paper/Definitions.lean"));
+        assert!(prompt_value.contains("current working directory as a Lean code workspace"));
+        assert!(prompt_value.contains("GrokRxiv/Paper/*.lean"));
         assert!(prompt_value.contains("library_manifest.json"));
-        assert!(prompt_value.contains("not in the files array"));
+        assert!(prompt_value.contains("small schema-valid JSON audit"));
+        assert!(prompt_value.contains("do not paste the full Lean library into stdout"));
         assert!(!prompt_value.contains("GrokRxiv/Proofs.lean contents"));
-        assert!(built.args.contains(&"--safe-mode".to_string()));
-        assert!(built.args.contains(&"--disable-slash-commands".to_string()));
-        assert!(built.args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!built.args.contains(&"--safe-mode".to_string()));
+        assert!(!built.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(!built.args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!built.args.iter().any(|arg| arg == "--tools"));
     }
 
     #[test]

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GrokRxiv Lean Library File Edit Artifact",
+  "description": "Small audit output for paper-local Lean library agents that edit GrokRxiv/Paper/*.lean and library_manifest.json in their prepared workdir. The orchestrator reads the edited files from disk.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["language", "changed", "edited_files", "notes", "confidence"],
+  "properties": {
+    "language": {
+      "type": "string",
+      "const": "lean"
+    },
+    "changed": {
+      "type": "boolean"
+    },
+    "edited_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "GrokRxiv/Paper/Notation.lean",
+          "GrokRxiv/Paper/Definitions.lean",
+          "GrokRxiv/Paper/Interfaces.lean",
+          "GrokRxiv/Paper/Statements.lean",
+          "GrokRxiv/Paper/Lemmas.lean",
+          "library_manifest.json"
+        ]
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

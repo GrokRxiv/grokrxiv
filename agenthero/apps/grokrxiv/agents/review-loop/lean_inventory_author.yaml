@@ -6,7 +6,7 @@ model: opus[1m]
 runner: cli
 prompt_template: prompts/review-loop/lean_inventory_author.md
 input_schema: schemas/review_loop_code_task.schema.json
-output_schema: schemas/review_loop_code_artifact.schema.json
+output_schema: schemas/review_loop_file_edit_artifact.schema.json
 verifiers:
   - json_schema
 max_retries: 1

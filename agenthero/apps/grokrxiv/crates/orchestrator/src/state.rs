@@ -688,7 +688,7 @@ mod tests {
             assert_eq!(cfg.runner, Some(AgentRunnerKind::Cli));
             assert_eq!(
                 cfg.output_schema.as_deref(),
-                Some("schemas/review_loop_code_artifact.schema.json")
+                Some("schemas/review_loop_file_edit_artifact.schema.json")
             );
         }
     }
@@ -718,7 +718,7 @@ mod tests {
             assert_eq!(cfg.runner, Some(AgentRunnerKind::Cli));
             assert_eq!(
                 cfg.output_schema.as_deref(),
-                Some("schemas/lean_library_artifact.schema.json")
+                Some("schemas/lean_library_file_edit_artifact.schema.json")
             );
         }
     }
