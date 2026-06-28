@@ -5763,6 +5763,7 @@ fn auto_lean_disabled(raw: &str) -> bool {
     )
 }
 
+const AUTO_LEAN_ENV: &str = "GROKRXIV_AUTO_LEAN";
 const FORMALIZE_QUEUE_AUTOSTART_ENV: &str = "GROKRXIV_FORMALIZE_QUEUE_AUTOSTART";
 const AGENTHERO_AGH_BIN_ENV: &str = "AGENTHERO_AGH_BIN";
 
@@ -10580,7 +10581,47 @@ async fn write_inventory_target_proofs_code(
     code: &str,
 ) -> anyhow::Result<()> {
     write_review_loop_code_file(&round_dir.join("GrokRxiv").join("Proofs.lean"), code).await?;
+    copy_inventory_editor_project_support(round_dir, target_dir).await?;
     write_review_loop_code_file(&target_dir.join("GrokRxiv").join("Proofs.lean"), code).await?;
+    Ok(())
+}
+
+async fn copy_review_loop_file_if_present(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    if !source.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::copy(source, destination)
+        .await
+        .with_context(|| format!("copy {} to {}", source.display(), destination.display()))?;
+    Ok(())
+}
+
+async fn copy_inventory_editor_project_support(
+    source_workdir: &Path,
+    target_dir: &Path,
+) -> anyhow::Result<()> {
+    for filename in [
+        "lakefile.lean",
+        "lean-toolchain",
+        "lake-manifest.json",
+        "lake_update.json",
+        "mathlib_setup.json",
+    ] {
+        copy_review_loop_file_if_present(
+            &source_workdir.join(filename),
+            &target_dir.join(filename),
+        )
+        .await?;
+    }
+    if source_workdir
+        .join(PAPER_LOCAL_LIBRARY_UMBRELLA_FILE)
+        .is_file()
+    {
+        copy_paper_local_library_into_workdir(source_workdir, target_dir).await?;
+    }
     Ok(())
 }
 
@@ -15381,6 +15422,7 @@ async fn run_inventory_lean_check_stage(
     let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
     let check_dir = target_dir.join("check");
     tokio::fs::create_dir_all(check_dir.join("GrokRxiv")).await?;
+    tokio::fs::create_dir_all(target_dir.join("GrokRxiv")).await?;
     let code = author_result
         .and_then(inventory_author_code)
         .or_else(|| latest_inventory_target_code(&target_dir));
@@ -15426,7 +15468,7 @@ async fn run_inventory_lean_check_stage(
     };
     if let Err(err) = prepare_review_loop_project_harness_with_paper_library(
         &task,
-        &check_dir,
+        &target_dir,
         Some(&formalize_inventory_library_dir(artifact_dir)),
     )
     .await
@@ -15437,8 +15479,8 @@ async fn run_inventory_lean_check_stage(
             "status": "environment_error",
             "claim_id": claim_id,
             "error": format!("{err:#}"),
-            "mathlib_setup": format!("review_loop/lean/targets/{}/check/mathlib_setup.json", formalize_inventory_target_slug(claim_id)),
-            "lake_update": format!("review_loop/lean/targets/{}/check/lake_update.json", formalize_inventory_target_slug(claim_id)),
+            "mathlib_setup": format!("review_loop/lean/targets/{}/mathlib_setup.json", formalize_inventory_target_slug(claim_id)),
+            "lake_update": format!("review_loop/lean/targets/{}/lake_update.json", formalize_inventory_target_slug(claim_id)),
         });
         write_loop_json(&check_dir.join("compile.json"), &result).await?;
         emit_formalize_node_event(formalize_node_event(
@@ -15458,12 +15500,13 @@ async fn run_inventory_lean_check_stage(
         ));
         return Ok(result);
     }
-    write_review_loop_code_file(&check_dir.join("GrokRxiv").join("Proofs.lean"), &code).await?;
     write_review_loop_code_file(&target_dir.join("GrokRxiv").join("Proofs.lean"), &code).await?;
+    copy_inventory_editor_project_support(&target_dir, &check_dir).await?;
+    write_review_loop_code_file(&check_dir.join("GrokRxiv").join("Proofs.lean"), &code).await?;
     let report = run_loop_command(
         "lake",
         &["build", "GrokRxiv.Proofs"],
-        &check_dir,
+        &target_dir,
         std::time::Duration::from_secs(task.compile_timeout_secs),
     )
     .await;
@@ -20509,7 +20552,7 @@ async fn open_review_pr_after_optional_loop(
         .filter(|outcome| !review_loop_outcome_halted(outcome))
         .map(review_loop_outcome_has_formalizable_math)
         .unwrap_or(false);
-    let auto_lean_env = std::env::var("GROKRXIV_AUTO_LEAN").ok();
+    let auto_lean_env = std::env::var(AUTO_LEAN_ENV).ok();
     let formalization_decision = decide_formalization_queue(
         with_lean,
         no_lean,
@@ -26305,6 +26348,50 @@ After-marker explains the displayed map.
                 .expect("round Proofs.lean"),
             code
         );
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("GrokRxiv/Proofs.lean"))
+                .expect("canonical Proofs.lean"),
+            code
+        );
+    }
+
+    #[tokio::test]
+    async fn inventory_target_proofs_code_materializes_editor_project_support() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let target_dir = tempdir.path().join("targets").join("lem_add_zero");
+        let round_dir = target_dir.join("rounds").join("0").join("author");
+        std::fs::create_dir_all(round_dir.join("GrokRxiv/Paper")).expect("paper dir");
+        std::fs::write(round_dir.join("lakefile.lean"), "import Lake\n").expect("lakefile");
+        std::fs::write(
+            round_dir.join("lean-toolchain"),
+            "leanprover/lean4:v4.30.0\n",
+        )
+        .expect("toolchain");
+        std::fs::write(round_dir.join("lake-manifest.json"), "{}\n").expect("manifest");
+        std::fs::write(
+            round_dir.join("GrokRxiv/Paper.lean"),
+            "import GrokRxiv.Paper.Notation\n",
+        )
+        .expect("paper umbrella");
+        for rel_path in PAPER_LOCAL_LIBRARY_FILES {
+            std::fs::write(
+                round_dir.join(rel_path),
+                "import Mathlib\n\nnamespace GrokRxiv\nnamespace Paper\n\nend Paper\nend GrokRxiv\n",
+            )
+            .expect("paper library file");
+        }
+        let code = "import GrokRxiv.Paper\n\n\
+                    theorem generated_from_source (n : Nat) : n + 0 = n := by simp\n";
+
+        write_inventory_target_proofs_code(&target_dir, &round_dir, code)
+            .await
+            .expect("write Proofs.lean");
+
+        assert!(target_dir.join("lakefile.lean").is_file());
+        assert!(target_dir.join("lean-toolchain").is_file());
+        assert!(target_dir.join("lake-manifest.json").is_file());
+        assert!(target_dir.join("GrokRxiv/Paper.lean").is_file());
+        assert!(target_dir.join("GrokRxiv/Paper/Definitions.lean").is_file());
         assert_eq!(
             std::fs::read_to_string(target_dir.join("GrokRxiv/Proofs.lean"))
                 .expect("canonical Proofs.lean"),
