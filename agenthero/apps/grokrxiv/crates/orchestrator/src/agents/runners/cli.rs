@@ -1778,6 +1778,15 @@ fn emit_cli_command_contract(
     timeout_dur: Option<Duration>,
 ) {
     let command = safe_cli_command_display(built);
+    let live_paths = built.cwd.as_ref().map(|cwd| {
+        format!(
+            " live_status={} agent_events={} raw_stdout={} raw_stderr={}",
+            cwd.join("agent_status.live.json").display(),
+            cwd.join("agent_events.live.jsonl").display(),
+            cwd.join("raw_stdout.live.txt").display(),
+            cwd.join("raw_stderr.live.txt").display()
+        )
+    });
     tracing::info!(
         role = %spec.role,
         provider = %spec.provider,
@@ -1791,18 +1800,20 @@ fn emit_cli_command_contract(
         "CLI agent command contract"
     );
     crate::cli_status::emit(format!(
-        "agent role={} provider={} model={} backend={backend:?} timeout={} command={command}",
+        "agent role={} provider={} model={} backend={backend:?} timeout={} command={command}{}",
         spec.role,
         spec.provider,
         spec.model,
-        timeout_display(timeout_dur)
+        timeout_display(timeout_dur),
+        live_paths.as_deref().unwrap_or("")
     ));
     eprintln!(
-        "agent_command role={} provider={} model={} backend={backend:?} timeout={} command={command}",
+        "agent_command role={} provider={} model={} backend={backend:?} timeout={} command={command}{}",
         spec.role,
         spec.provider,
         spec.model,
-        timeout_display(timeout_dur)
+        timeout_display(timeout_dur),
+        live_paths.as_deref().unwrap_or("")
     );
 }
 

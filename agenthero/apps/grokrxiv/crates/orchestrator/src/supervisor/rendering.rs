@@ -75,9 +75,19 @@ pub async fn render_to_disk_with_options(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("DATABASE_URL not configured"))?;
 
+    crate::cli_status::emit_detail(
+        "render load",
+        crate::cli_status::StatusMark::Run,
+        "review state",
+    );
     let bundle = crate::db::load_review_render_bundle(pool, review_id)
         .await
         .map_err(|e| anyhow::anyhow!("load review render bundle: {e}"))?;
+    crate::cli_status::emit_detail(
+        "render load",
+        crate::cli_status::StatusMark::Ok,
+        "review state",
+    );
     let crate::db::ReviewRenderHeadRow {
         meta_review: meta_json,
         paper_id: _paper_id,
@@ -173,28 +183,39 @@ pub async fn render_to_disk_with_options(
         field,
     );
 
+    crate::cli_status::emit_detail("render html", crate::cli_status::StatusMark::Run, "");
     let html = grokrxiv_render::render_html(&meta, &extract, &agents)
         .map_err(|e| anyhow::anyhow!("render_html: {e}"))?;
+    crate::cli_status::emit_detail("render html", crate::cli_status::StatusMark::Ok, "");
+    crate::cli_status::emit_detail("render markdown", crate::cli_status::StatusMark::Run, "");
     let md = grokrxiv_render::render_markdown(&meta, &extract, &agents);
+    crate::cli_status::emit_detail("render markdown", crate::cli_status::StatusMark::Ok, "");
+    crate::cli_status::emit_detail("render latex", crate::cli_status::StatusMark::Run, "");
     let tex = grokrxiv_render::render_latex(&meta, &extract, &agents);
+    crate::cli_status::emit_detail("render latex", crate::cli_status::StatusMark::Ok, "");
     let metadata = serde_json::json!({
         "review_id": review_id,
         "arxiv_id": extract.arxiv_id,
     });
+    crate::cli_status::emit_detail("render bundle", crate::cli_status::StatusMark::Run, "");
     let zip = grokrxiv_render::build_zip(&html, &md, &tex, None, &agent_jsons, &metadata)
         .map_err(|e| anyhow::anyhow!("build_zip: {e}"))?;
+    crate::cli_status::emit_detail("render bundle", crate::cli_status::StatusMark::Ok, "");
     let dir = crate::artifacts::review_artifact_dir(review_id);
+    crate::cli_status::emit_detail("render write", crate::cli_status::StatusMark::Run, "");
     tokio::fs::create_dir_all(&dir).await.ok();
     tokio::fs::write(dir.join("review.html"), &html).await?;
     tokio::fs::write(dir.join("review.md"), md).await?;
     tokio::fs::write(dir.join("review.tex"), tex).await?;
     tokio::fs::write(dir.join("bundle.zip"), &zip).await?;
+    crate::cli_status::emit_detail("render write", crate::cli_status::StatusMark::Ok, "");
 
     // The HTML quality pass is observational and may rewrite review.html plus
     // a formatting_fixes.json sidecar when enabled.
     let html_quality_enabled = !html_quality_disabled();
     let mut html_quality_ran = None;
     if html_quality_enabled {
+        crate::cli_status::emit_detail("html quality", crate::cli_status::StatusMark::Run, "");
         match crate::html_review::review_and_fix_html_with_timeout(
             state,
             review_id,
@@ -205,15 +226,27 @@ pub async fn render_to_disk_with_options(
         {
             Ok(ran) => {
                 html_quality_ran = Some(ran);
+                let mark = if ran {
+                    crate::cli_status::StatusMark::Ok
+                } else {
+                    crate::cli_status::StatusMark::Warn
+                };
+                crate::cli_status::emit_detail("html quality", mark, "");
             }
             Err(e) => {
                 html_quality_ran = Some(false);
+                crate::cli_status::emit_detail(
+                    "html quality",
+                    crate::cli_status::StatusMark::Warn,
+                    &format!("{e:#}"),
+                );
                 tracing::warn!(%review_id, err = %e, "html_quality: stage errored — leaving review.html as-is");
             }
         }
     }
 
     let dir_str = crate::artifacts::review_artifact_ref(review_id);
+    crate::cli_status::emit_detail("render persist", crate::cli_status::StatusMark::Run, "");
     let _ = crate::db::set_review_artifacts(
         pool,
         review_id,
@@ -222,6 +255,7 @@ pub async fn render_to_disk_with_options(
         Some(&format!("{dir_str}/bundle.zip")),
     )
     .await;
+    crate::cli_status::emit_detail("render persist", crate::cli_status::StatusMark::Ok, "");
 
     Ok(RenderToDiskReport {
         html_quality_enabled,

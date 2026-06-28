@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grokrxiv.org/schemas/html_quality_review.schema.json",
   "title": "HtmlQualityReview",
-  "description": "Output of the post-render html_quality stage. Codex (gpt-5.5) reads the rendered review.html, emits a fixed copy and a list of every change it made. Strict JSON, OpenAI-strict-compatible.",
+  "description": "Output of the post-render html_quality stage. Codex reads and edits review.html in its workdir, then emits a small audit report. Strict JSON, OpenAI-strict-compatible.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "fixed_html": {
-      "type": "string",
-      "description": "The corrected HTML document. If no changes were necessary this is the original HTML byte-for-byte."
+    "changed": {
+      "type": "boolean",
+      "description": "True if review.html was modified in place; false if no changes were needed."
     },
     "fixes": {
       "type": "array",
@@ -56,5 +56,5 @@
       "description": "Codex's confidence that the rewrite preserved meaning. Below 0.7 the moderator should diff before publishing."
     }
   },
-  "required": ["fixed_html", "fixes", "summary", "confidence"]
+  "required": ["changed", "fixes", "summary", "confidence"]
 }

@@ -37,20 +37,17 @@ What NOT to touch:
 
 # User
 
-Rendered HTML document to audit:
-
-```html
-{{html}}
-```
+The rendered HTML document is `review.html` in your current working directory.
+Inspect and edit that file in place. Do not rewrite it from memory: make the
+smallest file edits needed for rendering/readability defects and preserve the
+review's substantive content.
 
 Respond ONLY with JSON matching the schema **html_quality_review.schema.json**
 (no prose, no markdown fences, no commentary outside the JSON). The JSON has
 four required fields:
 
-- `fixed_html`: the corrected HTML document (entire `<html>...</html>`). If
-  no changes are needed, return the original verbatim.
+- `changed`: whether you modified `review.html`.
 - `fixes`: an array of every change you made, each with `{location, issue,
-  before, after, severity, rationale}`. Empty array iff `fixed_html` equals
-  the input.
+  before, after, severity, rationale}`. Empty array iff `changed` is false.
 - `summary`: one paragraph naming what you fixed.
 - `confidence`: 0.0–1.0 — your confidence the rewrite preserved meaning.

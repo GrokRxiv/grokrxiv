@@ -2,10 +2,10 @@
 //!
 //! Runs after `review.html` is written by the render stage and BEFORE the
 //! review row reaches `awaiting_moderation`. Spawns the `codex` CLI
-//! (provider=openai, model=gpt-5.5) which audits the rendered HTML and
-//! returns a corrected copy + a structured list of fixes. The fix log is
-//! persisted as a sidecar JSON in the artifact directory so the moderator
-//! can audit what was rewritten.
+//! (provider=openai, model=gpt-5.5) in a role workdir containing
+//! `review.html`; Codex edits that file in place and returns a compact
+//! structured fix report. The fix log is persisted as a sidecar JSON in the
+//! artifact directory so the moderator can audit what was rewritten.
 //!
 //! This is NOT a peer reviewer of the source arXiv paper. It only audits
 //! GrokRxiv's own generated artifact for readability + rendering bugs (e.g.
@@ -177,11 +177,11 @@ pub async fn clean_pr_text(
     }
 }
 
-/// Read `<dir>/review.html`, run the html_quality codex audit, write the
-/// fixed HTML back, and persist `<dir>/formatting_fixes.json` with the
-/// structured fix log. Returns `Ok(false)` if no review.html exists yet
-/// (caller can decide whether that's an error). Returns `Ok(true)` on
-/// success or when codex emitted zero fixes.
+/// Read `<dir>/review.html`, run the html_quality Codex audit against a
+/// persistent workdir copy, write the checked HTML back, and persist
+/// `<dir>/formatting_fixes.json` with the structured fix log. Returns
+/// `Ok(false)` if no review.html exists yet (caller can decide whether that's
+/// an error). Returns `Ok(true)` on success or when Codex emitted zero fixes.
 ///
 /// Failures inside this function are surfaced via `tracing::warn!` and
 /// returned as `Ok(false)` — the caller treats them as "html_quality did
@@ -247,15 +247,41 @@ pub async fn review_and_fix_html_with_timeout(
         timeout_secs: timeout_secs.unwrap_or(0),
     };
 
-    let prompt = render_html_quality_prompt(&original_html);
+    let workdir = artifacts_dir.join("html_quality");
+    match tokio::fs::remove_dir_all(&workdir).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(
+                %review_id,
+                path = %workdir.display(),
+                err = %e,
+                "html_quality: failed to reset workdir — leaving review.html unchanged"
+            );
+            return Ok(false);
+        }
+    }
+    tokio::fs::create_dir_all(&workdir)
+        .await
+        .with_context(|| format!("create html_quality workdir: {}", workdir.display()))?;
+    let work_html_path = workdir.join("review.html");
+    tokio::fs::write(&work_html_path, original_html.as_bytes())
+        .await
+        .with_context(|| format!("write html_quality work copy: {}", work_html_path.display()))?;
+
+    let prompt = render_html_quality_prompt();
     let input = AgentInput {
         context: crate::agents::review_only_agent_context(review_id),
         role: role.to_string(),
         content_hash_material: Value::String("html_quality".into()),
-        artifact: Value::String(original_html.clone()),
+        artifact: serde_json::json!({
+            "review_id": review_id,
+            "input_file": "review.html",
+            "original_bytes": html_bytes.len(),
+        }),
         system_prompt: "You are the HTML Quality harness. Output strict JSON only.".into(),
         user_prompt: prompt,
-        source_bundle_path: None,
+        source_bundle_path: Some(workdir.to_string_lossy().into_owned()),
     };
 
     let runner = CliRunner::new();
@@ -271,12 +297,6 @@ pub async fn review_and_fix_html_with_timeout(
         }
     };
 
-    let fixed_html = run
-        .output
-        .get("fixed_html")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .unwrap_or_default();
     let fixes_len = run
         .output
         .get("fixes")
@@ -289,10 +309,23 @@ pub async fn review_and_fix_html_with_timeout(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
-    if fixed_html.is_empty() {
+    let fixed_html = match tokio::fs::read_to_string(&work_html_path).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(
+                %review_id,
+                path = %work_html_path.display(),
+                err = %e,
+                "html_quality: codex did not leave a readable review.html work copy — leaving review.html unchanged"
+            );
+            return Ok(false);
+        }
+    };
+
+    if fixed_html.trim().is_empty() {
         tracing::warn!(
             %review_id,
-            "html_quality: codex returned no fixed_html field — leaving review.html unchanged"
+            "html_quality: codex left an empty review.html work copy — leaving review.html unchanged"
         );
         return Ok(false);
     }
@@ -313,9 +346,11 @@ pub async fn review_and_fix_html_with_timeout(
         "review_id": review_id,
         "model": model,
         "changed": changed,
+        "reported_changed": run.output.get("changed").cloned().unwrap_or(Value::Bool(changed)),
         "fixes": run.output.get("fixes").cloned().unwrap_or(Value::Array(vec![])),
         "summary": run.output.get("summary").cloned().unwrap_or(Value::String(String::new())),
         "confidence": confidence,
+        "workdir": workdir.display().to_string(),
     });
     if let Err(e) = tokio::fs::write(
         &sidecar_path,
@@ -338,8 +373,8 @@ pub async fn review_and_fix_html_with_timeout(
     Ok(true)
 }
 
-fn render_html_quality_prompt(html: &str) -> String {
-    HTML_QUALITY_PROMPT_TEMPLATE.replace("{{html}}", html)
+fn render_html_quality_prompt() -> String {
+    HTML_QUALITY_PROMPT_TEMPLATE.to_string()
 }
 
 fn html_quality_timeout_policy() -> Option<Option<u32>> {
@@ -367,9 +402,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_html_quality_prompt_substitutes_html_placeholder() {
-        let rendered = render_html_quality_prompt("<h1>Hello</h1>");
-        assert!(rendered.contains("<h1>Hello</h1>"));
+    fn render_html_quality_prompt_uses_review_html_file() {
+        let rendered = render_html_quality_prompt();
+        assert!(rendered.contains("review.html"));
         assert!(!rendered.contains("{{html}}"));
     }
 
@@ -384,7 +419,7 @@ mod tests {
         // required fields present
         let required = v["required"].as_array().expect("required is array");
         let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
-        for f in ["fixed_html", "fixes", "summary", "confidence"] {
+        for f in ["changed", "fixes", "summary", "confidence"] {
             assert!(names.contains(&f), "schema missing required field {f}");
         }
     }

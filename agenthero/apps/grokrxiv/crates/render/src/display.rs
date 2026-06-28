@@ -29,6 +29,8 @@ struct Candidate {
     end: usize,
 }
 
+const MAX_DISPLAY_MATH_CHUNK_BYTES: usize = 2048;
+
 pub(crate) fn display_paper(paper: &PaperExtract) -> PaperExtract {
     let mut paper = paper.clone();
     paper.title = display_text(&paper.title);
@@ -66,26 +68,22 @@ fn transform_protected_spans(input: &str, transform: fn(&str) -> String) -> Stri
     let mut out = String::with_capacity(input.len());
     let mut cursor = 0;
     while cursor < input.len() {
-        let rest = &input[cursor..];
-        let protected_end = if rest.starts_with('`') {
-            find_after(rest, "`").map(|n| cursor + n)
-        } else if rest.starts_with('$') {
-            find_after(rest, "$").map(|n| cursor + n)
-        } else if rest.starts_with(r"\(") {
-            find_after(rest, r"\)").map(|n| cursor + n)
-        } else if rest.starts_with(r"\[") {
-            find_after(rest, r"\]").map(|n| cursor + n)
-        } else {
-            None
+        let Some((start, close_delimiter)) = next_protected_start(input, cursor) else {
+            out.push_str(&transform(&input[cursor..]));
+            break;
         };
-        if let Some(end) = protected_end {
-            out.push_str(&input[cursor..end]);
-            cursor = end;
-            continue;
+        if start > cursor {
+            out.push_str(&transform(&input[cursor..start]));
         }
-        let next = next_protected_start(input, cursor).unwrap_or(input.len());
-        out.push_str(&transform(&input[cursor..next]));
-        cursor = next;
+        let protected = &input[start..];
+        if let Some(end_offset) = find_after(protected, close_delimiter) {
+            let end = start + end_offset;
+            out.push_str(&input[start..end]);
+            cursor = end;
+        } else {
+            out.push_str(&transform(protected));
+            break;
+        }
     }
     out
 }
@@ -96,18 +94,29 @@ fn find_after(rest: &str, delimiter: &str) -> Option<usize> {
         .map(|idx| delimiter.len() + idx + delimiter.len())
 }
 
-fn next_protected_start(input: &str, cursor: usize) -> Option<usize> {
-    let rest = &input[cursor..];
-    ["`", "$", r"\(", r"\["]
-        .iter()
-        .filter_map(|needle| rest.find(needle).map(|idx| cursor + idx))
-        .min()
+fn next_protected_start(input: &str, cursor: usize) -> Option<(usize, &'static str)> {
+    let bytes = input.as_bytes();
+    let mut index = cursor;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'`' => return Some((index, "`")),
+            b'$' => return Some((index, "$")),
+            b'\\' if input[index..].starts_with(r"\(") => return Some((index, r"\)")),
+            b'\\' if input[index..].starts_with(r"\[") => return Some((index, r"\]")),
+            _ => index += 1,
+        }
+    }
+    None
 }
 
 fn wrap_math_candidates(segment: &str) -> String {
     let mut candidates = Vec::new();
-    collect_candidates(&TEX_EXPR_RE, segment, &mut candidates);
-    collect_candidates(&ALGEBRA_EXPR_RE, segment, &mut candidates);
+    if segment.contains('\\') {
+        collect_candidates(&TEX_EXPR_RE, segment, &mut candidates);
+    }
+    if contains_math_marker(segment) {
+        collect_algebra_candidates(segment, &mut candidates);
+    }
     candidates.sort_by_key(|c| (c.start, std::cmp::Reverse(c.end - c.start)));
 
     let mut out = String::with_capacity(segment.len() + candidates.len() * 2);
@@ -151,6 +160,50 @@ fn collect_candidates(re: &Regex, segment: &str, out: &mut Vec<Candidate>) {
             end: m.end(),
         });
     }
+}
+
+fn collect_algebra_candidates(segment: &str, out: &mut Vec<Candidate>) {
+    let mut chunk_start = None;
+    for (idx, ch) in segment.char_indices() {
+        if is_algebra_chunk_char(ch) {
+            chunk_start.get_or_insert(idx);
+        } else if let Some(start) = chunk_start.take() {
+            collect_algebra_chunk(segment, start, idx, out);
+        }
+    }
+    if let Some(start) = chunk_start {
+        collect_algebra_chunk(segment, start, segment.len(), out);
+    }
+}
+
+fn collect_algebra_chunk(segment: &str, start: usize, end: usize, out: &mut Vec<Candidate>) {
+    if end <= start {
+        return;
+    }
+    let chunk = &segment[start..end];
+    if chunk.len() > MAX_DISPLAY_MATH_CHUNK_BYTES || !contains_math_marker(chunk) {
+        return;
+    }
+    for m in ALGEBRA_EXPR_RE.find_iter(chunk) {
+        out.push(Candidate {
+            start: start + m.start(),
+            end: start + m.end(),
+        });
+    }
+}
+
+fn contains_math_marker(segment: &str) -> bool {
+    segment
+        .bytes()
+        .any(|byte| matches!(byte, b'_' | b'^' | b'=' | b'\\'))
+}
+
+fn is_algebra_chunk_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '\\' | '_' | '^' | '{' | '}' | '(' | ')' | '+' | '-' | '*' | '=' | '.' | ','
+        )
 }
 
 fn is_wrappable_math(segment: &str, start: usize, end: usize, expr: &str) -> bool {
