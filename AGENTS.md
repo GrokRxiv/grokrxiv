@@ -159,7 +159,12 @@ Rules:
 
 ## Strict JSON Agent Output
 
-When an AgentHero prompt includes an output schema, the schema is the contract:
+When an AgentHero prompt includes an output schema for a schema-bound review
+agent, the schema is the contract. This section is review-output guidance; it
+does not apply to Lean formalization, theorem statement authoring,
+`Proofs.lean` generation, source-to-Lean debugging, or code-editing agents
+unless their prompt explicitly supplies a JSON schema and asks for schema-only
+output.
 
 - Required properties are required.
 - Enum values use the exact listed strings and casing.

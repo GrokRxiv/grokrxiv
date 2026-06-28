@@ -1,8 +1,8 @@
 # @grokrxiv/skills
 
-Installs the `grokrxiv-review` strict-JSON reviewer skill into the Claude
-Code, Gemini, and Codex CLIs so that pure `--runner cli` runs of the
-GrokRxiv 6-agent review DAG produce 6/6 schema-valid agent outputs.
+Installs the review-only `grokrxiv-review` strict-JSON reviewer skill into
+the Claude Code, Gemini, and Codex CLIs so that pure `--runner cli` runs of
+the GrokRxiv 6-agent review DAG produce 6/6 schema-valid agent outputs.
 
 ## What it installs
 
@@ -13,10 +13,15 @@ GrokRxiv 6-agent review DAG produce 6/6 schema-valid agent outputs.
 | Codex | Sentinel-delimited block additively merged into the global agents file | `~/.codex/AGENTS.md` |
 | (all) | Canonical JSON schemas mirrored from `agenthero/apps/grokrxiv/schemas/` | `~/.grokrxiv/skills/schemas/` |
 
-All three skill artifacts enforce the same contract: emit a single JSON
-object that strictly validates against the role's schema. No prose, no
-code fences, no extra fields, no paraphrased enum values, no stringified
-numbers.
+All three skill artifacts enforce the same contract for schema-bound review
+roles: emit a single JSON object that strictly validates against the role's
+schema. No prose, no code fences, no extra fields, no paraphrased enum
+values, no stringified numbers.
+
+The skill is not for Lean formalization, theorem statement authoring,
+`Proofs.lean` generation, source-to-Lean debugging, or general coding-agent
+work. Those roles should follow their own prompts and artifacts, not the
+review JSON schema contract.
 
 ## Install
 

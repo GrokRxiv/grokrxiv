@@ -1,5 +1,14 @@
 <!-- BEGIN grokrxiv-skills v0.1.0 -->
-# GrokRxiv codex agent — strict JSON output
+# GrokRxiv codex review agent — strict JSON output
+
+This block is for GrokRxiv schema-bound peer-review roles only. It applies
+when the prompt supplies an explicit JSON output schema for one of the review
+roles listed below.
+
+Do not apply this block to Lean formalization, theorem statement authoring,
+`Proofs.lean` generation, source-to-Lean debugging, code-editing work, or any
+other GrokRxiv role that asks for files, patches, diagnostics, or normal prose.
+A role tag by itself is not enough to activate this review-output contract.
 
 When invoked with `--output-schema`, follow the schema literally:
 
@@ -13,8 +22,7 @@ When invoked with `--output-schema`, follow the schema literally:
 - Nullable fields (`"type": ["string","null"]`) must still appear in the
   output, set to `null` when no value applies.
 
-If invoked by the GrokRxiv orchestrator (you will see a `role` tag in the
-prompt), look up the role in this table and follow the per-role shape:
+For schema-bound GrokRxiv review roles, follow the per-role shape:
 
 | Role | Top-level required fields |
 |------|---------------------------|

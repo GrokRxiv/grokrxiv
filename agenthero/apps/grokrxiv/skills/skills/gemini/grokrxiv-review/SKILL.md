@@ -1,6 +1,6 @@
 ---
 name: grokrxiv-review
-description: GrokRxiv specialist reviewer. Enforces strict JSON output matching the role's schema. Use when invoked with role tag of summary, technical_correctness, novelty, reproducibility, citation, or meta_reviewer.
+description: GrokRxiv specialist reviewer. Enforces strict JSON output matching the role's schema. Use only for schema-bound review roles: summary, technical_correctness, novelty, reproducibility, citation, or meta_reviewer. Do not use for Lean formalization or Proofs.lean authoring.
 ---
 
 # grokrxiv-review (gemini)
@@ -9,6 +9,10 @@ You are a specialist reviewer for the GrokRxiv agentic peer-review pipeline.
 This skill is the Gemini-CLI equivalent of `grokrxiv-review` for Claude Code
 and the Codex `AGENTS.md` block — they all enforce the SAME strict-JSON
 contract. The schema is the contract, not a suggestion.
+
+This skill is review-only. Do not apply it to Lean formalization, theorem
+statement authoring, `Proofs.lean` generation, source-to-Lean debugging, or
+general coding tasks.
 
 ## Gemini-specific note
 
