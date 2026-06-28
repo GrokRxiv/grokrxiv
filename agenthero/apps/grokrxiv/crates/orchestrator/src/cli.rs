@@ -15486,6 +15486,137 @@ fn compact_json_text(value: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_inventory_direct_parallel_target(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    claim_id: String,
+    packet: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let packet = write_enriched_inventory_packet_stage(artifact_dir, &claim_id, &packet).await?;
+    let author = run_inventory_author_stage(
+        state,
+        paper_id,
+        review_id,
+        mode,
+        artifact_dir,
+        &packet,
+        &claim_id,
+    )
+    .await?;
+    let compile =
+        run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&author))
+            .await?;
+    let mut final_compile = compile.clone();
+    let mut target_fix = serde_json::Value::Null;
+    if lean_compile_result_is_fixable(&compile) {
+        let fix = run_inventory_fix_stage(
+            state,
+            paper_id,
+            review_id,
+            mode,
+            artifact_dir,
+            &packet,
+            &claim_id,
+            &compile,
+        )
+        .await?;
+        final_compile =
+            run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&fix))
+                .await?;
+        target_fix = fix;
+    }
+    let faithfulness = run_inventory_faithfulness_stage(
+        state,
+        paper_id,
+        review_id,
+        mode,
+        artifact_dir,
+        &packet,
+        &claim_id,
+        &final_compile,
+    )
+    .await?;
+    let compile_status = final_compile
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let status = inventory_target_status(&final_compile, &faithfulness);
+    let claim_status = inventory_claim_status_from_target_status(&status);
+    let library_feedback_candidate = lean_target_compile_needs_library_feedback(&final_compile)
+        || inventory_faithfulness_needs_feedback(&final_compile, &faithfulness);
+    let library_feedback = if library_feedback_candidate {
+        serde_json::json!({
+            "status": "deferred_parallel_batch",
+            "reason": "parallel target execution keeps the checked paper-local library immutable during target jobs",
+        })
+    } else {
+        serde_json::Value::Null
+    };
+    let slug = formalize_inventory_target_slug(&claim_id);
+    let entry = serde_json::json!({
+        "source_claim_id": claim_id,
+        "status": status,
+        "claim_status": claim_status,
+        "compile_status": compile_status,
+        "faithfulness_verdict": inventory_faithfulness_verdict(&faithfulness).unwrap_or("unknown"),
+        "failure_reason": inventory_target_failure_reason(&final_compile, &faithfulness),
+        "library_feedback": library_feedback,
+        "source_faithfulness_feedback": serde_json::Value::Null,
+        "parallel_target": true,
+        "library_feedback_candidate": library_feedback_candidate,
+        "target_fix_status": target_fix.get("status").cloned().unwrap_or_else(|| serde_json::json!(null)),
+        "source_packet": format!("review_loop/lean/targets/{slug}/packet.json"),
+        "proofs_lean": format!("review_loop/lean/targets/{slug}/GrokRxiv/Proofs.lean"),
+        "compile": format!("review_loop/lean/targets/{slug}/check/compile.json"),
+        "faithfulness": format!("review_loop/lean/targets/{slug}/faithfulness/faithfulness.json"),
+        "faithfulness_status": faithfulness.get("status").cloned().unwrap_or_else(|| serde_json::json!(null)),
+    });
+    let target_dir = formalize_inventory_target_dir(
+        artifact_dir,
+        entry["source_claim_id"].as_str().unwrap_or_default(),
+    );
+    write_loop_json(&target_dir.join("target_result.json"), &entry).await?;
+    Ok(entry)
+}
+
+async fn write_inventory_parallel_feedback_batch(
+    artifact_dir: &Path,
+    entries: &[serde_json::Value],
+    concurrency: usize,
+) -> anyhow::Result<serde_json::Value> {
+    let library_dir = formalize_inventory_library_dir(artifact_dir);
+    tokio::fs::create_dir_all(&library_dir).await?;
+    let candidates = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("library_feedback_candidate")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let batch = serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "parallel-library-feedback-batch",
+        "status": if candidates.is_empty() { "not_needed" } else { "deferred" },
+        "reason": if candidates.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!("target jobs ran in isolated workdirs against a checked library snapshot; shared library mutation is deferred to a later batch implementation")
+        },
+        "parallel_target_concurrency": concurrency,
+        "candidate_count": candidates.len(),
+        "candidates": candidates,
+    });
+    write_loop_json(&library_dir.join("parallel_feedback_batch.json"), &batch).await?;
+    Ok(batch)
+}
+
 async fn run_inventory_direct_all_targets_formalize_review(
     state: &super::AppState,
     paper_id: Uuid,
@@ -15595,118 +15726,132 @@ async fn run_inventory_direct_all_targets_formalize_review(
         return Ok(());
     }
 
-    let mut entries = Vec::with_capacity(packets.len());
-    let mut proved = 0usize;
-    let mut blocked = 0usize;
-    for (claim_id, packet) in packets {
-        let packet =
-            write_enriched_inventory_packet_stage(artifact_dir, &claim_id, &packet).await?;
-        let author = run_inventory_author_stage(
-            state,
-            paper_id,
-            review_id,
-            mode,
-            artifact_dir,
-            &packet,
-            &claim_id,
-        )
-        .await?;
-        let compile =
-            run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&author))
-                .await?;
-        let mut final_compile = compile.clone();
-        let mut library_feedback = serde_json::Value::Null;
-        if lean_compile_result_is_fixable(&compile) {
-            let fix = run_inventory_fix_stage(
-                state,
-                paper_id,
-                review_id,
-                mode,
-                artifact_dir,
-                &packet,
-                &claim_id,
-                &compile,
-            )
-            .await?;
-            final_compile = run_inventory_lean_check_stage(
-                review_id,
-                mode,
-                artifact_dir,
-                &claim_id,
-                Some(&fix),
-            )
-            .await?;
-            let feedback_retry = run_inventory_library_feedback_and_retry_target(
-                state,
-                paper_id,
-                review_id,
-                mode,
-                artifact_dir,
-                &inventory,
-                &packet,
-                &claim_id,
-                &final_compile,
-                2,
-            )
-            .await?;
-            final_compile = feedback_retry.0;
-            library_feedback = feedback_retry.1;
+    use futures::{
+        stream::{FuturesUnordered, StreamExt},
+        FutureExt,
+    };
+    let target_concurrency = lean_target_concurrency_from_env().min(packets.len().max(1));
+    cli_status::emit(format!(
+        "formalize {review_id}: running {} Lean target(s) with parallel concurrency={target_concurrency}",
+        packets.len()
+    ));
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        "node.started",
+        "formalize_parallel_targets",
+        "lean",
+        "theorem_inventory_parallel_targets",
+        "running",
+        "parallel Lean target batch started",
+        serde_json::json!({
+            "stage": "parallel-targets",
+            "target_count": packets.len(),
+            "concurrency": target_concurrency,
+        }),
+    ));
+
+    let mut packet_iter = packets.into_iter();
+    let mut futures = FuturesUnordered::new();
+    for _ in 0..target_concurrency {
+        if let Some((claim_id, packet)) = packet_iter.next() {
+            futures.push(
+                run_inventory_direct_parallel_target(
+                    state,
+                    paper_id,
+                    review_id,
+                    mode,
+                    artifact_dir,
+                    claim_id.clone(),
+                    packet,
+                )
+                .map(move |result| (claim_id, result))
+                .boxed_local(),
+            );
         }
-        let mut faithfulness = run_inventory_faithfulness_stage(
-            state,
-            paper_id,
-            review_id,
-            mode,
-            artifact_dir,
-            &packet,
-            &claim_id,
-            &final_compile,
-        )
-        .await?;
-        let feedback_retry = run_inventory_faithfulness_feedback_and_retry_target(
-            state,
-            paper_id,
-            review_id,
-            mode,
-            artifact_dir,
-            &inventory,
-            &packet,
-            &claim_id,
-            &final_compile,
-            &faithfulness,
-        )
-        .await?;
-        final_compile = feedback_retry.0;
-        faithfulness = feedback_retry.1;
-        let source_faithfulness_feedback = feedback_retry.2;
-        let compile_status = final_compile
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown");
-        let status = inventory_target_status(&final_compile, &faithfulness);
-        let claim_status = inventory_claim_status_from_target_status(&status);
-        if claim_status == "proved" {
-            proved += 1;
-        } else if claim_status == "blocked" {
-            blocked += 1;
-        }
-        let slug = formalize_inventory_target_slug(&claim_id);
-        entries.push(serde_json::json!({
-            "source_claim_id": claim_id,
-            "status": status,
-            "claim_status": claim_status,
-            "compile_status": compile_status,
-            "faithfulness_verdict": inventory_faithfulness_verdict(&faithfulness).unwrap_or("unknown"),
-            "failure_reason": inventory_target_failure_reason(&final_compile, &faithfulness),
-            "library_feedback": library_feedback,
-            "source_faithfulness_feedback": source_faithfulness_feedback,
-            "source_packet": format!("review_loop/lean/targets/{slug}/packet.json"),
-            "proofs_lean": format!("review_loop/lean/targets/{slug}/GrokRxiv/Proofs.lean"),
-            "compile": format!("review_loop/lean/targets/{slug}/check/compile.json"),
-            "faithfulness": format!("review_loop/lean/targets/{slug}/faithfulness/faithfulness.json"),
-            "faithfulness_status": faithfulness.get("status").cloned().unwrap_or_else(|| serde_json::json!(null)),
-        }));
     }
+
+    let mut entries = Vec::with_capacity(claim_ids.len());
+    while let Some((claim_id, result)) = futures.next().await {
+        match result {
+            Ok(entry) => entries.push(entry),
+            Err(err) => {
+                let slug = formalize_inventory_target_slug(&claim_id);
+                entries.push(serde_json::json!({
+                    "source_claim_id": claim_id,
+                    "status": "pipeline_error",
+                    "claim_status": "blocked",
+                    "compile_status": "not_run",
+                    "faithfulness_verdict": "not_run",
+                    "failure_reason": format!("{err:#}"),
+                    "library_feedback": serde_json::Value::Null,
+                    "source_faithfulness_feedback": serde_json::Value::Null,
+                    "parallel_target": true,
+                    "library_feedback_candidate": false,
+                    "source_packet": format!("review_loop/lean/targets/{slug}/packet.json"),
+                    "proofs_lean": format!("review_loop/lean/targets/{slug}/GrokRxiv/Proofs.lean"),
+                    "compile": serde_json::Value::Null,
+                    "faithfulness": serde_json::Value::Null,
+                    "faithfulness_status": serde_json::Value::Null,
+                }));
+            }
+        }
+        if let Some((claim_id, packet)) = packet_iter.next() {
+            futures.push(
+                run_inventory_direct_parallel_target(
+                    state,
+                    paper_id,
+                    review_id,
+                    mode,
+                    artifact_dir,
+                    claim_id.clone(),
+                    packet,
+                )
+                .map(move |result| (claim_id, result))
+                .boxed_local(),
+            );
+        }
+    }
+
+    entries.sort_by_key(|entry| {
+        entry
+            .get("source_claim_id")
+            .and_then(|value| value.as_str())
+            .and_then(|claim_id| claim_ids.iter().position(|selected| selected == claim_id))
+            .unwrap_or(usize::MAX)
+    });
+    let parallel_feedback_batch =
+        write_inventory_parallel_feedback_batch(artifact_dir, &entries, target_concurrency).await?;
+    let proved = entries
+        .iter()
+        .filter(|entry| {
+            entry.get("claim_status").and_then(|value| value.as_str()) == Some("proved")
+        })
+        .count();
+    let blocked = entries
+        .iter()
+        .filter(|entry| {
+            entry.get("claim_status").and_then(|value| value.as_str()) == Some("blocked")
+        })
+        .count();
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        "node.completed",
+        "formalize_parallel_targets",
+        "lean",
+        "theorem_inventory_parallel_targets",
+        "completed",
+        "parallel Lean target batch completed",
+        serde_json::json!({
+            "stage": "parallel-targets",
+            "target_count": entries.len(),
+            "concurrency": target_concurrency,
+            "proved": proved,
+            "blocked": blocked,
+            "library_feedback_batch": "review_loop/lean/library/parallel_feedback_batch.json",
+        }),
+    ));
 
     let status = if proved == claim_ids.len() {
         "pass"
@@ -15734,7 +15879,14 @@ async fn run_inventory_direct_all_targets_formalize_review(
         blocked,
         claim_ids.len().saturating_sub(proved + blocked),
         external_actions_enabled,
-        None,
+        Some(serde_json::json!({
+            "env": harness,
+            "library": library_compile,
+            "parallel": {
+                "target_concurrency": target_concurrency,
+                "library_feedback_batch": parallel_feedback_batch,
+            },
+        })),
     )
     .await?;
     commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
