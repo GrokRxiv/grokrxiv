@@ -70,10 +70,11 @@ pub async fn clean_pr_text(
     };
     let model =
         std::env::var("GROKRXIV_HTML_QUALITY_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
-    let timeout_secs: u32 = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
+    let timeout_secs: u32 = std::env::var("GROKRXIV_PR_TEXT_QUALITY_TIMEOUT_SECS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(900);
 
     let schema: Value = match serde_json::from_str(PR_TEXT_QUALITY_SCHEMA) {
         Ok(v) => v,
@@ -193,9 +194,11 @@ pub async fn review_and_fix_html(
     review_and_fix_html_with_timeout(state, review_id, artifacts_dir, None).await
 }
 
-/// Run HTML quality with an optional caller-owned timeout. Refresh-review uses
-/// the override with a distinct role id so `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS`
-/// does not hide the refresh watchdog timeout.
+/// Run HTML quality with an optional caller-owned timeout. By default, the
+/// Codex artifact-repair agent is not killed by a short watchdog; set
+/// `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS` to a positive number to bound it.
+/// Refresh-review can pass an override with a distinct role id when that
+/// command needs a caller-owned budget.
 pub async fn review_and_fix_html_with_timeout(
     state: &AppState,
     review_id: Uuid,
@@ -219,11 +222,7 @@ pub async fn review_and_fix_html_with_timeout(
 
     let model =
         std::env::var("GROKRXIV_HTML_QUALITY_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
-    let timeout_secs: u32 = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(180);
-    let timeout_secs = timeout_secs_override.unwrap_or(timeout_secs);
+    let timeout_secs = timeout_secs_override.or_else(html_quality_timeout_override);
 
     let schema: Value =
         serde_json::from_str(HTML_QUALITY_SCHEMA).context("html_quality schema parse")?;
@@ -240,7 +239,7 @@ pub async fn review_and_fix_html_with_timeout(
         model: model.clone(),
         schema: std::sync::Arc::new(schema),
         max_retries: 1,
-        timeout_secs,
+        timeout_secs: timeout_secs.unwrap_or(0),
     };
 
     let prompt = render_html_quality_prompt(&original_html);
@@ -336,6 +335,25 @@ pub async fn review_and_fix_html_with_timeout(
 
 fn render_html_quality_prompt(html: &str) -> String {
     HTML_QUALITY_PROMPT_TEMPLATE.replace("{{html}}", html)
+}
+
+fn html_quality_timeout_override() -> Option<u32> {
+    std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let lowered = trimmed.to_ascii_lowercase();
+            if matches!(
+                lowered.as_str(),
+                "0" | "none" | "no_timeout" | "unbounded"
+            ) {
+                return None;
+            }
+            trimmed.parse::<u32>().ok().filter(|secs| *secs > 0)
+        })
 }
 
 #[cfg(test)]

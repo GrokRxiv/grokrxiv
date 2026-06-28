@@ -17831,6 +17831,9 @@ async fn run_review_loop_for_review(
     );
     let reason =
         "Lean formalization runs asynchronously via the `formalize` job; queue with --with-lean.";
+    for (output, skip_reason) in review_loop_deferred_lean_skip_reasons(reason) {
+        bundle_skip_reasons.entry(output).or_insert(skip_reason);
+    }
     let _ = write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
     let lean_results = skipped_review_fix_code_results_with_status(
         &lean_task,
@@ -19261,6 +19264,17 @@ fn review_loop_bundle_skip_reasons(
         );
     }
     skip_reasons
+}
+
+fn review_loop_deferred_lean_skip_reasons(reason: &str) -> BTreeMap<String, String> {
+    [
+        "review_loop/lean/env/env_result.json",
+        "review_loop/lean/library/library_manifest.json",
+        "review_loop/lean/library/compile.json",
+    ]
+    .into_iter()
+    .map(|output| (output.to_string(), reason.to_string()))
+    .collect()
 }
 
 async fn record_review_loop_node(
@@ -20705,26 +20719,6 @@ fn refresh_stage_timeout() -> std::time::Duration {
         .unwrap_or_else(|| std::time::Duration::from_secs(15))
 }
 
-fn refresh_render_timeout() -> std::time::Duration {
-    std::env::var("AGENTHERO_REFRESH_RENDER_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or_else(|| {
-            let html_quality_secs = std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .filter(|secs| *secs > 0)
-                .unwrap_or(180);
-            std::time::Duration::from_secs(html_quality_secs.saturating_add(30))
-        })
-}
-
-fn refresh_html_quality_timeout_secs(render_timeout: std::time::Duration) -> u32 {
-    render_timeout.as_secs().clamp(1, u32::MAX as u64) as u32
-}
-
 #[derive(Debug, Clone, Copy)]
 struct RefreshRenderOutcome {
     artifacts_refreshed: bool,
@@ -20842,16 +20836,8 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
         "review {review_id}: rendering artifacts and running HTML quality if enabled"
     ));
     let started = std::time::Instant::now();
-    let render_timeout = refresh_render_timeout();
-    let html_quality_timeout_secs = refresh_html_quality_timeout_secs(render_timeout);
-    let render_watchdog_timeout = render_timeout.saturating_add(std::time::Duration::from_secs(5));
-    let render_outcome = match tokio::time::timeout(
-        render_watchdog_timeout,
-        refresh_rendered_artifacts(&state, review_id, Some(html_quality_timeout_secs)),
-    )
-    .await
-    {
-        Ok(Ok(outcome)) => {
+    let render_outcome = match refresh_rendered_artifacts(&state, review_id, None).await {
+        Ok(outcome) => {
             stages.push(refresh_stage_result(
                 "render_artifacts",
                 "ok",
@@ -20861,7 +20847,7 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
             ));
             outcome
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             stages.push(refresh_stage_result(
                 "render_artifacts",
                 "failed",
@@ -20873,25 +20859,7 @@ async fn refresh_review(review_id: Uuid, json: bool) -> anyhow::Result<()> {
                 artifacts_refreshed: false,
                 html_quality_enabled: false,
                 html_quality_ran: None,
-                html_quality_timeout_secs: Some(html_quality_timeout_secs),
-            }
-        }
-        Err(_) => {
-            stages.push(refresh_stage_result(
-                "render_artifacts",
-                "timeout",
-                started,
-                Some("artifacts_refreshed=false".to_string()),
-                Some(format!(
-                    "render/html_quality watchdog exceeded {}s",
-                    render_watchdog_timeout.as_secs()
-                )),
-            ));
-            RefreshRenderOutcome {
-                artifacts_refreshed: false,
-                html_quality_enabled: false,
-                html_quality_ran: None,
-                html_quality_timeout_secs: Some(html_quality_timeout_secs),
+                html_quality_timeout_secs: None,
             }
         }
     };

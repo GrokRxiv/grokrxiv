@@ -112,7 +112,8 @@ fn detect_quota_signal(stderr: &str) -> Option<String> {
 }
 
 /// Default subprocess timeout (seconds) when `AGENTHERO_CLI_TIMEOUT_SECS` is
-/// unset.
+/// unset. Per-role timeout env vars may explicitly opt out with `0`, `none`,
+/// or `unbounded`.
 const DEFAULT_CLI_TIMEOUT_SECS: u64 = 360;
 const AGENT_BENCHMARK_PATH_ENV: &str = "GROKRXIV_AGENT_BENCHMARK_PATH";
 const CITATION_TIMEOUT_MAX_ENV: &str = "GROKRXIV_CITATION_TIMEOUT_MAX_SECS";
@@ -1162,12 +1163,18 @@ fn build_api_fallback_providers(
 fn cli_timeout_for(spec: &AgentSpec) -> Option<Duration> {
     // 1. Operator per-role override (`GROKRXIV_<ROLE>_TIMEOUT_SECS`) wins as the configured
     //    floor. Adaptive roles can still lift it from recent successful samples.
-    if let Some(secs) = timeout_env_secs(&role_timeout_env_var(&spec.role)) {
+    if let Some(policy) = timeout_env_policy(&role_timeout_env_var(&spec.role)) {
+        let Some(secs) = policy else {
+            return None;
+        };
         let chosen = adaptive_cli_timeout_for(spec, secs).unwrap_or(secs);
         return Some(Duration::from_secs(chosen));
     }
     if lean_claude_role(spec) {
-        if let Some(secs) = timeout_env_secs(LEAN_CLAUDE_TIMEOUT_ENV) {
+        if let Some(policy) = timeout_env_policy(LEAN_CLAUDE_TIMEOUT_ENV) {
+            let Some(secs) = policy else {
+                return None;
+            };
             let chosen = adaptive_cli_timeout_for(spec, secs).unwrap_or(secs);
             return Some(Duration::from_secs(chosen));
         }
@@ -1192,10 +1199,24 @@ fn lean_claude_role(spec: &AgentSpec) -> bool {
 }
 
 fn timeout_env_secs(key: &str) -> Option<u64> {
+    timeout_env_policy(key).flatten()
+}
+
+fn timeout_env_policy(key: &str) -> Option<Option<u64>> {
     std::env::var(key)
         .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
+        .and_then(|s| parse_timeout_policy(s.trim()))
+}
+
+fn parse_timeout_policy(value: &str) -> Option<Option<u64>> {
+    if value.is_empty() {
+        return None;
+    }
+    let normalized = value.to_ascii_lowercase();
+    if matches!(normalized.as_str(), "0" | "none" | "no_timeout" | "unbounded") {
+        return Some(None);
+    }
+    value.parse::<u64>().ok().filter(|secs| *secs > 0).map(Some)
 }
 
 fn adaptive_cli_timeout_for(spec: &AgentSpec, configured_secs: u64) -> Option<u64> {

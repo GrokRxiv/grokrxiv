@@ -525,7 +525,7 @@ struct RefreshPipelineConfig {
     web_revalidate_url: Option<String>,
     html_quality_disabled: bool,
     html_quality_model: String,
-    html_quality_timeout_secs: u64,
+    html_quality_timeout_secs: Option<u64>,
     web_probe_timeout: Duration,
 }
 
@@ -536,11 +536,7 @@ impl RefreshPipelineConfig {
             html_quality_disabled: env_truthy("GROKRXIV_HTML_QUALITY_DISABLE"),
             html_quality_model: nonblank_env("GROKRXIV_HTML_QUALITY_MODEL")
                 .unwrap_or_else(|| "gpt-5.5".to_string()),
-            html_quality_timeout_secs: std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .filter(|secs| *secs > 0)
-                .unwrap_or(180),
+            html_quality_timeout_secs: timeout_env_policy("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS"),
             web_probe_timeout: std::env::var("AGENTHERO_DOCTOR_WEB_TIMEOUT_SECS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -580,9 +576,13 @@ fn check_html_quality_with(config: &RefreshPipelineConfig) -> CheckResult {
             "GROKRXIV_HTML_QUALITY_DISABLE set; HTML quality cleanup disabled",
         );
     }
+    let timeout = config
+        .html_quality_timeout_secs
+        .map(|secs| secs.to_string())
+        .unwrap_or_else(|| "unbounded".to_string());
     CheckResult::ok(format!(
-        "enabled model={} timeout_secs={}",
-        config.html_quality_model, config.html_quality_timeout_secs
+        "enabled model={} timeout_secs={timeout}",
+        config.html_quality_model
     ))
 }
 
@@ -609,6 +609,23 @@ fn nonblank_env(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn timeout_env_policy(key: &str) -> Option<u64> {
+    std::env::var(key).ok().and_then(|value| {
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let lowered = value.to_ascii_lowercase();
+        if matches!(
+            lowered.as_str(),
+            "0" | "none" | "no_timeout" | "unbounded"
+        ) {
+            return None;
+        }
+        value.parse::<u64>().ok().filter(|secs| *secs > 0)
+    })
 }
 
 fn doctor_requires_review_runner() -> bool {
@@ -948,7 +965,7 @@ mod tests {
             web_revalidate_url: None,
             html_quality_disabled: false,
             html_quality_model: "gemini-3-flash-preview".to_string(),
-            html_quality_timeout_secs: 42,
+            html_quality_timeout_secs: Some(42),
             web_probe_timeout: Duration::from_millis(50),
         };
 
