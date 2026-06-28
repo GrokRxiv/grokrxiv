@@ -1183,11 +1183,7 @@ async fn run_adapter_process(
         timeout_secs,
         output_limit_bytes,
     } = &manifest.adapter;
-    let timeout = Duration::from_secs(
-        timeout_secs
-            .or_else(adapter_timeout_from_env)
-            .unwrap_or(DEFAULT_ADAPTER_TIMEOUT_SECS),
-    );
+    let timeout = adapter_timeout_duration(*timeout_secs);
     let output_limit = output_limit_bytes
         .or_else(adapter_output_limit_from_env)
         .unwrap_or(DEFAULT_ADAPTER_OUTPUT_LIMIT_BYTES);
@@ -1274,10 +1270,17 @@ async fn run_adapter_process(
     stdin.shutdown().await?;
     drop(stdin);
 
-    let wait_outcome = tokio::select! {
-        result = child.wait() => AdapterWaitOutcome::Exited(result),
-        _ = tokio::time::sleep(timeout) => AdapterWaitOutcome::TimedOut,
-        _ = wait_for_adapter_cancellation(cancellation) => AdapterWaitOutcome::Cancelled,
+    let wait_outcome = if let Some(timeout) = timeout {
+        tokio::select! {
+            result = child.wait() => AdapterWaitOutcome::Exited(result),
+            _ = tokio::time::sleep(timeout) => AdapterWaitOutcome::TimedOut,
+            _ = wait_for_adapter_cancellation(cancellation) => AdapterWaitOutcome::Cancelled,
+        }
+    } else {
+        tokio::select! {
+            result = child.wait() => AdapterWaitOutcome::Exited(result),
+            _ = wait_for_adapter_cancellation(cancellation) => AdapterWaitOutcome::Cancelled,
+        }
     };
     let (status, wait_error) = match wait_outcome {
         AdapterWaitOutcome::Exited(result) => {
@@ -1293,7 +1296,9 @@ async fn run_adapter_process(
                 Some(anyhow::anyhow!(
                     "app `{}` adapter timed out after {}s",
                     manifest.slug,
-                    timeout.as_secs()
+                    timeout
+                        .expect("timed out outcome requires a configured adapter timeout")
+                        .as_secs()
                 )),
             )
         }
@@ -1798,10 +1803,22 @@ fn validate_adapter_response(
 }
 
 fn adapter_timeout_from_env() -> Option<u64> {
-    std::env::var("AGENTHERO_ADAPTER_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
+    let value = std::env::var("AGENTHERO_ADAPTER_TIMEOUT_SECS").ok()?;
+    let trimmed = value.trim();
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "none" | "no_timeout" | "unbounded" | "off"
+    ) {
+        return Some(0);
+    }
+    trimmed.parse::<u64>().ok()
+}
+
+fn adapter_timeout_duration(manifest_timeout_secs: Option<u64>) -> Option<Duration> {
+    let timeout_secs = manifest_timeout_secs
+        .or_else(adapter_timeout_from_env)
+        .unwrap_or(DEFAULT_ADAPTER_TIMEOUT_SECS);
+    (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs))
 }
 
 fn adapter_output_limit_from_env() -> Option<usize> {
