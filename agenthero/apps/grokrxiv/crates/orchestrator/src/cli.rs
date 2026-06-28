@@ -16545,6 +16545,54 @@ fn inventory_direct_paper_claim_proved_count(entries: &[serde_json::Value]) -> u
         .count()
 }
 
+fn inventory_direct_theorem_map_status(entries: &[serde_json::Value]) -> &'static str {
+    if entries.is_empty() {
+        return "unknown";
+    }
+    let passed = entries
+        .iter()
+        .filter(|entry| entry.get("status").and_then(|value| value.as_str()) == Some("pass"))
+        .count();
+    if passed == entries.len() {
+        "pass"
+    } else if passed > 0 {
+        "partial"
+    } else {
+        "fail"
+    }
+}
+
+fn merge_inventory_direct_theorem_map(
+    existing: Option<&serde_json::Value>,
+    entry: serde_json::Value,
+) -> serde_json::Value {
+    let claim_id = entry
+        .get("source_claim_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let mut entries = existing
+        .and_then(|value| value.get("entries"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(claim_id) = claim_id.as_deref() {
+        entries.retain(|existing| {
+            existing
+                .get("source_claim_id")
+                .and_then(|value| value.as_str())
+                != Some(claim_id)
+        });
+    }
+    entries.push(entry);
+    let status = inventory_direct_theorem_map_status(&entries);
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "source": "theorem_inventory_direct",
+        "status": status,
+        "entries": entries,
+    })
+}
+
 async fn run_inventory_direct_formalize_review(
     state: &super::AppState,
     paper_id: Uuid,
@@ -16821,22 +16869,26 @@ async fn run_inventory_direct_formalize_review(
     let lean_dir = artifact_dir.join("lean");
     tokio::fs::create_dir_all(&lean_dir).await?;
     write_loop_json(&lean_dir.join("results.json"), &summary).await?;
-    write_loop_json(&lean_dir.join("theorem_map.json"), &serde_json::json!({
-        "schema_version": "1.0.0",
-        "source": "theorem_inventory_direct",
+    let slug = formalize_inventory_target_slug(&claim_id);
+    let theorem_map_entry = serde_json::json!({
+        "source_claim_id": claim_id,
         "status": summary["status"].clone(),
-        "entries": [{
-            "source_claim_id": claim_id,
-            "status": summary["status"].clone(),
-            "claim_status": inventory_claim_status_from_target_status(summary["status"].as_str().unwrap_or("unknown")),
-            "failure_reason": summary["failure_reason"].clone(),
-            "library_feedback": summary["library_feedback"].clone(),
-            "source_faithfulness_feedback": summary["source_faithfulness_feedback"].clone(),
-            "source_packet": format!("review_loop/lean/targets/{}/packet.json", formalize_inventory_target_slug(&claim_id)),
-            "compile": format!("review_loop/lean/targets/{}/check/compile.json", formalize_inventory_target_slug(&claim_id)),
-            "faithfulness": format!("review_loop/lean/targets/{}/faithfulness/faithfulness.json", formalize_inventory_target_slug(&claim_id)),
-        }]
-    })).await?;
+        "claim_status": inventory_claim_status_from_target_status(summary["status"].as_str().unwrap_or("unknown")),
+        "failure_reason": summary["failure_reason"].clone(),
+        "library_feedback": summary["library_feedback"].clone(),
+        "source_faithfulness_feedback": summary["source_faithfulness_feedback"].clone(),
+        "source_packet": format!("review_loop/lean/targets/{slug}/packet.json"),
+        "proofs_lean": format!("review_loop/lean/targets/{slug}/GrokRxiv/Proofs.lean"),
+        "compile": format!("review_loop/lean/targets/{slug}/check/compile.json"),
+        "faithfulness": format!("review_loop/lean/targets/{slug}/faithfulness/faithfulness.json"),
+    });
+    let existing_theorem_map = tokio::fs::read_to_string(lean_dir.join("theorem_map.json"))
+        .await
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let theorem_map =
+        merge_inventory_direct_theorem_map(existing_theorem_map.as_ref(), theorem_map_entry);
+    write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
     if !external_actions_enabled {
         cli_status::emit(format!(
             "formalize {review_id}: external actions disabled; skipped PR comment and Lean commit"
@@ -26498,6 +26550,48 @@ After-marker explains the displayed map.
 
         assert_eq!(inventory_direct_kernel_proved_count(&entries), 1);
         assert_eq!(inventory_direct_paper_claim_proved_count(&entries), 0);
+    }
+
+    #[test]
+    fn single_target_theorem_map_update_preserves_other_target_entries() {
+        let existing = serde_json::json!({
+            "schema_version": "1.0.0",
+            "source": "theorem_inventory_direct",
+            "status": "fail",
+            "entries": [
+                {
+                    "source_claim_id": "claim:a",
+                    "status": "faithfulness_failed",
+                    "proofs_lean": "review_loop/lean/targets/claim_a/GrokRxiv/Proofs.lean"
+                },
+                {
+                    "source_claim_id": "claim:b",
+                    "status": "lean_compile_error",
+                    "proofs_lean": "review_loop/lean/targets/claim_b/GrokRxiv/Proofs.lean"
+                }
+            ]
+        });
+        let replacement = serde_json::json!({
+            "source_claim_id": "claim:b",
+            "status": "pass",
+            "proofs_lean": "review_loop/lean/targets/claim_b/GrokRxiv/Proofs.lean"
+        });
+
+        let merged = merge_inventory_direct_theorem_map(Some(&existing), replacement);
+        let entries = merged["entries"].as_array().expect("entries");
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .any(|entry| entry["source_claim_id"] == "claim:a"));
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["source_claim_id"] == "claim:b")
+                .expect("claim b")["status"],
+            "pass"
+        );
+        assert_eq!(merged["status"], "partial");
     }
 
     #[test]
