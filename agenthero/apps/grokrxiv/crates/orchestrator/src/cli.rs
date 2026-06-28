@@ -27,7 +27,8 @@ use crate::doctor as doctor_mod;
 use crate::lean_audit::{
     audit_lean_library_artifact, build_lean_source_input_for_claim, forbidden_terms_in_code,
     lean_check_diagnostic_result, lean_compile_result_is_fixable, lean_library_compile_needs_fix,
-    lean_target_compile_needs_library_feedback, LeanArtifactPolicy,
+    lean_target_compile_needs_library_feedback, source_first_inventory_from_paper_math_sources,
+    LeanArtifactPolicy,
 };
 use crate::runtime_config::{
     parse_role_model, parse_role_provider, parse_role_runner, provider_api_allowed,
@@ -10995,6 +10996,118 @@ async fn refresh_formalization_math_artifacts(
     paper_math_sources
 }
 
+async fn refresh_source_first_theorem_inventory_artifact(
+    pool: &sqlx::PgPool,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    existing_paper_math_sources: serde_json::Value,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let mut paper_math_sources = existing_paper_math_sources;
+    if let Some(inventory) = source_first_inventory_from_paper_math_sources(&paper_math_sources) {
+        write_loop_json(&artifact_dir.join("theorem_inventory.json"), &inventory).await?;
+        if let Some(obj) = paper_math_sources.as_object_mut() {
+            obj.insert("theorem_inventory".to_string(), inventory.clone());
+            append_paper_math_source(obj, "formalize:source_theorem_inventory".to_string());
+        }
+        write_loop_json(
+            &artifact_dir.join("paper_math_sources.json"),
+            &paper_math_sources,
+        )
+        .await?;
+        emit_formalize_node_event(formalize_node_event(
+            review_id,
+            mode,
+            "node.completed",
+            "formalize_source_inventory",
+            "inventory",
+            "theorem_inventory_source",
+            "pass",
+            "source-first theorem inventory restored without typed-IR enrichment",
+            serde_json::json!({
+                "artifact_id": "review_loop/theorem_inventory.json",
+                "source": "paper_math_sources",
+            }),
+        ));
+        return Ok(Some(inventory));
+    }
+
+    let seed = crate::db::load_paper_review_seed(pool, paper_id).await?;
+    let workdir = tempfile::tempdir().context("formalize source inventory workdir")?;
+    match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
+        Ok(count) if count > 0 => {
+            cli_status::emit(format!(
+                "formalize {review_id}: hydrated {count} arXiv source files for source-first theorem inventory"
+            ));
+            let config = FormalizeSourceConfig::from_env();
+            let inventory = build_formalize_theorem_inventory_from_workdir(
+                workdir.path(),
+                &seed.arxiv_id,
+                &seed.title,
+                &config,
+            )?;
+            write_loop_json(&artifact_dir.join("theorem_inventory.json"), &inventory).await?;
+            if let Some(obj) = paper_math_sources.as_object_mut() {
+                obj.insert("theorem_inventory".to_string(), inventory.clone());
+                append_paper_math_source(obj, "formalize:source_theorem_inventory".to_string());
+            }
+            write_loop_json(
+                &artifact_dir.join("paper_math_sources.json"),
+                &paper_math_sources,
+            )
+            .await?;
+            emit_formalize_node_event(formalize_node_event(
+                review_id,
+                mode,
+                "node.completed",
+                "formalize_source_inventory",
+                "inventory",
+                "theorem_inventory_source",
+                "pass",
+                "source-first theorem inventory built from arXiv TeX without typed-IR enrichment",
+                serde_json::json!({
+                    "artifact_id": "review_loop/theorem_inventory.json",
+                    "source_files": count,
+                    "inventory_count": inventory
+                        .get("inventory_count")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!(null)),
+                    "theorem_level_count": inventory
+                        .get("theorem_level_count")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!(null)),
+                }),
+            ));
+            Ok(Some(inventory))
+        }
+        Ok(_) => {
+            append_paper_math_warning(
+                &mut paper_math_sources,
+                "source-first theorem inventory refresh found no arXiv source files".to_string(),
+            );
+            write_loop_json(
+                &artifact_dir.join("paper_math_sources.json"),
+                &paper_math_sources,
+            )
+            .await?;
+            Ok(None)
+        }
+        Err(err) => {
+            append_paper_math_warning(
+                &mut paper_math_sources,
+                format!("source-first theorem inventory refresh failed: {err:#}"),
+            );
+            write_loop_json(
+                &artifact_dir.join("paper_math_sources.json"),
+                &paper_math_sources,
+            )
+            .await?;
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FormalizeExtractionPlan {
     try_source_inventory: bool,
@@ -13227,16 +13340,15 @@ async fn formalize_review(
             cli_status::emit(format!(
                 "formalize {review_id}: theorem_inventory.json missing; refreshing source-first inventory before direct Lean pipeline"
             ));
-            let _ = refresh_formalization_math_artifacts(
-                &state,
+            let _ = refresh_source_first_theorem_inventory_artifact(
                 pool,
                 paper_id,
                 review_id,
+                mode,
                 &artifact_dir,
                 existing_paper_math_sources,
-                mode,
             )
-            .await;
+            .await?;
         }
         return run_inventory_direct_formalize_review(
             &state,
@@ -25418,6 +25530,83 @@ The pure braid group is polyfree.
         assert!(context.contains("prop:polyfree"));
         assert!(!context.contains("\"typed_transcription\""));
         assert!(!context.contains("\"theorem_ir\""));
+    }
+
+    #[test]
+    fn formalize_direct_inventory_refresh_prefers_source_inventory_without_typed_ir() {
+        let paper_math_sources = serde_json::json!({
+            "theorem_inventory": {
+                "schema_version": "1.0.0",
+                "arxiv_id": "test",
+                "items": [{
+                    "id": "lem:source",
+                    "role": "lean_target",
+                    "source_tex": "\\begin{lemma}Source claim.\\end{lemma}",
+                    "source_context": {"before": "source definition", "after": "source proof"}
+                }],
+                "inventory_count": 1
+            },
+            "theorem_graph": {
+                "source": "stale_typed_ir",
+                "nodes": [{
+                    "id": "lem:source",
+                    "theorem_ir": {"conclusion": {"kind": "unknown_prop"}}
+                }]
+            }
+        });
+
+        let inventory = source_first_inventory_from_paper_math_sources(&paper_math_sources)
+            .expect("source inventory");
+
+        assert_eq!(inventory["items"][0]["id"], "lem:source");
+        assert_eq!(
+            inventory["items"][0]["source_context"]["before"],
+            "source definition"
+        );
+        assert_eq!(inventory.pointer("/items/0/theorem_ir"), None);
+    }
+
+    #[tokio::test]
+    async fn source_first_inventory_refresh_writes_embedded_inventory_without_db() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://user:pass@127.0.0.1:1/no_db")
+            .expect("lazy pool");
+        let paper_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let review_id = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        let paper_math_sources = serde_json::json!({
+            "theorem_inventory": {
+                "schema_version": "1.0.0",
+                "arxiv_id": "test",
+                "items": [{
+                    "id": "lem:source",
+                    "role": "lean_target",
+                    "source_tex": "\\begin{lemma}Source claim.\\end{lemma}",
+                    "theorem_ir": {"conclusion": {"kind": "unknown_prop"}}
+                }],
+                "inventory_count": 1
+            }
+        });
+
+        let inventory = refresh_source_first_theorem_inventory_artifact(
+            &pool,
+            paper_id,
+            review_id,
+            FormalizeMode::Full,
+            tempdir.path(),
+            paper_math_sources,
+        )
+        .await
+        .expect("refresh source inventory")
+        .expect("inventory");
+
+        let written = std::fs::read_to_string(tempdir.path().join("theorem_inventory.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .expect("written inventory");
+        assert_eq!(inventory["items"][0]["id"], "lem:source");
+        assert_eq!(written["items"][0]["id"], "lem:source");
+        assert_eq!(written.pointer("/items/0/theorem_ir"), None);
     }
 
     #[test]

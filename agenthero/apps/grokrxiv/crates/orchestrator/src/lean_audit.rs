@@ -187,6 +187,18 @@ pub(crate) fn build_lean_source_input_for_claim(
     }))
 }
 
+/// Extract a source-first theorem inventory already embedded in
+/// paper_math_sources, dropping intermediate typed/semantic IR fields.
+pub(crate) fn source_first_inventory_from_paper_math_sources(
+    value: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    value
+        .pointer("/theorem_graph/source_inventory")
+        .or_else(|| value.get("theorem_inventory"))
+        .cloned()
+        .map(strip_ir_fields)
+}
+
 /// Whether a target/library Lean result has concrete diagnostics that should be
 /// handed to a Lean fixer. Runner/environment failures are intentionally false.
 pub(crate) fn lean_compile_result_is_fixable(compile_result: &serde_json::Value) -> bool {
