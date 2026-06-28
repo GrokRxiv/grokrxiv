@@ -185,8 +185,8 @@ A later local model should be a separate adapter, not baked into extraction.
 
 Proposed shape:
 
-1. `statement_transcriber`: LaTeX theorem/equation environment -> typed IR and
-   Lean statement candidates.
+1. `statement_author`: theorem inventory/source context -> source-grounded Lean
+   statement candidates and symbol maps.
 2. `proof_sketcher`: proof environment -> structured proof plan with cited
    dependencies and source spans.
 3. `premise_retriever`: mathlib + paper-local definitions -> candidate lemmas.
@@ -194,9 +194,9 @@ Proposed shape:
    diagnostics programmatically.
 5. `local_prover`: Kimina/DeepSeek-style model or distilled local model for
    proof completion and repair.
-6. `faithfulness_gate`: compare paper statement, typed IR, emitted Lean
-   statement, and proved Lean declaration. A mismatch is `NARROWED` or
-   `OVERCLAIMED`, not `PROVED`.
+6. `faithfulness_gate`: compare paper source text, source-grounded symbol map,
+   emitted Lean statement, and proved Lean declaration. A mismatch is
+   `NARROWED` or `OVERCLAIMED`, not `PROVED`.
 
 This should be gated behind corpus entries that measure statement fidelity,
 proof status, and false-theorem rejection. It should not be required for the

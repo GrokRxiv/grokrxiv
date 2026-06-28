@@ -95,17 +95,7 @@ files are gitignored.
 | `GROKRXIV_CITATION_PROMPT_MAX_BIB_ENTRIES` | `32`             | Maximum bibliography entries included in the Citation LLM relevance prompt; full bibliography still stays in artifacts/verifier data |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_BLOCKS` | `240`          | Maximum TeX theorem-inventory blocks mirrored into the local source context file for fallback tool-loop diagnostics |
 | `GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_CHARS` | `500000`        | Character budget for the local source context file; does not cap `theorem_inventory.json` |
-| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS` | `1`            | Maximum theorem-level inventory items sent to one typed-transcription LLM batch; keep this small because Sonnet typed-IR is advisory and per-item bounded |
-| `GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS` | `30000`        | Character budget for one typed-transcription LLM batch |
-| `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory typed transcription calls |
-| `GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER` | `claude`                | Provider key for typed-IR transcription; set to `gemini` only to use agy as a backup route |
-| `GROKRXIV_FORMALIZE_TYPED_IR_MODEL` | `sonnet[1m]`     | Model passed to the selected typed-IR provider |
-| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS` | `300`              | Per-batch timeout floor for typed-IR transcription; failed or stale model output is recorded as a failure, not converted to fake math IR |
-| `GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_MAX_SECS` | `1800`        | Adaptive timeout ceiling for typed-IR Sonnet batches when recent successful benchmarks show longer latency |
-| `GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY` | `4`             | Maximum typed-IR transcription batches running concurrently |
-| `GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT` | `0`             | Include definition/remark/context inventory entries in typed-IR; default transcribes only theorem-level Lean targets |
-| `GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS` | `8`                 | Maximum selected theorem-level inventory items for the default typed-IR pass; set `0` for full selected inventory |
-| `GROKRXIV_FORMALIZE_TYPED_IR_ONLY` | `0`                         | Benchmark mode: run typed-IR artifact refresh through `agh app run grokrxiv formalize <review_id>` and then stop before semantic/Lean stages |
+| `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory extraction from arXiv TeX |
 | `GROKRXIV_FORMALIZE_QUEUE_AUTOSTART` | `1`                    | Start a one-shot `agh app work --run-id <job>` worker after queueing Lean formalization; set `0`/`false`/`no`/`off` to require manual workers |
 | `GROKRXIV_LEAN_TARGET_CONCURRENCY` | `3`                        | Maximum concurrent per-theorem Lean author/check/fix jobs |
 | `GROKRXIV_LEAN_MAX_TARGETS`      | `8`                         | MVP default Lean target cap; set `0` for full theorem-level mode, or another positive value for an explicit budget |

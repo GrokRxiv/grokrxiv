@@ -36,6 +36,78 @@
 - `agenthero/apps/c2rust/rust/src/main.rs` and `agenthero/apps/platform-smoke/rust/src/main.rs` are thin adapters around `DagExecutor`.
 - `agenthero/apps/grokrxiv/rust/src/main.rs` remains a thick adapter/runtime bridge and still routes some public review cases to the legacy GrokRxiv runtime.
 
+## 2026-06-28 GrokRxiv Visibility Gap Audit
+
+This section records the live gaps found while running `agh app run grokrxiv review 2606.25943 --with-lean` and the queued `formalize` app-run. The goal is not to add paper-specific traces. The goal is a platform-level contract where every LLM/API/CLI/subprocess step is observable without guessing, log scraping, `tail`, `wc`, or `pgrep`.
+
+### What Is Visible Today
+
+- App-run level:
+  - `agh app status <run_id> --json` shows run state, lease state, latest DAG run, recent node events, live nodes, artifact summaries, and observability commands.
+  - `agh app events <run_id> --json` exposes durable event rows.
+  - `agh app logs <run_id>` exposes the adapter stderr log.
+  - The app manifest advertises `events=true`, `logs=true`, `status=true`, `event_stream=true`, lifecycle events, and required trace fields.
+- Adapter/process level:
+  - Adapter stderr lines are persisted as `app_log.stderr` events.
+  - Formalize inventory, library, Lean-check, and faithfulness stages emit first-class `node.started` / `node.completed` / `node.failed` events with stage-specific artifact refs.
+  - Lean proof-author nodes currently emit first-class `node.started` events with target artifact paths and `timeout_secs=null` for unbounded authoring.
+- CLI-runner level:
+  - The GrokRxiv `CliRunner` writes `command.json`, `agent_status.live.json`, `agent_events.live.jsonl`, `raw_stdout.live.txt`, and `raw_stderr.live.txt` in the prepared role workdir.
+  - `agent_input` log lines show `role`, `provider`, `model`, `prompt_chars`, `review_input_bytes`, `schema_bytes`, and `workdir`.
+  - `agent_command` log lines show the redacted command shape, backend, model, and timeout policy.
+  - Claude runs use stream-json with verbose/partial-message/hook events. Codex runs use `codex exec --json --output-schema`.
+
+### Gaps
+
+- Agent calls are not normalized across the app pipeline.
+  - Some LLM steps are first-class `node.*` events, while many review roles, HTML quality, PR cleanup, and verifier actions still appear only as `app_log.stderr`.
+  - Operators should be able to query `agent_call.started`, `agent_call.stream`, `agent_call.completed`, and `agent_call.failed` events without parsing log text.
+- CLI live files are not consistently durable app artifacts.
+  - For target-local Lean workdirs, live files are under the review artifact tree and are inspectable.
+  - For temp workdirs such as `/var/folders/.../grokrxiv-review-*`, the live files may disappear after the process exits because the runner owns a tempdir.
+  - Every CLI call should attach durable refs for `command.json`, `agent_status.live.json`, `agent_events.live.jsonl`, `raw_stdout.live.txt`, and `raw_stderr.live.txt` to the app-run event stream before the child starts.
+- API calls do not have the same observability contract as CLI calls.
+  - Direct provider API calls need durable `agent_call.*` events with provider, model, endpoint class, request hash, response hash, retry number, fallback provider/model, latency, token usage, finish reason, and schema validation result.
+  - Payload bodies should not be dumped into logs, but prompt/schema/input artifact refs and hashes must be recorded.
+- Timeouts are still mixed with control flow.
+  - Long coding-agent/artifact-repair roles should not be killed by short default watchdogs.
+  - Bounded roles must report timeout policy, elapsed time, last stream activity, last durable event, and resume strategy.
+  - A timeout must not silently discard partial stdout/stderr; partial output should become a durable artifact and a resumed attempt should start from that artifact.
+- Cancellation is platform-level but child-process behavior is still not fully proven.
+  - `agh app cancel <run_id>` exists and updates app-run state.
+  - The contract still needs proof that cancellation propagates from app-run lease to adapter process to CLI child process group and then records a terminal `agent_call.cancelled` event.
+- The event stream does not yet expose enough "what is the agent doing now" detail.
+  - Stream chunks are captured in live files, but the app event stream mostly sees summary lines.
+  - Operators should see last stream type, byte counters, provider event type, tool-call names, and last activity timestamp in `agh app status`.
+- External side effects need consistent spans.
+  - GitHub PR open/update/comment, web revalidation, citation resolver calls, extraction downloads, Lake/Lean commands, and file artifact writes should all emit platform events with the same trace fields.
+- Review-loop completeness currently knows some async Lean artifacts are deferred, but the contract should be explicit.
+  - `review --with-lean` queues formalization after the review/PR path.
+  - The synchronous review-loop bundle must mark async Lean artifacts as `pending_async_formalize` or `deferred_to_formalize`; it must never fail because `formalize` has not produced `review_loop/lean/env/env_result.json` yet.
+
+### Typed-IR Status
+
+Typed-IR was supposed to be removed from the paper-to-Lean MVP path as a gate and as a source of truth.
+
+Resolved direction: the default GrokRxiv formalization path must not run typed-IR or use typed-IR/semantic-IR/proof-obligation artifacts as the source of truth for Lean authoring. Historical runs can contain older typed-IR artifacts, but new default `formalize` runs must route through theorem inventory, source context, paper-local library authoring, per-target `Proofs.lean`, Lean diagnostics, and faithfulness review.
+
+Required direction:
+
+- The Lean MVP source path should be:
+  - `theorem_inventory.json` / exact `source_tex`
+  - nearby source context and referenced definitions
+  - LLM-authored paper-local Lean library
+  - per-target `GrokRxiv/Proofs.lean`
+  - Lean/Lake diagnostic result
+  - source-faithfulness review
+- Typed-IR/semantic-IR must not be a required gate before `Proofs.lean` exists.
+- Historical typed-IR artifacts may be ignored or stripped for compatibility, but they must not be reused from stale cache as authoritative theorem data and must never block source-to-Lean authoring.
+- Acceptance for removing typed-IR from the Lean MVP path:
+  - A default `formalize` run has no `formalize_typed_ir*` nodes.
+  - Per-target proof-author packets are built from theorem inventory/source context/paper-local library, not from typed-IR or deterministic semantic mapping.
+  - Every selected target writes `review_loop/lean/targets/<target>/GrokRxiv/Proofs.lean` before compile diagnostics.
+  - Failures report compiler errors, missing paper-local library objects, source ambiguity, faithfulness failure, or incomplete proof; not "typed-IR unavailable" or stale graph reuse.
+
 ## File And Surface Map
 
 - Modify: `Cargo.toml`

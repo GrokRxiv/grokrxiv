@@ -10952,91 +10952,6 @@ fn ensure_min_cli_timeout_secs(floor: u64) {
     }
 }
 
-async fn refresh_formalization_math_artifacts(
-    state: &super::AppState,
-    pool: &sqlx::PgPool,
-    paper_id: Uuid,
-    review_id: Uuid,
-    artifact_dir: &Path,
-    existing_paper_math_sources: serde_json::Value,
-    mode: FormalizeMode,
-) -> serde_json::Value {
-    let mut paper_math_sources = existing_paper_math_sources;
-    if mode == FormalizeMode::AutoDetect {
-        cli_status::emit(format!(
-            "formalize {review_id}: auto-detect mode; skipping typed-IR enrichment and using persisted review-loop math artifacts"
-        ));
-        emit_formalize_node_event(formalize_node_event(
-            review_id,
-            mode,
-            "node.skipped",
-            "formalize_typed_ir",
-            "llm",
-            "formalize_source_inventory_typed_transcriber",
-            "skipped",
-            "auto-detect mode skipped typed-IR enrichment",
-            serde_json::json!({
-                "skip_reason": "auto_detect_uses_persisted_review_loop_artifacts",
-                "artifact_id": "review_loop/paper_math_sources.json",
-            }),
-        ));
-        let _ = write_loop_json(
-            &artifact_dir.join("paper_math_sources.json"),
-            &paper_math_sources,
-        )
-        .await;
-        return paper_math_sources;
-    }
-    match run_formalize_typed_theorem_extraction(
-        state,
-        pool,
-        paper_id,
-        review_id,
-        artifact_dir,
-        &paper_math_sources,
-        mode,
-    )
-    .await
-    {
-        Ok(Some(theorem_graph)) => {
-            if let Some(obj) = paper_math_sources.as_object_mut() {
-                let theorem_inventory = theorem_graph
-                    .get("source_inventory")
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        serde_json::json!({
-                            "artifact": "review_loop/theorem_inventory.json",
-                            "inventory_count": theorem_graph.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-                            "theorem_level_count": theorem_graph.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-                        })
-                    });
-                let theorem_inventory =
-                    formalize_theorem_inventory_with_typed_count(theorem_inventory, &theorem_graph);
-                obj.insert("theorem_inventory".to_string(), theorem_inventory);
-                obj.insert("theorem_graph".to_string(), theorem_graph);
-                append_paper_math_source(
-                    obj,
-                    "formalize:theorem_graph_extractor_typed_ir".to_string(),
-                );
-            }
-        }
-        Ok(None) => append_paper_math_warning(
-            &mut paper_math_sources,
-            "formalize typed-IR theorem extraction returned no theorem nodes".to_string(),
-        ),
-        Err(err) => append_paper_math_warning(
-            &mut paper_math_sources,
-            format!("formalize typed-IR theorem extraction failed: {err:#}"),
-        ),
-    }
-    let _ = write_loop_json(
-        &artifact_dir.join("paper_math_sources.json"),
-        &paper_math_sources,
-    )
-    .await;
-    paper_math_sources
-}
-
 async fn refresh_source_first_theorem_inventory_artifact(
     pool: &sqlx::PgPool,
     paper_id: Uuid,
@@ -11065,7 +10980,7 @@ async fn refresh_source_first_theorem_inventory_artifact(
             "inventory",
             "theorem_inventory_source",
             "pass",
-            "source-first theorem inventory restored without typed-IR enrichment",
+            "source-first theorem inventory restored from review-loop math artifacts",
             serde_json::json!({
                 "artifact_id": "review_loop/theorem_inventory.json",
                 "source": "paper_math_sources",
@@ -11106,7 +11021,7 @@ async fn refresh_source_first_theorem_inventory_artifact(
                 "inventory",
                 "theorem_inventory_source",
                 "pass",
-                "source-first theorem inventory built from arXiv TeX without typed-IR enrichment",
+                "source-first theorem inventory built from arXiv TeX",
                 serde_json::json!({
                     "artifact_id": "review_loop/theorem_inventory.json",
                     "source_files": count,
@@ -11149,671 +11064,6 @@ async fn refresh_source_first_theorem_inventory_artifact(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FormalizeExtractionPlan {
-    try_source_inventory: bool,
-    allow_body_tool_loop: bool,
-}
-
-fn formalize_extraction_plan(body_md: &str, mode: FormalizeMode) -> FormalizeExtractionPlan {
-    if mode == FormalizeMode::AutoDetect {
-        return FormalizeExtractionPlan {
-            try_source_inventory: false,
-            allow_body_tool_loop: false,
-        };
-    }
-    FormalizeExtractionPlan {
-        try_source_inventory: true,
-        allow_body_tool_loop: !body_md.trim().is_empty() && body_has_theorem_signal(body_md),
-    }
-}
-
-async fn run_formalize_typed_theorem_extraction(
-    state: &super::AppState,
-    pool: &sqlx::PgPool,
-    paper_id: Uuid,
-    review_id: Uuid,
-    artifact_dir: &Path,
-    paper_math_sources: &serde_json::Value,
-    mode: FormalizeMode,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    let body_md = paper_math_sources_body_markdown(paper_math_sources);
-    let plan = formalize_extraction_plan(&body_md, mode);
-    if !plan.try_source_inventory && !plan.allow_body_tool_loop {
-        return Ok(None);
-    }
-    let runner = state
-        .runners
-        .get(&AgentRunnerKind::Cli)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("formalize typed-IR enrichment requires CLI runner"))?;
-    let seed = crate::db::load_paper_review_seed(pool, paper_id).await?;
-    let workdir = tempfile::tempdir().context("formalize typed-IR workdir")?;
-    if !body_md.trim().is_empty() {
-        crate::ingest_pipeline::write_body_md_to_workdir(workdir.path(), &body_md).await?;
-    }
-    let formalize_config = FormalizeSourceConfig::from_env();
-    let mut theorem_inventory = serde_json::Value::Null;
-    if plan.try_source_inventory {
-        cli_status::emit(format!(
-            "formalize {review_id}: hydrating real arXiv source for typed-IR extraction"
-        ));
-        match hydrate_formalize_source_workdir(workdir.path(), &seed.arxiv_id).await {
-            Ok(count) if count > 0 => {
-                cli_status::emit(format!(
-                    "formalize {review_id}: hydrated {count} arXiv source files for typed-IR extraction"
-                ));
-                theorem_inventory = build_formalize_theorem_inventory_from_workdir(
-                    workdir.path(),
-                    &seed.arxiv_id,
-                    &seed.title,
-                    &formalize_config,
-                )
-                .unwrap_or_else(|err| {
-                    serde_json::json!({
-                        "schema_version": "1.0.0",
-                        "arxiv_id": seed.arxiv_id,
-                        "title": seed.title,
-                        "items": [],
-                        "inventory_count": 0usize,
-                        "warnings": [format!("failed to build theorem inventory: {err:#}")],
-                    })
-                });
-                write_loop_json(
-                    &artifact_dir.join("theorem_inventory.json"),
-                    &theorem_inventory,
-                )
-                .await?;
-            }
-            Ok(_) => cli_status::emit(format!(
-                "formalize {review_id}: arXiv source hydration yielded no source files"
-            )),
-            Err(err) => cli_status::emit(format!(
-                "formalize {review_id}: arXiv source hydration skipped: {err:#}"
-            )),
-        }
-    }
-    let extract = grokrxiv_ingest::PaperExtract {
-        arxiv_id: seed.arxiv_id.clone(),
-        title: seed.title.clone(),
-        authors: Vec::new(),
-        abstract_: seed.abstract_.clone().unwrap_or_default(),
-        field: seed.field.clone(),
-        sections: vec![grokrxiv_ingest::Section {
-            heading: "Paper body".to_string(),
-            body_markdown: body_md,
-        }],
-        figures: Vec::new(),
-        bibliography: Vec::new(),
-        source_format: Some("review_loop_artifact".to_string()),
-    };
-    let agent = grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::new();
-    let mut spec =
-        crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-    spec.timeout_secs = spec
-        .timeout_secs
-        .max(formalize_config.source_extraction_timeout_secs);
-    spec.schema = Arc::new(agent.schema().clone());
-    if theorem_inventory
-        .get("items")
-        .and_then(|value| value.as_array())
-        .map(|items| !items.is_empty())
-        .unwrap_or(false)
-    {
-        cli_status::emit(format!(
-            "formalize {review_id}: source-first typed-IR theorem extraction starting inventory_count={}",
-            theorem_inventory["inventory_count"].as_u64().unwrap_or(0)
-        ));
-        match run_formalize_inventory_typed_transcription(
-            runner.clone(),
-            &spec,
-            paper_id,
-            review_id,
-            &seed,
-            &theorem_inventory,
-            &formalize_config,
-            workdir.path(),
-        )
-        .await
-        {
-            Ok(Some(theorem_graph)) => return Ok(Some(theorem_graph)),
-            Ok(None) => {
-                cli_status::emit(format!(
-                    "formalize {review_id}: source-first typed-IR theorem extraction returned no nodes"
-                ));
-                return Ok(None);
-            }
-            Err(err) => {
-                return Err(err).with_context(|| {
-                    format!(
-                        "source-first typed-IR theorem extraction failed for review {review_id}"
-                    )
-                });
-            }
-        }
-    }
-    if !plan.allow_body_tool_loop {
-        return Ok(None);
-    }
-    let registry = Arc::new(
-        grokrxiv_extraction::extraction::theorems::TheoremGraphExtractorAgent::build_registry(),
-    );
-    let budget = crate::ingest_pipeline::extraction_budget_for("theorems");
-    let ctx = ExtractionContext {
-        workdir: workdir.path(),
-        extract: &extract,
-        semantic_ast: paper_math_sources.get("semantic_ast"),
-        paper_id,
-        arxiv_id: &seed.arxiv_id,
-        registry,
-        max_cost_usd: f32::MAX,
-        max_iters: budget.max_iters,
-    };
-    cli_status::emit(format!(
-        "formalize {review_id}: typed-IR theorem extraction starting"
-    ));
-    let run = agent.run(runner, &spec, ctx).await?;
-    let nodes = run
-        .output
-        .get("theorem_graph")
-        .or_else(|| run.output.get("nodes"))
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if nodes.is_empty() {
-        return Ok(None);
-    }
-    cli_status::emit(format!(
-        "formalize {review_id}: typed-IR theorem extraction ok nodes={} iters={}",
-        nodes.len(),
-        run.iters
-    ));
-    Ok(Some(serde_json::json!({
-        "artifact": "theorem_graph.json",
-        "arxiv_id": seed.arxiv_id,
-        "nodes": nodes,
-        "source": "formalize_typed_ir_theorem_extractor",
-    })))
-}
-
-async fn run_formalize_inventory_typed_transcription(
-    runner: Arc<dyn crate::agents::AgentRunner>,
-    spec: &crate::agents::AgentSpec,
-    paper_id: Uuid,
-    review_id: Uuid,
-    seed: &crate::db::PaperReviewSeedRow,
-    theorem_inventory: &serde_json::Value,
-    config: &FormalizeSourceConfig,
-    _workdir: &Path,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    let mut spec = spec.clone();
-    apply_formalize_typed_ir_transcriber_config(&mut spec, config);
-
-    let items = theorem_inventory
-        .get("items")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let inventory_item_count = items.len();
-    let items = formalize_inventory_transcription_items(&items, config)
-        .iter()
-        .map(formalize_inventory_typed_ir_item)
-        .collect::<Vec<_>>();
-    let batches = formalize_inventory_batches(&items, config);
-    let batch_count = batches.len();
-    let total_items = items.len();
-    let total_started = std::time::Instant::now();
-    use futures::stream::StreamExt as _;
-    let mut batch_results: Vec<FormalizeTypedIrBatchResult> =
-        futures::stream::iter(batches.into_iter().enumerate().map(|(batch_index, batch_items)| {
-            let runner = runner.clone();
-            let spec = spec.clone();
-            let arxiv_id = seed.arxiv_id.clone();
-            let title = seed.title.clone();
-            let concurrency = config.typed_ir_batch_concurrency;
-            async move {
-                let batch_number = batch_index + 1;
-                let node_kind = "llm";
-                let tool_id = "formalize_source_inventory_typed_transcriber";
-                let provider = spec.provider.clone();
-                let model = spec.model.clone();
-                cli_status::emit(format!(
-                    "formalize {review_id}: typed-IR transcription batch {batch_number}/{batch_count} items={}",
-                    batch_items.len()
-                ));
-                let artifact = serde_json::json!({
-                    "review_id": review_id,
-                    "paper_id": paper_id,
-                    "arxiv_id": &arxiv_id,
-                    "title": &title,
-                    "task": "Type-transcribe every supplied theorem_inventory item into theorem_graph nodes with typed_transcription/theorem_ir.",
-                    "theorem_inventory_artifact": "review_loop/theorem_inventory.json",
-                    "batch_index": batch_index,
-                    "batch_count": batch_count,
-                    "batch_items": &batch_items,
-                });
-                let system_prompt = formalize_inventory_typed_transcription_system_prompt();
-                let user_prompt = formalize_inventory_typed_transcription_user_prompt(
-                    &arxiv_id,
-                    &title,
-                    batch_index,
-                    batch_count,
-                    &batch_items,
-                );
-                let prompt_hash = formalize_prompt_hash(&system_prompt, &user_prompt, &artifact);
-                emit_formalize_node_event(formalize_node_event(
-                    review_id,
-                    FormalizeMode::Full,
-                    "node.started",
-                    &format!("formalize_typed_ir_batch_{batch_number}"),
-                    node_kind,
-                    tool_id,
-                    "running",
-                    "typed-IR transcription batch started",
-                    serde_json::json!({
-                        "provider": &provider,
-                        "model": &model,
-                        "prompt_hash": &prompt_hash,
-                        "batch_number": batch_number,
-                        "batch_count": batch_count,
-                        "items": batch_items.len(),
-                        "inventory_items": inventory_item_count,
-                        "max_items": config.typed_ir_max_items,
-                        "concurrency": concurrency,
-                        "timeout_secs": spec.timeout_secs,
-                        "artifact_id": "review_loop/theorem_inventory.json",
-                    }),
-                ));
-                let input = AgentInput {
-                    context: crate::agents::grokrxiv_agent_context(paper_id, review_id),
-                    role: spec.role.clone(),
-                    content_hash_material: artifact.clone(),
-                    artifact,
-                    system_prompt,
-                    user_prompt,
-                    source_bundle_path: None,
-                };
-                let started = std::time::Instant::now();
-                let run = match runner.run(&spec, &input).await {
-                    Ok(run) => run,
-                    Err(err) => {
-                        let error = truncate(&format!("{err:#}"), 2_000);
-                        emit_formalize_node_event(formalize_node_event(
-                            review_id,
-                            FormalizeMode::Full,
-                            "node.failed",
-                            &format!("formalize_typed_ir_batch_{batch_number}"),
-                            node_kind,
-                            tool_id,
-                            "failed",
-                            "typed-IR transcription batch failed",
-                            serde_json::json!({
-                                "provider": &provider,
-                                "model": &model,
-                                "prompt_hash": &prompt_hash,
-                                "batch_number": batch_number,
-                                "batch_count": batch_count,
-                                "items": batch_items.len(),
-                                "inventory_items": inventory_item_count,
-                                "max_items": config.typed_ir_max_items,
-                                "concurrency": concurrency,
-                                "duration_ms": started.elapsed().as_millis() as u64,
-                                "timeout_secs": spec.timeout_secs,
-                                "error": error,
-                            }),
-                        ));
-                        return FormalizeTypedIrBatchResult {
-                            batch_index,
-                            batch_number,
-                            nodes: Vec::new(),
-                            error: Some(format!("typed-ir runner failed: {err:#}")),
-                        };
-                    }
-                };
-                let batch_nodes = run
-                    .output
-                    .get("theorem_graph")
-                    .or_else(|| run.output.get("nodes"))
-                    .and_then(|value| value.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                if !formalize_typed_ir_nodes_cover_batch(&batch_nodes, &batch_items) {
-                    let reason = if batch_nodes.is_empty() {
-                        "empty_or_stale_llm_output"
-                    } else {
-                        "incomplete_or_mismatched_llm_output"
-                    };
-                    emit_formalize_node_event(formalize_node_event(
-                        review_id,
-                        FormalizeMode::Full,
-                        "node.failed",
-                        &format!("formalize_typed_ir_batch_{batch_number}"),
-                        node_kind,
-                        tool_id,
-                        "failed",
-                        "typed-IR transcription batch returned stale or incomplete output",
-                        serde_json::json!({
-                            "provider": &provider,
-                            "model": &model,
-                            "prompt_hash": &prompt_hash,
-                            "batch_number": batch_number,
-                            "batch_count": batch_count,
-                            "items": batch_items.len(),
-                            "inventory_items": inventory_item_count,
-                            "max_items": config.typed_ir_max_items,
-                            "nodes": batch_nodes.len(),
-                            "concurrency": concurrency,
-                            "duration_ms": started.elapsed().as_millis() as u64,
-                            "latency_ms": run.latency_ms,
-                            "timeout_secs": spec.timeout_secs,
-                            "reason": reason,
-                        }),
-                    ));
-                    return FormalizeTypedIrBatchResult {
-                        batch_index,
-                        batch_number,
-                        nodes: Vec::new(),
-                        error: Some(format!("typed-ir runner returned {reason}")),
-                    };
-                }
-                let duration_ms = started.elapsed().as_millis() as u64;
-                emit_formalize_node_event(formalize_node_event(
-                    review_id,
-                    FormalizeMode::Full,
-                    "node.completed",
-                    &format!("formalize_typed_ir_batch_{batch_number}"),
-                    node_kind,
-                    tool_id,
-                    "ok",
-                    "typed-IR transcription batch completed",
-                    serde_json::json!({
-                        "provider": &provider,
-                        "model": &model,
-                        "prompt_hash": &prompt_hash,
-                        "batch_number": batch_number,
-                        "batch_count": batch_count,
-                        "items": batch_items.len(),
-                        "inventory_items": inventory_item_count,
-                        "max_items": config.typed_ir_max_items,
-                        "nodes": batch_nodes.len(),
-                        "concurrency": concurrency,
-                        "duration_ms": duration_ms,
-                        "latency_ms": run.latency_ms,
-                        "timeout_secs": spec.timeout_secs,
-                    }),
-                ));
-                cli_status::emit(format!(
-                    "formalize {review_id}: typed-IR transcription batch {batch_number}/{batch_count} ok nodes={} latency_ms={}",
-                    batch_nodes.len(),
-                    run.latency_ms
-                ));
-                FormalizeTypedIrBatchResult {
-                    batch_index,
-                    batch_number,
-                    nodes: batch_nodes,
-                    error: None,
-                }
-            }
-        }))
-        .buffer_unordered(config.typed_ir_batch_concurrency)
-        .collect::<Vec<FormalizeTypedIrBatchResult>>()
-        .await
-        .into_iter()
-        .collect::<Vec<_>>();
-    batch_results.sort_by_key(|result| result.batch_index);
-
-    let mut nodes = Vec::new();
-    let mut failed_batches = Vec::new();
-    for result in &mut batch_results {
-        if let Some(error) = result.error.take() {
-            failed_batches.push(serde_json::json!({
-                "batch_index": result.batch_index,
-                "batch_number": result.batch_number,
-                "error": error,
-            }));
-        } else {
-            nodes.append(&mut result.nodes);
-        }
-    }
-    if nodes.is_empty() {
-        let inventory_count = theorem_inventory["inventory_count"].as_u64().unwrap_or(0);
-        let theorem_level_count = theorem_inventory["theorem_level_count"]
-            .as_u64()
-            .unwrap_or(0);
-        cli_status::emit(format!(
-            "formalize {review_id}: typed-IR transcription failed for all batches; using deterministic source inventory fallback inventory_count={inventory_count} theorem_level_count={theorem_level_count}"
-        ));
-        emit_formalize_node_event(formalize_node_event(
-            review_id,
-            FormalizeMode::Full,
-            "node.completed",
-            "formalize_typed_ir",
-            "deterministic",
-            "formalize_theorem_inventory_source_fallback",
-            "fallback",
-            "typed-IR transcription failed; using deterministic source inventory fallback",
-            serde_json::json!({
-                "provider": &spec.provider,
-                "model": &spec.model,
-                "batch_count": batch_count,
-                "items": total_items,
-                "inventory_items": inventory_item_count,
-                "max_items": config.typed_ir_max_items,
-                "nodes": theorem_inventory
-                    .get("items")
-                    .and_then(|value| value.as_array())
-                    .map(Vec::len)
-                    .unwrap_or(0),
-                "failed_count": failed_batches.len(),
-                "failed_batches": failed_batches.clone(),
-                "concurrency": config.typed_ir_batch_concurrency,
-                "duration_ms": total_started.elapsed().as_millis() as u64,
-                "timeout_secs": spec.timeout_secs,
-                "artifact_id": "review_loop/theorem_inventory.json",
-            }),
-        ));
-        return Ok(Some(formalize_inventory_source_fallback_theorem_graph(
-            seed,
-            theorem_inventory,
-            failed_batches,
-        )));
-    }
-    merge_formalize_inventory_context_into_nodes(&mut nodes, theorem_inventory);
-    let inventory_count = theorem_inventory["inventory_count"].as_u64().unwrap_or(0);
-    let theorem_level_count = theorem_inventory["theorem_level_count"]
-        .as_u64()
-        .unwrap_or(0);
-    let failed_count = failed_batches.len();
-    if failed_count == 0 {
-        cli_status::emit(format!(
-            "formalize {review_id}: source-first typed-IR theorem extraction ok inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={}",
-            nodes.len()
-        ));
-    } else {
-        cli_status::emit(format!(
-            "formalize {review_id}: source-first typed-IR theorem extraction partial inventory_count={inventory_count} theorem_level_count={theorem_level_count} nodes={} failed_batches={failed_count}",
-            nodes.len()
-        ));
-    }
-    let status = if failed_count == 0 { "ok" } else { "partial" };
-    let message = if failed_count == 0 {
-        "typed-IR transcription completed"
-    } else {
-        "typed-IR transcription partially completed"
-    };
-    emit_formalize_node_event(formalize_node_event(
-        review_id,
-        FormalizeMode::Full,
-        "node.completed",
-        "formalize_typed_ir",
-        "llm",
-        "formalize_source_inventory_typed_transcriber",
-        status,
-        message,
-        serde_json::json!({
-            "provider": &spec.provider,
-            "model": &spec.model,
-            "batch_count": batch_count,
-            "items": total_items,
-            "inventory_items": inventory_item_count,
-            "max_items": config.typed_ir_max_items,
-            "nodes": nodes.len(),
-            "failed_count": failed_count,
-            "failed_batches": failed_batches.clone(),
-            "concurrency": config.typed_ir_batch_concurrency,
-            "duration_ms": total_started.elapsed().as_millis() as u64,
-            "timeout_secs": spec.timeout_secs,
-            "artifact_id": "review_loop/theorem_inventory.json",
-        }),
-    ));
-    Ok(Some(serde_json::json!({
-        "artifact": "theorem_graph.json",
-        "arxiv_id": &seed.arxiv_id,
-        "inventory_artifact": "review_loop/theorem_inventory.json",
-        "inventory_count": inventory_count,
-        "theorem_level_count": theorem_level_count,
-        "typed_count": nodes.len(),
-        "failed_count": failed_count,
-        "failed_batches": failed_batches,
-        "partial": failed_count > 0,
-        "nodes": nodes,
-        "source_inventory": theorem_inventory.clone(),
-        "source": "formalize_source_inventory_typed_transcriber",
-    })))
-}
-
-fn formalize_theorem_inventory_with_typed_count(
-    mut theorem_inventory: serde_json::Value,
-    theorem_graph: &serde_json::Value,
-) -> serde_json::Value {
-    if let Some(obj) = theorem_inventory.as_object_mut() {
-        obj.entry("artifact".to_string())
-            .or_insert_with(|| serde_json::json!("review_loop/theorem_inventory.json"));
-        obj.insert(
-            "typed_count".to_string(),
-            theorem_graph
-                .get("typed_count")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!(null)),
-        );
-    }
-    theorem_inventory
-}
-
-fn formalize_inventory_source_fallback_theorem_graph(
-    seed: &crate::db::PaperReviewSeedRow,
-    theorem_inventory: &serde_json::Value,
-    failed_batches: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    let nodes = theorem_inventory
-        .get("items")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(formalize_inventory_source_fallback_node)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    serde_json::json!({
-        "artifact": "theorem_graph.json",
-        "arxiv_id": &seed.arxiv_id,
-        "inventory_artifact": "review_loop/theorem_inventory.json",
-        "inventory_count": theorem_inventory.get("inventory_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-        "theorem_level_count": theorem_inventory.get("theorem_level_count").cloned().unwrap_or_else(|| serde_json::json!(null)),
-        "typed_count": 0,
-        "failed_count": failed_batches.len(),
-        "failed_batches": failed_batches,
-        "partial": true,
-        "nodes": nodes,
-        "source_inventory": theorem_inventory,
-        "source": "formalize_theorem_inventory_source_fallback",
-        "typed_ir_status": "failed_source_inventory_fallback",
-    })
-}
-
-fn formalize_inventory_source_fallback_node(item: &serde_json::Value) -> Option<serde_json::Value> {
-    let source_tex = item
-        .get("source_tex")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    let id = item
-        .get("id")
-        .and_then(|value| value.as_str())
-        .or_else(|| {
-            item.get("labels")
-                .and_then(|value| value.as_array())
-                .and_then(|labels| labels.first())
-                .and_then(|value| value.as_str())
-        })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    let kind = item
-        .get("kind")
-        .or_else(|| item.get("type"))
-        .or_else(|| item.get("env"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("theorem");
-    let section = item
-        .get("section")
-        .or_else(|| item.get("section_id"))
-        .cloned()
-        .or_else(|| {
-            let file = item.get("file").and_then(|value| value.as_str())?;
-            let char_start = item.get("char_start").and_then(|value| value.as_u64())?;
-            Some(serde_json::json!(format!("{file}:{char_start}")))
-        })
-        .unwrap_or_else(|| serde_json::json!(null));
-    let depends_on = item
-        .get("depends_on")
-        .or_else(|| item.get("refs"))
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-    let mut node = serde_json::Map::new();
-    node.insert("id".to_string(), serde_json::json!(id));
-    node.insert("type".to_string(), serde_json::json!(kind));
-    node.insert(
-        "role".to_string(),
-        item.get("role")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!(null)),
-    );
-    node.insert(
-        "statement".to_string(),
-        item.get("statement")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| serde_json::json!(value))
-            .unwrap_or_else(|| serde_json::json!(source_tex)),
-    );
-    node.insert("source_tex".to_string(), serde_json::json!(source_tex));
-    if let Some(source_context) = item.get("source_context") {
-        node.insert("source_context".to_string(), source_context.clone());
-    }
-    node.insert("section".to_string(), section);
-    node.insert("depends_on".to_string(), depends_on);
-    if let Some(typed_transcription) = item.get("typed_transcription") {
-        node.insert(
-            "typed_transcription".to_string(),
-            typed_transcription.clone(),
-        );
-    }
-    if let Some(theorem_ir) = item.get("theorem_ir") {
-        node.insert("theorem_ir".to_string(), theorem_ir.clone());
-    }
-    Some(serde_json::Value::Object(node))
-}
-
-fn formalize_inventory_typed_ir_item(item: &serde_json::Value) -> serde_json::Value {
-    let mut compact = item.clone();
-    if let Some(obj) = compact.as_object_mut() {
-        obj.remove("source_context");
-    }
-    compact
-}
-
 fn formalize_inventory_lean_targets(inventory: &serde_json::Value) -> Vec<serde_json::Value> {
     inventory
         .get("items")
@@ -11823,143 +11073,6 @@ fn formalize_inventory_lean_targets(inventory: &serde_json::Value) -> Vec<serde_
         .filter(|item| item.get("role").and_then(|value| value.as_str()) == Some("lean_target"))
         .cloned()
         .collect()
-}
-
-fn formalize_inventory_context_by_id(
-    theorem_inventory: &serde_json::Value,
-) -> HashMap<String, serde_json::Value> {
-    let mut by_id = HashMap::new();
-    let Some(items) = theorem_inventory
-        .get("items")
-        .and_then(|value| value.as_array())
-    else {
-        return by_id;
-    };
-    for item in items {
-        let Some(source_context) = item.get("source_context").cloned() else {
-            continue;
-        };
-        let Some(id) = item
-            .get("id")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        by_id.entry(id.to_string()).or_insert(source_context);
-    }
-    by_id
-}
-
-fn merge_formalize_inventory_context_into_nodes(
-    nodes: &mut [serde_json::Value],
-    theorem_inventory: &serde_json::Value,
-) {
-    let contexts = formalize_inventory_context_by_id(theorem_inventory);
-    if contexts.is_empty() {
-        return;
-    }
-    for node in nodes {
-        let Some(obj) = node.as_object_mut() else {
-            continue;
-        };
-        if obj.contains_key("source_context") {
-            continue;
-        }
-        let Some(id) = obj
-            .get("id")
-            .or_else(|| obj.get("label"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        if let Some(source_context) = contexts.get(id) {
-            obj.insert("source_context".to_string(), source_context.clone());
-        }
-    }
-}
-
-fn paper_math_sources_source_inventory(value: &serde_json::Value) -> Option<&serde_json::Value> {
-    value
-        .pointer("/theorem_graph/source_inventory")
-        .or_else(|| value.get("theorem_inventory"))
-}
-
-#[derive(Debug)]
-struct FormalizeTypedIrBatchResult {
-    batch_index: usize,
-    batch_number: usize,
-    nodes: Vec<serde_json::Value>,
-    error: Option<String>,
-}
-
-fn formalize_typed_ir_nodes_cover_batch(
-    nodes: &[serde_json::Value],
-    batch_items: &[serde_json::Value],
-) -> bool {
-    if nodes.len() != batch_items.len() || nodes.is_empty() {
-        return false;
-    }
-    let node_ids = nodes
-        .iter()
-        .filter_map(|node| node.get("id").and_then(|value| value.as_str()))
-        .collect::<BTreeSet<_>>();
-    batch_items.iter().all(|item| {
-        item.get("id")
-            .and_then(|value| value.as_str())
-            .map(|id| node_ids.contains(id))
-            .unwrap_or(false)
-    })
-}
-
-fn formalize_inventory_typed_transcription_system_prompt() -> String {
-    "You are GrokRxiv role `formalize_source_inventory_typed_transcriber`. \
-     Type-transcribe theorem graph nodes from a deterministic inventory of real arXiv LaTeX source blocks. \
-     The inventory is complete for the supplied batch; do not sample, rank, or omit items. \
-     Return one raw JSON object matching the supplied schema exactly. \
-     Do not add undeclared fields. Set `reason` to null when inventory items exist. \
-     Do not invent theorems that are not present in `source_tex`. \
-     Preserve the exact source_tex for every output node. Set each output node's \
-     `id` from the inventory item `id`, `type` from `kind`, and `section` from \
-     the source `file` plus `char_start` when no paper section heading is available. \
-     For theorem/lemma/proposition/corollary nodes, \
-     write a faithful plain-language statement, set typed_transcription.status to \
-     `transcribed`, and fill theorem_ir. For definition nodes, emit a definition/context \
-     node with source_tex and typed_transcription when possible; definitions are not proof targets. \
-     For topology, algebra, category, or group \
-     theory statements that do not fit arithmetic/equality constructors, use \
-     math_type `{ \"kind\": \"custom\", \"name\": \"...\" }` and proposition \
-     `{ \"kind\": \"uninterpreted_predicate\", \"name\": \"...\", \"args\": [...] }`. \
-     Do not use unknown_prop, raw_term, or unknown_term for a theorem-level target \
-     unless the TeX block is genuinely not a mathematical statement. \
-     Resolve depends_on from labels referenced in the same source block when possible. \
-     Emit one theorem_graph node for every inventory item supplied in the batch."
-        .to_string()
-}
-
-fn formalize_inventory_typed_transcription_user_prompt(
-    arxiv_id: &str,
-    title: &str,
-    batch_index: usize,
-    batch_count: usize,
-    batch_items: &[serde_json::Value],
-) -> String {
-    let batch_json = serde_json::to_string_pretty(batch_items).unwrap_or_else(|_| "[]".to_string());
-    format!(
-        "Paper: {arxiv_id}\nTitle: {title}\n\n\
-         Batch {}/{} from review_loop/theorem_inventory.json. \
-         Emit a theorem_graph node for every item in this JSON array. \
-         Do not choose only the most important items. Do not omit definitions; mark them as context/definition nodes. \
-         Use each item's `id`, `kind`, `file`, `char_start`, `refs`, and `source_tex` to fill schema-valid \
-         `id`, `type`, `section`, `depends_on`, and `source_tex` fields. \
-         Preserve every item's source_tex exactly.\n\n\
-         <theorem_inventory_batch>\n{batch_json}\n</theorem_inventory_batch>",
-        batch_index + 1,
-        batch_count
-    )
 }
 
 async fn hydrate_formalize_source_workdir(workdir: &Path, arxiv_id: &str) -> anyhow::Result<usize> {
@@ -11974,24 +11087,7 @@ async fn hydrate_formalize_source_workdir(workdir: &Path, arxiv_id: &str) -> any
 struct FormalizeSourceConfig {
     source_context_max_blocks: usize,
     source_context_max_chars: usize,
-    transcription_batch_items: usize,
-    transcription_batch_chars: usize,
-    source_extraction_timeout_secs: u32,
-    typed_ir_provider: String,
-    typed_ir_model: String,
-    typed_ir_timeout_secs: u32,
-    typed_ir_batch_concurrency: usize,
-    typed_ir_include_context: bool,
-    typed_ir_max_items: usize,
-    typed_ir_only: bool,
 }
-
-const FORMALIZE_TYPED_IR_DEFAULT_PROVIDER: &str = "claude";
-const FORMALIZE_TYPED_IR_DEFAULT_MODEL: &str = "sonnet[1m]";
-const FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS: u32 = 300;
-const FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS: usize = 1;
-const FORMALIZE_TYPED_IR_DEFAULT_BATCH_CONCURRENCY: usize = 4;
-const FORMALIZE_TYPED_IR_ROLE: &str = "formalize_source_inventory_typed_transcriber";
 
 impl FormalizeSourceConfig {
     fn from_env() -> Self {
@@ -12004,54 +11100,6 @@ impl FormalizeSourceConfig {
                 "GROKRXIV_FORMALIZE_SOURCE_CONTEXT_MAX_CHARS",
                 500_000,
             ),
-            transcription_batch_items: formalize_env_usize(
-                "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
-                FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS,
-            )
-            .max(1),
-            transcription_batch_chars: formalize_env_usize(
-                "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
-                30_000,
-            )
-            .max(1),
-            source_extraction_timeout_secs: formalize_env_u32(
-                "GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS",
-                1_800,
-            ),
-            typed_ir_provider: crate::runtime_config::provider_override_for_role(
-                FORMALIZE_TYPED_IR_ROLE,
-            )
-            .unwrap_or_else(|| {
-                formalize_env_string(
-                    "GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER",
-                    FORMALIZE_TYPED_IR_DEFAULT_PROVIDER,
-                )
-            }),
-            typed_ir_model: crate::runtime_config::model_override_for_role(FORMALIZE_TYPED_IR_ROLE)
-                .unwrap_or_else(|| {
-                    formalize_env_string(
-                        "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
-                        FORMALIZE_TYPED_IR_DEFAULT_MODEL,
-                    )
-                }),
-            typed_ir_timeout_secs: formalize_env_u32(
-                "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS",
-                FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            ),
-            typed_ir_batch_concurrency: formalize_env_usize(
-                "GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY",
-                FORMALIZE_TYPED_IR_DEFAULT_BATCH_CONCURRENCY,
-            )
-            .clamp(1, 16),
-            typed_ir_include_context: formalize_env_bool(
-                "GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT",
-                false,
-            ),
-            typed_ir_max_items: formalize_env_usize_allow_zero(
-                "GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS",
-                8,
-            ),
-            typed_ir_only: formalize_env_bool("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", false),
         }
     }
 }
@@ -12062,51 +11110,6 @@ fn formalize_env_usize(name: &str, default: usize) -> usize {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
-}
-
-fn formalize_env_usize_allow_zero(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
-fn formalize_env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
-}
-
-fn formalize_env_string(name: &str, default: &str) -> String {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
-
-fn formalize_env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .and_then(|value| match value.as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
-        })
-        .unwrap_or(default)
-}
-
-fn apply_formalize_typed_ir_transcriber_config(
-    spec: &mut crate::agents::AgentSpec,
-    config: &FormalizeSourceConfig,
-) {
-    spec.role = "formalize_source_inventory_typed_transcriber".to_string();
-    spec.provider = config.typed_ir_provider.clone();
-    spec.model = config.typed_ir_model.clone();
-    spec.timeout_secs = config.typed_ir_timeout_secs;
 }
 
 fn validate_lean_statement_author_output(
@@ -12589,12 +11592,8 @@ fn build_formalize_theorem_inventory(
             "known_environment_count": aliases.len(),
             "unknown_theorem_like_environment_count": unknown_envs.len(),
             "unknown_theorem_like_environments": unknown_envs,
-            "transcription_batch_items": config.transcription_batch_items,
-            "transcription_batch_chars": config.transcription_batch_chars,
-            "typed_ir_batch_concurrency": config.typed_ir_batch_concurrency,
-            "typed_ir_include_context": config.typed_ir_include_context,
-            "typed_ir_max_items": config.typed_ir_max_items,
-            "typed_ir_only": config.typed_ir_only,
+            "source_context_max_blocks": config.source_context_max_blocks,
+            "source_context_max_chars": config.source_context_max_chars,
         }
     })
 }
@@ -12715,66 +11714,6 @@ fn read_formalize_source_workdir_entries(
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
-}
-
-fn formalize_inventory_batches(
-    items: &[serde_json::Value],
-    config: &FormalizeSourceConfig,
-) -> Vec<Vec<serde_json::Value>> {
-    let mut batches: Vec<Vec<serde_json::Value>> = Vec::new();
-    let mut current: Vec<serde_json::Value> = Vec::new();
-    let mut current_chars = 0usize;
-    for item in items {
-        let item_chars = serde_json::to_string(item).map(|s| s.len()).unwrap_or(0);
-        let would_exceed_items = current.len() >= config.transcription_batch_items;
-        let would_exceed_chars = !current.is_empty()
-            && current_chars.saturating_add(item_chars) > config.transcription_batch_chars;
-        if would_exceed_items || would_exceed_chars {
-            batches.push(std::mem::take(&mut current));
-            current_chars = 0;
-        }
-        current.push(item.clone());
-        current_chars = current_chars.saturating_add(item_chars);
-    }
-    if !current.is_empty() {
-        batches.push(current);
-    }
-    batches
-}
-
-fn formalize_inventory_transcription_items(
-    items: &[serde_json::Value],
-    config: &FormalizeSourceConfig,
-) -> Vec<serde_json::Value> {
-    let mut selected = if config.typed_ir_include_context {
-        items.to_vec()
-    } else {
-        let targets = formalize_inventory_theorem_level_items(items);
-        if targets.is_empty() {
-            items.to_vec()
-        } else {
-            targets
-        }
-    };
-    if config.typed_ir_max_items > 0 && selected.len() > config.typed_ir_max_items {
-        selected.truncate(config.typed_ir_max_items);
-    }
-    selected
-}
-
-fn formalize_inventory_theorem_level_items(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    items
-        .iter()
-        .filter(|item| {
-            item.get("role").and_then(|value| value.as_str()) == Some("lean_target")
-                || item
-                    .get("kind")
-                    .and_then(|value| value.as_str())
-                    .map(formalize_kind_is_theorem_level)
-                    .unwrap_or(false)
-        })
-        .cloned()
-        .collect::<Vec<_>>()
 }
 
 fn formalize_latex_theorem_aliases(text: &str) -> BTreeMap<String, String> {
@@ -13146,152 +12085,6 @@ fn safe_formalize_source_archive_path(path: &Path) -> Option<String> {
     (!rel.is_empty()).then_some(rel)
 }
 
-fn paper_math_sources_body_markdown(value: &serde_json::Value) -> String {
-    let theorem_statements = paper_math_sources_theorem_statement_markdown(value);
-    if theorem_graph_has_reliable_typed_targets(value) && !theorem_statements.trim().is_empty() {
-        return theorem_statements;
-    }
-    let body = value.get("body").unwrap_or(&serde_json::Value::Null);
-    if let Some(text) = body.get("text").and_then(|value| value.as_str()) {
-        return text.to_string();
-    }
-    let mut parts = Vec::new();
-    if let Some(sections) = body.get("sections").and_then(|value| value.as_array()) {
-        for section in sections {
-            if let Some(heading) = section.get("heading").and_then(|value| value.as_str()) {
-                if !heading.trim().is_empty() {
-                    parts.push(format!("## {}", heading.trim()));
-                }
-            }
-            if let Some(text) = section
-                .get("body_markdown")
-                .or_else(|| section.get("text"))
-                .or_else(|| section.get("content"))
-                .and_then(|value| value.as_str())
-            {
-                parts.push(text.to_string());
-            }
-        }
-    }
-    let body_markdown = parts.join("\n\n");
-    if !body_markdown.trim().is_empty() {
-        return body_markdown;
-    }
-    theorem_statements
-}
-
-fn theorem_graph_has_reliable_typed_targets(value: &serde_json::Value) -> bool {
-    let Some(nodes) = value
-        .get("theorem_graph")
-        .and_then(|doc| doc.get("nodes").or_else(|| doc.get("theorem_graph")))
-        .and_then(|nodes| nodes.as_array())
-    else {
-        return false;
-    };
-    nodes.iter().any(theorem_node_is_reliable_typed_target)
-}
-
-fn theorem_node_is_reliable_typed_target(node: &serde_json::Value) -> bool {
-    let kind = node
-        .get("type")
-        .or_else(|| node.get("kind"))
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_ascii_lowercase());
-    if !matches!(
-        kind.as_deref(),
-        Some("theorem" | "lemma" | "proposition" | "corollary")
-    ) {
-        return false;
-    }
-    if node
-        .get("statement")
-        .or_else(|| node.get("statement_preview"))
-        .and_then(|value| value.as_str())
-        .map(|value| value.trim().is_empty())
-        .unwrap_or(true)
-    {
-        return false;
-    }
-    if node
-        .get("typed_transcription")
-        .and_then(|typed| typed.get("status"))
-        .and_then(|value| value.as_str())
-        != Some("transcribed")
-    {
-        return false;
-    }
-    let Some(theorem_ir) = node.get("theorem_ir") else {
-        return false;
-    };
-    !contains_unknown_typed_ir_node(theorem_ir)
-}
-
-fn contains_unknown_typed_ir_node(value: &serde_json::Value) -> bool {
-    if matches!(
-        value.get("kind").and_then(|kind| kind.as_str()),
-        Some("unknown_prop" | "unknown_term" | "unknown_type" | "raw_term")
-    ) {
-        return true;
-    }
-    match value {
-        serde_json::Value::Array(items) => items.iter().any(contains_unknown_typed_ir_node),
-        serde_json::Value::Object(map) => map.values().any(contains_unknown_typed_ir_node),
-        _ => false,
-    }
-}
-
-fn paper_math_sources_theorem_statement_markdown(value: &serde_json::Value) -> String {
-    let Some(nodes) = value
-        .get("theorem_graph")
-        .and_then(|doc| doc.get("nodes").or_else(|| doc.get("theorem_graph")))
-        .and_then(|nodes| nodes.as_array())
-    else {
-        return String::new();
-    };
-    let mut parts = Vec::new();
-    for node in nodes {
-        let kind = node
-            .get("type")
-            .or_else(|| node.get("kind"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("theorem")
-            .to_ascii_lowercase();
-        if !matches!(
-            kind.as_str(),
-            "theorem" | "lemma" | "proposition" | "corollary"
-        ) {
-            continue;
-        }
-        let statement = node
-            .get("statement")
-            .or_else(|| node.get("statement_preview"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let Some(statement) = statement else {
-            continue;
-        };
-        let id = node
-            .get("id")
-            .or_else(|| node.get("label"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("theorem");
-        let mut part = format!("## {kind} {id}\n\n{statement}");
-        if let Some(source_tex) = node
-            .get("source_tex")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            part.push_str("\n\n```tex\n");
-            part.push_str(source_tex);
-            part.push_str("\n```");
-        }
-        parts.push(part);
-    }
-    parts.join("\n\n")
-}
-
 fn append_paper_math_source(obj: &mut serde_json::Map<String, serde_json::Value>, source: String) {
     match obj.get_mut("artifact_sources") {
         Some(serde_json::Value::Array(items)) => items.push(serde_json::Value::String(source)),
@@ -13318,15 +12111,13 @@ fn append_paper_math_warning(value: &mut serde_json::Value, warning: String) {
     }
 }
 
-/// Experimental Lean formalization for an already-reviewed paper, run ASYNCHRONOUSLY from the
-/// verdict (via the `formalize` app action / worker job, or directly). Reloads the review-loop
-/// state the synchronous review persisted (semantic_ir / proof_obligations / lean_targets /
-/// semantic_model), runs the per-theorem author -> `lake build` -> fix loop + the advisory
-/// faithfulness check, recomputes the lean-derived advisory artifacts (theorem_map /
-/// semantic_adequacy) and the `formal` view of policy_gate.json WITHOUT changing
-/// deterministic_status / recommendation / blocking_issues, re-renders review.md, and
-/// best-effort updates the PR. Anti-hallucination invariant unchanged: a target is `proved`
-/// only on a clean `lake build` kernel pass with no sorry/admit/axiom.
+/// Experimental Lean formalization for an already-reviewed paper, run asynchronously from the
+/// verdict or directly through the `formalize` app action. The default path is source-first:
+/// `theorem_inventory.json` plus source context -> paper-local Lean library -> per-target
+/// `GrokRxiv/Proofs.lean` -> Lean/Lake diagnostic -> source-faithfulness review. It does not use
+/// typed-IR, semantic-IR, or proof obligations as gates before `Proofs.lean` exists.
+/// Anti-hallucination invariant unchanged: a target is `proved` only on a clean Lean kernel pass
+/// with no sorry/admit/axiom.
 async fn formalize_review(
     review_id: Uuid,
     debug_output: bool,
@@ -13335,7 +12126,6 @@ async fn formalize_review(
     stage: FormalizeStage,
     claim_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    use grokrxiv_schemas::VerifierStatus;
     if debug_output {
         cli_status::set_enabled(true);
     }
@@ -13357,7 +12147,6 @@ async fn formalize_review(
         .await
         .context("formalize: load paper_id for review")?;
     cli_status::emit(format!("formalize {review_id}: paper_id={paper_id}"));
-    let stages = review_loop_stage_plan()?;
     let artifact_dir = crate::artifacts::review_artifact_dir(review_id).join("review_loop");
     cli_status::emit(format!(
         "formalize {review_id}: loading review-loop artifacts from {}",
@@ -13376,395 +12165,32 @@ async fn formalize_review(
             "formalize {review_id}: no review_loop/paper_math_sources.json — run the review first"
         );
     }
-    if !formalize_env_bool("GROKRXIV_FORMALIZE_LEGACY_SEMANTIC_PATH", false) {
-        if !artifact_dir.join("theorem_inventory.json").is_file() {
-            cli_status::emit(format!(
-                "formalize {review_id}: theorem_inventory.json missing; refreshing source-first inventory before direct Lean pipeline"
-            ));
-            let _ = refresh_source_first_theorem_inventory_artifact(
-                pool,
-                paper_id,
-                review_id,
-                mode,
-                &artifact_dir,
-                existing_paper_math_sources,
-            )
-            .await?;
-        }
-        return run_inventory_direct_formalize_review(
-            &state,
+    if !artifact_dir.join("theorem_inventory.json").is_file() {
+        cli_status::emit(format!(
+            "formalize {review_id}: theorem_inventory.json missing; refreshing source-first inventory before direct Lean pipeline"
+        ));
+        let _ = refresh_source_first_theorem_inventory_artifact(
+            pool,
             paper_id,
             review_id,
             mode,
             &artifact_dir,
-            stage,
-            claim_id,
-            external_actions_enabled,
-            debug_output,
+            existing_paper_math_sources,
         )
-        .await;
+        .await?;
     }
-
-    cli_status::emit(format!(
-        "formalize {review_id}: refreshing source-first math artifacts"
-    ));
-    let paper_math_sources = refresh_formalization_math_artifacts(
+    run_inventory_direct_formalize_review(
         &state,
-        pool,
         paper_id,
         review_id,
-        &artifact_dir,
-        existing_paper_math_sources,
         mode,
-    )
-    .await;
-    let claims_value = match read_json("claims.json") {
-        serde_json::Value::Null => serde_json::json!({"review_id": review_id, "claims": []}),
-        value => value,
-    };
-    let knowledge_graph = match read_json("knowledge_graph.json") {
-        serde_json::Value::Null => serde_json::json!({"nodes": [], "edges": []}),
-        value => value,
-    };
-    let semantic_ir = grokrxiv_review_loop::build_semantic_ir_from_paper_math(
-        review_id,
-        &paper_math_sources,
-        &claims_value,
-        &knowledge_graph,
-    );
-    write_loop_json(&artifact_dir.join("semantic_ir.json"), &semantic_ir).await?;
-    let semantic_model = serde_json::json!({
-        "schema_version": "1.0.0",
-        "review_id": review_id,
-        "semantic_ir": "review_loop/semantic_ir.json",
-        "paper_math_sources": "review_loop/paper_math_sources.json",
-        "theorem_candidate_count": semantic_ir["theorem_candidates"]
-            .as_array()
-            .map(Vec::len)
-            .unwrap_or(0),
-        "definition_count": semantic_ir["definitions"]
-            .as_array()
-            .map(Vec::len)
-            .unwrap_or(0),
-        "assumption_count": semantic_ir["assumptions"]
-            .as_array()
-            .map(Vec::len)
-            .unwrap_or(0),
-    });
-    write_loop_json(&artifact_dir.join("semantic_model.json"), &semantic_model).await?;
-    let haskell_results = serde_json::json!({
-        "status": "retired",
-        "note": "Haskell intermediate retired; LLM authors Lean directly.",
-    });
-    let proof_obligations =
-        grokrxiv_review_loop::build_proof_obligations(review_id, &semantic_ir, &haskell_results);
-    write_loop_json(
-        &artifact_dir.join("proof_obligations.json"),
-        &proof_obligations,
-    )
-    .await?;
-    let formalization_goal = grokrxiv_review_loop::build_formalization_goal(
-        review_id,
-        mode.as_str(),
-        &semantic_ir,
-        &proof_obligations,
-    );
-    write_loop_json(
-        &artifact_dir.join("formalization_goal.json"),
-        &formalization_goal,
-    )
-    .await?;
-    let lean_targets = grokrxiv_review_loop::build_lean_targets(&proof_obligations);
-    write_loop_json(&artifact_dir.join("lean_targets.json"), &lean_targets).await?;
-    // Paper dependency graph (A1): the extractor records each theorem's "uses" edges on its
-    // `proof:<id>` node here, which `resolve_obligation_dependencies` mines to give the Lean
-    // author the referenced definitions/lemmas instead of an isolated statement.
-    let mut theorem_nodes: Vec<serde_json::Value> = paper_math_sources
-        .get("theorem_graph")
-        .and_then(|tg| tg.get("nodes").or_else(|| tg.get("theorem_graph")))
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if let Some(source_inventory) = paper_math_sources_source_inventory(&paper_math_sources) {
-        merge_formalize_inventory_context_into_nodes(&mut theorem_nodes, source_inventory);
-    }
-
-    let proof_obligations_ready =
-        grokrxiv_review_loop::proof_obligations_require_lean(&proof_obligations);
-    let proof_targets_skip = grokrxiv_review_loop::proof_obligations_skip_lean(&proof_obligations);
-    record_review_loop_node(
-        pool,
-        review_id,
-        &stages,
-        "proof_obligation_generator",
-        proof_obligations.clone(),
-        VerifierStatus::Pass,
-        serde_json::json!({
-            "artifact_path": "review_loop/proof_obligations.json",
-            "lean_targets": "review_loop/lean_targets.json"
-        }),
-    )
-    .await?;
-
-    let lean_dir = artifact_dir.join("lean");
-    let lean_src_dir = lean_dir.join("GrokRxiv");
-    tokio::fs::create_dir_all(&lean_src_dir).await?;
-    let lean_task = ReviewFixCodeTask {
-        target_id: "lean",
-        language: "lean",
-        filename: "GrokRxiv/Proofs.lean",
-        author_role: "lean_proof_author",
-        reviewer_role: "lean_code_reviewer",
-        fixer_role: "lean_code_fixer",
-        compile_program: "lake",
-        compile_args: vec!["build".to_string(), "GrokRxiv.Proofs".to_string()],
-        compile_timeout_secs: 1800,
-        forbidden_terms: vec!["sorry", "admit", "axiom"],
-        max_attempts: 2,
-    };
-    let lean_final_path = lean_src_dir.join("Proofs.lean");
-
-    cli_status::emit(format!(
-        "formalize {review_id}: per-theorem Lean formalization (experimental, advisory)"
-    ));
-    let lean_results = if proof_obligations_ready {
-        run_per_theorem_lean_loop(
-            &state,
-            paper_id,
-            review_id,
-            mode,
-            &lean_task,
-            &proof_obligations,
-            &lean_targets,
-            &semantic_ir,
-            &semantic_model,
-            &theorem_nodes,
-            &lean_dir,
-            &lean_final_path,
-            debug_output,
-        )
-        .await
-    } else {
-        let reason = proof_obligations
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("No paper-derived formal mathematical statements were available for Lean.");
-        let _ = write_review_loop_code_file(
-            &lean_final_path,
-            &format!("/- Lean formalization not authored: {reason} -/\n"),
-        )
-        .await;
-        let skip = proof_obligations
-            .get("skip_reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("no_math_found");
-        skipped_review_fix_code_results_with_status(
-            &lean_task,
-            &lean_final_path,
-            reason,
-            "skipped",
-            skip,
-        )
-    };
-    let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
-    let lean_pass = lean_results["status"] == "pass";
-    let lean_accepted = lean_pass || proof_targets_skip || !proof_obligations_ready;
-    write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
-    write_loop_json(&lean_dir.join("fix_rounds.json"), &lean_results).await?;
-    record_review_loop_node(
-        pool,
-        review_id,
-        &stages,
-        "lean_review_fix_code",
-        lean_results.clone(),
-        if lean_accepted {
-            VerifierStatus::Pass
-        } else {
-            VerifierStatus::Fail
-        },
-        serde_json::json!({"artifact_path": "review_loop/lean/results.json"}),
-    )
-    .await?;
-
-    let theorem_map = grokrxiv_review_loop::build_theorem_map(&proof_obligations, &lean_results);
-    write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
-    write_loop_json(&lean_dir.join("verification_report.json"), &theorem_map).await?;
-
-    let faithfulness = run_lean_faithfulness_stage(
-        &state,
-        paper_id,
-        review_id,
-        &theorem_map,
-        &lean_results,
         &artifact_dir,
+        stage,
+        claim_id,
+        external_actions_enabled,
         debug_output,
     )
     .await
-    .unwrap_or_else(|err| {
-        serde_json::json!({
-            "schema_version": "1.0.0",
-            "advisory": true,
-            "status": "skipped",
-            "skip_reason": "stage_error",
-            "note": format!("faithfulness stage error: {err:#}"),
-            "verdicts": [],
-        })
-    });
-    record_review_loop_node(
-        pool,
-        review_id,
-        &stages,
-        "lean_faithfulness_check",
-        faithfulness.clone(),
-        VerifierStatus::Pass,
-        serde_json::json!({"artifact_path": "review_loop/faithfulness.json", "advisory": true}),
-    )
-    .await?;
-
-    let semantic_adequacy =
-        grokrxiv_review_loop::build_semantic_adequacy(&semantic_ir, &theorem_map);
-    write_loop_json(
-        &artifact_dir.join("semantic_adequacy.json"),
-        &semantic_adequacy,
-    )
-    .await?;
-    // A `skipped` adequacy check (Lean not run / no formalizable targets) is non-blocking
-    // and must never render as a faithfulness FAILURE.
-    let semantic_adequacy_pass = matches!(
-        semantic_adequacy["status"].as_str(),
-        Some("pass" | "skipped")
-    );
-    record_review_loop_node(
-        pool,
-        review_id,
-        &stages,
-        "semantic_adequacy_checker",
-        semantic_adequacy.clone(),
-        if semantic_adequacy_pass {
-            VerifierStatus::Pass
-        } else {
-            VerifierStatus::Fail
-        },
-        serde_json::json!({"artifact_path": "review_loop/semantic_adequacy.json"}),
-    )
-    .await?;
-
-    // Update ONLY the advisory `formal` view in policy_gate.json — never the verdict
-    // (deterministic_status / recommendation / blocking_issues), which already shipped.
-    let policy_path = artifact_dir.join("policy_gate.json");
-    let mut refreshed_policy_gate = read_json("policy_gate.json");
-    if let Ok(text) = std::fs::read_to_string(&policy_path) {
-        if let Ok(mut policy) = serde_json::from_str::<serde_json::Value>(&text) {
-            let lean_label = if lean_pass {
-                "pass"
-            } else if proof_targets_skip || !proof_obligations_ready {
-                "skipped"
-            } else {
-                "fail"
-            };
-            let formal = if lean_pass {
-                "proved"
-            } else if proof_targets_skip || !proof_obligations_ready {
-                "not_conducive_to_lean_proof"
-            } else {
-                "not_proved"
-            };
-            if let Some(cs) = policy
-                .get_mut("component_status")
-                .and_then(|v| v.as_object_mut())
-            {
-                cs.insert("lean".to_string(), serde_json::json!(lean_label));
-                cs.insert(
-                    "semantic_adequacy".to_string(),
-                    semantic_adequacy["status"].clone(),
-                );
-            }
-            if let Some(pv) = policy
-                .get_mut("publishability_vector")
-                .and_then(|v| v.as_object_mut())
-            {
-                pv.insert("formal".to_string(), serde_json::json!(formal));
-                pv.insert(
-                    "semantic_adequacy".to_string(),
-                    semantic_adequacy["status"].clone(),
-                );
-            }
-            let _ = write_loop_json(&policy_path, &policy).await;
-            let policy_integrity_failed = policy
-                .get("publishability_vector")
-                .and_then(|value| value.get("integrity"))
-                .and_then(|value| value.as_str())
-                == Some("fail");
-            record_review_loop_node(
-                pool,
-                review_id,
-                &stages,
-                "policy_gate",
-                policy.clone(),
-                if policy_integrity_failed {
-                    VerifierStatus::Fail
-                } else {
-                    VerifierStatus::Pass
-                },
-                serde_json::json!({"artifact_path": "review_loop/policy_gate.json"}),
-            )
-            .await?;
-            refreshed_policy_gate = policy;
-        }
-    }
-
-    refresh_formalize_review_loop_report(
-        pool,
-        review_id,
-        &stages,
-        &artifact_dir,
-        &lean_results,
-        &theorem_map,
-        &semantic_adequacy,
-        &refreshed_policy_gate,
-        debug_output,
-    )
-    .await?;
-
-    if let Err(err) = super::supervisor::render_to_disk(&state, review_id).await {
-        cli_status::emit(format!("formalize {review_id}: re-render skipped: {err:#}"));
-    }
-    if external_actions_enabled {
-        // Refresh the gate-feedback COMMENT (idempotent — does not touch committed files).
-        if let Err(err) = open_review_pr_for_gate(&state, review_id, false, false).await {
-            cli_status::emit(format!(
-                "formalize {review_id}: PR comment update skipped: {err:#}"
-            ));
-        }
-        // The async formalize authored the real Lean AFTER the review PR was opened (with a
-        // placeholder Proofs.lean), and the PR-open path is idempotent on an existing PR, so it
-        // never re-commits files. Explicitly stack a NEW commit carrying the authored Lean onto
-        // the existing PR branch so the proofs actually land in git.
-        match commit_lean_files_to_existing_pr(&state, review_id).await {
-            Ok(Some(sha)) => cli_status::emit(format!(
-                "formalize {review_id}: committed Lean to PR (commit {})",
-                sha.get(0..8).unwrap_or(&sha)
-            )),
-            Ok(None) => cli_status::emit(format!(
-                "formalize {review_id}: no open PR or no Lean files to commit"
-            )),
-            Err(err) => cli_status::emit(format!(
-                "formalize {review_id}: Lean PR commit skipped: {err:#}"
-            )),
-        }
-    } else {
-        cli_status::emit(format!(
-            "formalize {review_id}: external actions disabled; skipped PR comment and Lean commit"
-        ));
-    }
-    cli_status::emit(format!(
-        "formalize {review_id}: done (lean status={})",
-        lean_results
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-    ));
-    Ok(())
 }
 
 fn formalize_inventory_direct_dir(artifact_dir: &Path) -> PathBuf {
@@ -23139,8 +21565,7 @@ mod tests {
     use async_trait::async_trait;
     use chrono::TimeZone as _;
     use clap::{CommandFactory, Parser};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     #[test]
     fn app_runs_filters_and_cancel_commands_parse() {
@@ -23339,11 +21764,6 @@ mod tests {
         _lock: MutexGuard<'static, ()>,
     }
 
-    struct EnvVarsGuard {
-        previous: Vec<(&'static str, Option<String>)>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
     impl EnvVarGuard {
         fn clear(key: &'static str) -> Self {
             let lock = crate::test_env_lock();
@@ -23374,235 +21794,6 @@ mod tests {
                 Some(value) => std::env::set_var(self.key, value),
                 None => std::env::remove_var(self.key),
             }
-        }
-    }
-
-    impl EnvVarsGuard {
-        fn clear(keys: &[&'static str]) -> Self {
-            let lock = crate::test_env_lock();
-            let previous = keys
-                .iter()
-                .map(|key| {
-                    let previous = std::env::var(key).ok();
-                    std::env::remove_var(key);
-                    (*key, previous)
-                })
-                .collect();
-            Self {
-                previous,
-                _lock: lock,
-            }
-        }
-
-        fn set(keys: &[(&'static str, &str)]) -> Self {
-            let lock = crate::test_env_lock();
-            let previous = keys
-                .iter()
-                .map(|(key, value)| {
-                    let previous = std::env::var(key).ok();
-                    std::env::set_var(key, value);
-                    (*key, previous)
-                })
-                .collect();
-            Self {
-                previous,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarsGuard {
-        fn drop(&mut self) {
-            for (key, previous) in &self.previous {
-                match previous {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-
-    struct TypedIrConcurrentRunner {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
-        source_bundle_paths: Mutex<Vec<Option<String>>>,
-        sleep_ms: u64,
-    }
-
-    impl TypedIrConcurrentRunner {
-        fn new(sleep_ms: u64) -> Self {
-            Self {
-                active: AtomicUsize::new(0),
-                max_active: AtomicUsize::new(0),
-                source_bundle_paths: Mutex::new(Vec::new()),
-                sleep_ms,
-            }
-        }
-
-        fn max_active(&self) -> usize {
-            self.max_active.load(Ordering::SeqCst)
-        }
-
-        fn source_bundle_paths(&self) -> Vec<Option<String>> {
-            self.source_bundle_paths
-                .lock()
-                .expect("source bundle paths")
-                .clone()
-        }
-    }
-
-    #[async_trait]
-    impl crate::agents::AgentRunner for TypedIrConcurrentRunner {
-        fn name(&self) -> &'static str {
-            "typed-ir-concurrent-runner"
-        }
-
-        async fn run(
-            &self,
-            spec: &crate::agents::AgentSpec,
-            input: &crate::agents::AgentInput,
-        ) -> anyhow::Result<crate::agents::AgentRun> {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_active.fetch_max(active, Ordering::SeqCst);
-            self.source_bundle_paths
-                .lock()
-                .expect("source bundle paths")
-                .push(input.source_bundle_path.clone());
-            tokio::time::sleep(std::time::Duration::from_millis(self.sleep_ms)).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
-
-            let nodes = input
-                .artifact
-                .get("batch_items")
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|item| {
-                    let id = item
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("unknown");
-                    serde_json::json!({
-                        "id": id,
-                        "type": "theorem",
-                        "statement": format!("typed {id}"),
-                        "depends_on": [],
-                        "source_tex": item.get("source_tex").cloned().unwrap_or_default(),
-                        "typed_transcription": {"status": "transcribed"},
-                        "theorem_ir": {
-                            "math_type": {"kind": "custom", "name": "synthetic"},
-                            "proposition": {
-                                "kind": "uninterpreted_predicate",
-                                "name": "Synthetic",
-                                "args": []
-                            }
-                        }
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            Ok(crate::agents::AgentRun {
-                role: spec.role.clone(),
-                runner: spec.runner,
-                model: spec.model.clone(),
-                output: serde_json::json!({ "nodes": nodes }),
-                raw_output: None,
-                verifier_status: None,
-                verifier_notes: None,
-                tokens_in: None,
-                tokens_out: None,
-                latency_ms: self.sleep_ms as i32,
-                cache_hit: false,
-                sandbox_ref: None,
-            })
-        }
-    }
-
-    struct TypedIrFailingRunner;
-
-    #[async_trait]
-    impl crate::agents::AgentRunner for TypedIrFailingRunner {
-        fn name(&self) -> &'static str {
-            "typed-ir-failing-runner"
-        }
-
-        async fn run(
-            &self,
-            _spec: &crate::agents::AgentSpec,
-            _input: &crate::agents::AgentInput,
-        ) -> anyhow::Result<crate::agents::AgentRun> {
-            anyhow::bail!("simulated empty agy stdout")
-        }
-    }
-
-    struct TypedIrSelectiveFailingRunner {
-        fail_id: &'static str,
-    }
-
-    #[async_trait]
-    impl crate::agents::AgentRunner for TypedIrSelectiveFailingRunner {
-        fn name(&self) -> &'static str {
-            "typed-ir-selective-failing-runner"
-        }
-
-        async fn run(
-            &self,
-            spec: &crate::agents::AgentSpec,
-            input: &crate::agents::AgentInput,
-        ) -> anyhow::Result<crate::agents::AgentRun> {
-            let batch_items = input
-                .artifact
-                .get("batch_items")
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if batch_items
-                .iter()
-                .any(|item| item.get("id").and_then(|value| value.as_str()) == Some(self.fail_id))
-            {
-                anyhow::bail!("simulated timeout for {}", self.fail_id);
-            }
-            let nodes = batch_items
-                .into_iter()
-                .map(|item| {
-                    let id = item
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("unknown");
-                    serde_json::json!({
-                        "id": id,
-                        "type": "theorem",
-                        "statement": format!("typed {id}"),
-                        "depends_on": [],
-                        "source_tex": item.get("source_tex").cloned().unwrap_or_default(),
-                        "typed_transcription": {"status": "transcribed"},
-                        "theorem_ir": {
-                            "math_type": {"kind": "custom", "name": "synthetic"},
-                            "proposition": {
-                                "kind": "uninterpreted_predicate",
-                                "name": "Synthetic",
-                                "args": []
-                            }
-                        }
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            Ok(crate::agents::AgentRun {
-                role: spec.role.clone(),
-                runner: spec.runner,
-                model: spec.model.clone(),
-                output: serde_json::json!({ "nodes": nodes }),
-                raw_output: None,
-                verifier_status: None,
-                verifier_notes: None,
-                tokens_in: None,
-                tokens_out: None,
-                latency_ms: 1,
-                cache_hit: false,
-                sandbox_ref: None,
-            })
         }
     }
 
@@ -24440,432 +22631,6 @@ mod tests {
     }
 
     #[test]
-    fn formalize_source_config_defaults_to_mvp_transcription_batches() {
-        let _env = EnvVarsGuard::clear(&[
-            "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_ITEMS",
-            "GROKRXIV_FORMALIZE_TRANSCRIPTION_BATCH_CHARS",
-            "GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY",
-            "GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER",
-            "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
-            "GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS",
-            "GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT",
-            "GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS",
-            "GROKRXIV_FORMALIZE_TYPED_IR_ONLY",
-        ]);
-
-        let config = FormalizeSourceConfig::from_env();
-
-        assert_eq!(
-            config.transcription_batch_items,
-            FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS
-        );
-        assert_eq!(config.transcription_batch_chars, 30_000);
-        assert_eq!(config.typed_ir_batch_concurrency, 4);
-        assert!(!config.typed_ir_include_context);
-        assert_eq!(config.typed_ir_max_items, 8);
-        assert_eq!(config.typed_ir_provider, "claude");
-        assert_eq!(config.typed_ir_model, "sonnet[1m]");
-        assert_eq!(config.typed_ir_timeout_secs, 300);
-        assert!(!config.typed_ir_only);
-    }
-
-    #[test]
-    fn formalize_source_config_allows_typed_ir_provider_model_override() {
-        let _env = EnvVarsGuard::set(&[
-            ("GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER", "gemini"),
-            (
-                "GROKRXIV_FORMALIZE_TYPED_IR_MODEL",
-                "Gemini 3.5 Flash (Medium)",
-            ),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_TIMEOUT_SECS", "120"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_BATCH_CONCURRENCY", "6"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_INCLUDE_CONTEXT", "1"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_MAX_ITEMS", "0"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_ONLY", "1"),
-        ]);
-
-        let config = FormalizeSourceConfig::from_env();
-
-        assert_eq!(config.typed_ir_provider, "gemini");
-        assert_eq!(config.typed_ir_model, "Gemini 3.5 Flash (Medium)");
-        assert_eq!(config.typed_ir_timeout_secs, 120);
-        assert_eq!(config.typed_ir_batch_concurrency, 6);
-        assert!(config.typed_ir_include_context);
-        assert_eq!(config.typed_ir_max_items, 0);
-        assert!(config.typed_ir_only);
-    }
-
-    #[test]
-    fn formalize_source_config_accepts_role_level_typed_ir_overrides() {
-        let _env = EnvVarsGuard::set(&[
-            ("GROKRXIV_FORMALIZE_TYPED_IR_PROVIDER", "claude"),
-            ("GROKRXIV_FORMALIZE_TYPED_IR_MODEL", "sonnet[1m]"),
-            (
-                "AGENTHERO_PROVIDER_OVERRIDE_FORMALIZE_SOURCE_INVENTORY_TYPED_TRANSCRIBER",
-                "gemini",
-            ),
-            (
-                "AGENTHERO_MODEL_OVERRIDE_FORMALIZE_SOURCE_INVENTORY_TYPED_TRANSCRIBER",
-                "Gemini 3.5 Flash (Medium)",
-            ),
-        ]);
-
-        let config = FormalizeSourceConfig::from_env();
-
-        assert_eq!(config.typed_ir_provider, "gemini");
-        assert_eq!(config.typed_ir_model, "Gemini 3.5 Flash (Medium)");
-    }
-
-    #[test]
-    fn formalize_typed_ir_transcriber_uses_fast_model_and_timeout() {
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: FORMALIZE_TYPED_IR_DEFAULT_BATCH_ITEMS,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 4,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let mut spec =
-            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-        apply_formalize_typed_ir_transcriber_config(&mut spec, &config);
-
-        assert_eq!(spec.role, "formalize_source_inventory_typed_transcriber");
-        assert_eq!(spec.provider, "claude");
-        assert_eq!(spec.model, FORMALIZE_TYPED_IR_DEFAULT_MODEL);
-        assert_eq!(spec.timeout_secs, FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS);
-        assert_eq!(spec.timeout_secs, 300);
-    }
-
-    #[tokio::test]
-    async fn formalize_typed_ir_batches_run_concurrently_without_source_bundle() {
-        let runner = Arc::new(TypedIrConcurrentRunner::new(25));
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 1,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 2,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let mut spec =
-            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
-        let seed = crate::db::PaperReviewSeedRow {
-            arxiv_id: "2606.23906".to_string(),
-            title: "Typed IR Benchmark Fixture".to_string(),
-            abstract_: None,
-            field: None,
-            submitted_date: None,
-        };
-        let theorem_inventory = serde_json::json!({
-            "inventory_count": 4,
-            "theorem_level_count": 4,
-            "items": [
-                {"id": "thm:1", "kind": "theorem", "source_tex": "\\begin{theorem}A\\end{theorem}"},
-                {"id": "thm:2", "kind": "theorem", "source_tex": "\\begin{theorem}B\\end{theorem}"},
-                {"id": "thm:3", "kind": "theorem", "source_tex": "\\begin{theorem}C\\end{theorem}"},
-                {"id": "thm:4", "kind": "theorem", "source_tex": "\\begin{theorem}D\\end{theorem}"}
-            ]
-        });
-        let workdir = tempfile::tempdir().expect("temp workdir");
-
-        let theorem_graph = run_formalize_inventory_typed_transcription(
-            runner.clone(),
-            &spec,
-            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
-            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
-            &seed,
-            &theorem_inventory,
-            &config,
-            workdir.path(),
-        )
-        .await
-        .expect("typed-IR transcription succeeds")
-        .expect("typed-IR returns a theorem graph");
-
-        assert_eq!(runner.max_active(), 2);
-        assert_eq!(
-            runner.source_bundle_paths(),
-            vec![None, None, None, None],
-            "typed-IR batch prompts already include source_tex; passing the whole source bundle makes the fast path slow and stale"
-        );
-        assert_eq!(theorem_graph["typed_count"], 4);
-        assert_eq!(
-            theorem_graph["source_inventory"]["items"]
-                .as_array()
-                .map(|items| items.len()),
-            Some(4)
-        );
-    }
-
-    #[tokio::test]
-    async fn formalize_typed_ir_runner_error_falls_back_to_source_inventory_without_math_ir() {
-        let runner = Arc::new(TypedIrFailingRunner);
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 8,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 4,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let mut spec =
-            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
-        let seed = crate::db::PaperReviewSeedRow {
-            arxiv_id: "2606.23906".to_string(),
-            title: "Typed IR Benchmark Fixture".to_string(),
-            abstract_: None,
-            field: None,
-            submitted_date: None,
-        };
-        let theorem_inventory = serde_json::json!({
-            "inventory_count": 2,
-            "theorem_level_count": 2,
-            "items": [
-                {
-                    "id": "thm:main",
-                    "kind": "theorem",
-                    "role": "lean_target",
-                    "file": "paper.tex",
-                    "char_start": 12,
-                    "refs": ["lem:helper"],
-                    "source_tex": "\\begin{theorem}\\label{thm:main} Main result.\\end{theorem}"
-                },
-                {
-                    "id": "lem:helper",
-                    "kind": "lemma",
-                    "role": "lean_target",
-                    "file": "paper.tex",
-                    "char_start": 88,
-                    "source_tex": "\\begin{lemma} Helper result.\\end{lemma}"
-                }
-            ]
-        });
-        let workdir = tempfile::tempdir().expect("temp workdir");
-
-        let theorem_graph = run_formalize_inventory_typed_transcription(
-            runner,
-            &spec,
-            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
-            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
-            &seed,
-            &theorem_inventory,
-            &config,
-            workdir.path(),
-        )
-        .await
-        .expect("runner failure should fall back to deterministic source inventory")
-        .expect("source inventory fallback returns a theorem graph");
-
-        assert_eq!(
-            theorem_graph["source"],
-            "formalize_theorem_inventory_source_fallback"
-        );
-        assert_eq!(theorem_graph["typed_count"], 0);
-        assert_eq!(theorem_graph["failed_count"], 1);
-        assert_eq!(theorem_graph["nodes"][0]["id"], "thm:main");
-        assert_eq!(
-            theorem_graph["nodes"][0]["source_tex"],
-            "\\begin{theorem}\\label{thm:main} Main result.\\end{theorem}"
-        );
-        assert!(
-            theorem_graph["nodes"][0].get("theorem_ir").is_none(),
-            "source fallback must not fabricate typed theorem_ir"
-        );
-        assert!(
-            theorem_graph["source_inventory"]["items"]
-                .as_array()
-                .map(|items| items.len())
-                == Some(2)
-        );
-    }
-
-    #[tokio::test]
-    async fn formalize_typed_ir_preserves_successful_batches_when_one_batch_fails() {
-        let runner = Arc::new(TypedIrSelectiveFailingRunner {
-            fail_id: "thm:slow",
-        });
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 1,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 2,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let mut spec =
-            crate::ingest_pipeline::default_extraction_spec("theorems", AgentRunnerKind::Cli);
-        spec.schema = Arc::new(serde_json::json!({"type": "object"}));
-        let seed = crate::db::PaperReviewSeedRow {
-            arxiv_id: "2606.23906".to_string(),
-            title: "Typed IR Partial Fixture".to_string(),
-            abstract_: None,
-            field: None,
-            submitted_date: None,
-        };
-        let theorem_inventory = serde_json::json!({
-            "inventory_count": 2,
-            "theorem_level_count": 2,
-            "items": [
-                {
-                    "id": "thm:ok",
-                    "kind": "theorem",
-                    "role": "lean_target",
-                    "file": "paper.tex",
-                    "char_start": 12,
-                    "source_tex": "\\begin{theorem} OK result.\\end{theorem}"
-                },
-                {
-                    "id": "thm:slow",
-                    "kind": "theorem",
-                    "role": "lean_target",
-                    "file": "paper.tex",
-                    "char_start": 88,
-                    "source_tex": "\\begin{theorem} Slow result.\\end{theorem}"
-                }
-            ]
-        });
-        let workdir = tempfile::tempdir().expect("temp workdir");
-
-        let theorem_graph = run_formalize_inventory_typed_transcription(
-            runner,
-            &spec,
-            Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
-            Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
-            &seed,
-            &theorem_inventory,
-            &config,
-            workdir.path(),
-        )
-        .await
-        .expect("partial typed-IR transcription should retain successful batches")
-        .expect("partial typed-IR returns a theorem graph");
-
-        assert_eq!(theorem_graph["typed_count"], 1);
-        assert_eq!(theorem_graph["failed_count"], 1);
-        assert_eq!(theorem_graph["partial"], true);
-        assert_eq!(theorem_graph["nodes"][0]["id"], "thm:ok");
-        assert!(theorem_graph["failed_batches"][0]["error"]
-            .as_str()
-            .unwrap()
-            .contains("simulated timeout for thm:slow"));
-    }
-
-    #[test]
-    fn formalize_typed_ir_transcription_items_default_to_lean_targets() {
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 16,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 4,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let items = vec![
-            serde_json::json!({"id": "def:1", "kind": "definition", "role": "context"}),
-            serde_json::json!({"id": "thm:1", "kind": "theorem", "role": "lean_target"}),
-            serde_json::json!({"id": "rmk:1", "kind": "remark", "role": "context"}),
-            serde_json::json!({"id": "lem:1", "kind": "lemma", "role": "lean_target"}),
-        ];
-
-        let selected = formalize_inventory_transcription_items(&items, &config);
-
-        assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0]["id"], "thm:1");
-        assert_eq!(selected[1]["id"], "lem:1");
-    }
-
-    #[test]
-    fn formalize_typed_ir_transcription_items_can_include_context() {
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 16,
-            transcription_batch_chars: 30_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 4,
-            typed_ir_include_context: true,
-            typed_ir_max_items: 64,
-            typed_ir_only: false,
-        };
-        let items = vec![
-            serde_json::json!({"id": "def:1", "kind": "definition", "role": "context"}),
-            serde_json::json!({"id": "thm:1", "kind": "theorem", "role": "lean_target"}),
-        ];
-
-        let selected = formalize_inventory_transcription_items(&items, &config);
-
-        assert_eq!(selected.len(), 2);
-    }
-
-    #[test]
-    fn formalize_typed_ir_transcription_items_honor_default_cap() {
-        let config = FormalizeSourceConfig {
-            source_context_max_blocks: 240,
-            source_context_max_chars: 500_000,
-            transcription_batch_items: 32,
-            transcription_batch_chars: 60_000,
-            source_extraction_timeout_secs: 1_800,
-            typed_ir_provider: "claude".to_string(),
-            typed_ir_model: FORMALIZE_TYPED_IR_DEFAULT_MODEL.to_string(),
-            typed_ir_timeout_secs: FORMALIZE_TYPED_IR_DEFAULT_TIMEOUT_SECS,
-            typed_ir_batch_concurrency: 4,
-            typed_ir_include_context: false,
-            typed_ir_max_items: 3,
-            typed_ir_only: false,
-        };
-        let items = (0..8)
-            .map(|index| {
-                serde_json::json!({
-                    "id": format!("thm:{index}"),
-                    "kind": "theorem",
-                    "role": "lean_target",
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let selected = formalize_inventory_transcription_items(&items, &config);
-
-        assert_eq!(selected.len(), 3);
-        assert_eq!(selected[2]["id"], "thm:2");
-    }
-
-    #[test]
     fn formalize_worker_args_target_exact_app_run() {
         let job_id = Uuid::parse_str("5ec729c1-9ca6-4535-8a6f-677f91ca05fa").unwrap();
         let review_id = Uuid::parse_str("fb7eaf59-ec86-4240-93b5-1ef32f57b3a4").unwrap();
@@ -24990,30 +22755,6 @@ mod tests {
         }
         assert_eq!(payload["node_id"], serde_json::Value::Null);
         assert_eq!(payload["attempt"], serde_json::Value::Null);
-    }
-
-    #[test]
-    fn formalize_source_inventory_is_not_blocked_by_review_loop_body_signal() {
-        let plan = formalize_extraction_plan(
-            "This artifact only contains proof prose.",
-            FormalizeMode::Full,
-        );
-
-        assert!(plan.try_source_inventory);
-        assert!(!plan.allow_body_tool_loop);
-    }
-
-    #[test]
-    fn auto_detect_formalize_skips_typed_ir_enrichment() {
-        let body = "We prove the following. \\begin{theorem}For all n, n + 0 = n.\\end{theorem}";
-
-        let auto = formalize_extraction_plan(body, FormalizeMode::AutoDetect);
-        let full = formalize_extraction_plan(body, FormalizeMode::Full);
-
-        assert!(!auto.try_source_inventory);
-        assert!(!auto.allow_body_tool_loop);
-        assert!(full.try_source_inventory);
-        assert!(full.allow_body_tool_loop);
     }
 
     #[test]
@@ -25202,33 +22943,33 @@ mod tests {
             review_id,
             FormalizeMode::Full,
             "node.completed",
-            "formalize_typed_ir_batch_1",
-            "llm",
-            "formalize_source_inventory_typed_transcriber",
+            "formalize_source_inventory",
+            "inventory",
+            "theorem_inventory_source",
             "ok",
-            "typed-IR batch completed",
+            "source-first theorem inventory completed",
             serde_json::json!({
-                "model": FORMALIZE_TYPED_IR_DEFAULT_MODEL,
-                "batch_number": 1,
-                "batch_count": 2,
+                "artifact_id": "review_loop/theorem_inventory.json",
+                "inventory_count": 8,
                 "duration_ms": 42,
             }),
         );
 
         assert_eq!(event.event_type, "node.completed");
-        assert_eq!(event.node_id.as_deref(), Some("formalize_typed_ir_batch_1"));
+        assert_eq!(event.node_id.as_deref(), Some("formalize_source_inventory"));
         assert_eq!(event.payload["app"], "grokrxiv");
         assert_eq!(event.payload["action"], "formalize");
         assert_eq!(event.payload["dag_type"], "review-loop");
         assert_eq!(event.payload["review_id"], review_id.to_string());
         assert_eq!(event.payload["formalize_mode"], "full");
-        assert_eq!(event.payload["node_id"], "formalize_typed_ir_batch_1");
-        assert_eq!(event.payload["node_kind"], "llm");
+        assert_eq!(event.payload["node_id"], "formalize_source_inventory");
+        assert_eq!(event.payload["node_kind"], "inventory");
+        assert_eq!(event.payload["tool_id"], "theorem_inventory_source");
         assert_eq!(
-            event.payload["tool_id"],
-            "formalize_source_inventory_typed_transcriber"
+            event.payload["artifact_id"],
+            "review_loop/theorem_inventory.json"
         );
-        assert_eq!(event.payload["model"], FORMALIZE_TYPED_IR_DEFAULT_MODEL);
+        assert_eq!(event.payload["inventory_count"], 8);
         assert_eq!(event.payload["duration_ms"], 42);
     }
 
@@ -25244,15 +22985,14 @@ mod tests {
             review_id,
             FormalizeMode::Full,
             "node.completed",
-            "formalize_typed_ir_batch_1",
-            "llm",
-            "formalize_source_inventory_typed_transcriber",
+            "formalize_source_inventory",
+            "inventory",
+            "theorem_inventory_source",
             "ok",
-            "typed-IR batch completed",
+            "source-first theorem inventory completed",
             serde_json::json!({
-                "model": FORMALIZE_TYPED_IR_DEFAULT_MODEL,
-                "batch_number": 1,
-                "batch_count": 2,
+                "artifact_id": "review_loop/theorem_inventory.json",
+                "inventory_count": 8,
                 "duration_ms": 42,
             }),
         );
@@ -25267,11 +23007,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0]["event_type"], "node.completed");
-        assert_eq!(records[0]["node_id"], "formalize_typed_ir_batch_1");
+        assert_eq!(records[0]["node_id"], "formalize_source_inventory");
         assert_eq!(records[0]["payload"]["review_id"], review_id.to_string());
         assert_eq!(
             records[0]["payload"]["tool_id"],
-            "formalize_source_inventory_typed_transcriber"
+            "theorem_inventory_source"
         );
         assert!(records[0]["emitted_at"].as_str().is_some());
     }
@@ -25461,80 +23201,6 @@ mod tests {
     }
 
     #[test]
-    fn formalize_typed_ir_input_prefers_theorem_graph_statements() {
-        let paper_math_sources = serde_json::json!({
-            "body": {
-                "text": "Full paper body with many unrelated sections."
-            },
-            "theorem_graph": {
-                "nodes": [
-                    {
-                        "id": "proof-1",
-                        "type": "proof",
-                        "statement": "Proof. This should not be sent as a theorem target."
-                    },
-                    {
-                        "id": "thm-add-zero",
-                        "type": "theorem",
-                        "statement": "For every n : Nat, n + 0 = n.",
-                        "source_tex": "\\\\begin{theorem}For every n : Nat, n + 0 = n.\\\\end{theorem}",
-                        "typed_transcription": {"status": "transcribed"},
-                        "theorem_ir": {
-                            "binders": [{"name": "n", "type": {"kind": "nat"}}],
-                            "assumptions": [],
-                            "conclusion": {
-                                "kind": "equals",
-                                "lhs": {"kind": "add", "lhs": {"kind": "var", "name": "n"}, "rhs": {"kind": "nat_lit", "value": 0}},
-                                "rhs": {"kind": "var", "name": "n"}
-                            }
-                        }
-                    }
-                ]
-            }
-        });
-
-        let body = paper_math_sources_body_markdown(&paper_math_sources);
-
-        assert!(body.contains("## theorem thm-add-zero"));
-        assert!(body.contains("For every n : Nat, n + 0 = n."));
-        assert!(body.contains("\\\\begin{theorem}"));
-        assert!(!body.contains("Full paper body"));
-        assert!(!body.contains("Proof. This should not be sent"));
-    }
-
-    #[test]
-    fn formalize_typed_ir_input_bypasses_unreliable_theorem_graph_for_source_body() {
-        let paper_math_sources = serde_json::json!({
-            "body": {
-                "text": "**Theorem 7**. *Let M be either R^2 or a closed 2-manifold of genus at least 1. Then F(M - Q_m,k) is a K(pi,1)-space.*"
-            },
-            "theorem_graph": {
-                "nodes": [
-                    {
-                        "id": "proof-1",
-                        "type": "proof",
-                        "statement": "Proof. This should not be sent as a theorem target."
-                    },
-                    {
-                        "id": "thm-5",
-                        "type": "lemma",
-                        "statement": "We state a refined form of the five lemma here as a convenient quick reference.",
-                        "typed_transcription": {"status": "untranscribed"},
-                        "theorem_ir": {"conclusion": {"kind": "unknown_prop"}}
-                    }
-                ]
-            }
-        });
-
-        let body = paper_math_sources_body_markdown(&paper_math_sources);
-
-        assert!(body.contains("**Theorem 7**"));
-        assert!(body.contains("K(pi,1)-space"));
-        assert!(!body.contains("## lemma thm-5"));
-        assert!(!body.contains("Proof. This should not be sent"));
-    }
-
-    #[test]
     fn formalize_source_workdir_unpacks_tex_bundle_for_llm_tools() {
         let mut archive_bytes = Vec::new();
         {
@@ -25561,7 +23227,7 @@ mod tests {
     }
 
     #[test]
-    fn formalize_latex_source_context_indexes_alias_blocks_without_typed_ir() {
+    fn formalize_latex_source_context_indexes_alias_blocks_without_semantic_fields() {
         let entries = vec![FormalizeSourceArchiveEntry {
             path: "newbraid.tex".to_string(),
             bytes: br#"\documentclass{article}
@@ -25596,7 +23262,7 @@ The pure braid group is polyfree.
     }
 
     #[test]
-    fn formalize_direct_inventory_refresh_prefers_source_inventory_without_typed_ir() {
+    fn formalize_direct_inventory_refresh_prefers_source_inventory_over_stale_graph() {
         let paper_math_sources = serde_json::json!({
             "theorem_inventory": {
                 "schema_version": "1.0.0",
@@ -25610,7 +23276,7 @@ The pure braid group is polyfree.
                 "inventory_count": 1
             },
             "theorem_graph": {
-                "source": "stale_typed_ir",
+                "source": "stale_theorem_graph",
                 "nodes": [{
                     "id": "lem:source",
                     "theorem_ir": {"conclusion": {"kind": "unknown_prop"}}
@@ -25809,65 +23475,6 @@ After-marker explains the displayed map.
 
         assert_eq!(ids.len(), 10);
         assert_eq!(ids[9], "claim:9");
-    }
-
-    #[test]
-    fn formalize_typed_ir_prompt_item_strips_source_context_but_nodes_keep_it() {
-        let inventory = serde_json::json!({
-            "items": [{
-                "id": "prop:ctx",
-                "kind": "proposition",
-                "role": "lean_target",
-                "source_tex": "\\begin{prop}\\label{prop:ctx} Claim.\\end{prop}",
-                "source_context": {
-                    "before": "relations (0)--(3)",
-                    "after": "map construction"
-                }
-            }]
-        });
-        let item = inventory["items"][0].clone();
-        let compact = formalize_inventory_typed_ir_item(&item);
-        assert!(compact.get("source_context").is_none());
-
-        let mut nodes = vec![serde_json::json!({
-            "id": "prop:ctx",
-            "type": "proposition",
-            "statement": "Claim."
-        })];
-        merge_formalize_inventory_context_into_nodes(&mut nodes, &inventory);
-
-        assert_eq!(
-            nodes[0]["source_context"]["before"],
-            serde_json::json!("relations (0)--(3)")
-        );
-    }
-
-    #[test]
-    fn formalize_inventory_prompt_requires_typed_ir_without_sampling() {
-        let system = formalize_inventory_typed_transcription_system_prompt();
-        let batch_items = vec![serde_json::json!({
-            "id": "thm:fib",
-            "kind": "theorem",
-            "role": "lean_target",
-            "source_tex": "\\begin{thm}\\label{thm:fib}...\\end{thm}"
-        })];
-        let user = formalize_inventory_typed_transcription_user_prompt(
-            "2606.17193",
-            "Configuration Spaces and Braid Groups",
-            0,
-            1,
-            &batch_items,
-        );
-
-        assert!(system.contains("typed_transcription.status"));
-        assert!(system.contains("theorem_ir"));
-        assert!(system.contains("uninterpreted_predicate"));
-        assert!(system.contains("Do not use unknown_prop"));
-        assert!(system.contains("Emit one theorem_graph node for every inventory item"));
-        assert!(user.contains("2606.17193"));
-        assert!(user.contains("Emit a theorem_graph node for every item"));
-        assert!(!user.contains("best 1-3"));
-        assert!(user.contains("thm:fib"));
     }
 
     #[test]

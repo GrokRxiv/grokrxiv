@@ -1424,12 +1424,17 @@ fn sample_grokrxiv_option_value(value_name: &str, review_id: &str) -> String {
         "TEXT" => "Operator note.".into(),
         "TITLE" => "Sample title".into(),
         "FIELD" => "math".into(),
+        "CLAIM_ID" => "claim:sample".into(),
         "GLOB" => "**/*.tex".into(),
         "CSV" => "math,cs".into(),
         "REF" => "main".into(),
+        "ROLE=PROVIDER" => "citation=claude".into(),
+        "ROLE=MODEL" => "citation=sonnet[1m]".into(),
+        "ROLE=RUNNER" => "citation=cli".into(),
         "ARXIV_SET" => "math".into(),
         "arxiv|pdf|tex|git|mixed" => "arxiv".into(),
         "html|md|tex|pdf|zip" => "md".into(),
+        "all|inventory|packet|harness|author|lean-check|fix|faithfulness" => "all".into(),
         other => panic!("missing sample value for GrokRxiv option value `{other}`"),
     }
 }
