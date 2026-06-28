@@ -8516,6 +8516,7 @@ const PAPER_LOCAL_LIBRARY_FILES: &[&str] = &[
     "GrokRxiv/Paper/Lemmas.lean",
 ];
 const PAPER_LOCAL_LIBRARY_UMBRELLA_FILE: &str = "GrokRxiv/Paper.lean";
+const PAPER_LOCAL_LIBRARY_BUILD_TARGET: &str = "GrokRxiv.Paper";
 
 const PAPER_LOCAL_LIBRARY_PACKET_MAX_CONTEXT_ITEMS: usize = 80;
 const PAPER_LOCAL_LIBRARY_PACKET_SOURCE_TEX_CHARS: usize = 4_000;
@@ -12782,7 +12783,7 @@ async fn run_inventory_library_check_stage(
         Some(
             run_loop_command(
                 "lake",
-                &["build", "GrokRxiv.Paper.Lemmas"],
+                &["build", PAPER_LOCAL_LIBRARY_BUILD_TARGET],
                 &library_dir,
                 std::time::Duration::from_secs(inventory_direct_lean_task().compile_timeout_secs),
             )
@@ -12812,6 +12813,7 @@ async fn run_inventory_library_check_stage(
         "status": status,
         "validation_issues": validation_issues,
         "compile": report.as_ref().map(command_report_json),
+        "compile_target": PAPER_LOCAL_LIBRARY_BUILD_TARGET,
         "manifest": "review_loop/lean/library/library_manifest.json",
         "files": PAPER_LOCAL_LIBRARY_FILES,
         "upstream": upstream_result,
