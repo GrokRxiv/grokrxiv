@@ -208,11 +208,11 @@ actions:
         description: Emit expanded per-stage diagnostics and artifact paths while formalizing.
       - name: --auto-detect
         kind: flag
-        description: Internal queued mode for automatic Lean formalization; skip typed-IR enrichment and use persisted review-loop proof obligations.
+        description: Internal queued mode for automatic Lean formalization using persisted review-loop theorem inventory.
       - name: --stage
         kind: flag
-        value_name: all|inventory|packet|harness|author|lean-check|fix|faithfulness|typed-ir-diagnostic
-        description: Run one explicit formalization stage; default is all. Non-diagnostic stages use theorem_inventory.json as the canonical Lean source packet.
+        value_name: all|inventory|packet|harness|author|lean-check|fix|faithfulness
+        description: Run one explicit formalization stage; default is all. Stages use theorem_inventory.json source text as the canonical Lean input.
       - name: --claim-id
         kind: flag
         value_name: CLAIM_ID
@@ -220,22 +220,16 @@ actions:
       - name: --no-external-actions
         kind: flag
         description: Run formalization and render artifacts without updating PR comments or commits.
-      - name: --typed-ir-only
-        kind: flag
-        description: Backward-compatible alias for --stage typed-ir-diagnostic; does not run Lean formalization.
-      - name: --benchmark-typed-ir
-        kind: flag
-        description: Alias for --typed-ir-only.
       - name: --provider-for
         kind: flag
         value_name: ROLE=PROVIDER
         multiple: true
-        description: Override the provider for one role, including formalize_source_inventory_typed_transcriber=gemini as an agy backup route.
+        description: Override the provider for one role.
       - name: --model-for
         kind: flag
         value_name: ROLE=MODEL
         multiple: true
-        description: Override the model for one role, including formalize_source_inventory_typed_transcriber=Gemini 3.5 Flash (Medium).
+        description: Override the model for one role.
       - name: --runner-for
         kind: flag
         value_name: ROLE=RUNNER

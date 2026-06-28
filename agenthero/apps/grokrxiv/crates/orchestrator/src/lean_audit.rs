@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 /// A data-driven policy for generated Lean artifacts.
 #[derive(Debug, Clone)]
@@ -146,6 +147,148 @@ pub(crate) fn audit_lean_library_artifact(
     }
 
     issues
+}
+
+/// Build the source-first Lean authoring input for one theorem_inventory claim.
+///
+/// This deliberately preserves source TeX and nearby source context while
+/// excluding typed/semantic IR fields. Lean generation is authored by the LLM
+/// from paper source evidence, not gated by an intermediate math IR.
+pub(crate) fn build_lean_source_input_for_claim(
+    review_id: Uuid,
+    inventory: &serde_json::Value,
+    claim_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let target = inventory
+        .get("items")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("role").and_then(|value| value.as_str()) == Some("lean_target"))
+        .find(|item| inventory_item_matches_claim_id(item, claim_id))
+        .cloned()
+        .map(strip_ir_fields)
+        .ok_or_else(|| anyhow::anyhow!("inventory lean target `{claim_id}` not found"))?;
+
+    Ok(serde_json::json!({
+        "schema_version": "1.0.0",
+        "review_id": review_id,
+        "source": "review_loop/theorem_inventory.json",
+        "pipeline": "theorem_inventory_direct",
+        "target": target,
+        "contract": {
+            "source_tex_is_authoritative": true,
+            "source_context_is_supporting_evidence": true,
+            "llm_authors_statement_and_proof": true,
+            "deterministic_math_generation_allowed": false,
+            "forbidden_replacements": ["True", "0 = 0", "x = x", "metadata-only claims"],
+            "forbidden_terms": ["sorry", "admit", "axiom"]
+        }
+    }))
+}
+
+/// Whether a target/library Lean result has concrete diagnostics that should be
+/// handed to a Lean fixer. Runner/environment failures are intentionally false.
+pub(crate) fn lean_compile_result_is_fixable(compile_result: &serde_json::Value) -> bool {
+    matches!(
+        compile_result
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some(
+            "lean_compile_error"
+                | "forbidden_term"
+                | "missing_lean_declaration"
+                | "missing_paper_library_import"
+        )
+    )
+}
+
+/// Whether a failed target compile should trigger paper-local library feedback.
+pub(crate) fn lean_target_compile_needs_library_feedback(
+    compile_result: &serde_json::Value,
+) -> bool {
+    compile_result
+        .get("status")
+        .and_then(|value| value.as_str())
+        == Some("lean_compile_error")
+}
+
+/// Whether a failed paper-local library compile should trigger a library fix.
+pub(crate) fn lean_library_compile_needs_fix(library_compile: &serde_json::Value) -> bool {
+    matches!(
+        library_compile
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some("lean_compile_error" | "validation_error")
+    )
+}
+
+/// Build the durable diagnostic artifact for a Lean/Lake target check.
+pub(crate) fn lean_check_diagnostic_result(
+    claim_id: &str,
+    target_slug: &str,
+    status: &str,
+    formal_claim_present: bool,
+    paper_library_imports_present: bool,
+    forbidden_terms: &[&str],
+    compile_report: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "1.0.0",
+        "stage": "lean-check",
+        "diagnostic_only": true,
+        "status": status,
+        "claim_id": claim_id,
+        "formal_claim_present": formal_claim_present,
+        "paper_library_imports_present": paper_library_imports_present,
+        "forbidden_terms": forbidden_terms,
+        "compile": compile_report,
+        "code_path": format!("review_loop/lean/targets/{target_slug}/check/GrokRxiv/Proofs.lean"),
+        "proofs_lean": format!("review_loop/lean/targets/{target_slug}/GrokRxiv/Proofs.lean"),
+        "proofs_lean_saved": true,
+        "note": "Lean/Lake compile is a diagnostic for this MVP; GrokRxiv/Proofs.lean is preserved even when compile fails because paper-local or Mathlib support may be incomplete.",
+    })
+}
+
+fn inventory_item_matches_claim_id(item: &serde_json::Value, claim_id: &str) -> bool {
+    item.get("id")
+        .and_then(|value| value.as_str())
+        .is_some_and(|id| id == claim_id)
+        || item
+            .get("labels")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .any(|label| label == claim_id)
+}
+
+fn strip_ir_fields(mut value: serde_json::Value) -> serde_json::Value {
+    match &mut value {
+        serde_json::Value::Object(map) => {
+            for key in [
+                "typed_ir",
+                "typed_transcription",
+                "theorem_ir",
+                "semantic_ir",
+                "typed_ir_quality_issue",
+            ] {
+                map.remove(key);
+            }
+            for child in map.values_mut() {
+                let stripped = strip_ir_fields(std::mem::take(child));
+                *child = stripped;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                let stripped = strip_ir_fields(std::mem::take(child));
+                *child = stripped;
+            }
+        }
+        _ => {}
+    }
+    value
 }
 
 fn manifest_has_source_backed_interface(manifest: Option<&serde_json::Value>) -> bool {
@@ -375,5 +518,122 @@ theorem grokrxiv_add_zero (n : Nat) : n + 0 = n := by
         assert!(issues
             .iter()
             .any(|issue| issue.kind == "opaque_missing_source_evidence"));
+    }
+
+    #[test]
+    fn lean_source_input_preserves_source_context_and_removes_ir_fields() {
+        let review_id = Uuid::parse_str("59486169-9357-42b4-b520-339723816013").unwrap();
+        let inventory = serde_json::json!({
+            "items": [{
+                "id": "prop:ctx",
+                "kind": "proposition",
+                "role": "lean_target",
+                "labels": ["prop:ctx"],
+                "source_tex": "\\begin{proposition}The map is an isomorphism.\\end{proposition}",
+                "source_context": {
+                    "before": "Definitions before.",
+                    "after": "Explanation after.",
+                    "typed_transcription": {"status": "stale"}
+                },
+                "typed_transcription": {"status": "transcribed"},
+                "theorem_ir": {"conclusion": {"kind": "equality"}},
+                "semantic_ir": {"kind": "old_semantics"},
+                "typed_ir_quality_issue": "stale"
+            }]
+        });
+
+        let packet =
+            build_lean_source_input_for_claim(review_id, &inventory, "prop:ctx").expect("packet");
+
+        assert_eq!(packet["source"], "review_loop/theorem_inventory.json");
+        assert_eq!(packet["target"]["id"], "prop:ctx");
+        assert_eq!(
+            packet["target"]["source_tex"],
+            "\\begin{proposition}The map is an isomorphism.\\end{proposition}"
+        );
+        assert_eq!(
+            packet["target"]["source_context"]["before"],
+            "Definitions before."
+        );
+        assert_eq!(packet.pointer("/target/typed_transcription"), None);
+        assert_eq!(packet.pointer("/target/theorem_ir"), None);
+        assert_eq!(packet.pointer("/target/semantic_ir"), None);
+        assert_eq!(
+            packet.pointer("/target/source_context/typed_transcription"),
+            None
+        );
+        assert_eq!(packet.pointer("/typed_ir_required"), None);
+    }
+
+    #[test]
+    fn compile_policy_only_fixes_real_lean_errors() {
+        for status in [
+            "lean_compile_error",
+            "forbidden_term",
+            "missing_lean_declaration",
+            "missing_paper_library_import",
+        ] {
+            assert!(
+                lean_compile_result_is_fixable(&serde_json::json!({"status": status})),
+                "{status} should be routed to Lean repair"
+            );
+        }
+        for status in [
+            "pass",
+            "agent_error",
+            "runner_timeout",
+            "environment_error",
+            "missing_prerequisite",
+        ] {
+            assert!(
+                !lean_compile_result_is_fixable(&serde_json::json!({"status": status})),
+                "{status} should not be routed to Lean repair"
+            );
+        }
+    }
+
+    #[test]
+    fn library_feedback_policy_is_status_based_not_paper_specific() {
+        assert!(lean_target_compile_needs_library_feedback(
+            &serde_json::json!({"status": "lean_compile_error"})
+        ));
+        assert!(!lean_target_compile_needs_library_feedback(
+            &serde_json::json!({"status": "missing_lean_declaration"})
+        ));
+        assert!(lean_library_compile_needs_fix(
+            &serde_json::json!({"status": "lean_compile_error"})
+        ));
+        assert!(lean_library_compile_needs_fix(
+            &serde_json::json!({"status": "validation_error"})
+        ));
+        assert!(!lean_library_compile_needs_fix(
+            &serde_json::json!({"status": "environment_error"})
+        ));
+    }
+
+    #[test]
+    fn lean_check_diagnostic_result_preserves_output_path_on_compile_failure() {
+        let result = lean_check_diagnostic_result(
+            "lem:sample",
+            "lem_sample",
+            "lean_compile_error",
+            true,
+            true,
+            &[],
+            serde_json::json!({"status": "fail", "stderr": "error: build failed"}),
+        );
+
+        assert_eq!(result["stage"], "lean-check");
+        assert_eq!(result["diagnostic_only"], true);
+        assert_eq!(result["status"], "lean_compile_error");
+        assert_eq!(result["proofs_lean_saved"], true);
+        assert_eq!(
+            result["proofs_lean"],
+            "review_loop/lean/targets/lem_sample/GrokRxiv/Proofs.lean"
+        );
+        assert!(result["note"]
+            .as_str()
+            .unwrap()
+            .contains("compile is a diagnostic"));
     }
 }
