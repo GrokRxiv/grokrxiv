@@ -23642,7 +23642,7 @@ After-marker explains the displayed map.
     }
 
     #[test]
-    fn formalize_inventory_selected_claim_ids_defaults_to_eight_targets() {
+    fn formalize_inventory_selected_claim_ids_defaults_to_three_targets() {
         let _env = EnvVarGuard::clear("GROKRXIV_LEAN_MAX_TARGETS");
         let items = (0..10)
             .map(|index| {
@@ -23656,9 +23656,9 @@ After-marker explains the displayed map.
 
         let ids = formalize_inventory_selected_claim_ids(&inventory).expect("selected ids");
 
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 3);
         assert_eq!(ids[0], "claim:0");
-        assert_eq!(ids[7], "claim:7");
+        assert_eq!(ids[2], "claim:2");
     }
 
     #[test]

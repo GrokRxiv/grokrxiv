@@ -2,7 +2,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const DEFAULT_LEAN_MAX_TARGETS: usize = 8;
+const DEFAULT_LEAN_MAX_TARGETS: usize = 3;
 
 pub fn build_semantic_ir(
     review_id: Uuid,
@@ -2679,10 +2679,10 @@ publisherReadyLowerBound = claimCount == 43
             build_proof_obligations(review_id, &semantic_ir, &json!({"status": "pass"}));
 
         assert_eq!(obligations["candidate_count"], 10);
-        assert_eq!(obligations["selected_count"], 8);
-        assert_eq!(obligations["omitted_count"], 2);
-        assert_eq!(obligations["explicit_target_cap"], 8);
-        assert_eq!(obligations["obligations"].as_array().unwrap().len(), 8);
+        assert_eq!(obligations["selected_count"], 3);
+        assert_eq!(obligations["omitted_count"], 7);
+        assert_eq!(obligations["explicit_target_cap"], 3);
+        assert_eq!(obligations["obligations"].as_array().unwrap().len(), 3);
         assert_eq!(
             obligations["skipped_targets"][0]["reason"],
             "deferred_lean_target_budget"
