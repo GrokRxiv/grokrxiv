@@ -14131,8 +14131,13 @@ async fn write_inventory_library_loop_files(
     .await?;
     let compile_note = compile_result
         .map(|value| {
+            let heading = if phase == "target-feedback" {
+                "Target Lean compile result prompting paper-local library feedback"
+            } else {
+                "Prior library compile result"
+            };
             format!(
-                "\n\nPrior library compile result:\n```json\n{}\n```",
+                "\n\n{heading}:\n```json\n{}\n```",
                 serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
             )
         })
@@ -14412,6 +14417,114 @@ async fn run_inventory_library_fix_stage(
         }),
     };
     write_loop_json(&library_dir.join("fix_result.json"), &result).await?;
+    Ok(result)
+}
+
+async fn run_inventory_library_target_feedback_stage(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    inventory: &serde_json::Value,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let library_dir = formalize_inventory_library_dir(artifact_dir);
+    let slug = formalize_inventory_target_slug(claim_id);
+    let feedback_dir = library_dir.join("target_feedback").join(&slug);
+    tokio::fs::create_dir_all(&feedback_dir).await?;
+    write_inventory_library_loop_files(
+        &library_dir,
+        inventory,
+        "target-feedback",
+        Some(compile_result),
+    )
+    .await?;
+    let target_code =
+        latest_inventory_target_code(&formalize_inventory_target_dir(artifact_dir, claim_id));
+    let mut artifact = inventory_library_target_feedback_artifact(
+        inventory,
+        packet,
+        claim_id,
+        compile_result,
+        target_code.as_deref(),
+    );
+    artifact["prior_library"] = paper_local_library_artifact_from_dir(&library_dir);
+    write_loop_json(&feedback_dir.join("input.json"), &artifact).await?;
+
+    let run = run_review_loop_agent(
+        state,
+        paper_id,
+        review_id,
+        "lean_library_fixer",
+        artifact,
+        "You are GrokRxiv role `lean_library_fixer`. Revise the checked paper-local Lean library only if target compiler diagnostics show a missing or too-weak source-grounded paper interface. Return strict JSON matching schema.json exactly.".to_string(),
+        "Use target_packet, target_compile_result, prior_library, and source_packet. Return corrected GrokRxiv/Paper/*.lean files and library_manifest.json, or preserve the library and explain why the compiler error belongs to the target file. JSON only.".to_string(),
+        Some(&library_dir),
+    )
+    .await;
+    let result = match run {
+        Ok(run) => {
+            write_loop_json(&feedback_dir.join("fixer_output.json"), &run.output).await?;
+            if let Some(artifact) = paper_local_library_artifact_from_output(&run.output) {
+                materialize_paper_local_library_artifact(&library_dir, &artifact).await?;
+                let issues = validate_paper_local_library_artifact(&artifact);
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "stage": "library-target-feedback",
+                    "status": if issues.is_empty() { "pass" } else { "validation_error" },
+                    "claim_id": claim_id,
+                    "role": run.role,
+                    "model": run.model,
+                    "latency_ms": run.latency_ms,
+                    "validation_issues": issues,
+                    "artifact": format!("review_loop/lean/library/target_feedback/{slug}/result.json"),
+                })
+            } else {
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "stage": "library-target-feedback",
+                    "status": "agent_no_library_artifact",
+                    "claim_id": claim_id,
+                    "error": "lean_library_fixer returned without files/manifest",
+                    "output": run.output,
+                })
+            }
+        }
+        Err(err) => serde_json::json!({
+            "schema_version": "1.0.0",
+            "stage": "library-target-feedback",
+            "status": if format!("{err:#}").contains("timed out") { "runner_timeout" } else { "agent_error" },
+            "claim_id": claim_id,
+            "error": format!("{err:#}"),
+        }),
+    };
+    write_loop_json(&feedback_dir.join("result.json"), &result).await?;
+    let status = result
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("agent_error");
+    emit_formalize_node_event(formalize_node_event(
+        review_id,
+        mode,
+        if status == "pass" {
+            "node.completed"
+        } else {
+            "node.failed"
+        },
+        "formalize_library_target_feedback",
+        "llm",
+        "lean_library_fixer",
+        status,
+        "paper-local library target-feedback stage completed",
+        serde_json::json!({
+            "stage": "library-target-feedback",
+            "claim_id": claim_id,
+            "artifact_id": format!("review_loop/lean/library/target_feedback/{slug}/result.json"),
+        }),
+    ));
     Ok(result)
 }
 
@@ -15295,8 +15408,37 @@ async fn run_inventory_fix_stage(
     claim_id: &str,
     compile_result: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    run_inventory_fix_stage_with_round(
+        state,
+        paper_id,
+        review_id,
+        mode,
+        artifact_dir,
+        packet,
+        claim_id,
+        compile_result,
+        1,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inventory_fix_stage_with_round(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+    round: usize,
+) -> anyhow::Result<serde_json::Value> {
     let target_dir = formalize_inventory_target_dir(artifact_dir, claim_id);
-    let round_dir = target_dir.join("rounds").join("1").join("fix");
+    let round_dir = target_dir
+        .join("rounds")
+        .join(round.to_string())
+        .join("fix");
     tokio::fs::create_dir_all(&round_dir).await?;
     write_inventory_lean_loop_files(&round_dir, packet, claim_id, "fix", Some(compile_result))
         .await?;
@@ -15329,7 +15471,7 @@ async fn run_inventory_fix_stage(
             serde_json::json!({
                 "stage": "fix",
                 "claim_id": claim_id,
-                "artifact_id": format!("review_loop/lean/targets/{}/rounds/1/fix/result.json", formalize_inventory_target_slug(claim_id)),
+                "artifact_id": format!("review_loop/lean/targets/{}/rounds/{round}/fix/result.json", formalize_inventory_target_slug(claim_id)),
             }),
         ));
         return Ok(result);
@@ -15485,10 +15627,74 @@ async fn run_inventory_fix_stage(
         serde_json::json!({
             "stage": "fix",
             "claim_id": claim_id,
-            "artifact_id": format!("review_loop/lean/targets/{}/rounds/1/fix/result.json", formalize_inventory_target_slug(claim_id)),
+            "artifact_id": format!("review_loop/lean/targets/{}/rounds/{round}/fix/result.json", formalize_inventory_target_slug(claim_id)),
         }),
     ));
     Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inventory_library_feedback_and_retry_target(
+    state: &super::AppState,
+    paper_id: Uuid,
+    review_id: Uuid,
+    mode: FormalizeMode,
+    artifact_dir: &Path,
+    inventory: &serde_json::Value,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+) -> anyhow::Result<(serde_json::Value, serde_json::Value)> {
+    if !inventory_compile_status_needs_library_feedback(compile_result) {
+        return Ok((compile_result.clone(), serde_json::Value::Null));
+    }
+
+    let feedback = run_inventory_library_target_feedback_stage(
+        state,
+        paper_id,
+        review_id,
+        mode,
+        artifact_dir,
+        inventory,
+        packet,
+        claim_id,
+        compile_result,
+    )
+    .await?;
+    let library_compile =
+        run_inventory_library_check_stage(review_id, mode, artifact_dir, Some(&feedback)).await?;
+    let mut metadata = serde_json::json!({
+        "stage": "library-target-feedback",
+        "status": feedback.get("status").cloned().unwrap_or_else(|| serde_json::json!("unknown")),
+        "library_feedback": feedback,
+        "library_compile": library_compile,
+        "retried_target": false,
+    });
+    if !library_compile_passed(&library_compile) {
+        return Ok((compile_result.clone(), metadata));
+    }
+
+    let refreshed_packet =
+        write_enriched_inventory_packet_stage(artifact_dir, claim_id, packet).await?;
+    let retry_fix = run_inventory_fix_stage_with_round(
+        state,
+        paper_id,
+        review_id,
+        mode,
+        artifact_dir,
+        &refreshed_packet,
+        claim_id,
+        compile_result,
+        2,
+    )
+    .await?;
+    let retry_compile =
+        run_inventory_lean_check_stage(review_id, mode, artifact_dir, claim_id, Some(&retry_fix))
+            .await?;
+    metadata["retried_target"] = serde_json::json!(true);
+    metadata["target_retry_fix"] = retry_fix;
+    metadata["target_retry_compile"] = retry_compile.clone();
+    Ok((retry_compile, metadata))
 }
 
 async fn run_inventory_faithfulness_stage(
@@ -15948,6 +16154,7 @@ async fn run_inventory_direct_formalize_review(
         return Ok(());
     }
     let mut final_compile = compile.clone();
+    let mut library_feedback = serde_json::Value::Null;
     if inventory_compile_status_is_fixable(&compile) {
         let fix = run_inventory_fix_stage(
             state,
@@ -15966,6 +16173,20 @@ async fn run_inventory_direct_formalize_review(
         final_compile =
             run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&fix))
                 .await?;
+        let feedback_retry = run_inventory_library_feedback_and_retry_target(
+            state,
+            paper_id,
+            review_id,
+            mode,
+            artifact_dir,
+            &inventory,
+            &packet,
+            &claim_id,
+            &final_compile,
+        )
+        .await?;
+        final_compile = feedback_retry.0;
+        library_feedback = feedback_retry.1;
     } else if stage == FormalizeStage::Fix {
         cli_status::emit(format!(
             "formalize {review_id}: fix skipped because Lean check already passed for {claim_id}"
@@ -15995,6 +16216,7 @@ async fn run_inventory_direct_formalize_review(
         "failure_reason": inventory_target_failure_reason(&final_compile, &faithfulness),
         "compile": final_compile,
         "faithfulness": faithfulness,
+        "library_feedback": library_feedback,
         "external_actions_enabled": external_actions_enabled,
     });
     let lean_dir = artifact_dir.join("lean");
@@ -16009,6 +16231,7 @@ async fn run_inventory_direct_formalize_review(
             "status": summary["status"].clone(),
             "claim_status": inventory_claim_status_from_target_status(summary["status"].as_str().unwrap_or("unknown")),
             "failure_reason": summary["failure_reason"].clone(),
+            "library_feedback": summary["library_feedback"].clone(),
             "source_packet": format!("review_loop/lean/targets/{}/packet.json", formalize_inventory_target_slug(&claim_id)),
             "compile": format!("review_loop/lean/targets/{}/check/compile.json", formalize_inventory_target_slug(&claim_id)),
             "faithfulness": format!("review_loop/lean/targets/{}/faithfulness/faithfulness.json", formalize_inventory_target_slug(&claim_id)),
@@ -16041,6 +16264,43 @@ fn inventory_compile_status_is_fixable(compile_result: &serde_json::Value) -> bo
                 | "missing_paper_library_import"
         )
     )
+}
+
+fn inventory_compile_status_needs_library_feedback(compile_result: &serde_json::Value) -> bool {
+    compile_result
+        .get("status")
+        .and_then(|value| value.as_str())
+        == Some("lean_compile_error")
+}
+
+fn inventory_library_target_feedback_artifact(
+    inventory: &serde_json::Value,
+    packet: &serde_json::Value,
+    claim_id: &str,
+    compile_result: &serde_json::Value,
+    target_code: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "phase": "target-feedback",
+        "target": "paper_local_lean_library",
+        "language": "lean",
+        "library_files": PAPER_LOCAL_LIBRARY_FILES,
+        "source_packet": paper_local_library_source_packet(inventory),
+        "full_inventory_path": "review_loop/theorem_inventory.json",
+        "claim_id": claim_id,
+        "target_packet": packet,
+        "target_compile_result": compile_result,
+        "target_code": target_code,
+        "requirements": [
+            "Revise the paper-local Lean library only when the target compiler output shows a missing or too-weak paper-local interface.",
+            "Use target_packet.source_tex, target_packet.source_context, theorem_inventory context, prior library files, and compiler diagnostics as source evidence.",
+            "Add source-grounded paper-local interfaces or definitions in GrokRxiv/Paper/*.lean, with source evidence in library_manifest.json.",
+            "Preserve source meaning; if the compiler error is a theorem-file issue rather than a library/interface issue, keep the library semantically unchanged and report that in notes.",
+            "Use opaque only for source-grounded paper-local interfaces in GrokRxiv/Paper/Interfaces.lean and only with source evidence in the manifest.",
+            "Do not use sorry, admit, or axiom.",
+            "Do not prove selected target theorem claims in the library."
+        ],
+    })
 }
 
 fn inventory_stage_failure_reason(result: &serde_json::Value) -> Option<String> {
@@ -16250,6 +16510,7 @@ async fn run_inventory_direct_all_targets_formalize_review(
             run_inventory_lean_check_stage(review_id, mode, artifact_dir, &claim_id, Some(&author))
                 .await?;
         let mut final_compile = compile.clone();
+        let mut library_feedback = serde_json::Value::Null;
         if inventory_compile_status_is_fixable(&compile) {
             let fix = run_inventory_fix_stage(
                 state,
@@ -16270,6 +16531,20 @@ async fn run_inventory_direct_all_targets_formalize_review(
                 Some(&fix),
             )
             .await?;
+            let feedback_retry = run_inventory_library_feedback_and_retry_target(
+                state,
+                paper_id,
+                review_id,
+                mode,
+                artifact_dir,
+                &inventory,
+                &packet,
+                &claim_id,
+                &final_compile,
+            )
+            .await?;
+            final_compile = feedback_retry.0;
+            library_feedback = feedback_retry.1;
         }
         let faithfulness = run_inventory_faithfulness_stage(
             state,
@@ -16301,6 +16576,7 @@ async fn run_inventory_direct_all_targets_formalize_review(
             "compile_status": compile_status,
             "faithfulness_verdict": inventory_faithfulness_verdict(&faithfulness).unwrap_or("unknown"),
             "failure_reason": inventory_target_failure_reason(&final_compile, &faithfulness),
+            "library_feedback": library_feedback,
             "source_packet": format!("review_loop/lean/targets/{slug}/packet.json"),
             "proofs_lean": format!("review_loop/lean/targets/{slug}/GrokRxiv/Proofs.lean"),
             "compile": format!("review_loop/lean/targets/{slug}/check/compile.json"),
@@ -25670,6 +25946,89 @@ theorem grokrxiv_add_zero (n : Nat) : n + 0 = n := by simp\n";
                 "status {status} must not spawn a fixer without compiler output"
             );
         }
+    }
+
+    #[test]
+    fn target_compile_error_can_trigger_paper_library_feedback() {
+        assert!(inventory_compile_status_needs_library_feedback(
+            &serde_json::json!({"status": "lean_compile_error"})
+        ));
+        for status in [
+            "pass",
+            "forbidden_term",
+            "missing_lean_declaration",
+            "missing_paper_library_import",
+            "environment_error",
+            "runner_timeout",
+        ] {
+            assert!(
+                !inventory_compile_status_needs_library_feedback(
+                    &serde_json::json!({"status": status})
+                ),
+                "status {status} must not mutate the paper-local library"
+            );
+        }
+    }
+
+    #[test]
+    fn paper_library_feedback_artifact_is_source_grounded_and_target_aware() {
+        let inventory = serde_json::json!({
+            "items": [{
+                "id": "lem:needs-interface",
+                "source_tex": "\\begin{lemma}For every object V, vectors of V exist.\\end{lemma}"
+            }]
+        });
+        let packet = serde_json::json!({
+            "target": {
+                "id": "lem:needs-interface",
+                "source_tex": "\\begin{lemma}For every object V, vectors of V exist.\\end{lemma}"
+            },
+            "paper_local_library": {
+                "declarations": [{
+                    "name": "Vec",
+                    "signature": "Vec : Type",
+                    "trust_status": "interface_checked"
+                }]
+            }
+        });
+        let compile = serde_json::json!({
+            "status": "lean_compile_error",
+            "compile": {
+                "stdout": "error: GrokRxiv/Proofs.lean:12:23: type expected, got\n  (V : Vec)"
+            }
+        });
+        let artifact = inventory_library_target_feedback_artifact(
+            &inventory,
+            &packet,
+            "lem:needs-interface",
+            &compile,
+            Some("import GrokRxiv.Paper\nopen GrokRxiv.Paper\n"),
+        );
+
+        assert_eq!(artifact["phase"], "target-feedback");
+        assert_eq!(artifact["target"], "paper_local_lean_library");
+        assert_eq!(artifact["claim_id"], "lem:needs-interface");
+        assert_eq!(
+            artifact["target_packet"]["target"]["id"],
+            "lem:needs-interface"
+        );
+        assert_eq!(
+            artifact["target_compile_result"]["status"],
+            "lean_compile_error"
+        );
+        assert_eq!(
+            artifact["target_code"],
+            "import GrokRxiv.Paper\nopen GrokRxiv.Paper\n"
+        );
+        let requirements = artifact["requirements"].as_array().unwrap();
+        assert!(requirements.iter().any(|item| item
+            .as_str()
+            .unwrap_or_default()
+            .contains("source-grounded paper-local interfaces")));
+        assert!(requirements.iter().any(|item| item
+            .as_str()
+            .unwrap_or_default()
+            .contains("Do not prove selected target theorem claims")));
     }
 
     #[tokio::test]
