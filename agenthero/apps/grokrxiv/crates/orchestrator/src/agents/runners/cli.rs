@@ -643,7 +643,9 @@ fn render_review_prompt_with_files(input: &AgentInput) -> String {
              must be the complete library_manifest.json payload. Do not use `sorry`, `admit`, \
              or `axiom`. Use `opaque` only for source-grounded paper-local interfaces in \
              `GrokRxiv/Paper/Interfaces.lean`, and map every interface to source evidence in \
-             the manifest. If a source/library gap remains, report it explicitly in `notes` \
+             the manifest. If a bodyless opaque value relies on `Nonempty`/Classical choice, \
+             declare it as `noncomputable opaque`, and mark dependent defs/instances/maps \
+             `noncomputable`. If a source/library gap remains, report it explicitly in `notes` \
              and the manifest rather than silently changing the paper claim.\n\n\
              <review_input_json>\n{artifact_json}\n</review_input_json>",
             role = role_slug(&input.role),

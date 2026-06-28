@@ -12646,6 +12646,9 @@ async fn write_inventory_library_loop_files(
              Missing Mathlib constructions must be represented as source-grounded \
              interfaces in `GrokRxiv/Paper/Interfaces.lean`, with source evidence \
              in `library_manifest.json`. Do not use `sorry`, `admit`, or `axiom`. \
+             If a bodyless opaque value relies on `Nonempty`/Classical choice, \
+             declare it as `noncomputable opaque` and mark dependent defs/instances/maps \
+             `noncomputable`. \
              Do not prove selected target theorem claims in the library. Preserve the \
              source meaning of paper objects and statements; if the available source \
              context is insufficient, record a blocked declaration or note instead of \
@@ -12698,6 +12701,7 @@ async fn run_inventory_library_author_stage(
             "Build a reusable paper-local Lean library for this run before theorem targets.",
             "Use source_tex, source_context, definitions, refs, and nearby paper TeX.",
             "Use opaque only for source-grounded paper-local interfaces in GrokRxiv/Paper/Interfaces.lean and only with source evidence in the manifest.",
+            "If a bodyless opaque value relies on Nonempty/Classical choice, declare it as noncomputable opaque and mark dependent defs/instances/maps noncomputable.",
             "Preserve the source meaning of paper objects and statements; report insufficient source/library support instead of silently changing the claim.",
             "Do not use sorry, admit, or axiom.",
             "Do not prove selected target theorem claims in the library."
@@ -12864,6 +12868,7 @@ async fn run_inventory_library_fix_stage(
             "Fix the paper-local Lean library generically; do not add paper-specific shortcuts.",
             "Use source_tex, source_context, definitions, refs, and nearby paper TeX.",
             "Use opaque only for source-grounded paper-local interfaces in GrokRxiv/Paper/Interfaces.lean and only with source evidence in the manifest.",
+            "If Lean reports that a bodyless opaque value depends on Classical.ofNonempty, change that declaration to noncomputable opaque and mark dependent defs/instances/maps noncomputable.",
             "Preserve the source meaning of paper objects and statements; report insufficient source/library support instead of silently changing the claim.",
             "Do not use sorry, admit, or axiom.",
             "Do not prove selected target theorem claims in the library."
@@ -14903,6 +14908,7 @@ fn inventory_faithfulness_feedback_artifact(
             "If the library is adequate and the theorem file drifted, preserve the library and rewrite the target theorem toward the source statement.",
             "Do not silence faithfulness by weakening the paper theorem, adding arbitrary assumptions, proving metadata, or replacing the target with True, 0 = 0, x = x, or a conditional strawman.",
             "Use opaque only for source-grounded paper-local interfaces in GrokRxiv/Paper/Interfaces.lean and only with source evidence in the manifest.",
+            "If a bodyless opaque value relies on Nonempty/Classical choice, declare it as noncomputable opaque and mark dependent defs/instances/maps noncomputable.",
             "Do not use sorry, admit, or axiom.",
             "Do not prove selected target theorem claims in the library."
         ],
@@ -15398,6 +15404,7 @@ fn inventory_library_target_feedback_artifact(
             "Add source-grounded paper-local interfaces or definitions in GrokRxiv/Paper/*.lean, with source evidence in library_manifest.json.",
             "Preserve source meaning; if the compiler error is a theorem-file issue rather than a library/interface issue, keep the library semantically unchanged and report that in notes.",
             "Use opaque only for source-grounded paper-local interfaces in GrokRxiv/Paper/Interfaces.lean and only with source evidence in the manifest.",
+            "If a bodyless opaque value relies on Nonempty/Classical choice, declare it as noncomputable opaque and mark dependent defs/instances/maps noncomputable.",
             "Do not use sorry, admit, or axiom.",
             "Do not prove selected target theorem claims in the library."
         ],
