@@ -15220,6 +15220,8 @@ async fn run_inventory_direct_formalize_review(
         let lean_dir = artifact_dir.join("lean");
         tokio::fs::create_dir_all(&lean_dir).await?;
         write_loop_json(&lean_dir.join("results.json"), &summary).await?;
+        commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
+            .await?;
         return Ok(());
     }
     let packet = write_enriched_inventory_packet_stage(artifact_dir, &claim_id, &packet).await?;
@@ -15358,11 +15360,8 @@ async fn run_inventory_direct_formalize_review(
     let theorem_map =
         merge_inventory_direct_theorem_map(existing_theorem_map.as_ref(), theorem_map_entry);
     write_loop_json(&lean_dir.join("theorem_map.json"), &theorem_map).await?;
-    if !external_actions_enabled {
-        cli_status::emit(format!(
-            "formalize {review_id}: external actions disabled; skipped PR comment and Lean commit"
-        ));
-    }
+    commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
+        .await?;
     cli_status::emit(format!(
         "formalize {review_id}: inventory-direct done (status={})",
         summary
@@ -15538,6 +15537,8 @@ async fn run_inventory_direct_all_targets_formalize_review(
             Some(harness),
         )
         .await?;
+        commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
+            .await?;
         return Ok(());
     }
 
@@ -15587,6 +15588,8 @@ async fn run_inventory_direct_all_targets_formalize_review(
             })),
         )
         .await?;
+        commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
+            .await?;
         return Ok(());
     }
 
@@ -15732,10 +15735,78 @@ async fn run_inventory_direct_all_targets_formalize_review(
         None,
     )
     .await?;
+    commit_formalize_lean_artifacts(state, review_id, artifact_dir, external_actions_enabled)
+        .await?;
     cli_status::emit(format!(
         "formalize {review_id}: inventory-direct done (status={status}, targets={}, proved={proved})",
         claim_ids.len()
     ));
+    Ok(())
+}
+
+async fn commit_formalize_lean_artifacts(
+    state: &super::AppState,
+    review_id: Uuid,
+    artifact_dir: &Path,
+    external_actions_enabled: bool,
+) -> anyhow::Result<()> {
+    let lean_dir = artifact_dir.join("lean");
+    tokio::fs::create_dir_all(&lean_dir).await?;
+    let result = if !external_actions_enabled {
+        serde_json::json!({
+            "schema_version": "1.0.0",
+            "status": "skipped",
+            "phase": "post_formalization_pr_commit",
+            "reason": "external_actions_disabled",
+            "blocking_formalize": false,
+            "commit_sha": null,
+        })
+    } else {
+        match commit_lean_files_to_existing_pr(state, review_id).await {
+            Ok(Some(commit_sha)) => {
+                cli_status::emit(format!(
+                    "formalize {review_id}: committed Lean artifacts to existing PR ({commit_sha})"
+                ));
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "status": "committed",
+                    "phase": "post_formalization_pr_commit",
+                    "reason": null,
+                    "blocking_formalize": false,
+                    "commit_sha": commit_sha,
+                })
+            }
+            Ok(None) => {
+                cli_status::emit(format!(
+                    "formalize {review_id}: Lean artifacts were produced but not committed to the PR (no existing PR or no files)"
+                ));
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "status": "failed",
+                    "phase": "post_formalization_pr_commit",
+                    "reason": "no_existing_pr_or_no_files",
+                    "blocking_formalize": false,
+                    "commit_sha": null,
+                })
+            }
+            Err(err) => {
+                let message = format!("{err:#}");
+                cli_status::emit(format!(
+                    "formalize {review_id}: Lean artifacts were produced but PR commit failed: {message}"
+                ));
+                serde_json::json!({
+                    "schema_version": "1.0.0",
+                    "status": "failed",
+                    "phase": "post_formalization_pr_commit",
+                    "reason": "commit_failed",
+                    "blocking_formalize": false,
+                    "commit_sha": null,
+                    "error": message,
+                })
+            }
+        }
+    };
+    write_loop_json(&lean_dir.join("pr_commit.json"), &result).await?;
     Ok(())
 }
 
@@ -16260,6 +16331,7 @@ async fn run_review_loop_for_review(
     for (output, skip_reason) in review_loop_deferred_lean_skip_reasons(reason) {
         bundle_skip_reasons.entry(output).or_insert(skip_reason);
     }
+    write_review_loop_deferred_lean_artifacts(&lean_dir, reason).await?;
     let _ = write_review_loop_code_file(&lean_final_path, &format!("/- {reason} -/\n")).await;
     let lean_results = skipped_review_fix_code_results_with_status(
         &lean_task,
@@ -16268,7 +16340,13 @@ async fn run_review_loop_for_review(
         "skipped",
         "lean_deferred_to_formalize",
     );
-    let lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
+    let mut lean_results = annotate_lean_review_fix_code_results(lean_results, &proof_obligations);
+    if let Some(object) = lean_results.as_object_mut() {
+        object.insert(
+            "deferred_outputs".to_string(),
+            review_loop_deferred_lean_outputs_value(reason),
+        );
+    }
     let lean_pass = lean_results["status"] == "pass";
     let lean_accepted = true;
     write_loop_json(&lean_dir.join("results.json"), &lean_results).await?;
@@ -17615,6 +17693,10 @@ async fn review_loop_bundle_completeness_report(
     artifact_dir: &Path,
     skip_reasons: &BTreeMap<String, String>,
 ) -> anyhow::Result<serde_json::Value> {
+    let mut effective_skip_reasons = skip_reasons.clone();
+    for (output, reason) in review_loop_declared_deferred_output_skip_reasons(artifact_dir) {
+        effective_skip_reasons.entry(output).or_insert(reason);
+    }
     let mut artifacts = Vec::new();
     let mut present_count = 0usize;
     let mut skipped_count = 0usize;
@@ -17633,8 +17715,12 @@ async fn review_loop_bundle_completeness_report(
                 .await
                 .map(|metadata| metadata.is_file())
                 .unwrap_or(false);
-            let skip_reason =
-                review_loop_skip_reason(skip_reasons, manifest_output, &bundle_rel, &artifact_path);
+            let skip_reason = review_loop_skip_reason(
+                &effective_skip_reasons,
+                manifest_output,
+                &bundle_rel,
+                &artifact_path,
+            );
             let status = if exists {
                 present_count += 1;
                 "present"
@@ -17701,6 +17787,124 @@ fn review_loop_deferred_lean_skip_reasons(reason: &str) -> BTreeMap<String, Stri
     .into_iter()
     .map(|output| (output.to_string(), reason.to_string()))
     .collect()
+}
+
+fn review_loop_deferred_lean_outputs_value(reason: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        review_loop_deferred_lean_skip_reasons(reason)
+            .into_iter()
+            .map(|(artifact, skip_reason)| {
+                serde_json::json!({
+                    "artifact": artifact,
+                    "skip_reason": skip_reason,
+                    "deferred_to": "formalize",
+                })
+            })
+            .collect(),
+    )
+}
+
+fn review_loop_declared_deferred_output_skip_reasons(
+    artifact_dir: &Path,
+) -> BTreeMap<String, String> {
+    let mut skip_reasons = BTreeMap::new();
+    collect_review_loop_declared_deferred_output_skip_reasons(artifact_dir, &mut skip_reasons);
+    skip_reasons
+}
+
+fn collect_review_loop_declared_deferred_output_skip_reasons(
+    dir: &Path,
+    skip_reasons: &mut BTreeMap<String, String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_review_loop_declared_deferred_output_skip_reasons(&path, skip_reasons);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(outputs) = value
+            .get("deferred_outputs")
+            .and_then(|value| value.as_array())
+        else {
+            continue;
+        };
+        for output in outputs {
+            let artifact = output
+                .get("artifact")
+                .or_else(|| output.get("path"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let reason = output
+                .get("skip_reason")
+                .or_else(|| output.get("reason"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let (Some(artifact), Some(reason)) = (artifact, reason) else {
+                continue;
+            };
+            skip_reasons
+                .entry(artifact.to_string())
+                .or_insert_with(|| reason.to_string());
+            if let Some(stripped) = artifact.strip_prefix("review_loop/") {
+                skip_reasons
+                    .entry(stripped.to_string())
+                    .or_insert_with(|| reason.to_string());
+            }
+        }
+    }
+}
+
+async fn write_review_loop_deferred_lean_artifacts(
+    lean_dir: &Path,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let pending = |artifact: &str| {
+        serde_json::json!({
+            "schema_version": "1.0.0",
+            "status": "pending",
+            "skip_reason": reason,
+            "deferred_to": "formalize",
+            "artifact": artifact,
+        })
+    };
+    write_loop_json(
+        &lean_dir.join("env").join("env_result.json"),
+        &pending("review_loop/lean/env/env_result.json"),
+    )
+    .await?;
+    write_loop_json(
+        &lean_dir.join("library").join("library_manifest.json"),
+        &serde_json::json!({
+            "schema_version": "1.0.0",
+            "status": "pending",
+            "skip_reason": reason,
+            "deferred_to": "formalize",
+            "artifact": "review_loop/lean/library/library_manifest.json",
+            "declarations": [],
+            "files": [],
+        }),
+    )
+    .await?;
+    write_loop_json(
+        &lean_dir.join("library").join("compile.json"),
+        &pending("review_loop/lean/library/compile.json"),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn record_review_loop_node(
@@ -23009,10 +23213,7 @@ mod tests {
         assert_eq!(records[0]["event_type"], "node.completed");
         assert_eq!(records[0]["node_id"], "formalize_source_inventory");
         assert_eq!(records[0]["payload"]["review_id"], review_id.to_string());
-        assert_eq!(
-            records[0]["payload"]["tool_id"],
-            "theorem_inventory_source"
-        );
+        assert_eq!(records[0]["payload"]["tool_id"], "theorem_inventory_source");
         assert!(records[0]["emitted_at"].as_str().is_some());
     }
 

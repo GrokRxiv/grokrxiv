@@ -1213,7 +1213,10 @@ fn parse_timeout_policy(value: &str) -> Option<Option<u64>> {
         return None;
     }
     let normalized = value.to_ascii_lowercase();
-    if matches!(normalized.as_str(), "0" | "none" | "no_timeout" | "unbounded") {
+    if matches!(
+        normalized.as_str(),
+        "0" | "none" | "no_timeout" | "unbounded"
+    ) {
         return Some(None);
     }
     value.parse::<u64>().ok().filter(|secs| *secs > 0).map(Some)

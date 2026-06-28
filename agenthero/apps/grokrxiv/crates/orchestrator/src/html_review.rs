@@ -195,8 +195,9 @@ pub async fn review_and_fix_html(
 }
 
 /// Run HTML quality with an optional caller-owned timeout. By default, the
-/// Codex artifact-repair agent is not killed by a short watchdog; set
-/// `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS` to a positive number to bound it.
+/// Codex artifact-repair agent gets a long watchdog rather than the runner's
+/// short fallback; set `GROKRXIV_HTML_QUALITY_TIMEOUT_SECS=none` to make it
+/// unbounded or to a positive number to override the default.
 /// Refresh-review can pass an override with a distinct role id when that
 /// command needs a caller-owned budget.
 pub async fn review_and_fix_html_with_timeout(
@@ -222,7 +223,11 @@ pub async fn review_and_fix_html_with_timeout(
 
     let model =
         std::env::var("GROKRXIV_HTML_QUALITY_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
-    let timeout_secs = timeout_secs_override.or_else(html_quality_timeout_override);
+    let timeout_secs = if let Some(timeout_secs) = timeout_secs_override {
+        Some(timeout_secs)
+    } else {
+        html_quality_timeout_policy().unwrap_or(Some(900))
+    };
 
     let schema: Value =
         serde_json::from_str(HTML_QUALITY_SCHEMA).context("html_quality schema parse")?;
@@ -337,7 +342,7 @@ fn render_html_quality_prompt(html: &str) -> String {
     HTML_QUALITY_PROMPT_TEMPLATE.replace("{{html}}", html)
 }
 
-fn html_quality_timeout_override() -> Option<u32> {
+fn html_quality_timeout_policy() -> Option<Option<u32>> {
     std::env::var("GROKRXIV_HTML_QUALITY_TIMEOUT_SECS")
         .ok()
         .and_then(|s| {
@@ -346,13 +351,14 @@ fn html_quality_timeout_override() -> Option<u32> {
                 return None;
             }
             let lowered = trimmed.to_ascii_lowercase();
-            if matches!(
-                lowered.as_str(),
-                "0" | "none" | "no_timeout" | "unbounded"
-            ) {
-                return None;
+            if matches!(lowered.as_str(), "0" | "none" | "no_timeout" | "unbounded") {
+                return Some(None);
             }
-            trimmed.parse::<u32>().ok().filter(|secs| *secs > 0)
+            trimmed
+                .parse::<u32>()
+                .ok()
+                .filter(|secs| *secs > 0)
+                .map(Some)
         })
 }
 

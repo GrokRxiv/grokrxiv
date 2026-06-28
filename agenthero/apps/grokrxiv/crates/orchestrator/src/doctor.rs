@@ -618,10 +618,7 @@ fn timeout_env_policy(key: &str) -> Option<u64> {
             return None;
         }
         let lowered = value.to_ascii_lowercase();
-        if matches!(
-            lowered.as_str(),
-            "0" | "none" | "no_timeout" | "unbounded"
-        ) {
+        if matches!(lowered.as_str(), "0" | "none" | "no_timeout" | "unbounded") {
             return None;
         }
         value.parse::<u64>().ok().filter(|secs| *secs > 0)
