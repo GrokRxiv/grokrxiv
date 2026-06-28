@@ -98,7 +98,7 @@ files are gitignored.
 | `GROKRXIV_FORMALIZE_SOURCE_EXTRACTION_TIMEOUT_SECS` | `1800`    | Timeout floor for source-inventory extraction from arXiv TeX |
 | `GROKRXIV_FORMALIZE_QUEUE_AUTOSTART` | `1`                    | Start a one-shot `agh app work --run-id <job>` worker after queueing Lean formalization; set `0`/`false`/`no`/`off` to require manual workers |
 | `GROKRXIV_LEAN_TARGET_CONCURRENCY` | `3`                        | Maximum concurrent per-theorem Lean author/check/fix jobs |
-| `GROKRXIV_LEAN_MAX_TARGETS`      | `8`                         | MVP default Lean target cap; set `0` for full theorem-level mode, or another positive value for an explicit budget |
+| `GROKRXIV_LEAN_MAX_TARGETS`      | `3`                         | MVP default Lean target cap; set `8` for stress runs, `0` for full theorem-level mode, or another positive value for an explicit budget |
 | `AGENTHERO_AGH_BIN`              | `agh`                       | Binary used by GrokRxiv when autostarting a one-shot app-run worker |
 | `AGENTHERO_RUNTIME_ROOT`         | repo-root `.agenthero`       | AgentHero runtime state root; app-run logs are written under `$AGENTHERO_RUNTIME_ROOT/app_runs/` |
 | `AGENTHERO_LOG_FILE`             | _none_                      | Optional structured AgentHero process log destination; writes JSONL diagnostics for audit pipelines |

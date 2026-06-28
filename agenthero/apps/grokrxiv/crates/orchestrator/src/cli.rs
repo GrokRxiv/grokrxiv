@@ -8802,13 +8802,7 @@ fn paper_local_library_source_packet(inventory: &serde_json::Value) -> serde_jso
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    let selected_ids = formalize_inventory_selected_claim_ids(inventory).unwrap_or_else(|_| {
-        formalize_inventory_lean_targets(inventory)
-            .into_iter()
-            .filter_map(|item| inventory_item_id(&item).map(str::to_string))
-            .take(8)
-            .collect()
-    });
+    let selected_ids = formalize_inventory_selected_claim_ids(inventory).unwrap_or_default();
     let selected_id_set = selected_ids.iter().cloned().collect::<BTreeSet<_>>();
     let selected_targets = items
         .iter()
@@ -12248,20 +12242,132 @@ fn formalize_inventory_default_target_cap() -> Option<usize> {
     grokrxiv_review_loop::lean_max_targets_from_env()
 }
 
+#[derive(Debug, Clone)]
+struct FormalizeInventoryTargetCandidate {
+    id: String,
+    ordinal: usize,
+    complexity_score: usize,
+}
+
+fn formalize_inventory_text_len(item: &serde_json::Value, key: &str) -> usize {
+    item.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::len)
+        .unwrap_or_default()
+}
+
+fn formalize_inventory_source_context_len(item: &serde_json::Value) -> usize {
+    item.get("source_context")
+        .and_then(|value| value.as_object())
+        .map(|context| {
+            context
+                .values()
+                .filter_map(|value| value.as_str())
+                .map(str::len)
+                .sum()
+        })
+        .unwrap_or_default()
+}
+
+fn formalize_inventory_array_len(item: &serde_json::Value, key: &str) -> usize {
+    item.get(key)
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or_default()
+}
+
+fn formalize_inventory_tex_signal_count(source_tex: &str) -> usize {
+    let mut count = 0;
+    let bytes = source_tex.as_bytes();
+    for index in 0..bytes.len() {
+        match bytes[index] {
+            b'\\' | b'$' | b'_' | b'^' | b'{' | b'}' | b'&' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+fn formalize_inventory_target_complexity_score(item: &serde_json::Value) -> usize {
+    let source_tex = item
+        .get("source_tex")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    formalize_inventory_text_len(item, "source_tex")
+        + formalize_inventory_text_len(item, "statement")
+        + formalize_inventory_source_context_len(item) / 4
+        + formalize_inventory_tex_signal_count(source_tex) * 8
+        + formalize_inventory_array_len(item, "refs") * 64
+}
+
+fn formalize_inventory_select_diverse_claim_ids(
+    targets: Vec<serde_json::Value>,
+    target_cap: Option<usize>,
+) -> Vec<String> {
+    let candidates = targets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(ordinal, item)| {
+            item.get("id").and_then(|value| value.as_str()).map(|id| {
+                FormalizeInventoryTargetCandidate {
+                    id: id.to_string(),
+                    ordinal,
+                    complexity_score: formalize_inventory_target_complexity_score(&item),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let Some(cap) = target_cap else {
+        return candidates
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect();
+    };
+    if candidates.len() <= cap {
+        return candidates
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect();
+    }
+    if cap == 0 {
+        return candidates
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect();
+    }
+    if cap == 1 {
+        return candidates
+            .into_iter()
+            .take(1)
+            .map(|candidate| candidate.id)
+            .collect();
+    }
+
+    let mut by_complexity = candidates.clone();
+    by_complexity.sort_by_key(|candidate| (candidate.complexity_score, candidate.ordinal));
+    let mut selected_ordinals = BTreeSet::new();
+    let last = by_complexity.len() - 1;
+    let slots = cap - 1;
+    for slot in 0..cap {
+        let sorted_index = (slot * last + slots / 2) / slots;
+        selected_ordinals.insert(by_complexity[sorted_index].ordinal);
+    }
+
+    candidates
+        .into_iter()
+        .filter(|candidate| selected_ordinals.contains(&candidate.ordinal))
+        .map(|candidate| candidate.id)
+        .collect()
+}
+
 fn formalize_inventory_selected_claim_ids(
     inventory: &serde_json::Value,
 ) -> anyhow::Result<Vec<String>> {
-    let mut ids = formalize_inventory_lean_targets(inventory)
-        .into_iter()
-        .filter_map(|item| {
-            item.get("id")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
-        .collect::<Vec<_>>();
-    if let Some(cap) = formalize_inventory_default_target_cap() {
-        ids.truncate(cap);
-    }
+    let ids = formalize_inventory_select_diverse_claim_ids(
+        formalize_inventory_lean_targets(inventory),
+        formalize_inventory_default_target_cap(),
+    );
     if ids.is_empty() {
         anyhow::bail!("theorem_inventory has no role=lean_target items");
     }
@@ -12311,6 +12417,7 @@ async fn write_inventory_stage_result(
     let direct_dir = formalize_inventory_direct_dir(artifact_dir);
     tokio::fs::create_dir_all(&direct_dir).await?;
     let targets = formalize_inventory_lean_targets(inventory);
+    let selected_target_ids = formalize_inventory_selected_claim_ids(inventory).unwrap_or_default();
     let result = serde_json::json!({
         "schema_version": "1.0.0",
         "stage": "inventory",
@@ -12318,6 +12425,13 @@ async fn write_inventory_stage_result(
         "source": "review_loop/theorem_inventory.json",
         "pipeline": "theorem_inventory_direct",
         "target_count": targets.len(),
+        "selected_target_count": selected_target_ids.len(),
+        "selected_target_ids": selected_target_ids,
+        "selection_strategy": if formalize_inventory_default_target_cap().is_some() {
+            "complexity_quantile_sample_preserving_paper_order"
+        } else {
+            "all_targets"
+        },
         "targets": targets.iter().map(|item| {
             serde_json::json!({
                 "id": item.get("id").cloned().unwrap_or_else(|| serde_json::json!(null)),
@@ -23714,13 +23828,14 @@ After-marker explains the displayed map.
     }
 
     #[test]
-    fn formalize_inventory_selected_claim_ids_defaults_to_three_targets() {
+    fn formalize_inventory_selected_claim_ids_defaults_to_three_diverse_targets() {
         let _env = EnvVarGuard::clear("GROKRXIV_LEAN_MAX_TARGETS");
         let items = (0..10)
             .map(|index| {
                 serde_json::json!({
                     "id": format!("claim:{index}"),
                     "role": "lean_target",
+                    "source_tex": "x".repeat(index + 1),
                 })
             })
             .collect::<Vec<_>>();
@@ -23730,7 +23845,8 @@ After-marker explains the displayed map.
 
         assert_eq!(ids.len(), 3);
         assert_eq!(ids[0], "claim:0");
-        assert_eq!(ids[2], "claim:2");
+        assert_eq!(ids[1], "claim:5");
+        assert_eq!(ids[2], "claim:9");
     }
 
     #[test]
